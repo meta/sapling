@@ -255,8 +255,14 @@ pub struct PrefixLine {
 /// A piece of a graph prefix line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PrefixLinePart {
-    /// Literal graph text.
+    /// Graph text with no column, such as blank cells and the spacing around a node glyph.
     Text(String),
+
+    /// Graph text that draws part of the edge in `column`.
+    ///
+    /// Callers can use the column to style each edge, for example to give each column its own
+    /// color. A connector that joins two columns belongs to the branch that forks or merges there.
+    ColumnText { column: usize, text: String },
 
     /// Placeholder for the rendered node glyph.
     ///

@@ -124,7 +124,9 @@ fn render_prefix_line(prefix_line: &PrefixLine, glyph: &str) -> String {
     let mut out = String::new();
     for part in prefix_line.parts.iter() {
         match part {
-            PrefixLinePart::Text(text) => out.push_str(text),
+            PrefixLinePart::Text(text) | PrefixLinePart::ColumnText { text, .. } => {
+                out.push_str(text)
+            }
             PrefixLinePart::NodeGlyph => out.push_str(glyph),
         }
     }

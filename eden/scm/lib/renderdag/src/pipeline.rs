@@ -189,7 +189,8 @@ mod tests {
                             .parts
                             .iter()
                             .map(|part| match part {
-                                PrefixLinePart::Text(text) => text.as_str(),
+                                PrefixLinePart::Text(text)
+                                | PrefixLinePart::ColumnText { text, .. } => text.as_str(),
                                 PrefixLinePart::NodeGlyph => "o",
                             })
                             .collect();

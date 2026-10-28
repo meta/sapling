@@ -6,6 +6,10 @@
  */
 
 use super::ancestry_lines;
+use super::column_line;
+use super::connector_columns;
+use super::is_horizontal_run;
+use super::push_column_part;
 use crate::pipeline::types::DashStyle;
 use crate::pipeline::types::GraphRowShape;
 use crate::pipeline::types::LinkLine;
@@ -32,8 +36,8 @@ impl<N> PrefixLineRenderer<N> for AsciiPrefixLineRenderer {
     fn next_prefix_lines(&mut self, line: &GraphRowShape<N>) -> Vec<PrefixLine> {
         let mut lines = Vec::new();
         let (ancestor, ancestor_line) = match line.style.dash_style {
-            DashStyle::Persistent => ('.', ". "),
-            DashStyle::Once => (':', ": "),
+            DashStyle::Persistent => (".", ". "),
+            DashStyle::Once => (":", ": "),
         };
 
         lines.push(render_pad_line(
@@ -47,7 +51,7 @@ impl<N> PrefixLineRenderer<N> for AsciiPrefixLineRenderer {
             parts: Vec::new(),
             kind: PrefixLineKind::Node,
         };
-        for entry in line.node_line.iter() {
+        for (i, entry) in line.node_line.iter().enumerate() {
             match entry {
                 NodeLine::Node => {
                     node_line.parts.push(PrefixLinePart::NodeGlyph);
@@ -55,9 +59,9 @@ impl<N> PrefixLineRenderer<N> for AsciiPrefixLineRenderer {
                         .parts
                         .push(PrefixLinePart::Text(String::from(" ")));
                 }
-                NodeLine::Parent => push_text(&mut node_line, "| "),
-                NodeLine::Ancestor => push_text(&mut node_line, ancestor_line),
-                NodeLine::Blank => push_text(&mut node_line, "  "),
+                NodeLine::Parent => push_column_part(&mut node_line.parts, i, "| "),
+                NodeLine::Ancestor => push_column_part(&mut node_line.parts, i, ancestor_line),
+                NodeLine::Blank => push_column_part(&mut node_line.parts, i, "  "),
             }
         }
         lines.push(node_line);
@@ -70,64 +74,69 @@ impl<N> PrefixLineRenderer<N> for AsciiPrefixLineRenderer {
 
         // Render the link line
         if let Some(link_row) = line.link_line.as_ref() {
-            let mut link_line = String::new();
+            let mut parts = Vec::new();
             let any_horizontal = link_row
                 .iter()
                 .any(|cur| cur.intersects(LinkLine::HORIZONTAL));
-            let mut iter = link_row
+            for (i, (cur, connector_column)) in link_row
                 .iter()
                 .copied()
-                .chain(std::iter::once(LinkLine::empty()))
-                .peekable();
-            while let Some(cur) = iter.next() {
-                let next = match iter.peek() {
-                    Some(&v) => v,
-                    None => break,
-                };
+                .zip(connector_columns(line.node_column, link_row))
+                .enumerate()
+            {
+                let next = link_row.get(i + 1).copied().unwrap_or_default();
                 // Draw the parent/ancestor line.
-                if cur.intersects(LinkLine::HORIZONTAL) {
+                let column_text = if cur.intersects(LinkLine::HORIZONTAL) {
                     if cur.intersects(LinkLine::CHILD | LinkLine::ANY_FORK_OR_MERGE) {
-                        link_line.push('+');
+                        "+"
                     } else {
-                        link_line.push('-');
+                        "-"
                     }
                 } else if cur.intersects(LinkLine::VERTICAL) {
                     if cur.intersects(LinkLine::ANY_FORK_OR_MERGE) && any_horizontal {
-                        link_line.push('+');
+                        "+"
                     } else if cur.intersects(LinkLine::VERT_PARENT) {
-                        link_line.push('|');
+                        "|"
                     } else {
-                        link_line.push(ancestor);
+                        ancestor
                     }
                 } else if cur.intersects(LinkLine::ANY_MERGE) && any_horizontal {
-                    link_line.push('\'');
+                    "'"
                 } else if cur.intersects(LinkLine::ANY_FORK) && any_horizontal {
-                    link_line.push('.');
+                    "."
                 } else {
-                    link_line.push(' ');
-                }
+                    " "
+                };
 
                 // Draw the connecting line.
-                if cur.intersects(LinkLine::HORIZONTAL) {
-                    link_line.push('-');
+                let connector = if cur.intersects(LinkLine::HORIZONTAL) {
+                    "-"
                 } else if cur.intersects(LinkLine::RIGHT_MERGE) {
                     if next.intersects(LinkLine::LEFT_FORK) && !any_horizontal {
-                        link_line.push('\\');
+                        "\\"
                     } else {
-                        link_line.push('-');
+                        "-"
                     }
                 } else if cur.intersects(LinkLine::RIGHT_FORK) {
                     if next.intersects(LinkLine::LEFT_MERGE) && !any_horizontal {
-                        link_line.push('/');
+                        "/"
                     } else {
-                        link_line.push('-');
+                        "-"
                     }
                 } else {
-                    link_line.push(' ');
-                }
+                    " "
+                };
+
+                let column = if is_horizontal_run(cur) {
+                    connector_column
+                } else {
+                    i
+                };
+                push_column_part(&mut parts, column, column_text);
+                push_column_part(&mut parts, connector_column, connector);
             }
             lines.push(PrefixLine {
-                parts: vec![PrefixLinePart::Text(link_line)],
+                parts,
                 kind: PrefixLineKind::Link,
             });
         }
@@ -135,23 +144,17 @@ impl<N> PrefixLineRenderer<N> for AsciiPrefixLineRenderer {
         // Render the term line
         if let Some(term_row) = line.term_line.as_ref() {
             let term_strs = ["| ", "~ "];
-            for term_str in term_strs.iter() {
-                let mut term_line = String::new();
-                for (i, term) in term_row.iter().enumerate() {
-                    if *term {
-                        term_line.push_str(term_str);
-                    } else {
-                        term_line.push_str(match line.ancestry_line[i] {
-                            PadLine::Parent => "| ",
-                            PadLine::Ancestor => ancestor_line,
-                            PadLine::Blank => "  ",
-                        });
-                    }
-                }
-                lines.push(PrefixLine {
-                    parts: vec![PrefixLinePart::Text(term_line)],
-                    kind: PrefixLineKind::Term,
-                });
+            for &term_str in &term_strs {
+                lines.push(column_line(
+                    PrefixLineKind::Term,
+                    term_row.iter().enumerate().map(|(i, term)| {
+                        if *term {
+                            term_str
+                        } else {
+                            pad_cell(ancestor_line, line.ancestry_line[i])
+                        }
+                    }),
+                ));
             }
         }
 
@@ -168,24 +171,16 @@ fn render_pad_line(
     line: impl IntoIterator<Item = PadLine>,
     kind: PrefixLineKind,
 ) -> PrefixLine {
-    PrefixLine {
-        parts: vec![PrefixLinePart::Text(render_pad_text(ancestor, line))],
+    column_line(
         kind,
-    }
+        line.into_iter().map(|entry| pad_cell(ancestor, entry)),
+    )
 }
 
-fn render_pad_text(ancestor: &str, line: impl IntoIterator<Item = PadLine>) -> String {
-    let mut out = String::new();
-    for entry in line {
-        out.push_str(match entry {
-            PadLine::Parent => "| ",
-            PadLine::Ancestor => ancestor,
-            PadLine::Blank => "  ",
-        });
+fn pad_cell(ancestor: &str, entry: PadLine) -> &str {
+    match entry {
+        PadLine::Parent => "| ",
+        PadLine::Ancestor => ancestor,
+        PadLine::Blank => "  ",
     }
-    out
-}
-
-fn push_text(line: &mut PrefixLine, text: &str) {
-    line.parts.push(PrefixLinePart::Text(text.to_owned()));
 }
