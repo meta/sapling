@@ -319,3 +319,15 @@ pub trait PrefixLineRenderer<N> {
     /// Convert the next graph row shape into prefix lines.
     fn next_prefix_lines(&mut self, row_shape: &GraphRowShape<N>) -> Vec<PrefixLine>;
 }
+
+/// A piece of a rendered graph line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct LinePiece<'a> {
+    /// The column of the edge that this text draws. It is `None` for text that is not part of an
+    /// edge: a node glyph, message text, or spacing.
+    pub column: Option<usize>,
+
+    /// The text of this piece.
+    pub text: &'a str,
+}
