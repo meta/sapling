@@ -19,7 +19,7 @@ crate-type = ["lib", "staticlib"]
 anyhow = "1.0.104"
 arc-swap = { version = "1.9.3", features = ["weak"] }
 blob = { version = "0.1.0", path = "../blob" }
-crossfire = "3.1.20"
+crossfire = "3.1.22"
 cxx = "1.0.194"
 cxxerror = { version = "0.1.0", path = "../edenfs_ffi/cxxerror" }
 edenfs-telemetry = { path = "../../../fs/rust/edenfs-telemetry" }
