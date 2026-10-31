@@ -26,7 +26,7 @@ itertools = "0.15.0"
 manifest = { version = "0.1.0", path = "../../manifest" }
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
 mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
-similar = { version = "3.2.0", features = ["bytes", "inline", "unicode"] }
+similar = { version = "3.2.1", features = ["bytes", "inline", "unicode"] }
 vec1 = { version = "1.12.1", features = ["serde"] }
 
 [dev-dependencies]
