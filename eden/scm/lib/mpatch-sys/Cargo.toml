@@ -14,4 +14,4 @@ exclude = ["BUCK"]
 name = "mpatch_sys"
 
 [build-dependencies]
-cc = "1.5.1"
+cc = "1.10.0"

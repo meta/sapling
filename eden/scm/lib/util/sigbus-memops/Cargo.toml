@@ -14,7 +14,7 @@ exclude = ["BUCK"]
 name = "sigbus_memops"
 
 [build-dependencies]
-cc = "1.5.1"
+cc = "1.10.0"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 libc = "0.2.186"

@@ -21,7 +21,7 @@ serde = { version = "1.0.229", features = ["derive", "rc"] }
 tempfile = "3.27.0"
 
 [target.'cfg(target_os = "macos")'.build-dependencies]
-cc = "1.5.1"
+cc = "1.10.0"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 ntapi = "0.4.3"

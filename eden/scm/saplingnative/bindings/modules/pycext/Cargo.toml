@@ -10,5 +10,5 @@ cpython = { version = "0.7.2", features = ["python3-sys"], default-features = fa
 python3-sys = "0.7.2"
 
 [build-dependencies]
-cc = "1.5.1"
+cc = "1.10.0"
 sapling-python-sysconfig = { version = "0.1.0", path = "../../../../lib/util/python-sysconfig" }
