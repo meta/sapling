@@ -25,7 +25,7 @@ path = "tests/sigbus_truncate_rlock_noop_sync.rs"
 
 [dependencies]
 byteorder = "1.5"
-memmap2 = "0.9.11"
+memmap2 = "0.9.12"
 rand = "0.10.3"
 sapling-atomicfile = { version = "0.2.0", path = "../atomicfile" }
 sapling-metrics = { version = "0.1.0", path = "../metrics", optional = true }

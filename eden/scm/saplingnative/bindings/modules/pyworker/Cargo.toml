@@ -19,7 +19,7 @@ sapling-vfs = { version = "0.1.0", path = "../../../../lib/vfs" }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [dev-dependencies]
-memmap2 = "0.9.11"
+memmap2 = "0.9.12"
 quickcheck = "1.1"
 sapling-minibytes = { version = "0.2.0", path = "../../../../lib/minibytes" }
 tempfile = "3.27.0"
