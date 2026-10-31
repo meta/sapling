@@ -15,4 +15,4 @@ name = "grepomanifest"
 
 [dependencies]
 anyhow = "1.0.104"
-roxmltree = "0.21.1"
+roxmltree = "0.21.2"
