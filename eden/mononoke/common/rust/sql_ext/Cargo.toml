@@ -10,7 +10,7 @@ license = "GPLv2+"
 [dependencies]
 anyhow = "1.0.104"
 async-trait = "0.1.92"
-aws-config = { version = "1.12.0", features = ["behavior-version-latest"] }
+aws-config = { version = "1.13.0", features = ["behavior-version-latest"] }
 aws-sdk-secretsmanager = "1.119.0"
 base64 = { version = "0.23.1", features = ["alloc"] }
 bincode = { version = "2", features = ["serde"] }
