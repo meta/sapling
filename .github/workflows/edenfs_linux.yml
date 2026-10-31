@@ -25,6 +25,10 @@ jobs:
     # the -sys crates' C code.
     env:
       SCCACHE_GHA_ENABLED: "on"
+      # sccache caches cargo's crates too, and keeps one server, so the stats
+      # at the end cover the whole build.
+      RUSTC_WRAPPER: sccache
+      SCCACHE_IDLE_TIMEOUT: "0"
       CC: gcc-14
       CXX: g++-14
     steps:
@@ -72,6 +76,11 @@ jobs:
     # Ninja's default of nproc+2 jobs leaves less memory headroom than one
     # compile per CPU on a cold cache.
     - name: Build
+      run: >
+        cmake --build _build -j "$(nproc)"
+        --target edenfs edenfs_privhelper edenfsctl.cargo
+
+    - name: Build tests
       run: cmake --build _build -j "$(nproc)"
 
     # The PrivHelper tests that call runInMountNamespace() set up a user and

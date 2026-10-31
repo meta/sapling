@@ -22,6 +22,13 @@ jobs:
     timeout-minutes: 120
     env:
       SCCACHE_GHA_ENABLED: "on"
+      # sccache caches cargo's crates too, and keeps one server, so the stats
+      # at the end cover the whole build.
+      RUSTC_WRAPPER: sccache
+      SCCACHE_IDLE_TIMEOUT: "0"
+      # The C in Rust crates otherwise targets the SDK's macOS version, newer
+      # than the one CMake links for, and ld warns about every such object.
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
     steps:
 
     - uses: actions/checkout@v6
@@ -55,6 +62,11 @@ jobs:
         -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
     - name: Build
+      run: >
+        cmake --build _build -j "$(sysctl -n hw.ncpu)"
+        --target edenfs edenfs_privhelper edenfsctl.cargo
+
+    - name: Build tests
       run: cmake --build _build -j "$(sysctl -n hw.ncpu)"
 
     # Takeover.manyMounts opens two file descriptors for each of 10,000 mounts.
