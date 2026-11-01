@@ -291,6 +291,16 @@ class EdenServer : private TakeoverHandler {
   void noteActivity(std::string_view what);
 
   /**
+   * A checkout recovery calls this right before it mounts, and
+   * endRecoveryMount() once mount() completes. Returns false, and the
+   * recovery must not mount, once EdenFS has left RUNNING. A graceful restart
+   * waits for recovery mounts like for Thrift requests, then refuses: a mount
+   * whose channel has not started cannot be handed over.
+   */
+  bool beginRecoveryMount(const AbsolutePath& mountPath);
+  void endRecoveryMount(const AbsolutePath& mountPath);
+
+  /**
    * Mount and return an EdenMount.
    */
   [[nodiscard]] ImmediateFuture<std::shared_ptr<EdenMount>> mount(
@@ -803,6 +813,11 @@ class EdenServer : private TakeoverHandler {
   // checkouts no longer in config.json.
   std::vector<std::pair<AbsolutePath, std::unique_ptr<CheckoutConfig>>>
   findCheckoutsNotServed();
+  // Starts recovering the checkouts not served without waiting for the next
+  // health-check tick, which can be up to two intervals away after a start.
+  // Called when a takeover leaves the daemon RUNNING: a takeover only remounts
+  // the checkouts the other daemon handed over.
+  void recoverCheckoutsNotServedSoon();
 
   // The last recorded stop reason of a checkout, or empty.
   std::string getCheckoutStopReason(const AbsolutePath& mountPath);
@@ -831,6 +846,8 @@ class EdenServer : private TakeoverHandler {
       const AbsolutePath& mountPath);
   // Returns true if this attempt failed and recovery gives up on the checkout.
   bool endCheckoutRecovery(const AbsolutePath& mountPath, bool success);
+  // Ends an attempt that never mounted; it does not count as a failure.
+  void cancelCheckoutRecovery(const AbsolutePath& mountPath);
   // Forgets recovery state once the checkout is mounted some other way. While
   // an attempt is in flight, the reset is applied when the attempt ends.
   void resetCheckoutRecovery(const AbsolutePath& mountPath);
@@ -941,8 +958,21 @@ class EdenServer : private TakeoverHandler {
      */
     folly::Future<std::optional<TakeoverData>> shutdownFuture =
         folly::Future<std::optional<TakeoverData>>::makeEmpty();
+    // Checkout recoveries mounting now, and when each started. See
+    // beginRecoveryMount().
+    folly::F14FastMap<AbsolutePath, std::chrono::steady_clock::time_point>
+        recoveryMounts;
   };
   folly::Synchronized<RunStateData> runningState_;
+
+  // This daemon took its mounts over from another one. Set by prepareImpl().
+  bool startedByTakeover_{false};
+
+  // Logs and returns the refusal of a graceful restart while a checkout
+  // recovery is mounting, or nullopt if none is.
+  std::optional<std::string> refuseTakeoverForRecoveryMounts(
+      const RunStateData& state,
+      std::string_view why);
 
   // Unforced takeovers waiting for the Thrift requests in flight. Only
   // touched on the main event base thread: by startTakeoverShutdown(), by

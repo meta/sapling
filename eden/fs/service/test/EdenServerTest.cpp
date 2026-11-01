@@ -771,6 +771,96 @@ TEST(EdenServerTakeoverTest, DoesNotWaitWhenTheGracePeriodIsOff) {
   EXPECT_TRUE(server.performCleanup());
 }
 
+TEST(EdenServerTakeoverTest, WaitsForARecoveryMount) {
+  GFLAGS_NAMESPACE::SetCommandLineOptionWithMode(
+      "enable_fault_injection", "true", GFLAGS_NAMESPACE::SET_FLAGS_VALUE);
+  TestServer::Options options;
+  options.takeoverRequestGrace = std::chrono::seconds{5};
+  TestServer testServer{options};
+  auto& server = testServer.getServer();
+  auto socketPath = EdenStateDir{server.getEdenDir()}.getTakeoverSocketPath();
+
+  ScopedServerThread serverThread{server};
+  ASSERT_TRUE(driveMainEventBaseUntil(server, [&] {
+    return server.getStatus() == EdenServer::RunState::RUNNING;
+  }));
+
+  const auto mountPath = canonicalPath("/recovering");
+  ASSERT_TRUE(server.beginRecoveryMount(mountPath));
+  // The recovery mount finishes while the takeover waits for it.
+  auto& faultInjector = server.getServerState()->getFaultInjector();
+  faultInjector.injectBlock("takeover_wait", "poll");
+  bool pollBlocked = false;
+  std::thread blockedWaiter([&] {
+    pollBlocked = faultInjector.waitUntilBlocked("takeover_wait", 5s);
+    server.endRecoveryMount(mountPath);
+    faultInjector.unblock("takeover_wait", "poll");
+  });
+
+  auto clientFuture = takeoverViaThread(
+      socketPath, /*shouldThrowDuringTakeover=*/false, /*force=*/false);
+  ASSERT_TRUE(driveMainEventBaseUntil(
+      server,
+      [&] { return clientFuture.wait_for(0ms) == std::future_status::ready; },
+      10s));
+  blockedWaiter.join();
+  EXPECT_TRUE(pollBlocked);
+  EXPECT_NO_THROW((void)clientFuture.get());
+
+  ASSERT_TRUE(serverThread.waitForExit(5s));
+  serverThread.join();
+  ASSERT_NO_THROW(serverThread.throwIfServeFailed());
+  EXPECT_TRUE(server.performCleanup());
+}
+
+TEST(EdenServerTakeoverTest, RefusedWhileARecoveryMountOutlivesTheGrace) {
+  GFLAGS_NAMESPACE::SetCommandLineOptionWithMode(
+      "enable_fault_injection", "true", GFLAGS_NAMESPACE::SET_FLAGS_VALUE);
+  TestServer::Options options;
+  options.takeoverRequestGrace = std::chrono::seconds{1};
+  TestServer testServer{options};
+  auto& server = testServer.getServer();
+  auto socketPath = EdenStateDir{server.getEdenDir()}.getTakeoverSocketPath();
+
+  ScopedServerThread serverThread{server};
+  ASSERT_TRUE(driveMainEventBaseUntil(server, [&] {
+    return server.getStatus() == EdenServer::RunState::RUNNING;
+  }));
+
+  const auto mountPath = canonicalPath("/recovering");
+  ASSERT_TRUE(server.beginRecoveryMount(mountPath));
+  // Forcing does not help: a mount cannot be cancelled.
+  for (const bool force : {false, true}) {
+    auto clientFuture = takeoverViaThread(
+        socketPath, /*shouldThrowDuringTakeover=*/false, force);
+    ASSERT_TRUE(driveMainEventBaseUntil(
+        server,
+        [&] { return clientFuture.wait_for(0ms) == std::future_status::ready; },
+        10s));
+    EXPECT_THROW_RE(
+        (void)clientFuture.get(),
+        std::runtime_error,
+        "refused the graceful restart.*remounting /recovering");
+    EXPECT_EQ(server.getStatus(), EdenServer::RunState::RUNNING);
+  }
+
+  // Once the recovery has mounted, a takeover goes ahead, and no recovery
+  // mount can start after it.
+  server.endRecoveryMount(mountPath);
+  auto clientFuture = takeoverViaThread(
+      socketPath, /*shouldThrowDuringTakeover=*/false, /*force=*/false);
+  ASSERT_TRUE(driveMainEventBaseUntil(server, [&] {
+    return clientFuture.wait_for(0ms) == std::future_status::ready;
+  }));
+  EXPECT_NO_THROW((void)clientFuture.get());
+  EXPECT_FALSE(server.beginRecoveryMount(mountPath));
+
+  ASSERT_TRUE(serverThread.waitForExit(5s));
+  serverThread.join();
+  ASSERT_NO_THROW(serverThread.throwIfServeFailed());
+  EXPECT_TRUE(server.performCleanup());
+}
+
 TEST(EdenServerShutdownTest, StopsCleanlyWithAnIdleClientConnected) {
   TestServer::Options options;
   options.enableNfsServer = true;

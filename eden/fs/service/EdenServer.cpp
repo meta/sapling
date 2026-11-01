@@ -1645,6 +1645,9 @@ ImmediateFuture<Unit> EdenServer::recover(TakeoverData&& data) {
             // recovered daemon would never be restarted again.
             restartArmer_.clearArmed();
             armPrivHelperRestart();
+            // Recoveries cancelled while the takeover was under way, among
+            // others, are not mounted.
+            recoverCheckoutsNotServedSoon();
           });
 }
 
@@ -1733,9 +1736,15 @@ Future<Unit> EdenServer::prepare(std::shared_ptr<StartupLogger> logger) {
           // the arm that follows relaunch a daemon the user stopped. Takeover
           // recovery, the one way back out, does not come through here.
           [this] {
-            auto state = runningState_.wlock();
-            if (state->state != RunState::SHUTTING_DOWN) {
+            {
+              auto state = runningState_.wlock();
+              if (state->state == RunState::SHUTTING_DOWN) {
+                return;
+              }
               state->state = RunState::RUNNING;
+            }
+            if (startedByTakeover_) {
+              recoverCheckoutsNotServedSoon();
             }
           });
 }
@@ -1803,6 +1812,7 @@ Future<Unit> EdenServer::prepareImpl(std::shared_ptr<StartupLogger> logger) {
     }
     doingTakeover = true;
   }
+  startedByTakeover_ = doingTakeover;
   auto thriftRunningFuture = createThriftServer();
   // Start the PrivHelper client, using our main event base to drive its I/O
   serverState_->getPrivHelper()->setEdenFsEventsLogger(edenFsEventsLogger_);
@@ -3410,6 +3420,47 @@ void EdenServer::noteActivity(std::string_view what) {
       RecentActivity{std::string{what}, std::chrono::steady_clock::now()});
 }
 
+bool EdenServer::beginRecoveryMount(const AbsolutePath& mountPath) {
+  auto state = runningState_.wlock();
+  if (state->state != RunState::RUNNING) {
+    return false;
+  }
+  state->recoveryMounts[mountPath] = std::chrono::steady_clock::now();
+  return true;
+}
+
+void EdenServer::endRecoveryMount(const AbsolutePath& mountPath) {
+  runningState_.wlock()->recoveryMounts.erase(mountPath);
+}
+
+std::optional<std::string> EdenServer::refuseTakeoverForRecoveryMounts(
+    const RunStateData& state,
+    std::string_view why) {
+  if (state.recoveryMounts.empty()) {
+    return std::nullopt;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  std::string description;
+  auto oldest = std::chrono::steady_clock::duration::zero();
+  for (const auto& [mountPath, startedAt] : state.recoveryMounts) {
+    if (!description.empty()) {
+      description += ", ";
+    }
+    description += fmt::format(
+        "remounting {} for {}", mountPath, durationToString(now - startedAt));
+    oldest = std::max(oldest, now - startedAt);
+  }
+  XLOGF(WARN, "Refusing the graceful restart, {}: {}", why, description);
+  serverState_->getStats()->increment(&TakeoverStats::sendFailure);
+  edenFsEventsLogger_->logEvent(
+      TakeoverRefused{
+          description, std::chrono::duration<double>{oldest}.count()});
+  return fmt::format(
+      "EdenFS is recovering a checkout and {}: {}. Retry later.",
+      kTakeoverRefusedPhrase,
+      description);
+}
+
 folly::Future<TakeoverData> EdenServer::startTakeoverShutdown(
     bool force,
     bool onlyIfIdle) {
@@ -3518,14 +3569,18 @@ folly::coro::Task<void> EdenServer::co_waitForInFlightRequests() {
   }
   auto inFlight =
       handler_->getRequestsRunningLongerThan(std::chrono::nanoseconds{0});
+  auto recoveryMounts = [this] {
+    return runningState_.rlock()->recoveryMounts.size();
+  };
   // Lets a test change the requests in flight once they have been looked at.
   co_await serverState_->getFaultInjector().co_checkAsync(
       "takeover", "wait_for_requests");
-  if (!inFlight.empty()) {
+  if (!inFlight.empty() || recoveryMounts() != 0) {
     XLOGF(
         INFO,
-        "Graceful restart: giving {} Thrift requests up to {} to finish",
+        "Graceful restart: giving {} Thrift requests and {} checkout recoveries up to {} to finish",
         inFlight.size(),
+        recoveryMounts(),
         durationToString(grace));
     const auto deadline = std::chrono::steady_clock::now() + grace;
     const auto interval = std::min(
@@ -3542,10 +3597,17 @@ folly::coro::Task<void> EdenServer::co_waitForInFlightRequests() {
       co_await folly::coro::sleep(interval);
       inFlight =
           handler_->getRequestsRunningLongerThan(std::chrono::nanoseconds{0});
-      if (!inFlight.empty() && std::chrono::steady_clock::now() >= deadline) {
-        refuse(inFlight, "requests did not finish within the grace period");
+      if (std::chrono::steady_clock::now() >= deadline) {
+        if (!inFlight.empty()) {
+          refuse(inFlight, "requests did not finish within the grace period");
+        }
+        if (auto refusal = refuseTakeoverForRecoveryMounts(
+                *runningState_.rlock(),
+                "checkout recoveries did not finish within the grace period")) {
+          throw std::runtime_error(*refusal);
+        }
       }
-    } while (!inFlight.empty());
+    } while (!inFlight.empty() || recoveryMounts() != 0);
   }
   // Lets a test start a request once the wait is over, before the Thrift
   // server stops.
@@ -3574,6 +3636,13 @@ folly::Future<TakeoverData> EdenServer::startTakeoverShutdownNow(bool force) {
               "can only perform graceful restart when running normally; "
               "current state is ",
               enumValue(state->state))));
+    }
+
+    // A recovery mount registers under this lock while RUNNING, so none can
+    // start once this check passes.
+    if (auto refusal = refuseTakeoverForRecoveryMounts(
+            *state, "a checkout recovery is mounting")) {
+      return makeFuture<TakeoverData>(std::runtime_error(*refusal));
     }
 
     {
@@ -4788,6 +4857,26 @@ EdenServer::findCheckoutsNotServed() {
   return result;
 }
 
+void EdenServer::recoverCheckoutsNotServedSoon() {
+  const auto config = serverState_->getEdenConfig();
+  if (config->mountHealthCheckInterval.getValue() <=
+          std::chrono::nanoseconds{0} ||
+      !config->mountHealthCheckRecovery.getValue()) {
+    return;
+  }
+  scheduleCallbackOnMainEventBase(std::chrono::milliseconds{0}, [this] {
+    for (auto& [mountPath, checkoutConfig] : findCheckoutsNotServed()) {
+      // The next tick reports a flapping checkout.
+      if (!isCheckoutFlapLimited(mountPath)) {
+        startCheckoutRecovery(
+            mountPath,
+            std::move(checkoutConfig),
+            CheckoutRecoveryTrigger::HealthCheckTick);
+      }
+    }
+  });
+}
+
 std::string EdenServer::getCheckoutStopReason(const AbsolutePath& mountPath) {
   auto states = checkoutRecoveryStates_.rlock();
   auto it = states->find(mountPath);
@@ -4814,7 +4903,6 @@ bool EdenServer::startCheckoutRecovery(
       "Mount point {} is not currently mounted, attempting to remount.",
       mountPath);
 
-  getStats()->increment(&CheckoutRecoveryStats::attempt);
   AccidentalUnmountRecovery event{
       /*error=*/"",
       /*success=*/false,
@@ -4839,6 +4927,17 @@ bool EdenServer::startCheckoutRecovery(
        mountPath = mountPath,
        event = std::move(event),
        stoppedAt = attempt->stoppedAt]() mutable {
+        // A graceful restart may have started since this attempt was queued.
+        if (!beginRecoveryMount(mountPath)) {
+          cancelCheckoutRecovery(mountPath);
+          getStats()->increment(&CheckoutRecoveryStats::cancelled);
+          XLOGF(
+              INFO,
+              "Not remounting {}: EdenFS is no longer running",
+              mountPath);
+          return folly::makeSemiFuture();
+        }
+        getStats()->increment(&CheckoutRecoveryStats::attempt);
         folly::stop_watch<> stopWatch;
         return makeImmediateFutureWith([&] {
                  return mount(std::move(initialConfig), /*readOnly=*/false);
@@ -4851,6 +4950,7 @@ bool EdenServer::startCheckoutRecovery(
                       stopWatch](
                          folly::Try<std::shared_ptr<EdenMount>>&&
                              result) mutable {
+              endRecoveryMount(mountPath);
               bool success = result.hasValue();
               // End the attempt before counting it: a channel stop seen
               // after the count must be judged as a flap, not as part of
@@ -5022,6 +5122,23 @@ bool EdenServer::endCheckoutRecovery(
     return true;
   }
   return false;
+}
+
+void EdenServer::cancelCheckoutRecovery(const AbsolutePath& mountPath) {
+  {
+    auto states = checkoutRecoveryStates_.wlock();
+    auto it = states->find(mountPath);
+    if (it == states->end()) {
+      return;
+    }
+    if (!it->second.resetRequested) {
+      it->second.inFlight = false;
+      return;
+    }
+  }
+  // Mounted some other way while this attempt was queued, which
+  // endCheckoutRecovery() does not count as a failure.
+  endCheckoutRecovery(mountPath, /*success=*/false);
 }
 
 void EdenServer::resetCheckoutRecovery(const AbsolutePath& mountPath) {

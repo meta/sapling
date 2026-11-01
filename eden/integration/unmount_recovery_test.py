@@ -14,7 +14,11 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from eden.fs.cli.util import INTENTIONALLY_UNMOUNTED, poll_until
-from eden.fs.service.eden.thrift_types import GetBlockedFaultsRequest, UnblockFaultArg
+from eden.fs.service.eden.thrift_types import (
+    FaultDefinition,
+    GetBlockedFaultsRequest,
+    UnblockFaultArg,
+)
 from parameterized import parameterized
 
 from .lib import testcase
@@ -184,6 +188,40 @@ class UnmountRecoveryTest(RecoveryTestBase):
         self.assert_stays_unmounted()
         self.assertEqual(3, self.recovery_counter("success"))
 
+    def test_graceful_restart_waits_for_a_recovery_mount(self) -> None:
+        faults = [("mount", ".*"), ("takeover_wait", "poll")]
+        with self.eden.get_thrift_client() as client:
+            for key_class, key_value in faults:
+                client.injectFault(
+                    FaultDefinition(
+                        keyClass=key_class, keyValueRegex=key_value, block=True
+                    )
+                )
+        self.eden.run_cmd("unmount", "--debug-mark-unintentional", self.mount)
+        # The recovery's mount is blocked before its channel starts.
+        self.wait_on_fault_hit("mount")
+
+        errors: List[Exception] = []
+
+        def restart() -> None:
+            try:
+                self.eden.graceful_restart()
+            except Exception as ex:
+                errors.append(ex)
+
+        restarter = threading.Thread(target=restart)
+        restarter.start()
+        # The old daemon waits for the recovery mount instead of refusing.
+        self.wait_on_fault_hit("takeover_wait")
+        for key_class, key_value in faults:
+            self.remove_fault(key_class, key_value)
+            self.unblock_fault(key_class, key_value)
+        restarter.join(timeout=120)
+        self.assertFalse(restarter.is_alive())
+        self.assertEqual([], errors)
+        self.assertEqual("RUNNING", self.mount_state())
+        self.assertEqual("hola\n", (Path(self.mount) / "hello").read_text())
+
     def test_flapping_checkout_is_reported(self) -> None:
         for recovered in range(1, 4):
             self.abort_fuse_connection()
@@ -284,3 +322,28 @@ class ChannelStopRecoveryTest(RecoveryTestBase):
             ),
             timeout=30,
         )
+
+
+@testcase.eden_repo_test(run_on_nfs=False, run_coroutines=False, run_io_uring=False)
+@unittest.skipIf(sys.platform != "linux", "exercised on Linux FUSE mounts")
+class RecoveryAfterTakeoverTest(RecoveryTestBase):
+    # The first health-check tick is at least 10 minutes away, so only the
+    # recovery that follows a takeover can remount the checkout in time.
+    def mount_config(self) -> List[str]:
+        return [
+            'mount-health-check-interval = "10m"',
+            "mount-health-check-recovery = true",
+        ]
+
+    def test_graceful_restart_recovers_a_checkout_it_did_not_take_over(
+        self,
+    ) -> None:
+        self.eden.run_cmd("unmount", "--debug-mark-unintentional", self.mount)
+        self.eden.graceful_restart()
+        self.wait_until_running()
+
+    def test_failed_graceful_restart_recovers_an_unmounted_checkout(self) -> None:
+        self.eden.run_cmd("unmount", "--debug-mark-unintentional", self.mount)
+        self.eden.takeover_without_ping_response()
+        self.assertTrue(self.eden.wait_for_is_healthy())
+        self.wait_until_running()
