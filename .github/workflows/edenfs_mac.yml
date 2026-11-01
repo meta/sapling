@@ -29,6 +29,10 @@ jobs:
       # The C in Rust crates otherwise targets the SDK's macOS version, newer
       # than the one CMake links for, and ld warns about every such object.
       MACOSX_DEPLOYMENT_TARGET: "15.0"
+      # libgit2, which cargo fetches with otherwise, uses SecureTransport on
+      # macOS, and it drops the connection while cloning crosvm's submodules
+      # from chromium.googlesource.com, sometimes on every retry.
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
     steps:
 
     - uses: actions/checkout@v6
