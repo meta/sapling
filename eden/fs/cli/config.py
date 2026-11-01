@@ -32,6 +32,7 @@ from typing import (
     Dict,
     Generator,
     IO,
+    Iterable,
     KeysView,
     List,
     Mapping,
@@ -1030,19 +1031,21 @@ Do you want to run `eden mount %s` instead?"""
     def _clear_intentionally_unmounted(self, path: str) -> None:
         self._intentionally_unmounted_file(path).unlink(missing_ok=True)
 
-    def set_intentionally_unmounted_for_all_mounts(self) -> None:
-        clients_dir = self._get_clients_dir()
-        intentionally_unmounted_files = [
-            p / INTENTIONALLY_UNMOUNTED for p in clients_dir.glob("*") if p.is_dir()
-        ]
-        for f in intentionally_unmounted_files:
-            f.touch()
+    def set_intentionally_unmounted_for_all_mounts(self) -> List[Path]:
+        """Mark every checkout intentionally unmounted. Returns only the markers
+        this call created, so that markers set by `eden unmount` survive
+        clear_intentionally_unmounted_markers()."""
+        created = []
+        for client_dir in self._get_clients_dir().glob("*"):
+            marker = client_dir / INTENTIONALLY_UNMOUNTED
+            if client_dir.is_dir() and not marker.exists():
+                marker.touch()
+                created.append(marker)
+        return created
 
-    def clear_intentionally_unmounted_for_all_mounts(self) -> None:
-        clients_dir = self._get_clients_dir()
-        intentionally_unmounted_files = clients_dir.glob(f"*/{INTENTIONALLY_UNMOUNTED}")
-        for f in intentionally_unmounted_files:
-            f.unlink(missing_ok=True)
+    def clear_intentionally_unmounted_markers(self, markers: Iterable[Path]) -> None:
+        for marker in markers:
+            marker.unlink(missing_ok=True)
 
     def destroy_mount(
         self, path: Union[Path, str], preserve_mount_point: bool = False
