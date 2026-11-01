@@ -54,7 +54,6 @@ pub enum StressCmd {
         glob_pattern: String,
 
         #[clap(
-            short,
             long,
             default_value = "1000",
             help = "Number of requests to send to the Thrift server"
