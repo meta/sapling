@@ -16,7 +16,7 @@ name = "hook"
 [dependencies]
 anyhow = "1.0.104"
 base64 = { version = "0.23.1", features = ["alloc"] }
-erased-serde = "0.4.10"
+erased-serde = "0.4.11"
 sapling-clientinfo = { version = "0.1.0", path = "../clientinfo" }
 sapling-configmodel = { version = "0.2.0", path = "../config/model" }
 sapling-distributed-tracing = { version = "0.1.0", path = "../distributed-tracing" }

@@ -10,7 +10,7 @@ anyhow = "1.0.104"
 base64 = { version = "0.23.1", features = ["alloc"] }
 blake2 = "0.10"
 cpython = { version = "0.7.2", features = ["python3-sys"], default-features = false }
-erased-serde = "0.4.10"
+erased-serde = "0.4.11"
 pyio = { version = "0.1.0", path = "../pyio" }
 pyrepo = { version = "0.1.0", path = "../pyrepo" }
 sapling-cpython-ext = { version = "0.1.0", path = "../../../../lib/cpython-ext" }
