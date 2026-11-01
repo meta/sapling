@@ -38,11 +38,13 @@ BlobCache::BlobCache(
     PrivateTag,
     std::shared_ptr<ReloadableConfig> config,
     EdenStatsPtr stats)
+    // Copies config rather than moving it: MSVC initializes the shared_ptr
+    // parameter before it evaluates the arguments to its left, which read it.
     : BlobCache{
           PrivateTag{},
           config->getEdenConfig()->inMemoryBlobCacheSize.getValue(),
           config->getEdenConfig()->inMemoryBlobCacheMinimumItems.getValue(),
-          std::move(config),
+          config,
           std::move(stats)} {}
 
 BlobCache::BlobCache(
