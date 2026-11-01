@@ -4576,6 +4576,7 @@ void EdenServer::checkMountHealth() {
   for (const auto& [mountPath, config] : notServed) {
     registeredMountPaths.insert(std::string{mountPath.view()});
   }
+  const auto edenConfig = serverState_->getEdenConfig();
   pruneMountHealthIssues(emittedMountHealthIssues_, registeredMountPaths);
 
   // The probe only needs the path and the repo source, both copied above, so
@@ -4586,7 +4587,16 @@ void EdenServer::checkMountHealth() {
 
   const auto reason = std::string{edenMountHealthIssueReasonString(
       EdenMountHealthIssueReason::DaemonRunningCheckoutNotMounted)};
-  for (const auto& [mountPath, config] : notServed) {
+  for (auto& [mountPath, config] : notServed) {
+    if (edenConfig->mountHealthCheckRecovery.getValue()) {
+      // The outcome is reported once the recovery succeeds or gives up.
+      startCheckoutRecovery(
+          mountPath,
+          std::move(config),
+          CheckoutRecoveryTrigger::HealthCheckTick,
+          /*reportOutcome=*/true);
+      continue;
+    }
     if (!shouldLogMountHealthIssue(
             emittedMountHealthIssues_, mountPath.asString(), reason)) {
       continue;
@@ -4729,7 +4739,18 @@ void EdenServer::recoverCheckoutIfUnmounted(
   if (!initialConfig) {
     return;
   }
+  startCheckoutRecovery(
+      mountPath,
+      std::move(initialConfig),
+      CheckoutRecoveryTrigger::PeriodicTask,
+      /*reportOutcome=*/false);
+}
 
+void EdenServer::startCheckoutRecovery(
+    const AbsolutePath& mountPath,
+    std::unique_ptr<CheckoutConfig> initialConfig,
+    CheckoutRecoveryTrigger trigger,
+    bool reportOutcome) {
   auto attempt = beginCheckoutRecovery(mountPath);
   if (!attempt) {
     return;
@@ -4746,7 +4767,7 @@ void EdenServer::recoverCheckoutIfUnmounted(
       /*success=*/false,
       /*repo_source=*/initialConfig->getRepoSource(),
       /*mount_path=*/mountPath.asString(),
-      /*trigger=*/CheckoutRecoveryTrigger::PeriodicTask,
+      /*trigger=*/trigger,
       /*attempt=*/attempt->number,
       /*duration=*/0.0,
       /*mount_protocol=*/
@@ -4764,7 +4785,8 @@ void EdenServer::recoverCheckoutIfUnmounted(
        edenFsEventsLogger = serverState_->getEdenFsEventsLogger(),
        mountPath = mountPath,
        event = std::move(event),
-       stoppedAt = attempt->stoppedAt]() mutable {
+       stoppedAt = attempt->stoppedAt,
+       reportOutcome]() mutable {
         folly::stop_watch<> stopWatch;
         return makeImmediateFutureWith([&] {
                  return mount(std::move(initialConfig), /*readOnly=*/false);
@@ -4774,6 +4796,7 @@ void EdenServer::recoverCheckoutIfUnmounted(
                       edenFsEventsLogger,
                       event = std::move(event),
                       stoppedAt,
+                      reportOutcome,
                       stopWatch](
                          folly::Try<std::shared_ptr<EdenMount>>&&
                              result) mutable {
@@ -4781,14 +4804,30 @@ void EdenServer::recoverCheckoutIfUnmounted(
               getStats()->increment(
                   success ? &CheckoutRecoveryStats::success
                           : &CheckoutRecoveryStats::failure);
-              event.gave_up = endCheckoutRecovery(mountPath, success);
-              if (event.gave_up) {
+              const bool gaveUp = endCheckoutRecovery(mountPath, success);
+              event.gave_up = gaveUp;
+              if (gaveUp) {
                 getStats()->increment(&CheckoutRecoveryStats::gaveUp);
                 XLOGF(
                     WARN,
                     "Giving up recovering {} after {} failed attempts",
                     mountPath,
                     kMaxCheckoutRecoveryAttempts);
+              }
+              if (reportOutcome && (success || gaveUp)) {
+                edenFsEventsLogger->logEvent(
+                    EdenMountHealthIssue{
+                        "daemon_periodic",
+                        std::string{edenMountHealthIssueReasonString(
+                            EdenMountHealthIssueReason::
+                                DaemonRunningCheckoutNotMounted)},
+                        mountPath.asString(),
+                        mountPath.asString(),
+                        "configured_checkout",
+                        event.repo_source,
+                        event.stop_reason,
+                        /*attempted_repair=*/true,
+                        success});
               }
               event.success = success;
               if (success) {

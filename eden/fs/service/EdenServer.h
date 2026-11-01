@@ -102,6 +102,7 @@ class XplatLogger;
 struct CheckoutResult;
 struct INodePopulationReport;
 struct SessionInfo;
+enum class CheckoutRecoveryTrigger : uint8_t;
 
 #ifndef _WIN32
 class TakeoverServer;
@@ -796,11 +797,20 @@ class EdenServer : private TakeoverHandler {
   std::string getCheckoutStopReason(const AbsolutePath& mountPath);
 
   // Remounts a checkout from config.json that the daemon is not serving,
-  // unless it was unmounted on purpose. A failed attempt is retried on later
-  // runs, up to kMaxCheckoutRecoveryAttempts. May throw.
+  // unless it was unmounted on purpose. May throw.
   void recoverCheckoutIfUnmounted(
       const AbsolutePath& mountPath,
       const std::string& clientName);
+
+  // Remounts a checkout loadCheckoutNotServed() returned. A failed attempt is
+  // retried by a later call, up to kMaxCheckoutRecoveryAttempts. With
+  // reportOutcome, the success or final failure is logged as an
+  // eden_mount_health_issue.
+  void startCheckoutRecovery(
+      const AbsolutePath& mountPath,
+      std::unique_ptr<CheckoutConfig> initialConfig,
+      CheckoutRecoveryTrigger trigger,
+      bool reportOutcome);
 
   struct CheckoutRecoveryAttempt {
     uint32_t number;

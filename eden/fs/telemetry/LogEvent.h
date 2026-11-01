@@ -874,6 +874,7 @@ struct PrivHelperExit : public EdenFSEvent {
 // `source` column of accidental_unmount_recovery events.
 enum class CheckoutRecoveryTrigger : uint8_t {
   PeriodicTask,
+  HealthCheckTick,
 };
 
 constexpr std::string_view checkoutRecoveryTriggerName(
@@ -881,6 +882,8 @@ constexpr std::string_view checkoutRecoveryTriggerName(
   switch (trigger) {
     case CheckoutRecoveryTrigger::PeriodicTask:
       return "periodic_task";
+    case CheckoutRecoveryTrigger::HealthCheckTick:
+      return "health_check_tick";
   }
   return "unknown";
 }
