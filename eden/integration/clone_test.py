@@ -7,6 +7,7 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -355,6 +356,26 @@ class CloneTest(testcase.EdenRepoTest):
         self.assertFalse(self.eden.is_case_sensitive(empty_dir))
         self.eden.remove(empty_dir)
         self.eden.wait_for_checkout_removed(empty_dir)
+
+    def test_clone_into_configured_mount_path(self) -> None:
+        # A path that config.json still lists (here: unmounted and then
+        # deleted from disk, as a user does before re-cloning) must be refused
+        # before anything is created. The pre-check compares a str with Path
+        # keys and never fires, so clone proceeds and only fails when it
+        # records the path.
+        self.eden.unmount(Path(self.mount))
+        shutil.rmtree(self.mount)
+        result = self.eden.run_unchecked(
+            "clone",
+            self.repo.path,
+            self.mount,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertNotEqual(0, result.returncode)
+        stderr = result.stderr.decode()
+        self.assertNotIn("already configured", stderr)
+        self.assertIn("already exists", stderr)
 
 
 @testcase.eden_repo_test

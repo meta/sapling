@@ -830,3 +830,26 @@ class ListTest(unittest.TestCase):
 """,
             json_out.getvalue(),
         )
+
+
+class ClonePrecheckTest(unittest.TestCase, TemporaryDirectoryMixin):
+    def test_clone_into_configured_mount_path(self) -> None:
+        tmp_dir = Path(self.make_temporary_directory())
+        instance = config_mod.EdenInstance(
+            config_dir=tmp_dir / "state",
+            etc_eden_dir=tmp_dir / "etc",
+            home_dir=tmp_dir / "home",
+        )
+        mount_path = str(tmp_dir / "mounts" / "repo")
+        with patch.object(
+            instance,
+            "_get_directory_map",
+            return_value={Path(mount_path): "repo"},
+        ):
+            with patch.object(
+                instance,
+                "_create_mount_point_dir",
+                side_effect=RuntimeError("mount point created"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "mount point created"):
+                    instance.clone(MagicMock(), mount_path, "0" * 40)
