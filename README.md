@@ -65,6 +65,30 @@ resulting `sl` executable.
 Building the Sapling CLI requires Python 3.8, Rust, CMake, and OpenSSL for the main cli, and
 Node and Yarn for the ISL web UI.
 
+## Building EdenFS
+
+EdenFS builds on Linux with CMake 3.28 or newer, Ninja, Rust and GCC 14 or
+newer. The build fetches folly, fbthrift and the rest of EdenFS's C++
+dependencies when they aren't installed. On Ubuntu 24.04, install the
+libraries it doesn't fetch with:
+
+```
+sudo apt-get install -y libclang-dev libcurl4-openssl-dev libevent-dev libgflags-dev libre2-dev libsodium-dev libssl-dev libxxhash-dev libzstd-dev ninja-build pkg-config zlib1g-dev
+```
+
+For the Python CLI and tests, install the fbthrift-python wheel and the
+`toml`, `filelock`, `psutil` and `parameterized` modules in the Python
+environment CMake uses.
+
+Then, from the repository root:
+
+```
+export CC=gcc-14 CXX=g++-14
+cmake -B _build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBUILD_TESTS=ON -DCMAKE_EXE_LINKER_FLAGS=-Wl,--strip-debug
+cmake --build _build -j "$(nproc)"
+ctest --test-dir _build --output-on-failure -E 'integration_tests\.egg::'
+```
+
 ## Getting in Contact
 
 You can [Report an Issue on GitHub](https://github.com/facebook/sapling/issues) or
