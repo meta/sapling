@@ -23,7 +23,7 @@ mononoke_types = { version = "0.1.0", path = "../../../mononoke_types" }
 rand = "0.10.3"
 repo_identity = { version = "0.1.0", path = "../../repo_identity" }
 sapling-drawdag = { version = "0.2.0", path = "../../../../scm/lib/drawdag" }
-smallvec = { version = "1.16.2", features = ["const_generics", "impl_bincode", "serde", "specialization", "union", "write"] }
+smallvec = { version = "1.16.4", features = ["const_generics", "impl_bincode", "serde", "specialization", "union", "write"] }
 vec1 = { version = "1.12.1", features = ["serde"] }
 
 [dev-dependencies]

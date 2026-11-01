@@ -26,7 +26,7 @@ memwrites_commit_graph_storage = { version = "0.1.0", path = "../memwrites_commi
 mononoke_macros = { version = "0.1.0", path = "../../../common/mononoke_macros" }
 mononoke_types = { version = "0.1.0", path = "../../../mononoke_types" }
 scuba_ext = { version = "0.1.0", path = "../../../common/scuba_ext" }
-smallvec = { version = "1.16.2", features = ["const_generics", "impl_bincode", "serde", "specialization", "union", "write"] }
+smallvec = { version = "1.16.4", features = ["const_generics", "impl_bincode", "serde", "specialization", "union", "write"] }
 tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 vec1 = { version = "1.12.1", features = ["serde"] }

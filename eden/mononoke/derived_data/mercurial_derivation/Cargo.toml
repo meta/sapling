@@ -39,7 +39,7 @@ mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
 mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
 repo_derived_data = { version = "0.1.0", path = "../../repo_attributes/repo_derived_data" }
 restricted_paths_common = { version = "0.1.0", path = "../../repo_attributes/restricted_paths_common" }
-smallvec = { version = "1.16.2", features = ["const_generics", "impl_bincode", "serde", "specialization", "union", "write"] }
+smallvec = { version = "1.16.4", features = ["const_generics", "impl_bincode", "serde", "specialization", "union", "write"] }
 sorted_vector_map = { version = "0.2.1", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 stats = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 thiserror = "2.0.21"

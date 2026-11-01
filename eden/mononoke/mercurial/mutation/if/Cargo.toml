@@ -22,7 +22,7 @@ futures = { version = "0.3.34", features = ["async-await", "compat"] }
 mercurial_thrift = { version = "0.1.0", path = "../../types/if" }
 ref-cast = "1.0.27"
 rust = { version = "0.0.1", git = "https://github.com/facebook/fbthrift.git", branch = "main" }
-smallvec = { version = "1.16.2", features = ["const_generics", "impl_bincode", "serde", "specialization", "union", "write"] }
+smallvec = { version = "1.16.4", features = ["const_generics", "impl_bincode", "serde", "specialization", "union", "write"] }
 thiserror = "2.0.21"
 thrift = { version = "0.0.1", git = "https://github.com/facebook/fbthrift.git", branch = "main" }
 

@@ -41,7 +41,7 @@ sapling-types = { version = "0.1.0", path = "../../../scm/lib/types" }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_derive = "1.0.229"
 serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
-smallvec = { version = "1.16.2", features = ["const_generics", "impl_bincode", "serde", "specialization", "union", "write"] }
+smallvec = { version = "1.16.4", features = ["const_generics", "impl_bincode", "serde", "specialization", "union", "write"] }
 sorted_vector_map = { version = "0.2.1", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 sql = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 stats = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }

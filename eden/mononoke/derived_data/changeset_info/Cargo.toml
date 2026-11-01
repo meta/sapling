@@ -21,7 +21,7 @@ derived_data_service_if = { version = "0.1.0", path = "../remote/if" }
 fbthrift = { version = "0.0.1", git = "https://github.com/facebook/fbthrift.git", branch = "main" }
 mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
 mononoke_types_serialization = { version = "0.1.0", path = "../../mononoke_types/serialization" }
-smallvec = { version = "1.16.2", features = ["const_generics", "impl_bincode", "serde", "specialization", "union", "write"] }
+smallvec = { version = "1.16.4", features = ["const_generics", "impl_bincode", "serde", "specialization", "union", "write"] }
 sorted_vector_map = { version = "0.2.1", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 unicode-segmentation = "1.13.3"
 

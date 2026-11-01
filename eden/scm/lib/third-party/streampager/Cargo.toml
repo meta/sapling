@@ -23,7 +23,7 @@ notify = { version = "9.0.0-rc.6", optional = true }
 regex = "1.13.1"
 scopeguard = "1.2.0"
 serde = { version = "1.0.229", features = ["derive"] }
-smallvec = { version = "1.16.2", default-features = false }
+smallvec = { version = "1.16.4", default-features = false }
 terminfo = "0.9"
 termwiz = { version = "0.23.3", default-features = false }
 thiserror = "2.0.21"

@@ -19,7 +19,7 @@ name = "virtual_tree"
 parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard"] }
 sapling-vlqencoding = { version = "0.2.0", path = "../../vlqencoding" }
 sapling-zstdelta = { version = "0.1.0", path = "../../zstdelta" }
-smallvec = { version = "1.16.2", default-features = false }
+smallvec = { version = "1.16.4", default-features = false }
 
 [profile.release]
 overflow-checks = true

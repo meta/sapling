@@ -48,7 +48,7 @@ sapling-xdiff = { version = "0.1.0", path = "../../scm/lib/xdiff" }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_derive = "1.0.229"
 sha1 = "0.10.7"
-smallvec = { version = "1.16.2", features = ["const_generics", "impl_bincode", "serde", "specialization", "union", "write"] }
+smallvec = { version = "1.16.4", features = ["const_generics", "impl_bincode", "serde", "specialization", "union", "write"] }
 sorted_vector_map = { version = "0.2.1", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 sql = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 strum = { version = "0.28.0", features = ["derive"] }
