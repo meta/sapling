@@ -1002,8 +1002,16 @@ Do you want to run `eden mount %s` instead?"""
             useForce=use_force,
         )
 
-        with self.get_thrift_client(timeout=UNMOUNT_TIMEOUT_SECONDS) as client:
-            client.unmountV2(unmount_arg)
+        try:
+            with self.get_thrift_client(timeout=UNMOUNT_TIMEOUT_SECONDS) as client:
+                client.unmountV2(unmount_arg)
+        finally:
+            if unintentional_unmount:
+                # Used by `eden unmount --debug-mark-unintentional` (tests and
+                # debugging) and by doctor's unmount-and-remount repair. Leave
+                # no marker, even if the call failed, so that unmount recovery
+                # treats this unmount as accidental.
+                self._clear_intentionally_unmounted(path)
 
         if not unintentional_unmount:
             # If the unmount succeeded, create a file in the client directory
@@ -1011,11 +1019,16 @@ Do you want to run `eden mount %s` instead?"""
             # periodic unmount recovery from remount this repo.
             self._set_intentionally_unmounted(path)
 
-    def _set_intentionally_unmounted(self, path: str) -> None:
+    def _intentionally_unmounted_file(self, path: str) -> Path:
         mount_path = Path(path).resolve(strict=False)
         client_dir = self._get_client_dir_for_mount_point(mount_path)
-        intentionally_unmounted_file = client_dir / INTENTIONALLY_UNMOUNTED
-        intentionally_unmounted_file.touch()
+        return client_dir / INTENTIONALLY_UNMOUNTED
+
+    def _set_intentionally_unmounted(self, path: str) -> None:
+        self._intentionally_unmounted_file(path).touch()
+
+    def _clear_intentionally_unmounted(self, path: str) -> None:
+        self._intentionally_unmounted_file(path).unlink(missing_ok=True)
 
     def set_intentionally_unmounted_for_all_mounts(self) -> None:
         clients_dir = self._get_clients_dir()
