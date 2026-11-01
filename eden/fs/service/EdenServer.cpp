@@ -2634,7 +2634,12 @@ ImmediateFuture<std::shared_ptr<EdenMount>> EdenServer::mount(
                 // Perform all of the bind mounts associated with the
                 // client.  We don't need to do this for the takeover
                 // case as they are already mounted.
-                return edenMount->performBindMounts()
+                return serverState_->getFaultInjector()
+                    .checkAsync("mountBindMounts", edenMount->getPath().view())
+                    .semi()
+                    .deferValue([edenMount](auto&&) {
+                      return edenMount->performBindMounts();
+                    })
                     .deferValue([edenMount](auto&&) { return edenMount; })
                     .deferError([edenMount](
                                     const folly::exception_wrapper& ew) {
@@ -4617,10 +4622,10 @@ void EdenServer::checkMountHealth() {
     scheduleRunningMountHealthCheck(mountPath, std::move(repoSource));
   }
 
-  const auto reason = std::string{edenMountHealthIssueReasonString(
-      EdenMountHealthIssueReason::DaemonRunningCheckoutNotMounted)};
   for (auto& [mountPath, config] : notServed) {
-    if (edenConfig->mountHealthCheckRecovery.getValue()) {
+    // Recovery refuses a flapping checkout, so it is reported instead.
+    const bool flapping = isCheckoutFlapLimited(mountPath);
+    if (!flapping && edenConfig->mountHealthCheckRecovery.getValue()) {
       // The outcome is reported once the recovery succeeds or gives up.
       startCheckoutRecovery(
           mountPath,
@@ -4628,11 +4633,18 @@ void EdenServer::checkMountHealth() {
           CheckoutRecoveryTrigger::HealthCheckTick);
       continue;
     }
+    const auto issueReason = flapping
+        ? EdenMountHealthIssueReason::DaemonRunningCheckoutFlapping
+        : EdenMountHealthIssueReason::DaemonRunningCheckoutNotMounted;
+    const auto reason =
+        std::string{edenMountHealthIssueReasonString(issueReason)};
     if (!shouldLogMountHealthIssue(
             emittedMountHealthIssues_, mountPath.asString(), reason)) {
       continue;
     }
-    getStats()->increment(&CheckoutRecoveryStats::notServed);
+    getStats()->increment(
+        flapping ? &CheckoutRecoveryStats::flapLimited
+                 : &CheckoutRecoveryStats::notServed);
     auto stopReason = getCheckoutStopReason(mountPath);
     serverState_->getEdenFsEventsLogger()->logEvent(
         EdenMountHealthIssue{
@@ -4755,6 +4767,12 @@ std::string EdenServer::getCheckoutStopReason(const AbsolutePath& mountPath) {
   return it == states->end() ? std::string{} : it->second.stopReason;
 }
 
+bool EdenServer::isCheckoutFlapLimited(const AbsolutePath& mountPath) const {
+  auto states = checkoutRecoveryStates_.rlock();
+  auto it = states->find(mountPath);
+  return it != states->end() && it->second.flaps >= kMaxCheckoutFlaps;
+}
+
 void EdenServer::startCheckoutRecovery(
     const AbsolutePath& mountPath,
     std::unique_ptr<CheckoutConfig> initialConfig,
@@ -4807,10 +4825,13 @@ void EdenServer::startCheckoutRecovery(
                          folly::Try<std::shared_ptr<EdenMount>>&&
                              result) mutable {
               bool success = result.hasValue();
+              // End the attempt before counting it: a channel stop seen
+              // after the count must be judged as a flap, not as part of
+              // this attempt.
+              const bool gaveUp = endCheckoutRecovery(mountPath, success);
               getStats()->increment(
                   success ? &CheckoutRecoveryStats::success
                           : &CheckoutRecoveryStats::failure);
-              const bool gaveUp = endCheckoutRecovery(mountPath, success);
               event.gave_up = gaveUp;
               if (gaveUp) {
                 getStats()->increment(&CheckoutRecoveryStats::gaveUp);
@@ -4877,8 +4898,8 @@ std::optional<EdenServer::CheckoutRecoveryAttempt>
 EdenServer::beginCheckoutRecovery(const AbsolutePath& mountPath) {
   auto states = checkoutRecoveryStates_.wlock();
   auto& state = (*states)[mountPath];
-  // Skip while a remount is pending or after giving up.
-  if (state.inFlight || state.gaveUp) {
+  // Skip while a remount is pending, after giving up, or while flapping.
+  if (state.inFlight || state.gaveUp || state.flaps >= kMaxCheckoutFlaps) {
     return std::nullopt;
   }
   state.inFlight = true;
@@ -4888,6 +4909,18 @@ EdenServer::beginCheckoutRecovery(const AbsolutePath& mountPath) {
       state.stopReason,
       state.stopReason.empty() ? std::nullopt
                                : std::make_optional(state.stoppedAt)};
+}
+
+void EdenServer::addCheckoutFlap(
+    const AbsolutePath& mountPath,
+    CheckoutRecoveryState& state) {
+  if (++state.flaps == kMaxCheckoutFlaps) {
+    XLOGF(
+        WARN,
+        "{} stopped {} times soon after being recovered; not recovering it again",
+        mountPath,
+        kMaxCheckoutFlaps);
+  }
 }
 
 void EdenServer::recordCheckoutStop(
@@ -4904,8 +4937,18 @@ void EdenServer::recordCheckoutStop(
     // The remounted channel started and stopped again: a new outage.
     state.stoppedDuringRecovery = true;
   }
+  const auto stoppedAt =
+      channelStoppedAt.value_or(std::chrono::steady_clock::now());
+  if (state.recoveredAt) {
+    if (stoppedAt - *state.recoveredAt < kCheckoutFlapWindow) {
+      addCheckoutFlap(mountPath, state);
+    } else {
+      state.flaps = 0;
+    }
+    state.recoveredAt.reset();
+  }
   state.stopReason = std::move(reason);
-  state.stoppedAt = channelStoppedAt.value_or(std::chrono::steady_clock::now());
+  state.stoppedAt = stoppedAt;
 }
 
 bool EdenServer::endCheckoutRecovery(
@@ -4914,15 +4957,30 @@ bool EdenServer::endCheckoutRecovery(
   auto states = checkoutRecoveryStates_.wlock();
   auto it = states->try_emplace(mountPath).first;
   auto& state = it->second;
-  // Recovered, or mounted some other way while this attempt ran (so its
-  // failure, usually "already mounted", does not count): the outage is over.
-  if (success || state.resetRequested) {
+  if (success) {
+    // Only the flap count outlives a successful recovery.
+    CheckoutRecoveryState recovered;
+    recovered.flaps = state.flaps;
+    if (state.stoppedDuringRecovery) {
+      // The remounted channel already stopped again: a new outage, and a
+      // flap.
+      recovered.stopReason = std::move(state.stopReason);
+      recovered.stoppedAt = state.stoppedAt;
+      addCheckoutFlap(mountPath, recovered);
+    } else {
+      recovered.recoveredAt = std::chrono::steady_clock::now();
+    }
+    state = std::move(recovered);
+    return false;
+  }
+  if (state.resetRequested) {
+    // Mounted some other way while this attempt ran, so its failure (usually
+    // "already mounted") does not count.
     if (!state.stoppedDuringRecovery) {
-      // The next outage starts with a full retry budget.
       states->erase(it);
       return false;
     }
-    // The remounted channel already stopped again: keep that new outage.
+    // That mount's channel already stopped again: keep the new outage.
     CheckoutRecoveryState newOutage;
     newOutage.stopReason = std::move(state.stopReason);
     newOutage.stoppedAt = state.stoppedAt;

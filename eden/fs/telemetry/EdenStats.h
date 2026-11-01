@@ -852,6 +852,7 @@ struct CheckoutRecoveryStats : StatsGroup<CheckoutRecoveryStats> {
   Counter failure{"checkout_recovery.failure"};
   Counter gaveUp{"checkout_recovery.gave_up"};
   Counter notServed{"checkout_recovery.not_served"};
+  Counter flapLimited{"checkout_recovery.flap_limited"};
 };
 
 /*

@@ -48,6 +48,10 @@ TEST(MountHealthCheckTest, reasonStringsMatchTelemetryContract) {
       "daemon_running_checkout_not_mounted",
       edenMountHealthIssueReasonString(
           EdenMountHealthIssueReason::DaemonRunningCheckoutNotMounted));
+  EXPECT_EQ(
+      "daemon_running_checkout_flapping",
+      edenMountHealthIssueReasonString(
+          EdenMountHealthIssueReason::DaemonRunningCheckoutFlapping));
 }
 
 } // namespace

@@ -165,6 +165,42 @@ class UnmountRecoveryTest(RecoveryTestBase):
         self.assertEqual(3, self.recovery_counter("failure"))
         self.assertEqual(1, self.recovery_counter("gave_up"))
 
+    def test_stops_while_recovery_finishes_are_flaps(self) -> None:
+        with self.run_with_blocking_fault(keyClass="mountBindMounts"):
+            self.abort_fuse_connection()
+            for _ in range(3):
+                # The remounted channel runs, but the recovery has not finished.
+                self.wait_on_fault_hit("mountBindMounts")
+                self.abort_fuse_connection()
+                poll_until(
+                    lambda: True if self.mount_state() == "NOT_RUNNING" else None,
+                    timeout=30,
+                )
+                self.unblock_fault("mountBindMounts")
+            poll_until(
+                lambda: True if self.recovery_counter("flap_limited") == 1 else None,
+                timeout=30,
+            )
+        self.assert_stays_unmounted()
+        self.assertEqual(3, self.recovery_counter("success"))
+
+    def test_flapping_checkout_is_reported(self) -> None:
+        for recovered in range(1, 4):
+            self.abort_fuse_connection()
+            poll_until(
+                lambda expected=recovered: (
+                    True if self.recovery_counter("success") == expected else None
+                ),
+                timeout=30,
+            )
+        self.abort_fuse_connection()
+        poll_until(
+            lambda: True if self.recovery_counter("flap_limited") == 1 else None,
+            timeout=30,
+        )
+        self.assert_stays_unmounted()
+        self.assertEqual(1, self.recovery_counter("flap_limited"))
+
 
 @testcase.eden_repo_test(run_on_nfs=False, run_coroutines=False, run_io_uring=False)
 @unittest.skipIf(sys.platform != "linux", "exercised on Linux FUSE mounts")
@@ -217,3 +253,22 @@ class ChannelStopRecoveryTest(RecoveryTestBase):
         self.eden.unmount(Path(self.mount))
         self.assert_stays_unmounted()
         self.assertEqual(0, self.recovery_counter("attempt"))
+
+    def test_flapping_checkout_is_no_longer_recovered(self) -> None:
+        for recovered in range(1, 4):
+            self.abort_fuse_connection()
+            poll_until(
+                lambda expected=recovered: (
+                    True if self.recovery_counter("success") == expected else None
+                ),
+                timeout=30,
+            )
+        self.abort_fuse_connection()
+        # Teardown is asynchronous; wait for it before checking that no
+        # recovery follows.
+        poll_until(
+            lambda: True if self.mount_state() == "NOT_RUNNING" else None,
+            timeout=30,
+        )
+        self.assert_stays_unmounted()
+        self.assertEqual(3, self.recovery_counter("success"))

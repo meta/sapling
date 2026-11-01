@@ -804,6 +804,8 @@ class EdenServer : private TakeoverHandler {
 
   // The last recorded stop reason of a checkout, or empty.
   std::string getCheckoutStopReason(const AbsolutePath& mountPath);
+  // Whether recovery stopped retrying a checkout because it kept flapping.
+  bool isCheckoutFlapLimited(const AbsolutePath& mountPath) const;
 
   // Remounts a checkout loadCheckoutNotServed() returned. A failed attempt is
   // retried by a later call, up to kMaxCheckoutRecoveryAttempts. The success
@@ -1102,6 +1104,10 @@ class EdenServer : private TakeoverHandler {
       runningMountHealthChecks_;
 
   static constexpr uint32_t kMaxCheckoutRecoveryAttempts = 3;
+  // A recovered checkout that stops again within kCheckoutFlapWindow flaps;
+  // after kMaxCheckoutFlaps flaps in a row it is no longer recovered.
+  static constexpr auto kCheckoutFlapWindow = std::chrono::minutes{10};
+  static constexpr uint32_t kMaxCheckoutFlaps = 3;
   struct CheckoutRecoveryState {
     bool inFlight{false};
     uint32_t failedAttempts{0};
@@ -1114,9 +1120,15 @@ class EdenServer : private TakeoverHandler {
     // The channel of this attempt's mount started and then stopped before the
     // attempt ended.
     bool stoppedDuringRecovery{false};
+    std::optional<std::chrono::steady_clock::time_point> recoveredAt;
+    uint32_t flaps{0};
   };
   folly::Synchronized<folly::F14FastMap<AbsolutePath, CheckoutRecoveryState>>
       checkoutRecoveryStates_;
+  // Counts a stop that came soon after a recovery of this checkout.
+  static void addCheckoutFlap(
+      const AbsolutePath& mountPath,
+      CheckoutRecoveryState& state);
 
   /**
    * Remounting progress state.
