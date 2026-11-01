@@ -1493,10 +1493,6 @@ void EdenServer::updatePeriodicTaskIntervals(const EdenConfig& config) {
       std::chrono::duration_cast<std::chrono::milliseconds>(
           config.restrictedRootRefreshInterval.getValue()));
 
-  accidentalUnmountRecoveryTask_.updateInterval(
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-          config.accidentalUnmountRecoveryInterval.getValue()));
-
   mountHealthCheckTask_.updateInterval(
       std::chrono::duration_cast<std::chrono::milliseconds>(
           config.mountHealthCheckInterval.getValue()));
@@ -4593,8 +4589,7 @@ void EdenServer::checkMountHealth() {
       startCheckoutRecovery(
           mountPath,
           std::move(config),
-          CheckoutRecoveryTrigger::HealthCheckTick,
-          /*reportOutcome=*/true);
+          CheckoutRecoveryTrigger::HealthCheckTick);
       continue;
     }
     if (!shouldLogMountHealthIssue(
@@ -4615,49 +4610,6 @@ void EdenServer::checkMountHealth() {
             false,
             false});
   }
-}
-
-void EdenServer::accidentalUnmountRecovery() {
-  // Startup has not remounted every checkout yet, and shutdown and graceful
-  // restart unmount them on purpose.
-  if (runningState_.rlock()->state != RunState::RUNNING) {
-    return;
-  }
-  XLOGF(DBG5, "Performing accidental unmount recovery.");
-  folly::dynamic dirs = folly::dynamic::object();
-  try {
-    dirs = CheckoutConfig::loadClientDirectoryMap(edenDir_.getPath());
-  } catch (...) {
-    XLOGF(
-        WARN,
-        "Could not parse config.json file: {} skipping accidental unmount recovery.",
-        folly::exceptionStr(std::current_exception()));
-    return;
-  }
-
-  if (dirs.empty()) {
-    XLOGF(
-        DBG5,
-        "No mount points currently configured, skipping accidental unmount recovery.");
-    return;
-  }
-
-  std::unordered_set<AbsolutePath> configuredPaths;
-  for (const auto& client : dirs.items()) {
-    // One bad checkout must not stop recovery of the others.
-    try {
-      auto mountPath = canonicalPath(client.first.stringPiece());
-      configuredPaths.insert(mountPath);
-      recoverCheckoutIfUnmounted(mountPath, client.second.asString());
-    } catch (const std::exception& ex) {
-      XLOGF(
-          WARN,
-          "Accidental unmount recovery skipped {}: {}",
-          client.first.asString(),
-          folly::exceptionStr(ex));
-    }
-  }
-  pruneCheckoutRecoveries(configuredPaths);
 }
 
 std::unique_ptr<CheckoutConfig> EdenServer::loadCheckoutNotServed(
@@ -4708,9 +4660,11 @@ EdenServer::findCheckoutsNotServed() {
     XLOGF(WARN, "Could not parse config.json: {}", folly::exceptionStr(ex));
     return result;
   }
+  std::unordered_set<AbsolutePath> configuredPaths;
   for (const auto& client : dirs.items()) {
     try {
       auto mountPath = canonicalPath(client.first.stringPiece());
+      configuredPaths.insert(mountPath);
       if (auto config =
               loadCheckoutNotServed(mountPath, client.second.asString())) {
         result.emplace_back(std::move(mountPath), std::move(config));
@@ -4723,6 +4677,7 @@ EdenServer::findCheckoutsNotServed() {
           folly::exceptionStr(ex));
     }
   }
+  pruneCheckoutRecoveries(configuredPaths);
   return result;
 }
 
@@ -4732,25 +4687,10 @@ std::string EdenServer::getCheckoutStopReason(const AbsolutePath& mountPath) {
   return it == states->end() ? std::string{} : it->second.stopReason;
 }
 
-void EdenServer::recoverCheckoutIfUnmounted(
-    const AbsolutePath& mountPath,
-    const std::string& clientName) {
-  auto initialConfig = loadCheckoutNotServed(mountPath, clientName);
-  if (!initialConfig) {
-    return;
-  }
-  startCheckoutRecovery(
-      mountPath,
-      std::move(initialConfig),
-      CheckoutRecoveryTrigger::PeriodicTask,
-      /*reportOutcome=*/false);
-}
-
 void EdenServer::startCheckoutRecovery(
     const AbsolutePath& mountPath,
     std::unique_ptr<CheckoutConfig> initialConfig,
-    CheckoutRecoveryTrigger trigger,
-    bool reportOutcome) {
+    CheckoutRecoveryTrigger trigger) {
   auto attempt = beginCheckoutRecovery(mountPath);
   if (!attempt) {
     return;
@@ -4785,8 +4725,7 @@ void EdenServer::startCheckoutRecovery(
        edenFsEventsLogger = serverState_->getEdenFsEventsLogger(),
        mountPath = mountPath,
        event = std::move(event),
-       stoppedAt = attempt->stoppedAt,
-       reportOutcome]() mutable {
+       stoppedAt = attempt->stoppedAt]() mutable {
         folly::stop_watch<> stopWatch;
         return makeImmediateFutureWith([&] {
                  return mount(std::move(initialConfig), /*readOnly=*/false);
@@ -4796,7 +4735,6 @@ void EdenServer::startCheckoutRecovery(
                       edenFsEventsLogger,
                       event = std::move(event),
                       stoppedAt,
-                      reportOutcome,
                       stopWatch](
                          folly::Try<std::shared_ptr<EdenMount>>&&
                              result) mutable {
@@ -4814,7 +4752,7 @@ void EdenServer::startCheckoutRecovery(
                     mountPath,
                     kMaxCheckoutRecoveryAttempts);
               }
-              if (reportOutcome && (success || gaveUp)) {
+              if (success || gaveUp) {
                 edenFsEventsLogger->logEvent(
                     EdenMountHealthIssue{
                         "daemon_periodic",

@@ -41,6 +41,7 @@ inline constexpr std::string_view kDeadConfigKeys[] = {
     "experimental:skip-checkout-child-overlay-writes",
     "glob:allowed-suffix-queries",
     "glob:use-edenapi-suffix-query",
+    "mount:accidental-unmount-recovery-interval",
     "mount:readdir-prefetch",
     "nfs:access-rate-limit-count",
     "nfs:access-rate-limit-window-seconds",

@@ -900,19 +900,10 @@ class EdenConfig : private ConfigSettingManager {
       this};
 
   /**
-   * Specify the interval of periodic accidental unmount recovery.
-   */
-  ConfigSetting<std::chrono::nanoseconds> accidentalUnmountRecoveryInterval{
-      "mount:accidental-unmount-recovery-interval",
-      std::chrono::minutes(0),
-      this};
-
-  /**
    * Specify the interval of periodic mount health checks.
    *
-   * Health checks only observe and report; they never mount or unmount
-   * anything. They are therefore safe to enable independently of
-   * accidental-unmount-recovery-interval, which admits remounts.
+   * Health checks only observe and report unless mount-health-check-recovery
+   * is set; they never unmount anything.
    */
   ConfigSetting<std::chrono::nanoseconds> mountHealthCheckInterval{
       "mount:mount-health-check-interval",

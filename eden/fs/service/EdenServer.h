@@ -778,10 +778,6 @@ class EdenServer : private TakeoverHandler {
   // Run a garbage collection cycle over the inodes hierarchy.
   void garbageCollectAllMounts();
 
-  // Detects when a mount point accidentally gets unmounted, and
-  // attempts to recover it.
-  void accidentalUnmountRecovery();
-
   // Returns the config of a checkout from config.json that the daemon is not
   // serving and was not asked to stop serving, or nullptr. May throw.
   std::unique_ptr<CheckoutConfig> loadCheckoutNotServed(
@@ -789,28 +785,21 @@ class EdenServer : private TakeoverHandler {
       const std::string& clientName);
 
   // The checkouts loadCheckoutNotServed() returns, with their configs.
-  // Empty unless the daemon is RUNNING.
+  // Empty unless the daemon is RUNNING. Also forgets the recovery state of
+  // checkouts no longer in config.json.
   std::vector<std::pair<AbsolutePath, std::unique_ptr<CheckoutConfig>>>
   findCheckoutsNotServed();
 
   // The last recorded stop reason of a checkout, or empty.
   std::string getCheckoutStopReason(const AbsolutePath& mountPath);
 
-  // Remounts a checkout from config.json that the daemon is not serving,
-  // unless it was unmounted on purpose. May throw.
-  void recoverCheckoutIfUnmounted(
-      const AbsolutePath& mountPath,
-      const std::string& clientName);
-
   // Remounts a checkout loadCheckoutNotServed() returned. A failed attempt is
-  // retried by a later call, up to kMaxCheckoutRecoveryAttempts. With
-  // reportOutcome, the success or final failure is logged as an
-  // eden_mount_health_issue.
+  // retried by a later call, up to kMaxCheckoutRecoveryAttempts. The success
+  // or final failure is logged as an eden_mount_health_issue.
   void startCheckoutRecovery(
       const AbsolutePath& mountPath,
       std::unique_ptr<CheckoutConfig> initialConfig,
-      CheckoutRecoveryTrigger trigger,
-      bool reportOutcome);
+      CheckoutRecoveryTrigger trigger);
 
   struct CheckoutRecoveryAttempt {
     uint32_t number;
@@ -1210,8 +1199,6 @@ class EdenServer : private TakeoverHandler {
   // a walk that outlives this EdenServer clears its own copy, not a member.
   const std::shared_ptr<std::atomic<bool>> restrictedRootRefreshInFlight_{
       std::make_shared<std::atomic<bool>>(false)};
-  PeriodicFnTask<&EdenServer::accidentalUnmountRecovery>
-      accidentalUnmountRecoveryTask_{this, "accidental_unmount_recovery"};
   PeriodicFnTask<&EdenServer::checkMountHealth> mountHealthCheckTask_{
       this,
       "mount_health_check"};
