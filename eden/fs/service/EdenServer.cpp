@@ -232,6 +232,20 @@ void runInEventBaseThreadAndRethrow(folly::EventBase* evb, Fn&& fn) {
 }
 
 constexpr auto kMountHealthCheckTimeout = std::chrono::seconds{5};
+constexpr auto kChannelStopRecoveryDelay = std::chrono::milliseconds{500};
+
+// `source` of the eden_mount_health_issue row that reports a recovery's
+// outcome.
+constexpr std::string_view recoveryOutcomeSource(
+    CheckoutRecoveryTrigger trigger) {
+  switch (trigger) {
+    case CheckoutRecoveryTrigger::HealthCheckTick:
+      return "daemon_periodic";
+    case CheckoutRecoveryTrigger::ChannelStop:
+      return "daemon_channel_stop";
+  }
+  return "unknown";
+}
 
 using EmittedMountHealthIssues =
     folly::Synchronized<std::unordered_map<std::string, std::set<std::string>>>;
@@ -2606,7 +2620,10 @@ ImmediateFuture<std::shared_ptr<EdenMount>> EdenServer::mount(
                           optTakeover = std::move(takeover.value());
                         }
                         unregisterStats(edenMount.get());
-                        mountFinished(edenMount.get(), std::move(optTakeover));
+                        mountFinished(
+                            edenMount.get(),
+                            std::move(optTakeover),
+                            /*fsChannelCompleted=*/true);
                       });
 
               if (doTakeover) {
@@ -2744,14 +2761,22 @@ folly::SemiFuture<Unit> EdenServer::unmount(
 
 void EdenServer::mountFinished(
     EdenMount* edenMount,
-    std::optional<TakeoverData::MountInfo> takeover) {
+    std::optional<TakeoverData::MountInfo> takeover,
+    bool fsChannelCompleted) {
   const auto& mountPath = edenMount->getPath();
-  XLOGF(INFO, "mount point \"{}\" stopped", mountPath);
   const auto stop = edenMount->getFsChannelStop();
+  const std::string stopReason =
+      stop ? std::string{stop->reason.name} : "mount_failed";
+  XLOGF(INFO, "mount point \"{}\" stopped ({})", mountPath, stopReason);
   recordCheckoutStop(
       mountPath,
-      stop ? std::string{stop->reason.name} : "mount_failed",
+      stopReason,
       stop ? std::make_optional(stop->time) : std::nullopt);
+  // `takeover` is set for every channel that stopped cleanly; whether this is a
+  // takeover is decided by the takeover promise below.
+  const bool recoverAfterStop = fsChannelCompleted &&
+      shouldRecoverAfterChannelStop(*edenMount,
+                                    stop && stop->reason.unexpected);
 
   // Although it's uncommon for a GC to be running during unmount, we should
   // confirm any running GC exited before proceeding. Typically, GC stops on
@@ -2789,6 +2814,9 @@ void EdenServer::mountFinished(
       })
       .thenTry([this,
                 mountPath = mountPath,
+                clientDirectory =
+                    edenMount->getCheckoutConfig()->getClientDirectory(),
+                recoverAfterStop = recoverAfterStop,
                 takeoverData = std::move(takeover)](
                    folly::Try<SerializedInodeMap>&& result) mutable {
         // Erase the EdenMount from mountPoints_ before fulfilling the
@@ -2816,6 +2844,14 @@ void EdenServer::mountFinished(
             takeoverPromise = std::move(it->second.takeoverPromise);
             mountPoints->erase(it);
           }
+        }
+        if (recoverAfterStop && !takeoverPromise) {
+          // The short delay lets a concurrent `eden unmount` or `eden rm`
+          // write its marker first.
+          scheduleCallbackOnMainEventBase(
+              kChannelStopRecoveryDelay, [this, mountPath, clientDirectory] {
+                recoverCheckoutAfterChannelStop(mountPath, clientDirectory);
+              });
         }
         if (takeoverPromise) {
           takeoverPromise.value().setWith([&]() mutable {
@@ -4614,7 +4650,7 @@ void EdenServer::checkMountHealth() {
 
 std::unique_ptr<CheckoutConfig> EdenServer::loadCheckoutNotServed(
     const AbsolutePath& mountPath,
-    const std::string& clientName) {
+    const AbsolutePath& clientDirectory) {
   {
     const auto mountPoints = mountPoints_->rlock();
     if (mountPoints->find(mountPath) != mountPoints->end()) {
@@ -4632,8 +4668,8 @@ std::unique_ptr<CheckoutConfig> EdenServer::loadCheckoutNotServed(
     return nullptr;
   }
 
-  auto config = CheckoutConfig::loadFromClientDirectory(
-      mountPath, edenDir_.getCheckoutStateDir(clientName));
+  auto config =
+      CheckoutConfig::loadFromClientDirectory(mountPath, clientDirectory);
   if (config->isIntentionallyUnmounted()) {
     XLOGF(DBG5, "Mount point {} is intentionally unmounted.", mountPath);
     return nullptr;
@@ -4645,6 +4681,37 @@ std::unique_ptr<CheckoutConfig> EdenServer::loadCheckoutNotServed(
     return nullptr;
   }
   return config;
+}
+
+bool EdenServer::shouldRecoverAfterChannelStop(
+    const EdenMount& edenMount,
+    bool unexpectedStop) const {
+  return serverState_->getEdenConfig()->recoverOnChannelStop.getValue() &&
+      !edenMount.isUnmountStarted() &&
+      runningState_.rlock()->state == RunState::RUNNING && unexpectedStop;
+}
+
+void EdenServer::recoverCheckoutAfterChannelStop(
+    const AbsolutePath& mountPath,
+    const AbsolutePath& clientDirectory) {
+  if (runningState_.rlock()->state != RunState::RUNNING) {
+    return;
+  }
+  try {
+    auto config = loadCheckoutNotServed(mountPath, clientDirectory);
+    if (!config) {
+      return;
+    }
+    // Retries, if any, come from the mount health check.
+    startCheckoutRecovery(
+        mountPath, std::move(config), CheckoutRecoveryTrigger::ChannelStop);
+  } catch (const std::exception& ex) {
+    XLOGF(
+        WARN,
+        "Could not recover {} after its channel stopped: {}",
+        mountPath,
+        folly::exceptionStr(ex));
+  }
 }
 
 std::vector<std::pair<AbsolutePath, std::unique_ptr<CheckoutConfig>>>
@@ -4665,8 +4732,9 @@ EdenServer::findCheckoutsNotServed() {
     try {
       auto mountPath = canonicalPath(client.first.stringPiece());
       configuredPaths.insert(mountPath);
-      if (auto config =
-              loadCheckoutNotServed(mountPath, client.second.asString())) {
+      if (auto config = loadCheckoutNotServed(
+              mountPath,
+              edenDir_.getCheckoutStateDir(client.second.stringPiece()))) {
         result.emplace_back(std::move(mountPath), std::move(config));
       }
     } catch (const std::exception& ex) {
@@ -4755,7 +4823,7 @@ void EdenServer::startCheckoutRecovery(
               if (success || gaveUp) {
                 edenFsEventsLogger->logEvent(
                     EdenMountHealthIssue{
-                        "daemon_periodic",
+                        std::string{recoveryOutcomeSource(event.trigger)},
                         std::string{edenMountHealthIssueReasonString(
                             EdenMountHealthIssueReason::
                                 DaemonRunningCheckoutNotMounted)},

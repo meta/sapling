@@ -1055,6 +1055,13 @@ class EdenMount : public std::enable_shared_from_this<EdenMount> {
   };
 
   /**
+   * Whether unmount() was called on this mount.
+   */
+  bool isUnmountStarted() const {
+    return mountingUnmountingState_.rlock()->fsChannelUnmountStarted();
+  }
+
+  /**
    * Why and when the FsChannel stopped, or unset if it has not stopped.
    */
   std::optional<FsChannelStop> getFsChannelStop() const {

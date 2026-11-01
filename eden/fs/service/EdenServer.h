@@ -729,10 +729,13 @@ class EdenServer : private TakeoverHandler {
   bool createStorageEngine(cpptoml::table& config);
   void openStorageEngine(StartupLogger& logger);
 
-  // Called when a mount has been unmounted and has stopped.
+  // Called when a mount has been unmounted and has stopped. fsChannelCompleted
+  // is true when the mount's channel ran and then stopped, rather than the
+  // mount failing to start.
   void mountFinished(
       EdenMount* mountPoint,
-      std::optional<TakeoverData::MountInfo> takeover);
+      std::optional<TakeoverData::MountInfo> takeover,
+      bool fsChannelCompleted = false);
 
   [[nodiscard]] folly::SemiFuture<folly::Unit> performNormalShutdown();
   void shutdownPrivhelper();
@@ -782,7 +785,16 @@ class EdenServer : private TakeoverHandler {
   // serving and was not asked to stop serving, or nullptr. May throw.
   std::unique_ptr<CheckoutConfig> loadCheckoutNotServed(
       const AbsolutePath& mountPath,
-      const std::string& clientName);
+      const AbsolutePath& clientDirectory);
+
+  // Whether a checkout whose channel just stopped should be remounted now.
+  // `unexpectedStop` is FsStopReason::unexpected of the stop.
+  bool shouldRecoverAfterChannelStop(
+      const EdenMount& edenMount,
+      bool unexpectedStop) const;
+  void recoverCheckoutAfterChannelStop(
+      const AbsolutePath& mountPath,
+      const AbsolutePath& clientDirectory);
 
   // The checkouts loadCheckoutNotServed() returns, with their configs.
   // Empty unless the daemon is RUNNING. Also forgets the recovery state of

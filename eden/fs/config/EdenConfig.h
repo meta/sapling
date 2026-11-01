@@ -920,6 +920,16 @@ class EdenConfig : private ConfigSettingManager {
       this};
 
   /**
+   * When set, a checkout whose FUSE or NFS channel stops without anyone asking
+   * (ENODEV, EOF, read errors) is remounted right away, without waiting for
+   * the next mount health check.
+   */
+  ConfigSetting<bool> recoverOnChannelStop{
+      "mount:recover-on-channel-stop",
+      false,
+      this};
+
+  /**
    * The soong build system used in AOSP loves to crawls the entirety of the
    * repository, including the .eden directory. In doing so, it infinitely
    * recurse into the this-dir.

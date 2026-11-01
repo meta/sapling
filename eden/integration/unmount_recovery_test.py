@@ -61,6 +61,14 @@ class RecoveryTestBase(testcase.EdenRepoTest):
     def recovery_counter(self, name: str) -> float:
         return self.get_counters().get(f"checkout_recovery.{name}.sum", 0)
 
+    def abort_fuse_connection(self) -> None:
+        # The connection's control files belong to the mounting user.
+        minor = os.minor(os.stat(self.mount).st_dev)
+        abort = Path(f"/sys/fs/fuse/connections/{minor}/abort")
+        if not abort.exists():
+            self.skipTest(f"{abort} is not available")
+        abort.write_text("1")
+
 
 @testcase.eden_repo_test(run_on_nfs=False, run_coroutines=False, run_io_uring=False)
 @unittest.skipIf(sys.platform != "linux", "exercised on Linux FUSE mounts")
@@ -88,12 +96,7 @@ class UnmountRecoveryTest(RecoveryTestBase):
         self.assertEqual(0, self.recovery_counter("attempt"))
 
     def test_aborted_fuse_connection_is_remounted(self) -> None:
-        # The connection's control files belong to the mounting user.
-        minor = os.minor(os.stat(self.mount).st_dev)
-        abort = Path(f"/sys/fs/fuse/connections/{minor}/abort")
-        if not abort.exists():
-            self.skipTest(f"{abort} is not available")
-        abort.write_text("1")
+        self.abort_fuse_connection()
         poll_until(
             lambda: True if self.recovery_counter("success") == 1 else None,
             timeout=30,
@@ -193,3 +196,24 @@ class HealthCheckNotServedTest(RecoveryTestBase):
                 timeout=30,
             )
             self.eden.mount(Path(self.mount))
+
+
+@testcase.eden_repo_test(run_on_nfs=False, run_coroutines=False, run_io_uring=False)
+@unittest.skipIf(sys.platform != "linux", "exercised on Linux FUSE mounts")
+class ChannelStopRecoveryTest(RecoveryTestBase):
+    # No health check, so only the channel stop can trigger recovery.
+    def mount_config(self) -> List[str]:
+        return ["recover-on-channel-stop = true"]
+
+    def test_aborted_fuse_connection_is_remounted(self) -> None:
+        self.abort_fuse_connection()
+        poll_until(
+            lambda: True if self.recovery_counter("success") == 1 else None,
+            timeout=30,
+        )
+        self.assertEqual("RUNNING", self.mount_state())
+
+    def test_eden_unmount_is_not_remounted(self) -> None:
+        self.eden.unmount(Path(self.mount))
+        self.assert_stays_unmounted()
+        self.assertEqual(0, self.recovery_counter("attempt"))
