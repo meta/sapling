@@ -4,6 +4,7 @@
 # This software may be used and distributed according to the terms of the
 # GNU General Public License version 2.
 
+import os
 import sys
 import threading
 import time
@@ -12,6 +13,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from eden.fs.cli.util import INTENTIONALLY_UNMOUNTED, poll_until
+from parameterized import parameterized
 
 from .lib import testcase
 
@@ -75,3 +77,15 @@ class UnmountRecoveryTest(testcase.EdenRepoTest):
             self.assertEqual("RUNNING", self.mount_state())
         unmount.join(timeout=60)
         self.assert_stays_unmounted()
+
+    @parameterized.expand(
+        [
+            ("rust", {"EDENFSCTL_ONLY_RUST": "1"}),
+            ("python", {"EDENFSCTL_SKIP_RUST": "1"}),
+        ]
+    )
+    def test_eden_rm_leaves_no_mount(self, impl: str, env: Dict[str, str]) -> None:
+        self.eden.run_cmd("remove", "--yes", self.mount, env=env)
+        time.sleep(SETTLE_SECONDS)
+        self.assertNotIn(self.mount, self.eden.list_cmd_simple())
+        self.assertFalse(os.path.exists(self.mount))

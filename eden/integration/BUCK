@@ -772,6 +772,7 @@ python_unittest(
     network_access = network_access_utils.all(),
     supports_static_listing = False,
     deps = [
+        "fbsource//third-party/pypi/parameterized:parameterized",
         "//eden/fs/cli:lib",
         "//eden/integration/lib:lib",
     ],
