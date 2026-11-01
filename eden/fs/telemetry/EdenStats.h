@@ -853,6 +853,21 @@ struct CheckoutRecoveryStats : StatsGroup<CheckoutRecoveryStats> {
   Counter gaveUp{"checkout_recovery.gave_up"};
   Counter notServed{"checkout_recovery.not_served"};
   Counter flapLimited{"checkout_recovery.flap_limited"};
+  // Channel stops that did not trigger a recovery, by reason.
+  Counter channelStopSkippedTakeover{
+      "checkout_recovery.channel_stop_skipped.takeover"};
+  Counter channelStopSkippedUnmountRequested{
+      "checkout_recovery.channel_stop_skipped.unmount_requested"};
+  Counter channelStopSkippedDaemonNotRunning{
+      "checkout_recovery.channel_stop_skipped.daemon_not_running"};
+  Counter channelStopSkippedExpectedStop{
+      "checkout_recovery.channel_stop_skipped.expected_stop"};
+  // Not served any more, intentionally unmounted, or not recoverable.
+  Counter channelStopSkippedNotNeeded{
+      "checkout_recovery.channel_stop_skipped.not_needed"};
+  // In flight, gave up, or flapping.
+  Counter channelStopSkippedThrottled{
+      "checkout_recovery.channel_stop_skipped.throttled"};
 };
 
 /*

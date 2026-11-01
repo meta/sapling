@@ -788,10 +788,12 @@ class EdenServer : private TakeoverHandler {
       const AbsolutePath& clientDirectory);
 
   // Whether a checkout whose channel just stopped should be remounted now.
-  // `unexpectedStop` is FsStopReason::unexpected of the stop.
+  // `unexpectedStop` is FsStopReason::unexpected of the stop. Counts the
+  // reason when it should not.
   bool shouldRecoverAfterChannelStop(
       const EdenMount& edenMount,
-      bool unexpectedStop) const;
+      bool unexpectedStop,
+      bool takeover);
   void recoverCheckoutAfterChannelStop(
       const AbsolutePath& mountPath,
       const AbsolutePath& clientDirectory);
@@ -810,7 +812,8 @@ class EdenServer : private TakeoverHandler {
   // Remounts a checkout loadCheckoutNotServed() returned. A failed attempt is
   // retried by a later call, up to kMaxCheckoutRecoveryAttempts. The success
   // or final failure is logged as an eden_mount_health_issue.
-  void startCheckoutRecovery(
+  // Returns false if the checkout must not be tried now.
+  bool startCheckoutRecovery(
       const AbsolutePath& mountPath,
       std::unique_ptr<CheckoutConfig> initialConfig,
       CheckoutRecoveryTrigger trigger);

@@ -253,6 +253,9 @@ class ChannelStopRecoveryTest(RecoveryTestBase):
         self.eden.unmount(Path(self.mount))
         self.assert_stays_unmounted()
         self.assertEqual(0, self.recovery_counter("attempt"))
+        self.assertEqual(
+            1, self.recovery_counter("channel_stop_skipped.unmount_requested")
+        )
 
     def test_flapping_checkout_is_no_longer_recovered(self) -> None:
         for recovered in range(1, 4):
@@ -272,3 +275,12 @@ class ChannelStopRecoveryTest(RecoveryTestBase):
         )
         self.assert_stays_unmounted()
         self.assertEqual(3, self.recovery_counter("success"))
+        # The skip is counted from a delayed callback on the main event base.
+        poll_until(
+            lambda: (
+                True
+                if self.recovery_counter("channel_stop_skipped.throttled") == 1
+                else None
+            ),
+            timeout=30,
+        )
