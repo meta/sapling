@@ -4665,6 +4665,7 @@ void EdenServer::recoverCheckoutIfUnmounted(
       "Mount point {} is not currently mounted, attempting to remount.",
       mountPath);
 
+  getStats()->increment(&CheckoutRecoveryStats::attempt);
   AccidentalUnmountRecovery event{
       /*error=*/"",
       /*success=*/false,
@@ -4697,8 +4698,12 @@ void EdenServer::recoverCheckoutIfUnmounted(
                          folly::Try<std::shared_ptr<EdenMount>>&&
                              result) mutable {
               bool success = result.hasValue();
+              getStats()->increment(
+                  success ? &CheckoutRecoveryStats::success
+                          : &CheckoutRecoveryStats::failure);
               event.gave_up = endCheckoutRecovery(mountPath, success);
               if (event.gave_up) {
+                getStats()->increment(&CheckoutRecoveryStats::gaveUp);
                 XLOGF(
                     WARN,
                     "Giving up recovering {} after {} failed attempts",

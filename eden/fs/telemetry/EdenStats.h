@@ -45,6 +45,7 @@ struct TakeoverStats;
 struct CheckoutStats;
 struct TreeInodeStats;
 struct CgroupFileCacheStats;
+struct CheckoutRecoveryStats;
 struct FakeStats;
 
 class EdenStats : public RefCounted {
@@ -105,6 +106,7 @@ class EdenStats : public RefCounted {
   ThreadLocal<CheckoutStats> checkoutStats_;
   ThreadLocal<TreeInodeStats> treeInodeStats_;
   ThreadLocal<CgroupFileCacheStats> cgroupFileCacheStats_;
+  ThreadLocal<CheckoutRecoveryStats> checkoutRecoveryStats_;
   ThreadLocal<FakeStats> fakeStats_;
 };
 
@@ -208,6 +210,12 @@ template <>
 inline CgroupFileCacheStats&
 EdenStats::getStatsForCurrentThread<CgroupFileCacheStats>() {
   return *cgroupFileCacheStats_.get();
+}
+
+template <>
+inline CheckoutRecoveryStats&
+EdenStats::getStatsForCurrentThread<CheckoutRecoveryStats>() {
+  return *checkoutRecoveryStats_.get();
 }
 
 template <>
@@ -833,6 +841,16 @@ struct TreeInodeStats : StatsGroup<TreeInodeStats> {
 struct CgroupFileCacheStats : StatsGroup<CgroupFileCacheStats> {
   Counter reclaimedBytes{"local.memory.cgroup_file_cache.reclaimed_bytes"};
   Counter reclaimFailures{"local.memory.cgroup_file_cache.reclaim_failures"};
+};
+
+/**
+ * Remounts of checkouts the daemon stopped serving without being asked to.
+ */
+struct CheckoutRecoveryStats : StatsGroup<CheckoutRecoveryStats> {
+  Counter attempt{"checkout_recovery.attempt"};
+  Counter success{"checkout_recovery.success"};
+  Counter failure{"checkout_recovery.failure"};
+  Counter gaveUp{"checkout_recovery.gave_up"};
 };
 
 /*

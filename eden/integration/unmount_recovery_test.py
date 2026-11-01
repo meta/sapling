@@ -59,9 +59,19 @@ class UnmountRecoveryTest(testcase.EdenRepoTest):
         time.sleep(SETTLE_SECONDS)
         self.assertEqual("NOT_RUNNING", self.mount_state(mount))
 
+    def recovery_counter(self, name: str) -> float:
+        return self.get_counters().get(f"checkout_recovery.{name}.sum", 0)
+
     def test_unintentional_unmount_is_remounted(self) -> None:
         self.eden.run_cmd("unmount", "--debug-mark-unintentional", self.mount)
         self.wait_until_running()
+        # The counters are bumped once mount() completes, which can be just
+        # after the mount is listed as RUNNING.
+        poll_until(
+            lambda: True if self.recovery_counter("success") == 1 else None,
+            timeout=30,
+        )
+        self.assertEqual(1, self.recovery_counter("attempt"))
 
     def test_eden_unmount_is_not_remounted(self) -> None:
         self.eden.unmount(Path(self.mount))
@@ -125,3 +135,5 @@ class UnmountRecoveryTest(testcase.EdenRepoTest):
                 ).keyValues
             self.assertEqual([], list(blocked))
         self.assertEqual("NOT_RUNNING", self.mount_state())
+        self.assertEqual(3, self.recovery_counter("failure"))
+        self.assertEqual(1, self.recovery_counter("gave_up"))
