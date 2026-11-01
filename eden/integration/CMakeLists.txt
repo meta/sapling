@@ -32,7 +32,7 @@ endif()
 
 # The following integration test files contain one or more tests that require
 # pexpect.  For now we disable the entire files when pexpect is unavailable.
-if(NOT pexpect_FOUND)
+if(NOT EDEN_HAVE_PEXPECT)
   list(
     REMOVE_ITEM INTEGRATION_SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/health_test.py
@@ -51,8 +51,6 @@ add_fb_python_unittest(
     edenfsctl.real.main_lib
     eden_integration_lib
     eden_hg_integration_lib
-    python-psutil::python-psutil
-    python-parameterized::python-parameterized
   ENV
     "CMAKE_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
 )

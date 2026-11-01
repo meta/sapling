@@ -163,6 +163,25 @@ if (ENABLE_THRIFT_PYTHON AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     fb_find_thrift_python_runtime()
   endif()
 endif()
+# Sets <out> to the modules in ARGN that the Python the build uses can't
+# import. The Python CLI and the integration tests import them from that
+# Python's site-packages, as they do thrift-python.
+function(eden_missing_python_modules out)
+  set(missing "")
+  foreach(module IN LISTS ARGN)
+    execute_process(
+      COMMAND "${Python3_EXECUTABLE}" -c "import ${module}"
+      RESULT_VARIABLE result
+      OUTPUT_QUIET
+      ERROR_QUIET
+    )
+    if (NOT result EQUAL 0)
+      list(APPEND missing ${module})
+    endif()
+  endforeach()
+  set(${out} "${missing}" PARENT_SCOPE)
+endfunction()
+
 set(eden_no_python_cli "")
 if (NOT ENABLE_THRIFT_PYTHON)
   set(eden_no_python_cli "ENABLE_THRIFT_PYTHON is OFF")
@@ -171,11 +190,10 @@ elseif (NOT (THRIFT_PYTHON_SITE_PACKAGES AND FOLLY_PYTHON_SITE_PACKAGES))
 elseif (NOT TARGET fb303::fb303_core_thrift_python.py_lib)
   set(eden_no_python_cli "fb303 was built without FB303_THRIFT_PYTHON")
 else()
-  find_package(python-toml QUIET)
-  find_package(python-filelock QUIET)
-  if (NOT (python-toml_FOUND AND python-filelock_FOUND))
-    set(eden_no_python_cli
-      "getdeps' python-toml and python-filelock packages were not found")
+  eden_missing_python_modules(eden_missing toml filelock)
+  if (eden_missing)
+    list(JOIN eden_missing " and " eden_missing)
+    set(eden_no_python_cli "${Python3_EXECUTABLE} can't import ${eden_missing}")
   endif()
 endif()
 if (eden_no_python_cli)
@@ -193,17 +211,23 @@ endif()
 # The integration tests drive the Python CLI, so they need thrift-python too.
 if (BUILD_TESTS AND EDEN_HAVE_THRIFT_PYTHON)
   set(EDEN_BUILD_INTEGRATION_TESTS ON)
-  find_package(python-psutil REQUIRED)
-  find_package(python-parameterized REQUIRED)
+  eden_missing_python_modules(eden_missing psutil parameterized)
+  if (eden_missing)
+    list(JOIN eden_missing " and " eden_missing)
+    message(FATAL_ERROR
+      "The integration tests need ${eden_missing}, which ${Python3_EXECUTABLE} "
+      "can't import")
+  endif()
+  # Without pexpect, the integration tests that use it aren't built.
+  eden_missing_python_modules(eden_missing pexpect)
+  if (NOT eden_missing)
+    set(EDEN_HAVE_PEXPECT ON)
+  endif()
 elseif (BUILD_TESTS)
   message(STATUS
     "The Python CLI isn't built, so neither are the integration tests, which "
     "drive it")
 endif()
-
-# pexpect is used by some of the integration tests.
-# If we don't find it we simply won't run those tests.
-find_package(pexpect)
 
 if (NOT WIN32)
   find_package(CURL REQUIRED)

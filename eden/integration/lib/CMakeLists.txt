@@ -4,9 +4,7 @@
 # GNU General Public License version 2.
 
 file(GLOB INTEGRATION_LIB_SRCS "*.py")
-if(pexpect_FOUND)
-  list(APPEND INTEGRATION_LIB_DEPENDENCIES pexpect::pexpect)
-else()
+if(NOT EDEN_HAVE_PEXPECT)
   list(REMOVE_ITEM INTEGRATION_LIB_SRCS pexpect.py)
 endif()
 

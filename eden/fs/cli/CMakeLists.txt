@@ -20,8 +20,6 @@ if (EDEN_HAVE_THRIFT_PYTHON)
       eden_py
       eden_overlay_thrift_python
       eden_scm_redact
-      python-toml::python-toml
-      python-filelock::python-filelock
   )
   install_fb_python_executable(edenfsctl.real LIB_DESTINATION lib/eden)
 endif()
