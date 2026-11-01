@@ -56,7 +56,8 @@ jobs:
       run: |
         mkdir C:\vcpkg-archives
         "commit=$(git -C $env:VCPKG_INSTALLATION_ROOT rev-parse HEAD)" >> $env:GITHUB_OUTPUT
-    - uses: actions/cache@v6
+    - uses: actions/cache/restore@v6
+      id: vcpkg-cache
       with:
         path: C:\vcpkg-archives
         key: vcpkg-${{ steps.vcpkg.outputs.commit }}-zlib-zstd-gflags-re2-openssl-libsodium
@@ -74,6 +75,14 @@ jobs:
         echo OPENSSL_DIR=%VCPKG_INSTALLATION_ROOT%\installed\x64-windows-static-md>> %GITHUB_ENV% &&
         echo OPENSSL_STATIC=1>> %GITHUB_ENV%
       shell: cmd
+
+    # actions/cache saves at the end of the job, and only if every step passed.
+    # Saving here keeps the packages for the next run when the build fails.
+    - uses: actions/cache/save@v6
+      if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+      with:
+        path: C:\vcpkg-archives
+        key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
 
     # Only the developer environment puts cl.exe, ml64 and ninja on PATH. It
     # also repoints VCPKG_ROOT at Visual Studio's own vcpkg, so the steps below
