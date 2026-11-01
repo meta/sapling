@@ -22,9 +22,11 @@
 #include <memory>
 #include <system_error>
 #include <thread>
+#include <vector>
 
 #include <folly/CancellationToken.h>
 #include <folly/ExceptionWrapper.h>
+#include <folly/Executor.h>
 #include <folly/ScopeGuard.h>
 #include <folly/io/IOBufQueue.h>
 #include <folly/io/async/AsyncSocket.h>
@@ -1090,6 +1092,80 @@ TEST_F(EdenServerMountTest, StopWhileAMountIsShuttingDown) {
   // fulfills, so the stop waits for the shutdown and exits cleanly.
   EXPECT_TRUE(server.performCleanup());
   EXPECT_NO_THROW(std::move(unmountFuture).get(1s));
+}
+
+TEST_F(EdenServerMountTest, FailedUnmountClearsIntentionalMarker) {
+  auto& server = testServer().getServer();
+  auto mount = mountCheckout();
+  server.getServerState()->getFaultInjector().injectError(
+      "unmount",
+      ".*",
+      folly::make_exception_wrapper<std::runtime_error>("unmount failed"),
+      1);
+
+  EXPECT_THROW_RE(
+      server.unmount(mountPath(), UnmountOptions{})
+          .via(server.getMainEventBase())
+          .getVia(server.getMainEventBase()),
+      std::runtime_error,
+      "unmount failed");
+  EXPECT_FALSE(mount->getCheckoutConfig()->isIntentionallyUnmounted());
+  EXPECT_EQ(MountState::RUNNING, mount->getState());
+}
+
+TEST_F(EdenServerMountTest, DroppedUnmountCallbackDoesNotReschedule) {
+  class DroppingExecutor : public folly::Executor {
+   public:
+    void add(folly::Func task) override {
+      if (stopped) {
+        ++addedAfterStop;
+      } else {
+        tasks.push_back(std::move(task));
+      }
+    }
+
+    void drain() {
+      while (!tasks.empty()) {
+        auto ready = std::move(tasks);
+        tasks.clear();
+        for (auto& task : ready) {
+          task();
+        }
+      }
+    }
+
+    void stop() {
+      stopped = true;
+      tasks.clear();
+    }
+
+    bool stopped{false};
+    size_t addedAfterStop{0};
+    std::vector<folly::Func> tasks;
+  } executor;
+
+  auto& server = testServer().getServer();
+  auto mount = mountCheckout();
+  auto& faultInjector = server.getServerState()->getFaultInjector();
+  faultInjector.injectBlock("mountShutdown", ".*");
+  auto unmount = server.unmount(mountPath(), UnmountOptions{}).via(&executor);
+  executor.drain();
+  ASSERT_TRUE(driveMainEventBaseUntil(
+      server, [&] { return mount->getState() == MountState::SHUTTING_DOWN; }));
+  ASSERT_TRUE(faultInjector.waitUntilBlocked("mountShutdown", 5s));
+
+  faultInjector.removeFault("mountShutdown", ".*");
+  faultInjector.unblock("mountShutdown", ".*");
+  ASSERT_TRUE(driveMainEventBaseUntil(
+      server, [&] { return server.getAllMountPoints().empty(); }));
+  EXPECT_TRUE(unmount.isReady());
+
+  // A stopped pool discards queued callbacks rather than executing them.
+  // Destroying one must not enqueue another callback onto that same pool.
+  executor.stop();
+  EXPECT_EQ(0, executor.addedAfterStop);
+  ASSERT_TRUE(unmount.isReady());
+  EXPECT_NO_THROW(std::move(unmount).get());
 }
 #endif
 

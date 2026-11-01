@@ -259,6 +259,7 @@ cpp_unittest(
         "fbsource//third-party/googletest:gtest",
         "fbsource//xplat/folly:cancellation_token",
         "fbsource//xplat/folly:exception_wrapper",
+        "fbsource//xplat/folly:executor",
         "fbsource//xplat/folly:scope_guard",
         "fbsource//xplat/folly/io:iobuf",
         "fbsource//xplat/folly/io/async:async_base",

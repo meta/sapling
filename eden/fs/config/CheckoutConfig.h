@@ -109,6 +109,11 @@ class CheckoutConfig {
    */
   void clearIntentionallyUnmountedFlag() const;
 
+  /**
+   * Throws if the flag file cannot be written.
+   */
+  void setIntentionallyUnmountedFlag() const;
+
   bool isIntentionallyUnmounted() const;
 
   const AbsolutePath& getMountPath() const {

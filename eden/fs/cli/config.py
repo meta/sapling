@@ -1014,9 +1014,9 @@ Do you want to run `eden mount %s` instead?"""
                 self._clear_intentionally_unmounted(path)
 
         if not unintentional_unmount:
-            # If the unmount succeeded, create a file in the client directory
-            # to indicate that the unmount was intentional. This will prevent
-            # periodic unmount recovery from remount this repo.
+            # The daemon writes this marker before it starts the unmount, but
+            # only best-effort, so write it again now that the unmount
+            # succeeded. It stops unmount recovery from remounting the checkout.
             self._set_intentionally_unmounted(path)
 
     def _intentionally_unmounted_file(self, path: str) -> Path:

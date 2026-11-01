@@ -346,6 +346,12 @@ void CheckoutConfig::clearIntentionallyUnmountedFlag() const {
   std::remove(intentionallyUnmountedFile.c_str());
 }
 
+void CheckoutConfig::setIntentionallyUnmountedFlag() const {
+  writeFileAtomic(
+      clientDirectory_ + kIntentionallyUnmountedFile, folly::ByteRange{})
+      .value();
+}
+
 bool CheckoutConfig::isIntentionallyUnmounted() const {
   auto intentionallyUnmountedFile =
       clientDirectory_ + kIntentionallyUnmountedFile;

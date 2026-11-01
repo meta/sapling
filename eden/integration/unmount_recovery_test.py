@@ -5,12 +5,13 @@
 # GNU General Public License version 2.
 
 import sys
+import threading
 import time
 import unittest
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from eden.fs.cli.util import poll_until
+from eden.fs.cli.util import INTENTIONALLY_UNMOUNTED, poll_until
 
 from .lib import testcase
 
@@ -24,6 +25,7 @@ SETTLE_SECONDS = 3
 @unittest.skipIf(sys.platform != "linux", "exercised on Linux FUSE mounts")
 class UnmountRecoveryTest(testcase.EdenRepoTest):
     git_test_supported = False
+    enable_fault_injection = True
 
     def populate_repo(self) -> None:
         self.repo.write_file("hello", "hola\n")
@@ -45,6 +47,10 @@ class UnmountRecoveryTest(testcase.EdenRepoTest):
             timeout=30,
         )
 
+    def intentional_unmount_marker(self) -> Path:
+        client_dir = self.eden.client_dir_for_mount(Path(self.mount))
+        return client_dir / INTENTIONALLY_UNMOUNTED
+
     def assert_stays_unmounted(self, mount: Optional[str] = None) -> None:
         time.sleep(SETTLE_SECONDS)
         self.assertEqual("NOT_RUNNING", self.mount_state(mount))
@@ -55,4 +61,17 @@ class UnmountRecoveryTest(testcase.EdenRepoTest):
 
     def test_eden_unmount_is_not_remounted(self) -> None:
         self.eden.unmount(Path(self.mount))
+        self.assert_stays_unmounted()
+
+    def test_marker_is_written_before_the_unmount_finishes(self) -> None:
+        marker = self.intentional_unmount_marker()
+        with self.run_with_blocking_fault(keyClass="unmount"):
+            unmount = threading.Thread(
+                target=self.eden.unmount, args=(Path(self.mount),)
+            )
+            unmount.start()
+            self.wait_on_fault_hit("unmount")
+            self.assertTrue(marker.exists())
+            self.assertEqual("RUNNING", self.mount_state())
+        unmount.join(timeout=60)
         self.assert_stays_unmounted()

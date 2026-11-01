@@ -210,6 +210,7 @@ eden_add_test(eden_fs_service_test_eden_server_test
     FBThrift::thriftcpp2
     Folly::folly_cancellation_token
     Folly::folly_exception_wrapper
+    Folly::folly_executor
     Folly::folly_io_async_async_base
     Folly::folly_io_async_async_socket
     Folly::folly_io_iobuf

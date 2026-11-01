@@ -2667,33 +2667,74 @@ ImmediateFuture<std::shared_ptr<EdenMount>> EdenServer::mount(
       });
 }
 
+namespace {
+// Best effort: failing to write the marker must not fail the unmount.
+void markIntentionallyUnmounted(const CheckoutConfig& config) {
+  try {
+    config.setIntentionallyUnmountedFlag();
+  } catch (const std::exception& ex) {
+    XLOGF(
+        WARN,
+        "Could not mark {} as intentionally unmounted: {}",
+        config.getMountPath(),
+        ex.what());
+  }
+}
+} // namespace
+
 folly::SemiFuture<Unit> EdenServer::unmount(
     AbsolutePathPiece mountPath,
     UnmountOptions options) {
-  return folly::makeSemiFutureWith([&] {
-           auto future = Future<Unit>::makeEmpty();
-           auto mount = std::shared_ptr<EdenMount>{};
-           {
-             const auto mountPoints = mountPoints_->wlock();
-             const auto it = mountPoints->find(mountPath);
-             if (it == mountPoints->end()) {
-               return folly::makeSemiFuture<Unit>(std::out_of_range(
-                   fmt::format("no such mount point {}", mountPath)));
-             }
-             future = it->second.unmountPromise.getFuture();
-             mount = it->second.edenMount;
-           }
+  auto future = Future<Unit>::makeEmpty();
+  auto mount = std::shared_ptr<EdenMount>{};
+  auto unmount = folly::makeSemiFutureWith([&] {
+    {
+      const auto mountPoints = mountPoints_->wlock();
+      const auto it = mountPoints->find(mountPath);
+      if (it == mountPoints->end()) {
+        return folly::makeSemiFuture<Unit>(std::out_of_range(
+            fmt::format("no such mount point {}", mountPath)));
+      }
+      future = it->second.unmountPromise.getFuture();
+      mount = it->second.edenMount;
+    }
 
-           // We capture the mount shared_ptr in the lambda to keep the
-           // EdenMount object alive during the call to unmount.
-           return mount->unmount(options).deferValue(
-               [mount, f = std::move(future)](auto&&) mutable {
-                 return std::move(f);
-               });
-         })
-      .deferError([path = mountPath.copy()](folly::exception_wrapper&& ew) {
-        XLOGF(ERR, "Failed to perform unmount for \"{}\": {}", path, ew.what());
-        return folly::makeSemiFuture<Unit>(std::move(ew));
+    // Written before teardown starts, so that unmount recovery never
+    // sees this checkout unmounted without the marker.
+    markIntentionallyUnmounted(*mount->getCheckoutConfig());
+    serverState_->getFaultInjector().check("unmount", mountPath.view());
+    return mount->unmount(options);
+  });
+
+  // Keep the mount alive through the channel unmount, then return the final
+  // shutdown promise without deferred callbacks that could outlive the pool.
+  return std::move(unmount).defer(
+      [this,
+       path = mountPath.copy(),
+       mount = std::move(mount),
+       future = std::move(future)](
+          folly::Try<Unit>&& result) mutable -> Future<Unit> {
+        if (result.hasException()) {
+          if (mount) {
+            bool stillMounted = false;
+            {
+              const auto mountPoints = mountPoints_->rlock();
+              const auto it = mountPoints->find(mount->getPath());
+              stillMounted =
+                  it != mountPoints->end() && it->second.edenMount == mount;
+            }
+            if (stillMounted) {
+              mount->getCheckoutConfig()->clearIntentionallyUnmountedFlag();
+            }
+          }
+          XLOGF(
+              ERR,
+              "Failed to perform unmount for \"{}\": {}",
+              path,
+              result.exception().what());
+          return folly::makeFuture<Unit>(std::move(result));
+        }
+        return std::move(future);
       });
 }
 

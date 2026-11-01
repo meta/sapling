@@ -230,6 +230,18 @@ TEST_F(CheckoutConfigTest, testVersion2ParentBinary) {
       parent);
 }
 
+TEST_F(CheckoutConfigTest, testIntentionallyUnmountedFlag) {
+  auto config =
+      CheckoutConfig::loadFromClientDirectory(mountPoint_, clientDir_);
+  EXPECT_FALSE(config->isIntentionallyUnmounted());
+
+  config->setIntentionallyUnmountedFlag();
+  EXPECT_TRUE(config->isIntentionallyUnmounted());
+
+  config->clearIntentionallyUnmountedFlag();
+  EXPECT_FALSE(config->isIntentionallyUnmounted());
+}
+
 TEST_F(CheckoutConfigTest, testInProgress) {
   auto config =
       CheckoutConfig::loadFromClientDirectory(mountPoint_, clientDir_);
