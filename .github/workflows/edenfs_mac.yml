@@ -19,7 +19,7 @@ permissions:
 jobs:
   build:
     runs-on: macos-15
-    timeout-minutes: 120
+    timeout-minutes: 180
     env:
       SCCACHE_GHA_ENABLED: "on"
       # sccache caches cargo's crates too, and keeps one server, so the stats
@@ -57,29 +57,69 @@ jobs:
     - name: Install Rust Stable
       uses: dtolnay/rust-toolchain@stable
 
+    - uses: actions/setup-python@v6
+      with:
+        python-version: "3.12"
+
+    # The Python CLI needs thrift-python, which fbthrift builds as a wheel by
+    # itself, so build the wheel from the fbthrift that eden pins and install
+    # it with the modules that the CLI and eden's configure check for (psutil
+    # and parameterized for the integration tests, which the Test step skips).
+    - name: Find the fbthrift that eden pins
+      id: fbthrift
+      run: >
+        echo "rev=$(awk '{print $3}' build/deps/github_hashes/facebook/fbthrift-rev.txt)"
+        >> "$GITHUB_OUTPUT"
+    - uses: actions/checkout@v6
+      with:
+        repository: meta/fbthrift
+        ref: ${{ steps.fbthrift.outputs.rev }}
+        path: _fbthrift
+    - name: Install Python modules
+      run: >
+        pip install "cython>=3.0,<3.2" setuptools wheel delocate
+        toml filelock psutil parameterized
+    - name: Build thrift-python
+      run: |
+        cmake -S _fbthrift -B _fbthrift/_build -G Ninja \
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+          -DTHRIFT_PYTHON=ON \
+          -DPython3_EXECUTABLE="$(which python)" \
+          -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+        cmake --build _fbthrift/_build -j "$(sysctl -n hw.ncpu)" \
+          --target thrift_python_and_py3_bindings
+        pip install --no-deps \
+          _fbthrift/_build/thrift/lib/cybld/dist_self_contained/*.whl
+        rm -rf _fbthrift
+
     - name: Configure
       run: >
         cmake -B _build -G Ninja
         -DCMAKE_BUILD_TYPE=RelWithDebInfo
         -DBUILD_TESTS=ON
+        -DENABLE_THRIFT_PYTHON=ON
+        -DPython3_EXECUTABLE="$(which python)"
         -DCMAKE_C_COMPILER_LAUNCHER=sccache
         -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
     - name: Build
       run: >
         cmake --build _build -j "$(sysctl -n hw.ncpu)"
-        --target edenfs edenfs_privhelper edenfsctl.cargo
+        --target edenfs edenfs_privhelper edenfsctl.cargo edenfsctl.real.GEN_PY_EXE
 
     - name: Build tests
       run: cmake --build _build -j "$(sysctl -n hw.ncpu)"
 
     # Takeover.manyMounts opens two file descriptors for each of 10,000 mounts.
     # macOS caps the open file limit at kern.maxfilesperproc, so raise that too.
+    # The integration tests create repos with a Sapling hg, which this build
+    # doesn't build, and mount checkouts.
     - name: Test
       run: |
         sudo sysctl -w kern.maxfiles=131072 kern.maxfilesperproc=65536
         ulimit -n 65536
-        ctest --test-dir _build --output-on-failure
+        ctest --test-dir _build --output-on-failure -E 'integration_tests\.egg::'
 
     - name: Install
       run: DESTDIR="$PWD/_artifacts/mac" cmake --install _build

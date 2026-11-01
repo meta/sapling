@@ -19,7 +19,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 180
     # GCC 13, the runner's default, crashes on some of eden's coroutine tests.
     # CC and CXX also reach cargo's cc crate, which compiles cxx's runtime and
     # the -sys crates' C code.
@@ -56,11 +56,47 @@ jobs:
       run: >
         sudo --preserve-env=http_proxy apt-get install -y
         libclang-dev libcurl4-openssl-dev libevent-dev libgflags-dev libre2-dev
-        libsodium-dev libssl-dev libxxhash-dev libzstd-dev ninja-build pkg-config
-        zlib1g-dev
+        libsodium-dev libssl-dev libxxhash-dev libzstd-dev ninja-build patchelf
+        pkg-config zlib1g-dev
 
     - name: Install Rust Stable
       uses: dtolnay/rust-toolchain@stable
+
+    - uses: actions/setup-python@v6
+      with:
+        python-version: "3.12"
+
+    # The Python CLI needs thrift-python, which fbthrift builds as a wheel by
+    # itself, so build the wheel from the fbthrift that eden pins and install
+    # it with the modules that the CLI and eden's configure check for (psutil
+    # and parameterized for the integration tests, which the Test step skips).
+    - name: Find the fbthrift that eden pins
+      id: fbthrift
+      run: >
+        echo "rev=$(awk '{print $3}' build/deps/github_hashes/facebook/fbthrift-rev.txt)"
+        >> "$GITHUB_OUTPUT"
+    - uses: actions/checkout@v6
+      with:
+        repository: meta/fbthrift
+        ref: ${{ steps.fbthrift.outputs.rev }}
+        path: _fbthrift
+    - name: Install Python modules
+      run: >
+        pip install "cython>=3.0,<3.2" setuptools wheel auditwheel
+        toml filelock psutil parameterized
+    - name: Build thrift-python
+      run: |
+        cmake -S _fbthrift -B _fbthrift/_build -G Ninja \
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+          -DTHRIFT_PYTHON=ON \
+          -DPython3_EXECUTABLE="$(which python)" \
+          -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+        cmake --build _fbthrift/_build -j "$(nproc)" \
+          --target thrift_python_and_py3_bindings
+        pip install --no-deps \
+          _fbthrift/_build/thrift/lib/cybld/dist_self_contained/*.whl
+        rm -rf _fbthrift
 
     # fbcode_builder compiles with -g whatever the build type, and with their
     # debug info the test executables alone take about 30 GB.
@@ -69,6 +105,8 @@ jobs:
         cmake -B _build -G Ninja
         -DCMAKE_BUILD_TYPE=RelWithDebInfo
         -DBUILD_TESTS=ON
+        -DENABLE_THRIFT_PYTHON=ON
+        -DPython3_EXECUTABLE="$(which python)"
         -DCMAKE_EXE_LINKER_FLAGS=-Wl,--strip-debug
         -DCMAKE_C_COMPILER_LAUNCHER=sccache
         -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
@@ -78,18 +116,19 @@ jobs:
     - name: Build
       run: >
         cmake --build _build -j "$(nproc)"
-        --target edenfs edenfs_privhelper edenfsctl.cargo
+        --target edenfs edenfs_privhelper edenfsctl.cargo edenfsctl.real.GEN_PY_EXE
 
     - name: Build tests
       run: cmake --build _build -j "$(nproc)"
 
     # The PrivHelper tests that call runInMountNamespace() set up a user and
     # mount namespace, which Ubuntu 24.04's AppArmor doesn't allow unprivileged
-    # processes to do.
+    # processes to do. The integration tests create repos with a Sapling hg,
+    # which this build doesn't build, and mount checkouts.
     - name: Test
       run: |
         sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-        ctest --test-dir _build --output-on-failure
+        ctest --test-dir _build --output-on-failure -E 'integration_tests\.egg::'
 
     - name: Install
       run: DESTDIR="$PWD/_artifacts/linux" cmake --install _build
