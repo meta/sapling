@@ -19,6 +19,8 @@ enum class EdenMountHealthIssueReason {
   DaemonRunningMountNotConnected,
   DaemonRunningMountTimedOut,
   DaemonRunningMountAccessError,
+  // Configured in config.json but not served, and not unmounted on purpose.
+  DaemonRunningCheckoutNotMounted,
 };
 
 std::string_view edenMountHealthIssueReasonString(

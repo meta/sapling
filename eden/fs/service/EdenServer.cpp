@@ -2636,9 +2636,12 @@ ImmediateFuture<std::shared_ptr<EdenMount>> EdenServer::mount(
             })
             .thenTry([this, mountStopWatch, doTakeover, edenMount](auto&& t) {
               // A successful mount ends the outage, unless its channel has
-              // already stopped again.
+              // already stopped again. Earlier issues no longer apply, so the
+              // next outage is reported again.
               if (t.hasValue() && !edenMount->getFsChannelStop()) {
                 resetCheckoutRecovery(edenMount->getPath());
+                clearMountHealthIssues(
+                    emittedMountHealthIssues_, edenMount->getPath().asString());
               }
               auto* fsChannel = edenMount->getFsChannel();
               auto inodeCatalogType =
@@ -4567,12 +4570,40 @@ void EdenServer::checkMountHealth() {
           mountPath, mount->getCheckoutConfig()->getRepoSource());
     }
   }
+  // config.json is read on this thread, as accidental unmount recovery does;
+  // the probes below are the part that can block.
+  auto notServed = findCheckoutsNotServed();
+  for (const auto& [mountPath, config] : notServed) {
+    registeredMountPaths.insert(std::string{mountPath.view()});
+  }
   pruneMountHealthIssues(emittedMountHealthIssues_, registeredMountPaths);
 
   // The probe only needs the path and the repo source, both copied above, so
   // no reference to the mount is held across the asynchronous check.
   for (auto& [mountPath, repoSource] : probeTargets) {
     scheduleRunningMountHealthCheck(mountPath, std::move(repoSource));
+  }
+
+  const auto reason = std::string{edenMountHealthIssueReasonString(
+      EdenMountHealthIssueReason::DaemonRunningCheckoutNotMounted)};
+  for (const auto& [mountPath, config] : notServed) {
+    if (!shouldLogMountHealthIssue(
+            emittedMountHealthIssues_, mountPath.asString(), reason)) {
+      continue;
+    }
+    getStats()->increment(&CheckoutRecoveryStats::notServed);
+    auto stopReason = getCheckoutStopReason(mountPath);
+    serverState_->getEdenFsEventsLogger()->logEvent(
+        EdenMountHealthIssue{
+            "daemon_periodic",
+            reason,
+            mountPath.asString(),
+            mountPath.asString(),
+            "configured_checkout",
+            config->getRepoSource(),
+            stopReason.empty() ? "not_mounted_since_daemon_start" : stopReason,
+            false,
+            false});
   }
 }
 
@@ -4619,45 +4650,83 @@ void EdenServer::accidentalUnmountRecovery() {
   pruneCheckoutRecoveries(configuredPaths);
 }
 
-void EdenServer::recoverCheckoutIfUnmounted(
+std::unique_ptr<CheckoutConfig> EdenServer::loadCheckoutNotServed(
     const AbsolutePath& mountPath,
     const std::string& clientName) {
   {
     const auto mountPoints = mountPoints_->rlock();
     if (mountPoints->find(mountPath) != mountPoints->end()) {
-      return;
+      return nullptr;
     }
   }
 
   // This mount point is not currently mounted, but it was configured
   // in config.json.  This means that the client was unmounted.
-  // We should attempt to remount it, if it is unmounted accidentally.
 
   auto nfsServer = serverState_->getNfsServer();
   if (nfsServer && nfsServer->isMountRegistered(mountPath)) {
     // This mount point is registered with the NFS server, so it is
-    // probably in the process of being unmounted.  We should not
-    // attempt to remount it.
-    return;
+    // probably in the process of being unmounted.
+    return nullptr;
   }
 
-  auto initialConfig = CheckoutConfig::loadFromClientDirectory(
+  auto config = CheckoutConfig::loadFromClientDirectory(
       mountPath, edenDir_.getCheckoutStateDir(clientName));
-  if (initialConfig->isIntentionallyUnmounted()) {
-    XLOGF(
-        DBG5,
-        "Mount point {} is intentionally unmounted, skipping unmount recovery.",
-        mountPath);
-    return;
+  if (config->isIntentionallyUnmounted()) {
+    XLOGF(DBG5, "Mount point {} is intentionally unmounted.", mountPath);
+    return nullptr;
   }
-  if (initialConfig->getInodeCatalogType() ==
-      InodeCatalogType::LegacyEphemeral) {
+  if (config->getInodeCatalogType() == InodeCatalogType::LegacyEphemeral) {
     // An ephemeral overlay does not survive an unmount, so a remount would
     // not bring back the checkout's local state.
-    XLOGF(
-        DBG5,
-        "Mount point {} has an ephemeral overlay, skipping unmount recovery.",
-        mountPath);
+    XLOGF(DBG5, "Mount point {} has an ephemeral overlay.", mountPath);
+    return nullptr;
+  }
+  return config;
+}
+
+std::vector<std::pair<AbsolutePath, std::unique_ptr<CheckoutConfig>>>
+EdenServer::findCheckoutsNotServed() {
+  std::vector<std::pair<AbsolutePath, std::unique_ptr<CheckoutConfig>>> result;
+  if (runningState_.rlock()->state != RunState::RUNNING) {
+    return result;
+  }
+  folly::dynamic dirs = folly::dynamic::object();
+  try {
+    dirs = CheckoutConfig::loadClientDirectoryMap(edenDir_.getPath());
+  } catch (const std::exception& ex) {
+    XLOGF(WARN, "Could not parse config.json: {}", folly::exceptionStr(ex));
+    return result;
+  }
+  for (const auto& client : dirs.items()) {
+    try {
+      auto mountPath = canonicalPath(client.first.stringPiece());
+      if (auto config =
+              loadCheckoutNotServed(mountPath, client.second.asString())) {
+        result.emplace_back(std::move(mountPath), std::move(config));
+      }
+    } catch (const std::exception& ex) {
+      XLOGF(
+          WARN,
+          "Could not check whether {} is mounted: {}",
+          client.first.asString(),
+          folly::exceptionStr(ex));
+    }
+  }
+  return result;
+}
+
+std::string EdenServer::getCheckoutStopReason(const AbsolutePath& mountPath) {
+  auto states = checkoutRecoveryStates_.rlock();
+  auto it = states->find(mountPath);
+  return it == states->end() ? std::string{} : it->second.stopReason;
+}
+
+void EdenServer::recoverCheckoutIfUnmounted(
+    const AbsolutePath& mountPath,
+    const std::string& clientName) {
+  auto initialConfig = loadCheckoutNotServed(mountPath, clientName);
+  if (!initialConfig) {
     return;
   }
 

@@ -781,6 +781,20 @@ class EdenServer : private TakeoverHandler {
   // attempts to recover it.
   void accidentalUnmountRecovery();
 
+  // Returns the config of a checkout from config.json that the daemon is not
+  // serving and was not asked to stop serving, or nullptr. May throw.
+  std::unique_ptr<CheckoutConfig> loadCheckoutNotServed(
+      const AbsolutePath& mountPath,
+      const std::string& clientName);
+
+  // The checkouts loadCheckoutNotServed() returns, with their configs.
+  // Empty unless the daemon is RUNNING.
+  std::vector<std::pair<AbsolutePath, std::unique_ptr<CheckoutConfig>>>
+  findCheckoutsNotServed();
+
+  // The last recorded stop reason of a checkout, or empty.
+  std::string getCheckoutStopReason(const AbsolutePath& mountPath);
+
   // Remounts a checkout from config.json that the daemon is not serving,
   // unless it was unmounted on purpose. A failed attempt is retried on later
   // runs, up to kMaxCheckoutRecoveryAttempts. May throw.

@@ -112,6 +112,8 @@ std::string_view edenMountHealthIssueReasonString(
       return "daemon_running_mount_timed_out";
     case EdenMountHealthIssueReason::DaemonRunningMountAccessError:
       return "daemon_running_mount_access_error";
+    case EdenMountHealthIssueReason::DaemonRunningCheckoutNotMounted:
+      return "daemon_running_checkout_not_mounted";
   }
   return "unknown";
 }

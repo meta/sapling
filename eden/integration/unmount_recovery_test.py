@@ -25,9 +25,7 @@ RECOVERY_INTERVAL = "1s"
 SETTLE_SECONDS = 3
 
 
-@testcase.eden_repo_test(run_on_nfs=False, run_coroutines=False, run_io_uring=False)
-@unittest.skipIf(sys.platform != "linux", "exercised on Linux FUSE mounts")
-class UnmountRecoveryTest(testcase.EdenRepoTest):
+class RecoveryTestBase(testcase.EdenRepoTest):
     git_test_supported = False
     enable_fault_injection = True
 
@@ -35,11 +33,12 @@ class UnmountRecoveryTest(testcase.EdenRepoTest):
         self.repo.write_file("hello", "hola\n")
         self.repo.commit("Initial commit.")
 
+    def mount_config(self) -> List[str]:
+        return []
+
     def edenfs_extra_config(self) -> Optional[Dict[str, List[str]]]:
         configs = dict(super().edenfs_extra_config() or {})
-        configs["mount"] = list(configs.get("mount", [])) + [
-            f'accidental-unmount-recovery-interval = "{RECOVERY_INTERVAL}"'
-        ]
+        configs["mount"] = list(configs.get("mount", [])) + self.mount_config()
         return configs
 
     def mount_state(self, mount: Optional[str] = None) -> Optional[str]:
@@ -61,6 +60,13 @@ class UnmountRecoveryTest(testcase.EdenRepoTest):
 
     def recovery_counter(self, name: str) -> float:
         return self.get_counters().get(f"checkout_recovery.{name}.sum", 0)
+
+
+@testcase.eden_repo_test(run_on_nfs=False, run_coroutines=False, run_io_uring=False)
+@unittest.skipIf(sys.platform != "linux", "exercised on Linux FUSE mounts")
+class UnmountRecoveryTest(RecoveryTestBase):
+    def mount_config(self) -> List[str]:
+        return [f'accidental-unmount-recovery-interval = "{RECOVERY_INTERVAL}"']
 
     def test_unintentional_unmount_is_remounted(self) -> None:
         self.eden.run_cmd("unmount", "--debug-mark-unintentional", self.mount)
@@ -137,3 +143,35 @@ class UnmountRecoveryTest(testcase.EdenRepoTest):
         self.assertEqual("NOT_RUNNING", self.mount_state())
         self.assertEqual(3, self.recovery_counter("failure"))
         self.assertEqual(1, self.recovery_counter("gave_up"))
+
+
+@testcase.eden_repo_test(run_on_nfs=False, run_coroutines=False, run_io_uring=False)
+@unittest.skipIf(sys.platform != "linux", "exercised on Linux FUSE mounts")
+class HealthCheckNotServedTest(RecoveryTestBase):
+    def mount_config(self) -> List[str]:
+        return [f'mount-health-check-interval = "{RECOVERY_INTERVAL}"']
+
+    def test_unintentional_unmount_is_reported_once(self) -> None:
+        self.eden.run_cmd("unmount", "--debug-mark-unintentional", self.mount)
+        poll_until(
+            lambda: True if self.recovery_counter("not_served") == 1 else None,
+            timeout=30,
+        )
+        self.assert_stays_unmounted()
+        self.assertEqual(1, self.recovery_counter("not_served"))
+
+    def test_eden_unmount_is_not_reported(self) -> None:
+        self.eden.unmount(Path(self.mount))
+        self.assert_stays_unmounted()
+        self.assertEqual(0, self.recovery_counter("not_served"))
+
+    def test_each_outage_is_reported(self) -> None:
+        for outage in range(1, 3):
+            self.eden.run_cmd("unmount", "--debug-mark-unintentional", self.mount)
+            poll_until(
+                lambda expected=outage: (
+                    True if self.recovery_counter("not_served") == expected else None
+                ),
+                timeout=30,
+            )
+            self.eden.mount(Path(self.mount))
