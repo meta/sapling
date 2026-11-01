@@ -806,7 +806,10 @@ ImmediateFuture<OnDiskState> getOnDiskState(
         });
   } else {
     return makeImmediateFuture<OnDiskState>(std::logic_error(
-        fmt::format("Unknown file type {} for file {}", fileType, path)));
+        fmt::format(
+            "Unknown file type {} for file {}",
+            fmt::underlying(fileType),
+            path)));
   }
 }
 

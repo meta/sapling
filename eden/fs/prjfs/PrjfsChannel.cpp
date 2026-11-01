@@ -1412,7 +1412,10 @@ HRESULT PrjfsChannelInner::notification(
     PRJ_NOTIFICATION_PARAMETERS* /*notificationParameters*/) {
   auto it = notificationHandlerMap.find(notificationType);
   if (it == notificationHandlerMap.end()) {
-    XLOGF(WARN, "Unrecognized notification: {}", notificationType);
+    XLOGF(
+        WARN,
+        "Unrecognized notification: {}",
+        fmt::underlying(notificationType));
     return HRESULT_FROM_WIN32(ERROR_INVALID_PARAMETER);
   } else {
     auto duration = it->second.duration;
