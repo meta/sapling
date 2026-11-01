@@ -4567,6 +4567,11 @@ void EdenServer::checkMountHealth() {
 }
 
 void EdenServer::accidentalUnmountRecovery() {
+  // Startup has not remounted every checkout yet, and shutdown and graceful
+  // restart unmount them on purpose.
+  if (runningState_.rlock()->state != RunState::RUNNING) {
+    return;
+  }
   XLOGF(DBG5, "Performing accidental unmount recovery.");
   folly::dynamic dirs = folly::dynamic::object();
   try {
