@@ -4655,7 +4655,8 @@ void EdenServer::recoverCheckoutIfUnmounted(
     return;
   }
 
-  if (!beginCheckoutRecovery(mountPath)) {
+  auto attempt = beginCheckoutRecovery(mountPath);
+  if (!attempt) {
     return;
   }
 
@@ -4664,34 +4665,59 @@ void EdenServer::recoverCheckoutIfUnmounted(
       "Mount point {} is not currently mounted, attempting to remount.",
       mountPath);
 
+  AccidentalUnmountRecovery event{
+      /*error=*/"",
+      /*success=*/false,
+      /*repo_source=*/initialConfig->getRepoSource(),
+      /*mount_path=*/mountPath.asString(),
+      /*trigger=*/CheckoutRecoveryTrigger::PeriodicTask,
+      /*attempt=*/*attempt,
+      /*duration=*/0.0,
+      /*mount_protocol=*/
+      FieldConverter<MountProtocol>{}.toDebugString(
+          serverState_->getEdenConfig()->enableNfsServer.getValue()
+              ? initialConfig->getMountProtocol()
+              : kMountProtocolDefault)};
   folly::via(
       getServerState()->getThreadPool().get(),
       [this,
        initialConfig = std::move(initialConfig),
        edenFsEventsLogger = serverState_->getEdenFsEventsLogger(),
        mountPath = mountPath,
-       repoName = clientName]() mutable {
+       event = std::move(event)]() mutable {
+        folly::stop_watch<> stopWatch;
         return makeImmediateFutureWith([&] {
                  return mount(std::move(initialConfig), /*readOnly=*/false);
                })
             .thenTry([this,
                       mountPath,
                       edenFsEventsLogger,
-                      repoName = std::move(repoName)](
-                         folly::Try<std::shared_ptr<EdenMount>>&& result) {
+                      event = std::move(event),
+                      stopWatch](
+                         folly::Try<std::shared_ptr<EdenMount>>&&
+                             result) mutable {
               bool success = result.hasValue();
-              if (endCheckoutRecovery(mountPath, success)) {
+              event.gave_up = endCheckoutRecovery(mountPath, success);
+              if (event.gave_up) {
                 XLOGF(
                     WARN,
                     "Giving up recovering {} after {} failed attempts",
                     mountPath,
                     kMaxCheckoutRecoveryAttempts);
               }
-              std::string exceptionMessage =
+              event.success = success;
+              if (success) {
+                event.mount_protocol =
+                    FieldConverter<MountProtocol>{}.toDebugString(
+                        result.value()->shouldBeOrIsNfsChannel()
+                            ? MountProtocol::NFS
+                            : kMountProtocolDefault);
+              }
+              event.error =
                   success ? "" : result.exception().what().toStdString();
-              edenFsEventsLogger->logEvent(
-                  AccidentalUnmountRecovery{
-                      exceptionMessage, success, repoName});
+              event.duration =
+                  std::chrono::duration<double>{stopWatch.elapsed()}.count();
+              edenFsEventsLogger->logEvent(event);
               if (success) {
                 XLOGF(
                     DBG3,

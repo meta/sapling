@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "eden/common/os/ProcessId.h"
@@ -869,23 +870,65 @@ struct PrivHelperExit : public EdenFSEvent {
   }
 };
 
+// What started a checkout recovery attempt. Its name is logged in the
+// `source` column of accidental_unmount_recovery events.
+enum class CheckoutRecoveryTrigger : uint8_t {
+  PeriodicTask,
+};
+
+constexpr std::string_view checkoutRecoveryTriggerName(
+    CheckoutRecoveryTrigger trigger) {
+  switch (trigger) {
+    case CheckoutRecoveryTrigger::PeriodicTask:
+      return "periodic_task";
+  }
+  return "unknown";
+}
+
 struct AccidentalUnmountRecovery : public EdenFSEvent {
   std::string error;
   bool success = false;
   std::string repo_source;
+  std::string mount_path;
+  CheckoutRecoveryTrigger trigger;
+  // 1 for the first attempt.
+  int64_t attempt = 0;
+  double duration = 0.0;
+  std::string mount_protocol;
+  // Set on the failed attempt after which recovery gave up on the checkout.
+  bool gave_up = false;
 
   AccidentalUnmountRecovery(
       std::string error,
       bool success,
-      std::string repo_source)
+      std::string repo_source,
+      std::string mount_path,
+      CheckoutRecoveryTrigger trigger,
+      int64_t attempt,
+      double duration,
+      std::string mount_protocol)
       : error(std::move(error)),
         success(success),
-        repo_source(std::move(repo_source)) {}
+        repo_source(std::move(repo_source)),
+        mount_path(std::move(mount_path)),
+        trigger(trigger),
+        attempt(attempt),
+        duration(duration),
+        mount_protocol(std::move(mount_protocol)) {}
 
   void populate(DynamicEvent& event) const override {
     event.addString("remount_error", error);
     event.addBool("success", success);
     event.addString("repo_source", repo_source);
+    event.addString("mount_path", mount_path);
+    event.addString(
+        "source", std::string{checkoutRecoveryTriggerName(trigger)});
+    event.addInt("retry", attempt);
+    event.addDouble("duration", duration);
+    event.addString("mount_protocol", mount_protocol);
+    event.addString(
+        "causeDetail",
+        gave_up ? R"({"gave_up":true})" : R"({"gave_up":false})");
   }
 
   const char* getType() const override {
