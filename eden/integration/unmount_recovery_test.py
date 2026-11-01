@@ -4,6 +4,7 @@
 # This software may be used and distributed according to the terms of the
 # GNU General Public License version 2.
 
+import json
 import os
 import sys
 import threading
@@ -89,3 +90,15 @@ class UnmountRecoveryTest(testcase.EdenRepoTest):
         time.sleep(SETTLE_SECONDS)
         self.assertNotIn(self.mount, self.eden.list_cmd_simple())
         self.assertFalse(os.path.exists(self.mount))
+
+    def test_broken_checkout_does_not_block_recovery_of_others(self) -> None:
+        config_json = self.eden.eden_dir / "config.json"
+        original = config_json.read_text()
+        self.addCleanup(config_json.write_text, original)
+        directory_map = json.loads(original)
+        for i in range(3):
+            directory_map[f"/nonexistent/checkout-{i}"] = f"missing-client-{i}"
+        config_json.write_text(json.dumps(directory_map))
+
+        self.eden.run_cmd("unmount", "--debug-mark-unintentional", self.mount)
+        self.wait_until_running()

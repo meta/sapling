@@ -780,6 +780,12 @@ class EdenServer : private TakeoverHandler {
   // attempts to recover it.
   void accidentalUnmountRecovery();
 
+  // Remounts a checkout from config.json that the daemon is not serving,
+  // unless it was unmounted on purpose. May throw.
+  void recoverCheckoutIfUnmounted(
+      const AbsolutePath& mountPath,
+      const std::string& clientName);
+
   // Probes every mount the daemon believes it is serving and reports the ones
   // the kernel disagrees about.
   void checkMountHealth();

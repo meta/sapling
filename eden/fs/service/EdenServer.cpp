@@ -4592,91 +4592,102 @@ void EdenServer::accidentalUnmountRecovery() {
   }
 
   for (const auto& client : dirs.items()) {
-    auto mountPath = canonicalPath(client.first.stringPiece());
-    bool isMounted = false;
-    {
-      const auto mountPoints = mountPoints_->rlock();
-      isMounted = mountPoints->find(mountPath) != mountPoints->end();
-    }
-
-    if (!isMounted) {
-      // This mount point is not currently mounted, but it was configured
-      // in config.json.  This means that the client was unmounted.
-      // We should attempt to remount it, if it is unmounted accidentally.
-
-      auto nfsServer = serverState_->getNfsServer();
-      if (nfsServer && nfsServer->isMountRegistered(mountPath)) {
-        // This mount point is registered with the NFS server, so it is
-        // probably in the process of being unmounted.  We should not
-        // attempt to remount it.
-        continue;
-      }
-
-      auto edenClientPath =
-          edenDir_.getCheckoutStateDir(client.second.stringPiece());
-      std::unique_ptr<CheckoutConfig> initialConfig;
-      try {
-        initialConfig =
-            CheckoutConfig::loadFromClientDirectory(mountPath, edenClientPath);
-      } catch (const std::exception& ex) {
-        XLOGF(
-            WARN,
-            "Skipping unmount recovery for {}: {}",
-            mountPath,
-            folly::exceptionStr(ex));
-        continue;
-      }
-      if (initialConfig->isIntentionallyUnmounted()) {
-        XLOGF(
-            DBG5,
-            "Mount point {} is intentionally unmounted, skipping unmount recovery.",
-            mountPath);
-        continue;
-      }
-
+    // One bad checkout must not stop recovery of the others.
+    try {
+      recoverCheckoutIfUnmounted(
+          canonicalPath(client.first.stringPiece()), client.second.asString());
+    } catch (const std::exception& ex) {
       XLOGF(
-          INFO,
-          "Mount point {} is not currently mounted, attempting to remount.",
-          mountPath);
-
-      folly::via(
-          getServerState()->getThreadPool().get(),
-          [this,
-           initialConfig = std::move(initialConfig),
-           edenFsEventsLogger = serverState_->getEdenFsEventsLogger(),
-           mountPath,
-           repoName = client.second.asString()]() mutable {
-            return mount(std::move(initialConfig), /*readOnly=*/false)
-                .thenTry([mountPath,
-                          edenFsEventsLogger,
-                          repoName = std::move(repoName)](
-                             folly::Try<std::shared_ptr<EdenMount>>&& result) {
-                  bool success = result.hasValue();
-                  std::string exceptionMessage =
-                      success ? "" : result.exception().what().toStdString();
-                  edenFsEventsLogger->logEvent(
-                      AccidentalUnmountRecovery{
-                          exceptionMessage, success, repoName});
-                  if (success) {
-                    XLOGF(
-                        DBG3,
-                        "Automatically remounted mount: {}",
-                        mountPath.value());
-                    return ImmediateFuture<folly::Unit>{std::in_place};
-                  } else {
-                    auto errorMessage = fmt::format(
-                        "Failed to remount {}: {}\n",
-                        mountPath.value(),
-                        result.exception().what());
-                    XLOG(ERR, errorMessage);
-                    return makeImmediateFuture<Unit>(
-                        std::move(result).exception());
-                  }
-                })
-                .semi();
-          });
+          WARN,
+          "Accidental unmount recovery skipped {}: {}",
+          client.first.asString(),
+          folly::exceptionStr(ex));
     }
   }
+}
+
+void EdenServer::recoverCheckoutIfUnmounted(
+    const AbsolutePath& mountPath,
+    const std::string& clientName) {
+  {
+    const auto mountPoints = mountPoints_->rlock();
+    if (mountPoints->find(mountPath) != mountPoints->end()) {
+      return;
+    }
+  }
+
+  // This mount point is not currently mounted, but it was configured
+  // in config.json.  This means that the client was unmounted.
+  // We should attempt to remount it, if it is unmounted accidentally.
+
+  auto nfsServer = serverState_->getNfsServer();
+  if (nfsServer && nfsServer->isMountRegistered(mountPath)) {
+    // This mount point is registered with the NFS server, so it is
+    // probably in the process of being unmounted.  We should not
+    // attempt to remount it.
+    return;
+  }
+
+  auto initialConfig = CheckoutConfig::loadFromClientDirectory(
+      mountPath, edenDir_.getCheckoutStateDir(clientName));
+  if (initialConfig->isIntentionallyUnmounted()) {
+    XLOGF(
+        DBG5,
+        "Mount point {} is intentionally unmounted, skipping unmount recovery.",
+        mountPath);
+    return;
+  }
+  if (initialConfig->getInodeCatalogType() ==
+      InodeCatalogType::LegacyEphemeral) {
+    // An ephemeral overlay does not survive an unmount, so a remount would
+    // not bring back the checkout's local state.
+    XLOGF(
+        DBG5,
+        "Mount point {} has an ephemeral overlay, skipping unmount recovery.",
+        mountPath);
+    return;
+  }
+
+  XLOGF(
+      INFO,
+      "Mount point {} is not currently mounted, attempting to remount.",
+      mountPath);
+
+  folly::via(
+      getServerState()->getThreadPool().get(),
+      [this,
+       initialConfig = std::move(initialConfig),
+       edenFsEventsLogger = serverState_->getEdenFsEventsLogger(),
+       mountPath = mountPath,
+       repoName = clientName]() mutable {
+        return mount(std::move(initialConfig), /*readOnly=*/false)
+            .thenTry([mountPath,
+                      edenFsEventsLogger,
+                      repoName = std::move(repoName)](
+                         folly::Try<std::shared_ptr<EdenMount>>&& result) {
+              bool success = result.hasValue();
+              std::string exceptionMessage =
+                  success ? "" : result.exception().what().toStdString();
+              edenFsEventsLogger->logEvent(
+                  AccidentalUnmountRecovery{
+                      exceptionMessage, success, repoName});
+              if (success) {
+                XLOGF(
+                    DBG3,
+                    "Automatically remounted mount: {}",
+                    mountPath.value());
+                return ImmediateFuture<folly::Unit>{std::in_place};
+              } else {
+                auto errorMessage = fmt::format(
+                    "Failed to remount {}: {}\n",
+                    mountPath.value(),
+                    result.exception().what());
+                XLOG(ERR, errorMessage);
+                return makeImmediateFuture<Unit>(std::move(result).exception());
+              }
+            })
+            .semi();
+      });
 }
 
 void EdenServer::refreshRestrictedRoots() {
