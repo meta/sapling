@@ -782,14 +782,23 @@ class EdenServer : private TakeoverHandler {
   void accidentalUnmountRecovery();
 
   // Remounts a checkout from config.json that the daemon is not serving,
-  // unless it was unmounted on purpose. May throw.
+  // unless it was unmounted on purpose. A failed attempt is retried on later
+  // runs, up to kMaxCheckoutRecoveryAttempts. May throw.
   void recoverCheckoutIfUnmounted(
       const AbsolutePath& mountPath,
       const std::string& clientName);
 
-  // Returns false if a recovery of this checkout is already in progress.
-  bool beginCheckoutRecovery(const AbsolutePath& mountPath);
-  void endCheckoutRecovery(const AbsolutePath& mountPath);
+  // Returns the attempt number, or nullopt if this checkout must not be tried
+  // now: an attempt is in progress, or recovery gave up.
+  std::optional<uint32_t> beginCheckoutRecovery(const AbsolutePath& mountPath);
+  // Returns true if this attempt failed and recovery gives up on the checkout.
+  bool endCheckoutRecovery(const AbsolutePath& mountPath, bool success);
+  // Forgets recovery state once the checkout is mounted some other way. While
+  // an attempt is in flight, the reset is applied when the attempt ends.
+  void resetCheckoutRecovery(const AbsolutePath& mountPath);
+  // Forgets recovery state of checkouts that left config.json.
+  void pruneCheckoutRecoveries(
+      const std::unordered_set<AbsolutePath>& configuredPaths);
 
   // Probes every mount the daemon believes it is serving and reports the ones
   // the kernel disagrees about.
@@ -1053,8 +1062,14 @@ class EdenServer : private TakeoverHandler {
   std::shared_ptr<folly::Synchronized<std::unordered_set<std::string>>>
       runningMountHealthChecks_;
 
+  static constexpr uint32_t kMaxCheckoutRecoveryAttempts = 3;
   struct CheckoutRecoveryState {
     bool inFlight{false};
+    uint32_t failedAttempts{0};
+    // Set after kMaxCheckoutRecoveryAttempts failures; no more attempts.
+    bool gaveUp{false};
+    // The checkout was mounted some other way while an attempt was in flight.
+    bool resetRequested{false};
   };
   folly::Synchronized<folly::F14FastMap<AbsolutePath, CheckoutRecoveryState>>
       checkoutRecoveryStates_;

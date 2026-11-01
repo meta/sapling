@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from eden.fs.cli.util import INTENTIONALLY_UNMOUNTED, poll_until
+from eden.fs.service.eden.thrift_types import GetBlockedFaultsRequest, UnblockFaultArg
 from parameterized import parameterized
 
 from .lib import testcase
@@ -102,3 +103,25 @@ class UnmountRecoveryTest(testcase.EdenRepoTest):
 
         self.eden.run_cmd("unmount", "--debug-mark-unintentional", self.mount)
         self.wait_until_running()
+
+    def test_recovery_gives_up_after_three_failed_attempts(self) -> None:
+        with self.run_with_blocking_fault(keyClass="mount"):
+            self.eden.run_cmd("unmount", "--debug-mark-unintentional", self.mount)
+            for _ in range(3):
+                self.wait_on_fault_hit("mount")
+                with self.eden.get_thrift_client() as client:
+                    client.unblockFault(
+                        UnblockFaultArg(
+                            keyClass="mount",
+                            errorType="runtime_error",
+                            errorMessage="injected mount failure",
+                        )
+                    )
+            # Later recovery runs make no fourth attempt.
+            time.sleep(SETTLE_SECONDS)
+            with self.eden.get_thrift_client() as client:
+                blocked = client.getBlockedFaults(
+                    GetBlockedFaultsRequest(keyclass="mount")
+                ).keyValues
+            self.assertEqual([], list(blocked))
+        self.assertEqual("NOT_RUNNING", self.mount_state())

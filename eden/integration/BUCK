@@ -774,6 +774,7 @@ python_unittest(
     deps = [
         "fbsource//third-party/pypi/parameterized:parameterized",
         "//eden/fs/cli:lib",
+        "//eden/fs/service:thrift-python-types",
         "//eden/integration/lib:lib",
     ],
 )

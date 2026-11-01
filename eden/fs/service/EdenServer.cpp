@@ -2635,6 +2635,10 @@ ImmediateFuture<std::shared_ptr<EdenMount>> EdenServer::mount(
               }
             })
             .thenTry([this, mountStopWatch, doTakeover, edenMount](auto&& t) {
+              // Any successful mount clears earlier recovery failures.
+              if (t.hasValue()) {
+                resetCheckoutRecovery(edenMount->getPath());
+              }
               auto* fsChannel = edenMount->getFsChannel();
               auto inodeCatalogType =
                   edenMount->getCheckoutConfig()->getInodeCatalogType();
@@ -4591,11 +4595,13 @@ void EdenServer::accidentalUnmountRecovery() {
     return;
   }
 
+  std::unordered_set<AbsolutePath> configuredPaths;
   for (const auto& client : dirs.items()) {
     // One bad checkout must not stop recovery of the others.
     try {
-      recoverCheckoutIfUnmounted(
-          canonicalPath(client.first.stringPiece()), client.second.asString());
+      auto mountPath = canonicalPath(client.first.stringPiece());
+      configuredPaths.insert(mountPath);
+      recoverCheckoutIfUnmounted(mountPath, client.second.asString());
     } catch (const std::exception& ex) {
       XLOGF(
           WARN,
@@ -4604,6 +4610,7 @@ void EdenServer::accidentalUnmountRecovery() {
           folly::exceptionStr(ex));
     }
   }
+  pruneCheckoutRecoveries(configuredPaths);
 }
 
 void EdenServer::recoverCheckoutIfUnmounted(
@@ -4672,8 +4679,14 @@ void EdenServer::recoverCheckoutIfUnmounted(
                       edenFsEventsLogger,
                       repoName = std::move(repoName)](
                          folly::Try<std::shared_ptr<EdenMount>>&& result) {
-              endCheckoutRecovery(mountPath);
               bool success = result.hasValue();
+              if (endCheckoutRecovery(mountPath, success)) {
+                XLOGF(
+                    WARN,
+                    "Giving up recovering {} after {} failed attempts",
+                    mountPath,
+                    kMaxCheckoutRecoveryAttempts);
+              }
               std::string exceptionMessage =
                   success ? "" : result.exception().what().toStdString();
               edenFsEventsLogger->logEvent(
@@ -4698,18 +4711,70 @@ void EdenServer::recoverCheckoutIfUnmounted(
       });
 }
 
-bool EdenServer::beginCheckoutRecovery(const AbsolutePath& mountPath) {
+std::optional<uint32_t> EdenServer::beginCheckoutRecovery(
+    const AbsolutePath& mountPath) {
   auto states = checkoutRecoveryStates_.wlock();
   auto& state = (*states)[mountPath];
-  if (state.inFlight) {
-    return false;
+  // Skip while a remount is pending or after giving up.
+  if (state.inFlight || state.gaveUp) {
+    return std::nullopt;
   }
   state.inFlight = true;
-  return true;
+  return state.failedAttempts + 1;
 }
 
-void EdenServer::endCheckoutRecovery(const AbsolutePath& mountPath) {
-  checkoutRecoveryStates_.wlock()->erase(mountPath);
+bool EdenServer::endCheckoutRecovery(
+    const AbsolutePath& mountPath,
+    bool success) {
+  auto states = checkoutRecoveryStates_.wlock();
+  if (success) {
+    // Recovered: the next outage starts with a full retry budget.
+    states->erase(mountPath);
+    return false;
+  }
+  auto it = states->try_emplace(mountPath).first;
+  if (it->second.resetRequested) {
+    // Mounted some other way while this attempt ran, so its failure (usually
+    // "already mounted") does not count.
+    states->erase(it);
+    return false;
+  }
+  auto& state = it->second;
+  state.inFlight = false;
+  ++state.failedAttempts;
+  if (state.failedAttempts >= kMaxCheckoutRecoveryAttempts) {
+    state.gaveUp = true;
+    return true;
+  }
+  return false;
+}
+
+void EdenServer::resetCheckoutRecovery(const AbsolutePath& mountPath) {
+  auto states = checkoutRecoveryStates_.wlock();
+  auto it = states->find(mountPath);
+  if (it == states->end()) {
+    return;
+  }
+  if (it->second.inFlight) {
+    // Let endCheckoutRecovery() apply the reset. A recovery attempt's own
+    // successful mount() also gets here.
+    it->second.resetRequested = true;
+    return;
+  }
+  states->erase(it);
+}
+
+void EdenServer::pruneCheckoutRecoveries(
+    const std::unordered_set<AbsolutePath>& configuredPaths) {
+  auto states = checkoutRecoveryStates_.wlock();
+  for (auto it = states->begin(); it != states->end();) {
+    // An in-flight entry is left for its attempt to finish.
+    if (!it->second.inFlight && !configuredPaths.contains(it->first)) {
+      it = states->erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 void EdenServer::refreshRestrictedRoots() {
