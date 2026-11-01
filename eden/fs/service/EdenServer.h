@@ -28,6 +28,7 @@
 #include <folly/SocketAddress.h>
 #include <folly/Synchronized.h>
 #include <folly/ThreadLocal.h>
+#include <folly/container/F14Map.h>
 #include <folly/coro/safe/NowTask.h>
 #include <folly/futures/SharedPromise.h>
 #include <folly/io/async/ScopedEventBaseThread.h>
@@ -786,6 +787,10 @@ class EdenServer : private TakeoverHandler {
       const AbsolutePath& mountPath,
       const std::string& clientName);
 
+  // Returns false if a recovery of this checkout is already in progress.
+  bool beginCheckoutRecovery(const AbsolutePath& mountPath);
+  void endCheckoutRecovery(const AbsolutePath& mountPath);
+
   // Probes every mount the daemon believes it is serving and reports the ones
   // the kernel disagrees about.
   void checkMountHealth();
@@ -1047,6 +1052,12 @@ class EdenServer : private TakeoverHandler {
 
   std::shared_ptr<folly::Synchronized<std::unordered_set<std::string>>>
       runningMountHealthChecks_;
+
+  struct CheckoutRecoveryState {
+    bool inFlight{false};
+  };
+  folly::Synchronized<folly::F14FastMap<AbsolutePath, CheckoutRecoveryState>>
+      checkoutRecoveryStates_;
 
   /**
    * Remounting progress state.

@@ -4648,6 +4648,10 @@ void EdenServer::recoverCheckoutIfUnmounted(
     return;
   }
 
+  if (!beginCheckoutRecovery(mountPath)) {
+    return;
+  }
+
   XLOGF(
       INFO,
       "Mount point {} is not currently mounted, attempting to remount.",
@@ -4660,11 +4664,15 @@ void EdenServer::recoverCheckoutIfUnmounted(
        edenFsEventsLogger = serverState_->getEdenFsEventsLogger(),
        mountPath = mountPath,
        repoName = clientName]() mutable {
-        return mount(std::move(initialConfig), /*readOnly=*/false)
-            .thenTry([mountPath,
+        return makeImmediateFutureWith([&] {
+                 return mount(std::move(initialConfig), /*readOnly=*/false);
+               })
+            .thenTry([this,
+                      mountPath,
                       edenFsEventsLogger,
                       repoName = std::move(repoName)](
                          folly::Try<std::shared_ptr<EdenMount>>&& result) {
+              endCheckoutRecovery(mountPath);
               bool success = result.hasValue();
               std::string exceptionMessage =
                   success ? "" : result.exception().what().toStdString();
@@ -4688,6 +4696,20 @@ void EdenServer::recoverCheckoutIfUnmounted(
             })
             .semi();
       });
+}
+
+bool EdenServer::beginCheckoutRecovery(const AbsolutePath& mountPath) {
+  auto states = checkoutRecoveryStates_.wlock();
+  auto& state = (*states)[mountPath];
+  if (state.inFlight) {
+    return false;
+  }
+  state.inFlight = true;
+  return true;
+}
+
+void EdenServer::endCheckoutRecovery(const AbsolutePath& mountPath) {
+  checkoutRecoveryStates_.wlock()->erase(mountPath);
 }
 
 void EdenServer::refreshRestrictedRoots() {
