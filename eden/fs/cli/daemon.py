@@ -351,31 +351,23 @@ def gracefully_restart_edenfs_service(
     """
     Gracefully restart the EdenFS service
     This function ensures a seamless transition from the old EdenFS instance to the new one.
-    It prevents the auto unmount recovery task from interfering with the restart process.
 
     The running daemon refuses a takeover while it is serving long Thrift
     requests. With force_takeover, it cancels them and proceeds. With
     only_if_idle, it also refuses while it has served a checkout or a mount
     recently.
     """
-    # Set the intentionally unmounted flag for all mounts to prevent auto unmount recovery
-    # during the restart process. This ensures that the old EdenFS mounts are not recovered
-    # while the new instance is taking over.
-    markers = instance.set_intentionally_unmounted_for_all_mounts()
-    try:
-        # Start the new EdenFS service, taking over from the old instance.
-        return _start_edenfs_service(
-            instance=instance,
-            daemon_binary=daemon_binary,
-            edenfs_args=edenfs_args,
-            preserved_env=preserved_env,
-            takeover=True,
-            force_takeover=force_takeover,
-            only_if_idle=only_if_idle,
-        )
-    finally:
-        # Let the auto unmount recovery task resume its normal operation.
-        instance.clear_intentionally_unmounted_markers(markers)
+    # Unmount recovery and the health check's not-served scan run only while a
+    # daemon is RUNNING, and neither daemon is RUNNING during the handover.
+    return _start_edenfs_service(
+        instance=instance,
+        daemon_binary=daemon_binary,
+        edenfs_args=edenfs_args,
+        preserved_env=preserved_env,
+        takeover=True,
+        force_takeover=force_takeover,
+        only_if_idle=only_if_idle,
+    )
 
 
 # Flags that apply to one takeover only. They travel with --undefok so that a

@@ -347,3 +347,29 @@ class RecoveryAfterTakeoverTest(RecoveryTestBase):
         self.eden.takeover_without_ping_response()
         self.assertTrue(self.eden.wait_for_is_healthy())
         self.wait_until_running()
+
+
+@testcase.eden_repo_test(run_on_nfs=False, run_coroutines=False, run_io_uring=False)
+@unittest.skipIf(sys.platform != "linux", "exercised on Linux FUSE mounts")
+class GracefulRestartRecoveryTest(RecoveryTestBase):
+    def select_storage_engine(self) -> str:
+        return "sqlite"
+
+    def mount_config(self) -> List[str]:
+        return [
+            f'mount-health-check-interval = "{RECOVERY_INTERVAL}"',
+            "mount-health-check-recovery = true",
+            "recover-on-channel-stop = true",
+        ]
+
+    def test_graceful_restart_starts_no_recovery(self) -> None:
+        self.eden.graceful_restart()
+        time.sleep(SETTLE_SECONDS)
+        self.assertEqual("RUNNING", self.mount_state())
+        self.assertEqual(0, self.recovery_counter("attempt"))
+
+    def test_eden_unmount_survives_graceful_restart(self) -> None:
+        self.eden.unmount(Path(self.mount))
+        self.eden.graceful_restart()
+        self.assert_stays_unmounted()
+        self.assertEqual(0, self.recovery_counter("attempt"))
