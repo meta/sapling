@@ -711,7 +711,7 @@ class EdenInstance(AbstractEdenInstance):
         snapshot_id: str,
         filter_paths: Optional[List[str]] = None,
     ) -> None:
-        if path in self._get_directory_map():
+        if Path(path) in self._get_directory_map():
             raise Exception(
                 """\
 mount path %s is already configured (see `eden list`). \

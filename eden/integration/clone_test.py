@@ -359,10 +359,8 @@ class CloneTest(testcase.EdenRepoTest):
 
     def test_clone_into_configured_mount_path(self) -> None:
         # A path that config.json still lists (here: unmounted and then
-        # deleted from disk, as a user does before re-cloning) must be refused
-        # before anything is created. The pre-check compares a str with Path
-        # keys and never fires, so clone proceeds and only fails when it
-        # records the path.
+        # deleted from disk, as a user does before re-cloning) is refused
+        # before anything is created.
         self.eden.unmount(Path(self.mount))
         shutil.rmtree(self.mount)
         result = self.eden.run_unchecked(
@@ -374,8 +372,8 @@ class CloneTest(testcase.EdenRepoTest):
         )
         self.assertNotEqual(0, result.returncode)
         stderr = result.stderr.decode()
-        self.assertNotIn("already configured", stderr)
-        self.assertIn("already exists", stderr)
+        self.assertIn("already configured", stderr)
+        self.assertNotIn("already exists", stderr)
 
 
 @testcase.eden_repo_test

@@ -851,5 +851,5 @@ class ClonePrecheckTest(unittest.TestCase, TemporaryDirectoryMixin):
                 "_create_mount_point_dir",
                 side_effect=RuntimeError("mount point created"),
             ):
-                with self.assertRaisesRegex(RuntimeError, "mount point created"):
+                with self.assertRaisesRegex(Exception, "already configured"):
                     instance.clone(MagicMock(), mount_path, "0" * 40)
