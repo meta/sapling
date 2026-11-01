@@ -37,6 +37,18 @@ FsChannelInfo RpcStopData::extractTakeoverInfo() {
   return NfsChannelData{std::move(socketToKernel)};
 }
 
+FsStopReason RpcStopData::getStopReason() const {
+  switch (reason) {
+    case RpcStopReason::UNMOUNT:
+      return {"nfs_eof", true};
+    case RpcStopReason::ERROR:
+      return {"nfs_read_error", true};
+    case RpcStopReason::TAKEOVER:
+      return {"takeover", false};
+  }
+  return {"unknown", false};
+}
+
 void RpcConnectionHandler::getReadBuffer(void** bufP, size_t* lenP) {
   // TODO(xavierd): Should kDefaultReadBufferAllocationSize be configured to be
   // at least the configured NFS iosize?
@@ -185,6 +197,7 @@ folly::SemiFuture<folly::Unit> RpcConnectionHandler::resetReader(
   // callbacks under EOF or error conditions, and `this` must stay alive for the
   // duration of this callback.
   DestructorGuard dg{this};
+  const auto stopRequestedAt = std::chrono::steady_clock::now();
 
   {
     auto& state = state_.get();
@@ -213,7 +226,7 @@ folly::SemiFuture<folly::Unit> RpcConnectionHandler::resetReader(
 
   XLOG(DBG4, "waiting for pending requests to complete");
   return pendingRequestsComplete_.getFuture().ensure(
-      [this, proc = proc_, dg = std::move(dg), stopReason]() {
+      [this, proc = proc_, dg = std::move(dg), stopReason, stopRequestedAt]() {
         XLOG(
             DBG4,
             "Pending requests complete; finishing destroying this RPC handler");
@@ -224,6 +237,7 @@ folly::SemiFuture<folly::Unit> RpcConnectionHandler::resetReader(
 
         RpcStopData data{};
         data.reason = stopReason;
+        data.stopRequestedAt = stopRequestedAt;
         if (stopReason == RpcStopReason::TAKEOVER) {
           // We've already set readCB to nullptr, so detach the
           // network socket and transfer it to the process taking over

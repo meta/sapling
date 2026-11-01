@@ -1111,6 +1111,30 @@ FuseChannel::FuseChannel(
   initializeInflightRequestsRateLimiter(maximumInFlightRequests);
 }
 
+FsStopReason FuseChannel::StopData::getStopReason() const {
+  switch (reason) {
+    case StopReason::RUNNING:
+      return {"running", false};
+    case StopReason::INIT_FAILED:
+      return {"fuse_init_failed", false};
+    case StopReason::UNMOUNTED:
+      return {"fuse_unmounted", true};
+    case StopReason::TAKEOVER:
+      return {"takeover", false};
+    case StopReason::DESTRUCTOR:
+      return {"fuse_destructor", false};
+    case StopReason::FUSE_READ_ERROR:
+      return {"fuse_read_error", true};
+    case StopReason::FUSE_WRITE_ERROR:
+      return {"fuse_write_error", true};
+    case StopReason::FUSE_TRUNCATED_REQUEST:
+      return {"fuse_truncated_request", true};
+    case StopReason::WORKER_EXCEPTION:
+      return {"worker_exception", true};
+  }
+  return {"unknown", false};
+}
+
 FuseChannel::~FuseChannel() {
   XCHECK_EQ(1, traceBus_.use_count())
       << "This shared_ptr should not be copied; see attached comment.";
@@ -1695,6 +1719,7 @@ bool FuseChannel::requestSessionExitLocked(
   // Record the reason we are stopping and then notify worker threads to
   // stop.
   state->stopReason = reason;
+  state->stopRequestedAt = std::chrono::steady_clock::now();
 
   // Update stop_ so that worker threads will break out of their loop.
   stop_.store(true, std::memory_order_relaxed);
@@ -2518,6 +2543,7 @@ void FuseChannel::sessionComplete(folly::Synchronized<State>::LockedPtr state) {
 
   auto data = std::make_unique<StopData>();
   data->reason = state->stopReason;
+  data->stopRequestedAt = state->stopRequestedAt;
   // Unlock the state before the remaining steps
   state.unlock();
 

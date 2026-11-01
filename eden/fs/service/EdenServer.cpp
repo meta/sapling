@@ -2635,8 +2635,9 @@ ImmediateFuture<std::shared_ptr<EdenMount>> EdenServer::mount(
               }
             })
             .thenTry([this, mountStopWatch, doTakeover, edenMount](auto&& t) {
-              // Any successful mount clears earlier recovery failures.
-              if (t.hasValue()) {
+              // A successful mount ends the outage, unless its channel has
+              // already stopped again.
+              if (t.hasValue() && !edenMount->getFsChannelStop()) {
                 resetCheckoutRecovery(edenMount->getPath());
               }
               auto* fsChannel = edenMount->getFsChannel();
@@ -2747,6 +2748,11 @@ void EdenServer::mountFinished(
     std::optional<TakeoverData::MountInfo> takeover) {
   const auto& mountPath = edenMount->getPath();
   XLOGF(INFO, "mount point \"{}\" stopped", mountPath);
+  const auto stop = edenMount->getFsChannelStop();
+  recordCheckoutStop(
+      mountPath,
+      stop ? std::string{stop->reason.name} : "mount_failed",
+      stop ? std::make_optional(stop->time) : std::nullopt);
 
   // Although it's uncommon for a GC to be running during unmount, we should
   // confirm any running GC exited before proceeding. Typically, GC stops on
@@ -4672,20 +4678,24 @@ void EdenServer::recoverCheckoutIfUnmounted(
       /*repo_source=*/initialConfig->getRepoSource(),
       /*mount_path=*/mountPath.asString(),
       /*trigger=*/CheckoutRecoveryTrigger::PeriodicTask,
-      /*attempt=*/*attempt,
+      /*attempt=*/attempt->number,
       /*duration=*/0.0,
       /*mount_protocol=*/
       FieldConverter<MountProtocol>{}.toDebugString(
           serverState_->getEdenConfig()->enableNfsServer.getValue()
               ? initialConfig->getMountProtocol()
-              : kMountProtocolDefault)};
+              : kMountProtocolDefault),
+      /*stop_reason=*/attempt->stopReason.empty()
+          ? "not_mounted_since_daemon_start"
+          : attempt->stopReason};
   folly::via(
       getServerState()->getThreadPool().get(),
       [this,
        initialConfig = std::move(initialConfig),
        edenFsEventsLogger = serverState_->getEdenFsEventsLogger(),
        mountPath = mountPath,
-       event = std::move(event)]() mutable {
+       event = std::move(event),
+       stoppedAt = attempt->stoppedAt]() mutable {
         folly::stop_watch<> stopWatch;
         return makeImmediateFutureWith([&] {
                  return mount(std::move(initialConfig), /*readOnly=*/false);
@@ -4694,6 +4704,7 @@ void EdenServer::recoverCheckoutIfUnmounted(
                       mountPath,
                       edenFsEventsLogger,
                       event = std::move(event),
+                      stoppedAt,
                       stopWatch](
                          folly::Try<std::shared_ptr<EdenMount>>&&
                              result) mutable {
@@ -4722,6 +4733,12 @@ void EdenServer::recoverCheckoutIfUnmounted(
                   success ? "" : result.exception().what().toStdString();
               event.duration =
                   std::chrono::duration<double>{stopWatch.elapsed()}.count();
+              if (stoppedAt) {
+                event.outage_age_ms =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - *stoppedAt)
+                        .count();
+              }
               edenFsEventsLogger->logEvent(event);
               if (success) {
                 XLOGF(
@@ -4742,8 +4759,8 @@ void EdenServer::recoverCheckoutIfUnmounted(
       });
 }
 
-std::optional<uint32_t> EdenServer::beginCheckoutRecovery(
-    const AbsolutePath& mountPath) {
+std::optional<EdenServer::CheckoutRecoveryAttempt>
+EdenServer::beginCheckoutRecovery(const AbsolutePath& mountPath) {
   auto states = checkoutRecoveryStates_.wlock();
   auto& state = (*states)[mountPath];
   // Skip while a remount is pending or after giving up.
@@ -4751,26 +4768,53 @@ std::optional<uint32_t> EdenServer::beginCheckoutRecovery(
     return std::nullopt;
   }
   state.inFlight = true;
-  return state.failedAttempts + 1;
+  state.stoppedDuringRecovery = false;
+  return CheckoutRecoveryAttempt{
+      state.failedAttempts + 1,
+      state.stopReason,
+      state.stopReason.empty() ? std::nullopt
+                               : std::make_optional(state.stoppedAt)};
+}
+
+void EdenServer::recordCheckoutStop(
+    const AbsolutePath& mountPath,
+    std::string reason,
+    std::optional<std::chrono::steady_clock::time_point> channelStoppedAt) {
+  auto states = checkoutRecoveryStates_.wlock();
+  auto& state = (*states)[mountPath];
+  if (state.inFlight) {
+    // A recovery attempt's failed mount must not replace the original cause.
+    if (!channelStoppedAt) {
+      return;
+    }
+    // The remounted channel started and stopped again: a new outage.
+    state.stoppedDuringRecovery = true;
+  }
+  state.stopReason = std::move(reason);
+  state.stoppedAt = channelStoppedAt.value_or(std::chrono::steady_clock::now());
 }
 
 bool EdenServer::endCheckoutRecovery(
     const AbsolutePath& mountPath,
     bool success) {
   auto states = checkoutRecoveryStates_.wlock();
-  if (success) {
-    // Recovered: the next outage starts with a full retry budget.
-    states->erase(mountPath);
-    return false;
-  }
   auto it = states->try_emplace(mountPath).first;
-  if (it->second.resetRequested) {
-    // Mounted some other way while this attempt ran, so its failure (usually
-    // "already mounted") does not count.
-    states->erase(it);
+  auto& state = it->second;
+  // Recovered, or mounted some other way while this attempt ran (so its
+  // failure, usually "already mounted", does not count): the outage is over.
+  if (success || state.resetRequested) {
+    if (!state.stoppedDuringRecovery) {
+      // The next outage starts with a full retry budget.
+      states->erase(it);
+      return false;
+    }
+    // The remounted channel already stopped again: keep that new outage.
+    CheckoutRecoveryState newOutage;
+    newOutage.stopReason = std::move(state.stopReason);
+    newOutage.stoppedAt = state.stoppedAt;
+    state = std::move(newOutage);
     return false;
   }
-  auto& state = it->second;
   state.inFlight = false;
   ++state.failedAttempts;
   if (state.failedAttempts >= kMaxCheckoutRecoveryAttempts) {

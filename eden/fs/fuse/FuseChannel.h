@@ -199,6 +199,8 @@ class FuseChannel final : public FsChannel {
       return FuseChannelData{std::move(fuseDevice), fuseSettings};
     }
 
+    FsStopReason getStopReason() const override;
+
     /**
      * The reason why the FUSE channel was stopped.
      *
@@ -762,6 +764,9 @@ class FuseChannel final : public FsChannel {
      * or running.
      */
     StopReason stopReason{StopReason::RUNNING};
+
+    // When requestSessionExit() was first called.
+    std::optional<std::chrono::steady_clock::time_point> stopRequestedAt;
   };
 
   /**

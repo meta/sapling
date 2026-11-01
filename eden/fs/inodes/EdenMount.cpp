@@ -3105,6 +3105,10 @@ void EdenMount::preparePostFsChannelCompletion(
             if (stopData->isUnmounted()) {
               inodeMap_->setUnmounted();
             }
+            *fsChannelStop_.wlock() = FsChannelStop{
+                stopData->getStopReason(),
+                stopData->stopRequestedAt.value_or(
+                    std::chrono::steady_clock::now())};
 
             fsChannelCompletionPromise_.setWith([&] {
               return TakeoverData::MountInfo{

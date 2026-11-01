@@ -788,9 +788,17 @@ class EdenServer : private TakeoverHandler {
       const AbsolutePath& mountPath,
       const std::string& clientName);
 
-  // Returns the attempt number, or nullopt if this checkout must not be tried
-  // now: an attempt is in progress, or recovery gave up.
-  std::optional<uint32_t> beginCheckoutRecovery(const AbsolutePath& mountPath);
+  struct CheckoutRecoveryAttempt {
+    uint32_t number;
+    // Why the daemon stopped serving the checkout, and when; empty if it has
+    // not served it since it started.
+    std::string stopReason;
+    std::optional<std::chrono::steady_clock::time_point> stoppedAt;
+  };
+  // Returns nullopt if this checkout must not be tried now: an attempt is in
+  // progress, or recovery gave up.
+  std::optional<CheckoutRecoveryAttempt> beginCheckoutRecovery(
+      const AbsolutePath& mountPath);
   // Returns true if this attempt failed and recovery gives up on the checkout.
   bool endCheckoutRecovery(const AbsolutePath& mountPath, bool success);
   // Forgets recovery state once the checkout is mounted some other way. While
@@ -799,6 +807,12 @@ class EdenServer : private TakeoverHandler {
   // Forgets recovery state of checkouts that left config.json.
   void pruneCheckoutRecoveries(
       const std::unordered_set<AbsolutePath>& configuredPaths);
+  // Records why the checkout stopped being served. `channelStoppedAt` is when
+  // its channel was asked to stop; unset when the channel never started.
+  void recordCheckoutStop(
+      const AbsolutePath& mountPath,
+      std::string reason,
+      std::optional<std::chrono::steady_clock::time_point> channelStoppedAt);
 
   // Probes every mount the daemon believes it is serving and reports the ones
   // the kernel disagrees about.
@@ -1070,6 +1084,11 @@ class EdenServer : private TakeoverHandler {
     bool gaveUp{false};
     // The checkout was mounted some other way while an attempt was in flight.
     bool resetRequested{false};
+    std::string stopReason;
+    std::chrono::steady_clock::time_point stoppedAt;
+    // The channel of this attempt's mount started and then stopped before the
+    // attempt ended.
+    bool stoppedDuringRecovery{false};
   };
   folly::Synchronized<folly::F14FastMap<AbsolutePath, CheckoutRecoveryState>>
       checkoutRecoveryStates_;

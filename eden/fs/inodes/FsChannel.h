@@ -7,6 +7,10 @@
 
 #pragma once
 
+#include <chrono>
+#include <optional>
+#include <string_view>
+
 #include <folly/coro/safe/NowTask.h>
 #include "eden/common/utils/ImmediateFuture.h"
 #include "eden/fs/privhelper/PrivHelper.h"
@@ -16,6 +20,16 @@
 namespace facebook::eden {
 
 class ProcessAccessLog;
+
+/**
+ * Why a channel stopped.
+ */
+struct FsStopReason {
+  std::string_view name;
+  // The mount went away without EdenFS stopping it (unmounted from outside, or
+  // the connection to the kernel broke), so it may need to be remounted.
+  bool unexpected{false};
+};
 
 class FsStopData {
  public:
@@ -29,6 +43,19 @@ class FsStopData {
   virtual bool isUnmounted() = 0;
 
   virtual FsChannelInfo extractTakeoverInfo() = 0;
+
+  /**
+   * Why the channel stopped, for telemetry and recovery.
+   */
+  virtual FsStopReason getStopReason() const {
+    return {"unknown", false};
+  }
+
+  /**
+   * When the channel was asked to stop. It stops only once its outstanding
+   * requests finish, which can take much longer.
+   */
+  std::optional<std::chrono::steady_clock::time_point> stopRequestedAt;
 };
 
 using FsStopDataPtr = std::unique_ptr<FsStopData>;

@@ -446,6 +446,27 @@ TEST_F(FuseChannelTest, unmountAfterTakeoverStop) {
   EXPECT_TRUE(fuseStopData->isUnmounted());
 }
 
+TEST_F(FuseChannelTest, stopTimeIsWhenTheUnmountArrived) {
+  auto channel = createChannel();
+  auto completeFuture = performInit(channel.get());
+  auto lookupId = fuse_.sendLookup(FUSE_ROOT_ID, "pending");
+  auto lookup = dispatcher_->waitForLookup(lookupId, kTimeout);
+
+  const auto beforeUnmount = std::chrono::steady_clock::now();
+  channel->logUnmountEventAndExit();
+  const auto afterUnmount = std::chrono::steady_clock::now();
+  // The channel stops only once the pending lookup is answered.
+  lookup.promise.setValue(genRandomLookupResponse(9));
+  EXPECT_EQ(lookupId, fuse_.recvResponse().header.unique);
+
+  auto stopData = std::move(completeFuture).get(kTimeout);
+  ASSERT_TRUE(stopData->stopRequestedAt.has_value());
+  EXPECT_GE(*stopData->stopRequestedAt, beforeUnmount);
+  EXPECT_LE(*stopData->stopRequestedAt, afterUnmount);
+  EXPECT_EQ("fuse_unmounted", stopData->getStopReason().name);
+  EXPECT_TRUE(stopData->getStopReason().unexpected);
+}
+
 TEST_F(FuseChannelTest, testTakeoverBufferSizeFollowsNegotiatedMaxWrite) {
   // fuse:max-pages is 0, so a fresh mount would get the minimum buffer, but
   // the inherited connection lets the kernel send 1 MB writes.

@@ -1047,6 +1047,20 @@ class EdenMount : public std::enable_shared_from_this<EdenMount> {
   [[nodiscard]] folly::Future<TakeoverData::MountInfo>
   getFsChannelCompletionFuture();
 
+  struct FsChannelStop {
+    FsStopReason reason;
+    // When the channel was asked to stop, before its outstanding requests
+    // finished.
+    std::chrono::steady_clock::time_point time;
+  };
+
+  /**
+   * Why and when the FsChannel stopped, or unset if it has not stopped.
+   */
+  std::optional<FsChannelStop> getFsChannelStop() const {
+    return *fsChannelStop_.rlock();
+  }
+
   Owner getOwner() const {
     return *owner_.rlock();
   }
@@ -1519,6 +1533,8 @@ class EdenMount : public std::enable_shared_from_this<EdenMount> {
   };
 
   folly::Synchronized<MountingUnmountingState> mountingUnmountingState_;
+
+  folly::Synchronized<std::optional<FsChannelStop>> fsChannelStop_;
 
   /**
    * The current state of the mount point.

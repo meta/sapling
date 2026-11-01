@@ -51,6 +51,7 @@ enum class RpcStopReason {
 struct RpcStopData final : FsStopData {
   bool isUnmounted() override;
   FsChannelInfo extractTakeoverInfo() override;
+  FsStopReason getStopReason() const override;
 
   /**
    * The reason why the connection was stopped.

@@ -897,6 +897,11 @@ struct AccidentalUnmountRecovery : public EdenFSEvent {
   std::string mount_protocol;
   // Set on the failed attempt after which recovery gave up on the checkout.
   bool gave_up = false;
+  // Why the daemon stopped serving the checkout.
+  std::string stop_reason;
+  // Time from that stop until this attempt ended. Unset when this daemon never
+  // served the checkout.
+  std::optional<int64_t> outage_age_ms;
 
   AccidentalUnmountRecovery(
       std::string error,
@@ -906,7 +911,8 @@ struct AccidentalUnmountRecovery : public EdenFSEvent {
       CheckoutRecoveryTrigger trigger,
       int64_t attempt,
       double duration,
-      std::string mount_protocol)
+      std::string mount_protocol,
+      std::string stop_reason)
       : error(std::move(error)),
         success(success),
         repo_source(std::move(repo_source)),
@@ -914,7 +920,8 @@ struct AccidentalUnmountRecovery : public EdenFSEvent {
         trigger(trigger),
         attempt(attempt),
         duration(duration),
-        mount_protocol(std::move(mount_protocol)) {}
+        mount_protocol(std::move(mount_protocol)),
+        stop_reason(std::move(stop_reason)) {}
 
   void populate(DynamicEvent& event) const override {
     event.addString("remount_error", error);
@@ -926,9 +933,14 @@ struct AccidentalUnmountRecovery : public EdenFSEvent {
     event.addInt("retry", attempt);
     event.addDouble("duration", duration);
     event.addString("mount_protocol", mount_protocol);
+    event.addString("reason", stop_reason);
     event.addString(
         "causeDetail",
-        gave_up ? R"({"gave_up":true})" : R"({"gave_up":false})");
+        outage_age_ms ? fmt::format(
+                            "{{\"gave_up\":{},\"outage_age_ms\":{}}}",
+                            gave_up,
+                            *outage_age_ms)
+                      : fmt::format("{{\"gave_up\":{}}}", gave_up));
   }
 
   const char* getType() const override {
