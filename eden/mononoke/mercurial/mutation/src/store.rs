@@ -288,6 +288,9 @@ impl SqlHgMutationStore {
             extra,
         ) in rows
         {
+            if p_seq >= pred_count {
+                continue;
+            }
             let entry = match entries.entry(successor) {
                 hash_map::Entry::Occupied(entry) => entry.into_mut(),
                 hash_map::Entry::Vacant(entry) => {

@@ -8,12 +8,9 @@
 # stored, a later, different entry for the same successor is ignored and the
 # stored entry must be read back unchanged (see the `hg_mutation_info`
 # insert_or_ignore and mutation/test/cycles.rs).
-#
-# FIXME: BUG! The predecessor rows of an entry are keyed by (repo, successor,
-# seq) only, so a later entry with MORE predecessors inserts its extra rows
-# next to the first entry's, and the read merges them: the client is served the
-# first entry's metadata with the later entry's predecessors. This test pins
-# the current behaviour; the next diff fixes it.
+# The predecessor rows of an entry are keyed by (repo, successor, seq) only, so
+# a later entry with MORE predecessors still leaves its extra rows behind in
+# the table; the read ignores every row at or beyond the stored pred_count.
 
   $ . "${TEST_FIXTURES}/library.sh"
   $ configure modern
@@ -92,8 +89,7 @@
   0|20CA2A4749A439B459125EF0F6A4F26E88EE7538
   1|80521A640A0C8F51DCC128C2658B224D595840AC
 
-# FIXME: BUG! Reading the mutation history of C merges that leaked row into the
-# first entry: the client is served the first entry's `amend` metadata with the
-# second entry's predecessor list, instead of the stored `amend` from A alone.
+# Reading the mutation history of C ignores that leaked row: the client is
+# served the stored first entry, the `amend` from A alone.
   $ mutations "$C"
-  op=amend preds=[bin("20ca2a4749a439b459125ef0f6a4f26e88ee7538"),bin("80521a640a0c8f51dcc128c2658b224d595840ac")]
+  op=amend preds=[bin("20ca2a4749a439b459125ef0f6a4f26e88ee7538")]
