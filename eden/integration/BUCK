@@ -766,6 +766,18 @@ python_unittest(
 )
 
 python_unittest(
+    name = "unmount_recovery",
+    srcs = ["unmount_recovery_test.py"],
+    env = artifacts["env"],
+    network_access = network_access_utils.all(),
+    supports_static_listing = False,
+    deps = [
+        "//eden/fs/cli:lib",
+        "//eden/integration/lib:lib",
+    ],
+)
+
+python_unittest(
     name = "userinfo",
     srcs = ["userinfo_test.py"],
     env = artifacts["env"],
