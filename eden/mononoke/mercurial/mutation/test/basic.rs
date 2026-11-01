@@ -424,3 +424,70 @@ async fn check_mutations_are_cut_when_reaching_limit(fb: FacebookInit) -> Result
 
     Ok(())
 }
+
+/// FIXME: BUG! This did merge a later, ignored mutation entry's extra predecessor into the stored
+/// entry: after `1 <- [2]` was stored, a second `1 <- [2, 3]` for the same successor was ignored by
+/// `hg_mutation_info` (first-writer-wins) but its `(successor 1, seq 1, 3)` row has no conflicting
+/// key in `hg_mutation_preds`, so it was inserted and the read JOIN returned `1 <- [2, 3]` under the
+/// first entry's metadata. It should have returned the first entry, `1 <- [2]`. This test pins the
+/// current behaviour; the next diff fixes it.
+#[mononoke::fbinit_test]
+async fn first_entry_for_a_successor_wins(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let store = SqlHgMutationStoreBuilder::with_sqlite_in_memory()
+        .unwrap()
+        .with_repo_id(REPO_ZERO);
+
+    let first = HgMutationEntry::new(
+        make_hg_cs_id(1),
+        vec![make_hg_cs_id(2)],
+        vec![],
+        String::from("amend"),
+        String::from("testuser"),
+        0,
+        0,
+        vec![],
+    );
+    store
+        .add_entries(&ctx, hashset![make_hg_cs_id(1)], vec![first.clone()])
+        .await?;
+
+    // A different client claims 1 was a fold of 2 and 3.  The entry for successor 1 already
+    // exists, so this must be ignored.
+    let second = HgMutationEntry::new(
+        make_hg_cs_id(1),
+        vec![make_hg_cs_id(2), make_hg_cs_id(3)],
+        vec![],
+        String::from("fold"),
+        String::from("testuser"),
+        0,
+        0,
+        vec![],
+    );
+    store
+        .add_entries(&ctx, hashset![make_hg_cs_id(1)], vec![second])
+        .await?;
+
+    let fetched = store
+        .all_predecessors(&ctx, hashset![make_hg_cs_id(1)])
+        .await?;
+
+    // FIXME: BUG! the stored entry has the ignored second entry's extra predecessor 3 merged in
+    // under the first entry's metadata, instead of staying 1 <- [2].
+    let leaked = HgMutationEntry::new(
+        make_hg_cs_id(1),
+        vec![make_hg_cs_id(2), make_hg_cs_id(3)],
+        vec![],
+        String::from("amend"),
+        String::from("testuser"),
+        0,
+        0,
+        vec![],
+    );
+    assert_eq!(
+        fetched,
+        vec![leaked],
+        "BUG! expected the current merged entry for successor 1"
+    );
+    Ok(())
+}
