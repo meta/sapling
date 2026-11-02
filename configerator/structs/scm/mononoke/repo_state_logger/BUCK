@@ -1,0 +1,15 @@
+load("@fbcode_macros//build_defs:thrift_library.bzl", "thrift_library")
+
+oncall("scm_server_infra")
+
+thrift_library(
+    name = "repo_state_logger",
+    languages = [
+        "rust",
+    ],
+    thrift_rust_options = [
+        "deprecated_default_enum_min_i32",
+        "serde",
+    ],
+    thrift_srcs = {"repo_state_logger.thrift": None},
+)
