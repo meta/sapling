@@ -112,6 +112,7 @@ fn add_healthcheck_load_header(fb: FacebookInit, headers: &mut HeaderMap, avg_wi
     }
     let counter = format!("container_memory_usage_percent.avg.{avg_window}");
     if let Some(load) = STATS::container_memory.get_value(fb, (counter,)) {
+        let load = if load == 0 { 1 } else { load };
         headers.insert("X-FB-Load", load.into());
     }
 }
@@ -249,7 +250,7 @@ mod tests {
 
         counter.set_value(fb, 0);
         add_healthcheck_load_header(fb, &mut headers, avg_window);
-        assert_eq!(headers.get("X-FB-Load").expect("zero load header"), "0");
+        assert_eq!(headers.get("X-FB-Load").expect("zero load header"), "1");
     }
 
     #[mononoke::fbinit_test]
