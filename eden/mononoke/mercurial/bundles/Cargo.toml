@@ -9,7 +9,7 @@ license = "GPLv2+"
 
 [dependencies]
 anyhow = "1.0.104"
-async-compression = { version = "0.4.50", features = ["brotli", "bzip2", "deflate", "futures-io", "gzip", "tokio", "zlib", "zstd", "zstdmt"] }
+async-compression = { version = "0.4.51", features = ["brotli", "bzip2", "deflate", "futures-io", "gzip", "tokio", "zlib", "zstd", "zstdmt"] }
 async-stream = "0.3"
 byteorder = "1.5"
 bytes = { version = "1.12.1", features = ["serde"] }
