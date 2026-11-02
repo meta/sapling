@@ -1,0 +1,78 @@
+load("@fbcode_macros//build_defs/lib:rust_oss.bzl", "rust_oss")
+load("@fbsource//tools/build_defs:rust_binary.bzl", "rust_binary")
+
+oncall("scm_server_infra")
+
+rust_binary(
+    name = "diff_service_server",
+    srcs = glob([
+        "server/**/*.rs",
+    ]),
+    test_deps = [
+        "fbsource//third-party/rust:arc-swap",
+        "fbsource//third-party/rust:tempfile",
+        "//eden/mononoke/common/mononoke_macros:mononoke_macros",
+        "//eden/mononoke/common/mononoke_repos:mononoke_repos",
+    ]
+    + (["fbsource//third-party/rust:serde_json"] if rust_oss.is_oss_build() else []),
+    deps = [
+        "fbsource//third-party/rust:anyhow",
+        "fbsource//third-party/rust:async-trait",
+        "fbsource//third-party/rust:clap",
+        "fbsource//third-party/rust:futures",
+        "fbsource//third-party/rust:thiserror",
+        "fbsource//third-party/rust:tokio",
+        "fbsource//third-party/rust:tracing",
+        "//common/rust/shed/facet:facet",
+        "//common/rust/shed/fbinit:fbinit",
+        "//common/rust/shed/futures_stats:futures_stats",
+        "//eden/mononoke/blobstore:ephemeral_blobstore",
+        "//eden/mononoke/cmdlib/mononoke_app:mononoke_app",
+        "//eden/mononoke/cmdlib/sharding:executor_lib",
+        "//eden/mononoke/cmdlib/sharding_ext:sharding_ext",
+        "//eden/mononoke/cmdlib/thrift_server:mononoke_thrift_server",
+        "//eden/mononoke/common/acl_regions:acl_regions",
+        "//eden/mononoke/common/memory:memory",
+        "//eden/mononoke/common/metadata:metadata",
+        "//eden/mononoke/common/permission_checker:permission_checker",
+        "//eden/mononoke/common/rust/justknobs_ext:justknobs",
+        "//eden/mononoke/common/scuba_ext:scuba_ext",
+        "//eden/mononoke/features/commit_compare:commit_compare",
+        "//eden/mononoke/features/diff:diff",
+        "//eden/mononoke/mercurial:mercurial_types",
+        "//eden/mononoke/metaconfig:metaconfig_types",
+        "//eden/mononoke/mononoke_api:mononoke_api",
+        "//eden/mononoke/mononoke_types:mononoke_types",
+        "//eden/mononoke/repo_attributes/bonsai_git_mapping:bonsai_git_mapping",
+        "//eden/mononoke/repo_attributes/bonsai_globalrev_mapping:bonsai_globalrev_mapping",
+        "//eden/mononoke/repo_attributes/bonsai_hg_mapping:bonsai_hg_mapping",
+        "//eden/mononoke/repo_attributes/bonsai_p4_mapping:bonsai_p4_mapping",
+        "//eden/mononoke/repo_attributes/bonsai_svnrev_mapping:bonsai_svnrev_mapping",
+        "//eden/mononoke/repo_attributes/commit_graph/commit_graph:commit_graph",
+        "//eden/mononoke/repo_attributes/filestore:filestore",
+        "//eden/mononoke/repo_attributes/mutable_renames:mutable_renames",
+        "//eden/mononoke/repo_attributes/repo_blobstore:repo_blobstore",
+        "//eden/mononoke/repo_attributes/repo_derived_data:repo_derived_data",
+        "//eden/mononoke/repo_attributes/repo_identity:repo_identity",
+        "//eden/mononoke/repo_attributes/repo_permission_checker:repo_permission_checker",
+        "//eden/mononoke/repo_attributes/restricted_paths:restricted_paths",
+        "//eden/mononoke/repo_authorization:repo_authorization",
+        "//eden/mononoke/scs/if:source_control-rust",
+        "//eden/mononoke/servers/diff_service/if:DiffService-metadata-sys",
+        "//eden/mononoke/servers/diff_service/if:diff_service_if-rust",
+        "//eden/mononoke/servers/diff_service/if:diff_service_if-rust-services",
+        "//eden/mononoke/servers/slapi/slapi_server/context:context",
+    ]
+    + (
+        []
+        if rust_oss.is_oss_build()
+        else [
+            "fbsource//third-party/rust:serde_json",
+            "//common/rust/base_controller:thrift_factory",
+            "//common/rust/identity:identity",
+            "//eden/mononoke/common/connection_security_checker:connection_security_checker",
+            "//eden/scm/lib/clientinfo:clientinfo",
+            "//login/if:login_objects_thrift-rust",
+        ]
+    ),
+)

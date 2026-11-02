@@ -1,0 +1,20 @@
+load("@fbcode_macros//build_defs:thrift_library.bzl", "thrift_library")
+
+oncall("scm_server_infra")
+
+thrift_library(
+    name = "diff_service_if",
+    languages = [
+        "rust",
+    ],
+    rust_gen_metadata = True,
+    thrift_rust_options = ["default_enum_zero"],
+    thrift_srcs = {
+        "diff_service.thrift": ["DiffService"],
+    },
+    deps = [
+        "//eden/mononoke/scs/if:source_control",
+        "//thrift/annotation:rust",
+        "//thrift/annotation:thrift",
+    ],
+)

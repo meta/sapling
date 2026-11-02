@@ -1,0 +1,71 @@
+load("@fbcode_macros//build_defs/lib:rust_oss.bzl", "rust_oss")
+load("@fbsource//tools/build_defs:rust_binary.bzl", "rust_binary")
+load("@fbsource//tools/build_defs:rust_library.bzl", "rust_library")
+
+oncall("scm_server_infra")
+
+rust_binary(
+    name = "diff_service_client_cli",
+    srcs = glob(["bin/**/*.rs"]),
+    deps = [
+        "fbsource//third-party/rust:anyhow",
+        "fbsource//third-party/rust:clap",
+        "fbsource//third-party/rust:faster-hex",
+        "fbsource//third-party/rust:futures",
+        ":diff_service_client",
+        "//common/rust/shed/fbinit:fbinit",
+        "//common/rust/shed/fbinit:fbinit-tokio",
+        "//eden/mononoke/cmdlib:cmdlib_logging",
+        "//eden/mononoke/cmdlib/commit_id_types:commit_id_types",
+        "//eden/mononoke/mononoke_types:mononoke_types",
+        "//eden/mononoke/scs/if:source_control-rust",
+        "//eden/mononoke/servers/diff_service/if:diff_service_if-rust",
+        "//eden/mononoke/servers/slapi/slapi_server/context:context",
+        "//eden/scm/lib/clientinfo:clientinfo",
+    ]
+    + (
+        []
+        if rust_oss.is_oss_build()
+        else [
+            "//common/rust/cpp_log_spew:cpp_log_spew",
+        ]
+    ),
+)
+
+rust_library(
+    name = "diff_service_client",
+    srcs = glob([
+        "lib/**/*.rs",
+    ]),
+    autocargo = {
+        "cargo_toml_config": {
+            "extra_buck_dependencies": {
+                "dependencies": [
+                    "//eden/mononoke/common/oss/thrift_transport:oss_thrift_transport",
+                ],
+            },
+        },
+    },
+    test_deps = [],
+    deps = [
+        "fbsource//third-party/rust:anyhow",
+        "fbsource//third-party/rust:futures",
+        "//common/rust/shed/fbinit:fbinit",
+        "//eden/mononoke/mononoke_types:mononoke_types",
+        "//eden/mononoke/scs/if:source_control-rust",
+        "//eden/mononoke/servers/diff_service/if:diff_service_if-rust",
+        "//eden/mononoke/servers/diff_service/if:diff_service_if-rust-clients",
+        "//eden/mononoke/servers/slapi/slapi_server/context:context",
+        "//fb303/thrift:fb303_core-rust",
+    ]
+    + (
+        [
+            "//eden/mononoke/common/oss/thrift_transport:oss_thrift_transport",
+        ]
+        if rust_oss.is_oss_build()
+        else [
+            "//common/thrift/thrift:status-rust-clients",
+            "//eden/mononoke/common/facebook/thrift_client:thrift_client",
+        ]
+    ),
+)

@@ -28,6 +28,9 @@ connection_security_checker = { version = "0.1.0", path = "../../../common/conne
 context = { version = "0.1.0", path = "../../slapi/slapi_server/context" }
 dedupmap = { version = "0.1.0", path = "../../../common/dedupmap" }
 derived_data_manager = { version = "0.1.0", path = "../../../derived_data/manager" }
+diff_service_client = { version = "0.1.0", path = "../../../clients/diff_service_client" }
+diff_service_if = { version = "0.1.0", path = "../../diff_service/if" }
+diff_service_if_clients = { version = "0.1.0", path = "../../diff_service/if/clients" }
 environment = { version = "0.1.0", path = "../../../cmdlib/environment" }
 ephemeral_blobstore = { version = "0.1.0", path = "../../../blobstore/ephemeral_blobstore" }
 faster-hex = "0.6.1"

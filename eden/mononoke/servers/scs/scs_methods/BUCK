@@ -59,7 +59,6 @@ rust_library(
         "//configerator/structs/infrasec/if:acl-rust",
         "//configerator/structs/scm/mononoke/repos:repos-rust",
         "//eden/mononoke/blobstore:ephemeral_blobstore",
-        "//eden/mononoke/clients/facebook/diff_service_client:diff_service_client",
         "//eden/mononoke/cmdlib:environment",
         "//eden/mononoke/cmdlib/mononoke_app:mononoke_app",
         "//eden/mononoke/common/cats:cats",
@@ -77,8 +76,6 @@ rust_library(
         "//eden/mononoke/common/scuba_ext:scuba_ext",
         "//eden/mononoke/common/sql_construct:sql_construct",
         "//eden/mononoke/derived_data:derived_data_manager",
-        "//eden/mononoke/facebook/diff_service/if:diff_service_if-rust",
-        "//eden/mononoke/facebook/diff_service/if:diff_service_if-rust-clients",
         "//eden/mononoke/features/async_requests:async_requests",
         "//eden/mononoke/features/commit_cloud/helpers:commit_cloud_helpers",
         "//eden/mononoke/features/commit_cloud/types:commit_cloud_types",
@@ -106,6 +103,8 @@ rust_library(
         "//eden/mononoke/repo_authorization:repo_authorization",
         "//eden/mononoke/scs/if:source_control-rust",
         "//eden/mononoke/scs/if:source_control-rust-services",
+        "//eden/mononoke/servers/diff_service/if:diff_service_if-rust",
+        "//eden/mononoke/servers/diff_service/if:diff_service_if-rust-clients",
         "//eden/mononoke/servers/scs/scs_errors:scs_errors",
         "//eden/mononoke/servers/slapi/slapi_server/context:context",
         "//eden/mononoke/tools/repo_spec_writer:repo_spec_writer",
@@ -119,6 +118,7 @@ rust_library(
         []
         if rust_oss.is_oss_build()
         else [
+            "//eden/mononoke/clients/diff_service_client:diff_service_client",
             "//eden/mononoke/facebook/ods3_schemas:MononokeScsRequest_ods3-rs_bindings",
             "//common/rust/configo:configo",
         ]
