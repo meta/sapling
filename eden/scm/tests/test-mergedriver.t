@@ -843,3 +843,200 @@ delete all the files, but with a non-interactive conflict resolution involved
   rebasing f931f701d752 "different other.txt"
   $ sl st
   ? other.txt.orig
+
+conclude marks a file unresolved: merge must report it unresolved
+
+A driver may need to leave a file unresolved from its conclude step (for
+example, a strict mode that could not fully merge a file). Such a file must
+be reported as unresolved to callers of the merge, rather than the merge
+succeeding while the file remains "U" in the merge state.
+
+  $ cd $TESTTMP
+  $ cat > mergedriver-conclude-unresolved.py << EOF
+  > def preprocess(ui, repo, hooktype, mergestate, wctx, labels):
+  >     repo.ui.status('* preprocess called\n')
+  >     for f in mergestate:
+  >         mergestate.mark(f, 'd')
+  > def conclude(ui, repo, hooktype, mergestate, wctx, labels):
+  >     repo.ui.status('* conclude called\n')
+  >     mergestate.mark('foo.txt', 'u')
+  > EOF
+  $ sl init repo-conclude
+  $ cd repo-conclude
+  $ echo afoo > foo.txt
+  $ echo abar > bar.txt
+  $ sl add foo.txt bar.txt
+  $ sl commit -ma
+  $ echo bfoo >> foo.txt
+  $ echo bbar >> bar.txt
+  $ sl commit -mb
+  $ sl up 'desc(a)'
+  2 files updated, 0 files merged, 0 files removed, 0 files unresolved
+  $ echo cfoo >> foo.txt
+  $ echo cbar >> bar.txt
+  $ sl commit -mc
+  $ cat >> $HGRCPATH << EOF
+  > [experimental]
+  > mergedriver = python:$TESTTMP/mergedriver-conclude-unresolved.py
+  > EOF
+  $ sl merge 'desc(b)'
+  * preprocess called
+  * conclude called
+  0 files updated, 0 files merged, 0 files removed, 1 files unresolved
+  use 'sl resolve' to retry unresolved file merges or 'sl goto -C .' to abandon
+  [1]
+  $ sl resolve --list
+  R bar.txt
+  U foo.txt
+  $ sl resolve --mark foo.txt
+  (no more unresolved files)
+  $ sl commit -m merge
+
+the recount is gated by experimental.mergedriver.recount-unresolved-after-conclude
+(default on); with the gate off, the old behavior returns: the merge
+reports success while the file remains unresolved
+
+  $ sl goto --clean 'desc(c)'
+  2 files updated, 0 files merged, 0 files removed, 0 files unresolved
+  $ sl merge 'desc(b)' --config experimental.mergedriver.recount-unresolved-after-conclude=false
+  * preprocess called
+  * conclude called
+  0 files updated, 0 files merged, 0 files removed, 0 files unresolved
+  (branch merge, don't forget to commit)
+  $ sl resolve --list
+  R bar.txt
+  U foo.txt
+  $ sl resolve --mark foo.txt
+  (no more unresolved files)
+  $ sl commit -m merge-gate-off
+
+with the gate explicitly on, the merge reports the file unresolved again
+
+  $ sl goto --clean 'desc(c)'
+  2 files updated, 0 files merged, 0 files removed, 0 files unresolved
+  $ sl merge 'desc(b)' --config experimental.mergedriver.recount-unresolved-after-conclude=true
+  * preprocess called
+  * conclude called
+  0 files updated, 0 files merged, 0 files removed, 1 files unresolved
+  use 'sl resolve' to retry unresolved file merges or 'sl goto -C .' to abandon
+  [1]
+  $ sl resolve --list
+  R bar.txt
+  U foo.txt
+  $ sl resolve --mark foo.txt
+  (no more unresolved files)
+  $ sl commit -m merge-gate-on
+
+conclude marks a file unresolved during a goto --merge
+
+  $ sl goto --clean 'desc(c)'
+  2 files updated, 0 files merged, 0 files removed, 0 files unresolved
+  $ echo gfoo >> foo.txt
+  $ sl goto --merge 'desc(b)'
+  * preprocess called
+  * conclude called
+  1 files updated, 0 files merged, 0 files removed, 1 files unresolved
+  use 'sl resolve' to retry unresolved file merges
+  [1]
+  $ sl resolve --list
+  U foo.txt
+  $ sl goto --clean 'desc(c)'
+  2 files updated, 0 files merged, 0 files removed, 0 files unresolved
+
+conclude marks a file unresolved when run from resolve --all
+
+In this case the merge itself leaves a different file unresolved, so the
+conclude step is deferred until "sl resolve --all". That command must not
+exit successfully while the driver has re-marked a file unresolved.
+
+  $ cat > $TESTTMP/mergedriver-conclude-unresolved-resolve.py << EOF
+  > def preprocess(ui, repo, hooktype, mergestate, wctx, labels):
+  >     repo.ui.status('* preprocess called\n')
+  >     mergestate.mark('foo.txt', 'd')
+  > def conclude(ui, repo, hooktype, mergestate, wctx, labels):
+  >     repo.ui.status('* conclude called\n')
+  >     mergestate.mark('foo.txt', 'u')
+  > EOF
+  $ cat >> $HGRCPATH << EOF
+  > [experimental]
+  > mergedriver = python:$TESTTMP/mergedriver-conclude-unresolved-resolve.py
+  > EOF
+  $ sl merge 'desc(b)'
+  * preprocess called
+  merging bar.txt
+  warning: 1 conflicts while merging bar.txt! (edit, then use 'sl resolve --mark')
+  0 files updated, 0 files merged, 0 files removed, 1 files unresolved
+  use 'sl resolve' to retry unresolved file merges or 'sl goto -C .' to abandon
+  [1]
+  $ sl resolve bar.txt --tool internal:local
+  (no more unresolved files -- run "sl resolve --all" to conclude)
+  $ sl resolve --all
+  * conclude called
+  [1]
+  $ sl resolve --list
+  R bar.txt
+  U foo.txt
+  $ sl resolve --mark foo.txt
+  (no more unresolved files)
+  $ sl commit -m merge2
+
+with the recount gate off, "sl resolve --all" exits successfully again
+while the driver-re-marked file remains unresolved (the old behavior)
+
+  $ sl goto --clean 'desc(c)'
+  2 files updated, 0 files merged, 0 files removed, 0 files unresolved
+  $ sl merge 'desc(b)'
+  * preprocess called
+  merging bar.txt
+  warning: 1 conflicts while merging bar.txt! (edit, then use 'sl resolve --mark')
+  0 files updated, 0 files merged, 0 files removed, 1 files unresolved
+  use 'sl resolve' to retry unresolved file merges or 'sl goto -C .' to abandon
+  [1]
+  $ sl resolve bar.txt --tool internal:local
+  (no more unresolved files -- run "sl resolve --all" to conclude)
+  $ sl resolve --all --config experimental.mergedriver.recount-unresolved-after-conclude=false
+  * conclude called
+  $ sl resolve --list
+  R bar.txt
+  U foo.txt
+  $ sl resolve --mark foo.txt
+  (no more unresolved files)
+  $ sl commit -m merge2-gate-off
+
+conclude marks a file unresolved during rebase: rebase must stop for resolve
+
+  $ cd $TESTTMP
+  $ cat >> $HGRCPATH << EOF
+  > [experimental]
+  > mergedriver = python:$TESTTMP/mergedriver-conclude-unresolved.py
+  > EOF
+  $ sl init repo-rebase-conclude
+  $ cd repo-rebase-conclude
+  $ echo afoo > foo.txt
+  $ sl add foo.txt
+  $ sl commit -m base
+  $ echo dfoo >> foo.txt
+  $ sl commit -m dest
+  $ sl up 'desc(base)'
+  1 files updated, 0 files merged, 0 files removed, 0 files unresolved
+  $ echo sfoo >> foo.txt
+  $ echo source > source.txt
+  $ sl add source.txt
+  $ sl commit -m source
+  $ sl --config extensions.rebase= rebase -d 'desc(dest)'
+  rebasing 03bef070aebf "source"
+  * preprocess called
+  * conclude called
+  unresolved conflicts (see sl resolve, then sl rebase --continue)
+  [1]
+  $ sl resolve --list
+  U foo.txt
+  $ sl resolve --mark foo.txt
+  (no more unresolved files)
+  continue: sl rebase --continue
+  $ sl --config extensions.rebase= rebase --continue
+  rebasing 03bef070aebf "source"
+  $ sl log -r . -T '{desc}\n'
+  source
+  $ cat source.txt
+  source

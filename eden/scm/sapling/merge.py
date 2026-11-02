@@ -848,6 +848,14 @@ def driverconclude(repo, ms, wctx, labels=None):
     return True
 
 
+def recountunresolvedafterconclude(ui):
+    return ui.configbool(
+        "experimental",
+        "mergedriver.recount-unresolved-after-conclude",
+        default=True,
+    )
+
+
 def _filesindirs(repo, manifest, dirs):
     """
     Generator that yields pairs of all the files in the manifest that are found
@@ -2056,6 +2064,8 @@ def applyupdates(
                     # XXX setting unresolved to at least 1 is a hack to make
                     # sure we error out
                     unresolved = max(unresolved, 1)
+                elif recountunresolvedafterconclude(ui):
+                    unresolved = ms.unresolvedcount()
 
             ms.commit()
 

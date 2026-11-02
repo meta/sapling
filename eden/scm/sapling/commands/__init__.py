@@ -5425,6 +5425,11 @@ def resolve(ui, repo, *pats, **opts):
                 ms.recordactions()
                 if not proceed:
                     return 1
+                # conclude may re-mark files unresolved, so report them
+                if mergemod.recountunresolvedafterconclude(ui) and list(
+                    ms.unresolved()
+                ):
+                    ret = 1
 
     # Nudge users into finishing an unfinished operation
     unresolvedf = list(ms.unresolved())
