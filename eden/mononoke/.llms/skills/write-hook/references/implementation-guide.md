@@ -72,3 +72,6 @@ arc lint -a -e extra
 Use `HookRejectionInfo::new_long(short_desc, long_desc)`:
 - `short_desc`: terse label like `"Directory too large"`
 - `long_desc`: human-readable with path, current value, limit, and what the user should do
+- User-visible rejection text is declared with `hook_messages!` (example:
+  `implementations/always_fail_changeset.rs`), rendered with
+  `<name>().into_rejection(...)`; repos override templates via the config `messages` map.
