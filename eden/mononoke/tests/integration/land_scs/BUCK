@@ -1,0 +1,21 @@
+load(
+    "//eden/mononoke/tests/integration/facebook:fb_manifest_deps.bzl",
+    "dott_test",
+)
+
+oncall("scm_server_infra")
+
+dott_test(
+    name = "scs-land-service",
+    dott_files = glob(["*.t"]),
+    enable_remote_execution = True,
+    deps = [
+        "//eden/mononoke:mononoke",
+        "//eden/mononoke/clients/scsc:scsc",
+        "//eden/mononoke/features/commit_rewriting/backsyncer:backsyncer_cmd",
+        "//eden/mononoke/servers/land_service:land_service",
+        "//eden/mononoke/servers/scs/scs_server:scs_server",
+        "//eden/mononoke/tools/admin:admin",
+        "//eden/mononoke/tools/testtool:testtool",
+    ],
+)
