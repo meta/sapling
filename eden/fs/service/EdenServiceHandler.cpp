@@ -5423,13 +5423,20 @@ folly::SemiFuture<std::unique_ptr<ChangeOwnershipResponse>>
 EdenServiceHandler::semifuture_changeOwnership(
     unique_ptr<ChangeOwnershipRequest> request) {
 #ifndef _WIN32
+  auto helper = INSTRUMENT_THRIFT_CALL(DBG2, *request->mountPoint());
+  auto& fetchContext = helper->getFetchContext();
   auto handle = lookupMount(*request->mountPoint());
-  return handle.getEdenMount()
-      .chown(*request->uid(), *request->gid())
-      .ensure([handle] {})
-      .thenValue([](folly::Unit&&) {
-        return std::make_unique<ChangeOwnershipResponse>();
-      })
+  return wrapImmediateFuture(
+             std::move(helper),
+             handle.getEdenMount()
+                 .chown(
+                     static_cast<uid_t>(*request->uid()),
+                     static_cast<gid_t>(*request->gid()),
+                     fetchContext)
+                 .ensure([handle] {})
+                 .thenValue([](folly::Unit&&) {
+                   return std::make_unique<ChangeOwnershipResponse>();
+                 }))
       .semi();
 #else
   NOT_IMPLEMENTED();

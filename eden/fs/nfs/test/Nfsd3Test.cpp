@@ -65,7 +65,9 @@ class FakeNfsDispatcher : public NfsDispatcher {
     return st;
   }
 
-  ImmediateFuture<folly::Unit> markGcRef(InodeNumber /*ino*/) override {
+  ImmediateFuture<folly::Unit> markGcRef(
+      InodeNumber /*ino*/,
+      const ObjectFetchContextPtr& /*context*/) override {
     return folly::unit;
   }
 

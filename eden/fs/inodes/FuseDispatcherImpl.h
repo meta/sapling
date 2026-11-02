@@ -116,7 +116,10 @@ class FuseDispatcherImpl : public FuseDispatcher {
       uint64_t offset,
       uint64_t length,
       const ObjectFetchContextPtr& context) override;
-  ImmediateFuture<folly::Unit> fsync(InodeNumber ino, bool datasync) override;
+  ImmediateFuture<folly::Unit> fsync(
+      InodeNumber ino,
+      bool datasync,
+      const ObjectFetchContextPtr& context) override;
   ImmediateFuture<folly::Unit> fsyncdir(InodeNumber ino, bool datasync)
       override;
 
@@ -131,7 +134,9 @@ class FuseDispatcherImpl : public FuseDispatcher {
       InodeNumber ino,
       folly::StringPiece name,
       const ObjectFetchContextPtr& context) override;
-  ImmediateFuture<std::vector<std::string>> listxattr(InodeNumber ino) override;
+  ImmediateFuture<std::vector<std::string>> listxattr(
+      InodeNumber ino,
+      const ObjectFetchContextPtr& context) override;
 
  private:
   ImmediateFuture<folly::Unit> renameImpl(

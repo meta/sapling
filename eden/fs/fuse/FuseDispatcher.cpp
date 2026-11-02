@@ -210,7 +210,8 @@ ImmediateFuture<folly::Unit> FuseDispatcher::fallocate(
   FUSELL_NOT_IMPL();
 }
 
-ImmediateFuture<folly::Unit> FuseDispatcher::fsync(InodeNumber, bool) {
+ImmediateFuture<folly::Unit>
+FuseDispatcher::fsync(InodeNumber, bool, const ObjectFetchContextPtr&) {
   FUSELL_NOT_IMPL();
 }
 
@@ -274,7 +275,8 @@ ImmediateFuture<std::string> FuseDispatcher::getxattr(
 }
 
 ImmediateFuture<std::vector<std::string>> FuseDispatcher::listxattr(
-    InodeNumber /*ino*/) {
+    InodeNumber /*ino*/,
+    const ObjectFetchContextPtr& /*context*/) {
   return std::vector<std::string>();
 }
 

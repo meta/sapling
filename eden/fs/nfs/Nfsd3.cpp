@@ -2781,7 +2781,8 @@ ImmediateFuture<folly::Unit> Nfsd3ServerProcessor::dispatchRpc(
                   DBG9,
                   "Update last fs request time for inode: {}",
                   inodeNumber.value());
-              return dispatcher_->markGcRef(inodeNumber.value());
+              return dispatcher_->markGcRef(
+                  inodeNumber.value(), contextRef.getObjectFetchContext());
             }
             return ImmediateFuture<folly::Unit>(folly::unit);
           })

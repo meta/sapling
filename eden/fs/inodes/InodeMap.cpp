@@ -315,7 +315,9 @@ void InodeMap::initializeFromOverlay(TreeInodePtr root, Overlay& overlay) {
       data->unloadedInodes_.size());
 }
 
-ImmediateFuture<InodePtr> InodeMap::lookupInode(InodeNumber number) {
+ImmediateFuture<InodePtr> InodeMap::lookupInode(
+    InodeNumber number,
+    const ObjectFetchContextPtr& context) {
   // Nearly every lookup is for an already loaded inode and mutates nothing, so
   // it must not serialize behind the write lock that starting a load needs.
   if (auto inode = lookupLoadedInode(number)) {
@@ -414,7 +416,8 @@ ImmediateFuture<InodePtr> InodeMap::lookupInode(InodeNumber number) {
           isUnlinked,
           childInodeNumber,
           optionalId,
-          mode);
+          mode,
+          context);
       return result;
     }
 
@@ -454,7 +457,8 @@ ImmediateFuture<InodePtr> InodeMap::lookupInode(InodeNumber number) {
         unloadedData->isUnlinked,
         childInodeNumber,
         unloadedData->id,
-        unloadedData->mode);
+        unloadedData->mode,
+        context);
 
     if (alreadyLoading) {
       // This parent is already being loaded.
@@ -478,15 +482,18 @@ void InodeMap::setupParentLookupPromise(
     bool isUnlinked,
     InodeNumber childInodeNumber,
     std::optional<ObjectId> id,
-    mode_t mode) {
+    mode_t mode,
+    const ObjectFetchContextPtr& context) {
   promise.getFuture()
       .thenValue([name = PathComponent(childName),
                   this,
                   isUnlinked,
                   childInodeNumber,
                   id,
-                  mode](const InodePtr& inode) {
-        startChildLookup(inode, name, isUnlinked, childInodeNumber, id, mode);
+                  mode,
+                  context = context.copy()](const InodePtr& inode) {
+        startChildLookup(
+            inode, name, isUnlinked, childInodeNumber, id, mode, context);
       })
       .thenError([this, childInodeNumber](const folly::exception_wrapper& ex) {
         // Fail all pending lookups on the child
@@ -500,7 +507,8 @@ void InodeMap::startChildLookup(
     bool isUnlinked,
     InodeNumber childInodeNumber,
     std::optional<ObjectId> id,
-    mode_t mode) {
+    mode_t mode,
+    const ObjectFetchContextPtr& context) {
   auto fault = mount_->getServerState()->getFaultInjector().checkTry(
       "inodemap-load", childInodeNumber);
   if (fault.hasException()) {
@@ -525,7 +533,7 @@ void InodeMap::startChildLookup(
   // In that case getOrLoadChild() will call startLoadingChildIfNotLoading() to
   // tell if it should continue the load itself, or if the load was already in
   // progress.)
-  treeInode->loadChildInode(childName, childInodeNumber);
+  treeInode->loadChildInode(childName, childInodeNumber, context);
 }
 
 InodeMap::PromiseVector InodeMap::inodeLoadComplete(InodeBase* inode) {
@@ -671,14 +679,20 @@ InodeMap::PromiseVector InodeMap::extractPendingPromises(InodeNumber number) {
   return promises;
 }
 
-ImmediateFuture<TreeInodePtr> InodeMap::lookupTreeInode(InodeNumber number) {
-  return lookupInode(number).thenValue(
-      [](const InodePtr& inode) { return inode.asTreePtr(); });
+ImmediateFuture<TreeInodePtr> InodeMap::lookupTreeInode(
+    InodeNumber number,
+    const ObjectFetchContextPtr& context) {
+  return lookupInode(number, context).thenValue([](const InodePtr& inode) {
+    return inode.asTreePtr();
+  });
 }
 
-ImmediateFuture<FileInodePtr> InodeMap::lookupFileInode(InodeNumber number) {
-  return lookupInode(number).thenValue(
-      [](const InodePtr& inode) { return inode.asFilePtr(); });
+ImmediateFuture<FileInodePtr> InodeMap::lookupFileInode(
+    InodeNumber number,
+    const ObjectFetchContextPtr& context) {
+  return lookupInode(number, context).thenValue([](const InodePtr& inode) {
+    return inode.asFilePtr();
+  });
 }
 
 InodePtr InodeMap::lookupLoadedInode(InodeNumber number) {

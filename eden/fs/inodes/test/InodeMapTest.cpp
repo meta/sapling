@@ -15,6 +15,7 @@
 
 #include "eden/common/utils/Bug.h"
 #include "eden/common/utils/FaultInjector.h"
+#include "eden/common/utils/RefPtr.h"
 #include "eden/fs/config/EdenConfig.h"
 #include "eden/fs/config/ReloadableConfig.h"
 #include "eden/fs/inodes/EdenMount.h"
@@ -22,6 +23,7 @@
 #include "eden/fs/inodes/Overlay.h"
 #include "eden/fs/inodes/TreeInode.h"
 #include "eden/fs/store/ObjectFetchContext.h"
+#include "eden/fs/store/StatsFetchContext.h"
 #include "eden/fs/telemetry/ErrorLogger.h"
 #include "eden/fs/telemetry/test/CapturingXplatLogger.h"
 #include "eden/fs/testharness/FakeTreeBuilder.h"
@@ -44,7 +46,8 @@ TEST(InodeMap, invalidInodeNumber) {
 
   EdenBugDisabler noCrash;
   auto* inodeMap = testMount.getEdenMount()->getInodeMap();
-  auto future = inodeMap->lookupFileInode(0x12345678_ino);
+  auto future = inodeMap->lookupFileInode(
+      0x12345678_ino, ObjectFetchContext::getNullContext());
   EXPECT_THROW_RE(
       std::move(future).get(), std::runtime_error, "unknown inode number");
 }
@@ -78,13 +81,20 @@ TEST(InodeMap, loadFaultFailsAllPendingLookupsAndAllowsRetry) {
   auto& injector = mount.getServerState()->getFaultInjector();
   const auto key = fmt::format("{}", number);
   injector.injectError("inodemap-load", key, std::runtime_error("loaded"));
-  EXPECT_EQ(inode, inodeMap->lookupFileInode(number).get(0ms));
+  EXPECT_EQ(
+      inode,
+      inodeMap->lookupFileInode(number, ObjectFetchContext::getNullContext())
+          .get(0ms));
   injector.removeFault("inodemap-load", key);
   inode.reset();
   mount.getEdenMount()->getRootInode()->unloadChildrenNow();
   ASSERT_FALSE(inodeMap->lookupLoadedInode(number));
   injector.injectError("inodemap-load", "0", std::runtime_error("wrong key"));
-  EXPECT_EQ(number, inodeMap->lookupInode(number).get(0ms)->getNodeId());
+  EXPECT_EQ(
+      number,
+      inodeMap->lookupInode(number, ObjectFetchContext::getNullContext())
+          .get(0ms)
+          ->getNodeId());
   injector.removeFault("inodemap-load", "0");
   mount.getEdenMount()->getRootInode()->unloadChildrenNow();
   ASSERT_FALSE(inodeMap->lookupLoadedInode(number));
@@ -92,14 +102,16 @@ TEST(InodeMap, loadFaultFailsAllPendingLookupsAndAllowsRetry) {
   std::optional<std::string> firstError;
   std::thread request([&] {
     try {
-      inodeMap->lookupInode(number).get(5s);
+      inodeMap->lookupInode(number, ObjectFetchContext::getNullContext())
+          .get(5s);
     } catch (const std::exception& ex) {
       firstError = ex.what();
     }
   });
   const auto reached = injector.waitUntilBlocked("inodemap-load", 5s);
   const auto blocked = injector.getBlockedFaults("inodemap-load");
-  auto second = inodeMap->lookupInode(number);
+  auto second =
+      inodeMap->lookupInode(number, ObjectFetchContext::getNullContext());
   injector.removeFault("inodemap-load", key);
   const auto unblocked = injector.unblockWithError(
       "inodemap-load", key, std::runtime_error("inode load blocked"));
@@ -110,7 +122,11 @@ TEST(InodeMap, loadFaultFailsAllPendingLookupsAndAllowsRetry) {
   EXPECT_EQ(std::optional<std::string>{"inode load blocked"}, firstError);
   EXPECT_THROW_RE(
       std::move(second).get(5s), std::runtime_error, "inode load blocked");
-  EXPECT_EQ(number, inodeMap->lookupInode(number).get(0ms)->getNodeId());
+  EXPECT_EQ(
+      number,
+      inodeMap->lookupInode(number, ObjectFetchContext::getNullContext())
+          .get(0ms)
+          ->getNodeId());
 }
 
 TEST(InodeMap, rejectsConflictingConcurrentChildLoad) {
@@ -214,9 +230,12 @@ TEST(InodeMap, simpleLookups) {
   auto srcTree = std::move(srcTreeFut).get(0ms);
 
   // Next look up the tree by inode number
-  auto tree2Fut = inodeMap->lookupTreeInode(srcTree->getNodeId())
-                      .semi()
-                      .via(testMount.getServerExecutor().get());
+  auto tree2Fut =
+      inodeMap
+          ->lookupTreeInode(
+              srcTree->getNodeId(), ObjectFetchContext::getNullContext())
+          .semi()
+          .via(testMount.getServerExecutor().get());
   testMount.drainServerExecutor();
   auto tree2 = std::move(tree2Fut).get(0ms);
   EXPECT_EQ(srcTree, tree2);
@@ -232,20 +251,32 @@ TEST(InodeMap, simpleLookups) {
   EXPECT_NE(srcTree->getNodeId(), noop->getNodeId());
 
   // And look up src/noop.c by inode ID
-  auto noop2Fut = inodeMap->lookupFileInode(noop->getNodeId())
-                      .semi()
-                      .via(testMount.getServerExecutor().get());
+  auto noop2Fut =
+      inodeMap
+          ->lookupFileInode(
+              noop->getNodeId(), ObjectFetchContext::getNullContext())
+          .semi()
+          .via(testMount.getServerExecutor().get());
   testMount.drainServerExecutor();
   auto noop2 = std::move(noop2Fut).get(0ms);
   EXPECT_EQ(noop, noop2);
   EXPECT_EQ(RelativePath{"src/noop.c"}, noop2->getPath());
 
-  // lookupTreeInode() and lookupFileInode() should fail
-  // when called on the wrong file type.
+  // lookupTreeInode(, ObjectFetchContext::getNullContext()) and
+  // lookupFileInode(, ObjectFetchContext::getNullContext()) should fail when
+  // called on the wrong file type.
   EXPECT_THROW_ERRNO(
-      inodeMap->lookupFileInode(srcTree->getNodeId()).get(), EISDIR);
+      inodeMap
+          ->lookupFileInode(
+              srcTree->getNodeId(), ObjectFetchContext::getNullContext())
+          .get(),
+      EISDIR);
   EXPECT_THROW_ERRNO(
-      inodeMap->lookupTreeInode(noop->getNodeId()).get(), ENOTDIR);
+      inodeMap
+          ->lookupTreeInode(
+              noop->getNodeId(), ObjectFetchContext::getNullContext())
+          .get(),
+      ENOTDIR);
 }
 
 TEST(InodeMap, asyncLookup) {
@@ -579,10 +610,14 @@ TEST(InodeMap, lookingUpAnUnloadedInodeAddsLoadsToTraceBus) {
   EXPECT_TRUE(isInodeMaterializedInQueue(queue, InodeEventProgress::END, bn));
 
   // Finally, we lookup the inodes by InodeNumber
-  auto secondAFuture = inodeMap->lookupTreeInode(an).semi().via(
-      testMount.getServerExecutor().get());
-  auto secondBFuture = inodeMap->lookupTreeInode(bn).semi().via(
-      testMount.getServerExecutor().get());
+  auto secondAFuture =
+      inodeMap->lookupTreeInode(an, ObjectFetchContext::getNullContext())
+          .semi()
+          .via(testMount.getServerExecutor().get());
+  auto secondBFuture =
+      inodeMap->lookupTreeInode(bn, ObjectFetchContext::getNullContext())
+          .semi()
+          .via(testMount.getServerExecutor().get());
   testMount.drainServerExecutor();
   std::move(secondAFuture).get(0ms);
   std::move(secondBFuture).get(0ms);
@@ -729,7 +764,9 @@ TEST(InodeMap, lookupOfRemovedUnloadedInodeWhoseNameWasReused) {
   // Looking the old inode up by number must fail instead of loading the new
   // file under the old number.
   auto lookup =
-      inodeMap->lookupInode(oldIno).semi().via(mount.getServerExecutor().get());
+      inodeMap->lookupInode(oldIno, ObjectFetchContext::getNullContext())
+          .semi()
+          .via(mount.getServerExecutor().get());
   mount.drainServerExecutor();
   EXPECT_THROW_ERRNO(std::move(lookup).get(0ms), ENOENT);
   EXPECT_EQ(newFile->getNodeId(), root->getChildInodeNumber("file"_pc));
@@ -854,13 +891,22 @@ TEST_F(
   // Now try looking up by inode number.
   EXPECT_EQ(
       "dir",
-      edenMount->getInodeMap()->lookupInode(oldTreeId).get()->getLogPath());
+      edenMount->getInodeMap()
+          ->lookupInode(oldTreeId, ObjectFetchContext::getNullContext())
+          .get()
+          ->getLogPath());
   EXPECT_EQ(
       "dir/file1.txt",
-      edenMount->getInodeMap()->lookupInode(oldFile1Id).get()->getLogPath());
+      edenMount->getInodeMap()
+          ->lookupInode(oldFile1Id, ObjectFetchContext::getNullContext())
+          .get()
+          ->getLogPath());
   EXPECT_EQ(
       "dir/file2.txt",
-      edenMount->getInodeMap()->lookupInode(oldFile2Id).get()->getLogPath());
+      edenMount->getInodeMap()
+          ->lookupInode(oldFile2Id, ObjectFetchContext::getNullContext())
+          .get()
+          ->getLogPath());
 }
 
 TEST_F(
@@ -868,16 +914,20 @@ TEST_F(
     preservesInodeNumbersForLoadedInodesDuringTakeover_lookupFirstByNumber) {
   // Look up by number first.
   auto oldTreeIdFut =
-      edenMount->getInodeMap()->lookupInode(oldTreeId).semi().via(
-          testMount.getServerExecutor().get());
-  auto oldFile1IdFut = edenMount->getInodeMap()
-                           ->lookupInode(oldFile1Id)
-                           .semi()
-                           .via(testMount.getServerExecutor().get());
-  auto oldFile2IdFut = edenMount->getInodeMap()
-                           ->lookupInode(oldFile2Id)
-                           .semi()
-                           .via(testMount.getServerExecutor().get());
+      edenMount->getInodeMap()
+          ->lookupInode(oldTreeId, ObjectFetchContext::getNullContext())
+          .semi()
+          .via(testMount.getServerExecutor().get());
+  auto oldFile1IdFut =
+      edenMount->getInodeMap()
+          ->lookupInode(oldFile1Id, ObjectFetchContext::getNullContext())
+          .semi()
+          .via(testMount.getServerExecutor().get());
+  auto oldFile2IdFut =
+      edenMount->getInodeMap()
+          ->lookupInode(oldFile2Id, ObjectFetchContext::getNullContext())
+          .semi()
+          .via(testMount.getServerExecutor().get());
   testMount.drainServerExecutor();
 
   EXPECT_EQ("dir", std::move(oldTreeIdFut).get(0ms)->getLogPath());
@@ -960,7 +1010,10 @@ TEST_F(InodePersistenceTreeTest, preservesLastGcRefTimeDuringTakeover) {
   testMount.remountGracefully();
 
   auto reloaded =
-      testMount.getEdenMount()->getInodeMap()->lookupInode(inodeNumber).get();
+      testMount.getEdenMount()
+          ->getInodeMap()
+          ->lookupInode(inodeNumber, ObjectFetchContext::getNullContext())
+          .get();
   EXPECT_EQ(expectedLastGcRefTime, reloaded->getLastGcRefTime());
 }
 #endif
@@ -1077,7 +1130,7 @@ TEST(InodeMap, forgottenCountExcludesReloadedInodes) {
   ASSERT_TRUE(inodeMap->isInodeRemembered(ino));
   const auto before = inodeMap->getInodeCounts().forgottenInodeCount;
 
-  file = inodeMap->lookupInode(ino).get();
+  file = inodeMap->lookupInode(ino, ObjectFetchContext::getNullContext()).get();
   EXPECT_EQ(before, inodeMap->getInodeCounts().forgottenInodeCount);
   file.reset();
   mount->getRootInode()->unloadChildrenNow();
@@ -1145,4 +1198,37 @@ TEST(InodeMap, loadingASecondNameForALoadedInodeFails) {
       dir->getOrLoadChild("a.txt"_pc, ObjectFetchContext::getNullContext())
           .get(0ms)
           ->getNodeId());
+}
+
+TEST(InodeMap, lookupByNumberLoadsWithCallerContext) {
+  FakeTreeBuilder builder;
+  builder.setFile("a/b/file.txt", "contents\n");
+  TestMount testMount{builder};
+  auto* inodeMap = testMount.getEdenMount()->getInodeMap();
+
+  // Remember a, b and the file by number, then unload all three.
+  auto a = testMount.getTreeInode("a");
+  auto b = testMount.getTreeInode("a/b");
+  auto file = testMount.getFileInode("a/b/file.txt");
+  const auto fileNumber = file->getNodeId();
+  a->incFsRefcount();
+  b->incFsRefcount();
+  file->incFsRefcount();
+  a.reset();
+  b.reset();
+  file.reset();
+  testMount.getEdenMount()->getRootInode()->unloadChildrenNow();
+  ASSERT_FALSE(inodeMap->lookupLoadedInode(fileNumber));
+
+  // Looking the file up by number loads a and b first, each from its tree;
+  // both loads are fetched with the caller's context.
+  auto context = makeRefPtr<StatsFetchContext>(
+      std::nullopt,
+      ObjectFetchContext::Cause::Thrift,
+      ObjectFetchContext::StaticCauseDetail::fromLiteral("InodeMapTest"),
+      nullptr);
+  EXPECT_EQ(
+      fileNumber,
+      inodeMap->lookupInode(fileNumber, context.copy()).get(0ms)->getNodeId());
+  EXPECT_EQ(2, context->countFetchesOfType(ObjectFetchContext::Tree));
 }

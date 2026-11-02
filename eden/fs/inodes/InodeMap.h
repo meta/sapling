@@ -23,6 +23,7 @@
 #include "eden/fs/inodes/InodeTimestamps.h"
 #include "eden/fs/inodes/Overlay.h"
 #include "eden/fs/model/ObjectId.h"
+#include "eden/fs/store/ObjectFetchContext.h"
 #include "eden/fs/takeover/gen-cpp2/takeover_types.h"
 
 namespace folly {
@@ -179,8 +180,14 @@ class InodeMap {
    * will be fulfilled when the loaded Inode is ready.  The Future may be
    * invoked immediately in the calling thread (if the Inode is already
    * available), or it may be invoked later in a different thread.
+   *
+   * The context is used for the loads this call starts, including those of
+   * unloaded ancestors. A lookup that joins a load already in progress does
+   * not change that load's context.
    */
-  ImmediateFuture<InodePtr> lookupInode(InodeNumber number);
+  ImmediateFuture<InodePtr> lookupInode(
+      InodeNumber number,
+      const ObjectFetchContextPtr& context);
 
   /**
    * Lookup a TreeInode object by inode number.
@@ -189,7 +196,9 @@ class InodeMap {
    * The returned Future throws ENOTDIR if this inode number does not refer to
    * a directory.
    */
-  ImmediateFuture<TreeInodePtr> lookupTreeInode(InodeNumber number);
+  ImmediateFuture<TreeInodePtr> lookupTreeInode(
+      InodeNumber number,
+      const ObjectFetchContextPtr& context);
 
   /**
    * Lookup a FileInode object by inode number.
@@ -198,7 +207,9 @@ class InodeMap {
    * The returned Future throws EISDIR if this inode number refers to a
    * directory.
    */
-  ImmediateFuture<FileInodePtr> lookupFileInode(InodeNumber number);
+  ImmediateFuture<FileInodePtr> lookupFileInode(
+      InodeNumber number,
+      const ObjectFetchContextPtr& context);
 
   /**
    * Lookup an Inode object by inode number, if it already exists.
@@ -699,14 +710,16 @@ class InodeMap {
       bool isUnlinked,
       InodeNumber childInodeNumber,
       std::optional<ObjectId> id,
-      mode_t mode);
+      mode_t mode,
+      const ObjectFetchContextPtr& context);
   void startChildLookup(
       const InodePtr& parent,
       PathComponentPiece childName,
       bool isUnlinked,
       InodeNumber childInodeNumber,
       std::optional<ObjectId> id,
-      mode_t mode);
+      mode_t mode,
+      const ObjectFetchContextPtr& context);
 
   /**
    * Create and return inode load start event that will later be published to

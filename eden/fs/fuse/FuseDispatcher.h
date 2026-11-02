@@ -384,9 +384,8 @@ class FuseDispatcher {
    * If the datasync parameter is true, then only the user data should be
    * flushed, not the meta data.
    */
-  [[nodiscard]] virtual ImmediateFuture<folly::Unit> fsync(
-      InodeNumber ino,
-      bool datasync);
+  [[nodiscard]] virtual ImmediateFuture<folly::Unit>
+  fsync(InodeNumber ino, bool datasync, const ObjectFetchContextPtr& context);
 
   /**
    * Ensure directory content changes are flushed to disk.
@@ -440,7 +439,9 @@ class FuseDispatcher {
   /**
    * List extended attribute names
    */
-  virtual ImmediateFuture<std::vector<std::string>> listxattr(InodeNumber ino);
+  virtual ImmediateFuture<std::vector<std::string>> listxattr(
+      InodeNumber ino,
+      const ObjectFetchContextPtr& context);
 
   /**
    * Remove an extended attribute

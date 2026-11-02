@@ -683,7 +683,10 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
    * The TreeInode will call InodeMap::inodeLoadComplete() or
    * InodeMap::inodeLoadFailed() when the load finishes.
    */
-  void loadChildInode(PathComponentPiece name, InodeNumber number);
+  void loadChildInode(
+      PathComponentPiece name,
+      InodeNumber number,
+      const ObjectFetchContextPtr& context);
 
   /**
    * Internal API only for use by InodeMap.

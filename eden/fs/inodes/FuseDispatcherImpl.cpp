@@ -141,7 +141,9 @@ ImmediateFuture<FuseDispatcher::Attr> FuseDispatcherImpl::getattr(
   return mount_->getServerState()
       ->getFaultInjector()
       .checkAsync("FuseDispatcherImpl::getattr", ino)
-      .thenValue([this, ino](auto&&) { return inodeMap_->lookupInode(ino); })
+      .thenValue([this, ino, context = context.copy()](auto&&) {
+        return inodeMap_->lookupInode(ino, context);
+      })
       .thenValue([context = context.copy()](const InodePtr& inode) {
         inode->markGcRef();
         return inode->stat(context);
@@ -180,8 +182,9 @@ ImmediateFuture<fuse_entry_out> FuseDispatcherImpl::lookup(
   return mount_->getServerState()
       ->getFaultInjector()
       .checkAsync("FuseDispatcherImpl::lookup", namepiece)
-      .thenValue(
-          [this, parent](auto&&) { return inodeMap_->lookupTreeInode(parent); })
+      .thenValue([this, parent, context = context.copy()](auto&&) {
+        return inodeMap_->lookupTreeInode(parent, context);
+      })
       .thenTry([name = PathComponent{namepiece}, context = context.copy()](
                    folly::Try<TreeInodePtr> tree) mutable {
         // The name is built once and moved along with the child lookup result.
@@ -281,7 +284,7 @@ ImmediateFuture<FuseDispatcher::Attr> FuseDispatcherImpl::setattr(
     folly::throwSystemErrorExplicit(EPERM, "Extra mode bits are disallowed");
   }
 
-  return inodeMap_->lookupInode(ino)
+  return inodeMap_->lookupInode(ino, context)
       .thenValue([this, attr, context = context.copy()](const InodePtr& inode) {
         auto fuseTimeToTimespec = [](uint64_t time, uint64_t ntime) {
           timespec spec;
@@ -368,9 +371,11 @@ ImmediateFuture<fuse_entry_out> FuseDispatcherImpl::create(
   // force 'mode' to be regular file, in which case rdev arg to mknod is ignored
   // (and thus can be zero)
   mode = S_IFREG | stripPrivilegeBits(mode & 07777);
-  return inodeMap_->lookupTreeInode(parent).thenValue(
-      [this, mode, childName = PathComponent{name}, context = context.copy()](
-          const TreeInodePtr& inode) {
+  return inodeMap_->lookupTreeInode(parent, context)
+      .thenValue([this,
+                  mode,
+                  childName = PathComponent{name},
+                  context = context.copy()](const TreeInodePtr& inode) {
         auto child = inode->mknod(childName, mode, 0, InvalidationRequired::No);
         FuseDispatcher::Attr attr{
             child->statNewlyCreated(*context), computeTtl()};
@@ -388,8 +393,9 @@ ImmediateFuture<BufVec> FuseDispatcherImpl::read(
   return mount_->getServerState()
       ->getFaultInjector()
       .checkAsync("FuseDispatcherImpl::read", ino)
-      .thenValue(
-          [this, ino](auto&&) { return inodeMap_->lookupFileInode(ino); })
+      .thenValue([this, ino, context = context.copy()](auto&&) {
+        return inodeMap_->lookupFileInode(ino, context);
+      })
       .thenValue([context = context.copy(), size, off](FileInodePtr&& inode) {
         inode->markGcRef();
         return inode->read(size, off, context)
@@ -410,8 +416,9 @@ ImmediateFuture<size_t> FuseDispatcherImpl::write(
     // `data` points into the kernel request buffer, which is only valid while
     // this call runs synchronously, so a parked request must copy it now.
     return std::move(checkpoint)
-        .thenValue(
-            [this, ino](auto&&) { return inodeMap_->lookupFileInode(ino); })
+        .thenValue([this, ino, context = context.copy()](auto&&) {
+          return inodeMap_->lookupFileInode(ino, context);
+        })
         .thenValue([copy = data.str(), off, context = context.copy()](
                        FileInodePtr&& inode) {
           return inode->write(copy, off, context);
@@ -422,7 +429,7 @@ ImmediateFuture<size_t> FuseDispatcherImpl::write(
       .thenValue(
           [this, ino, data, off, context = context.copy()](
               auto&&) -> ImmediateFuture<size_t> {
-            auto inodeFuture = inodeMap_->lookupFileInode(ino);
+            auto inodeFuture = inodeMap_->lookupFileInode(ino, context);
             if (inodeFuture.isReady() &&
                 mount_->getEdenConfig()
                     ->experimentalFuseAvoidWriteCopy.getValue()) {
@@ -456,17 +463,20 @@ ImmediateFuture<folly::Unit> FuseDispatcherImpl::fallocate(
     uint64_t offset,
     uint64_t length,
     const ObjectFetchContextPtr& context) {
-  return inodeMap_->lookupFileInode(ino).thenValue(
-      [offset, length, context = context.copy()](FileInodePtr inode) {
-        return inode->fallocate(offset, length, context);
-      });
+  return inodeMap_->lookupFileInode(ino, context)
+      .thenValue(
+          [offset, length, context = context.copy()](FileInodePtr inode) {
+            return inode->fallocate(offset, length, context);
+          });
 }
 
 ImmediateFuture<folly::Unit> FuseDispatcherImpl::fsync(
     InodeNumber ino,
-    bool datasync) {
-  return inodeMap_->lookupFileInode(ino).thenValue(
-      [datasync](FileInodePtr inode) { return inode->fsync(datasync); });
+    bool datasync,
+    const ObjectFetchContextPtr& context) {
+  return inodeMap_->lookupFileInode(ino, context)
+      .thenValue(
+          [datasync](FileInodePtr inode) { return inode->fsync(datasync); });
 }
 
 ImmediateFuture<Unit> FuseDispatcherImpl::fsyncdir(
@@ -484,9 +494,9 @@ ImmediateFuture<std::string> FuseDispatcherImpl::readlink(
     InodeNumber ino,
     bool kernelCachesReadlink,
     const ObjectFetchContextPtr& context) {
-  return inodeMap_->lookupFileInode(ino).thenValue(
-      [kernelCachesReadlink,
-       context = context.copy()](const FileInodePtr& inode) {
+  return inodeMap_->lookupFileInode(ino, context)
+      .thenValue([kernelCachesReadlink,
+                  context = context.copy()](const FileInodePtr& inode) {
         inode->markGcRef();
         // Only release the symlink blob after it's loaded if we can assume the
         // FUSE will cache the result in the kernel's page cache.
@@ -503,9 +513,10 @@ ImmediateFuture<FuseDirList> FuseDispatcherImpl::readdir(
     off_t offset,
     uint64_t /*fh*/,
     const ObjectFetchContextPtr& context) {
-  return inodeMap_->lookupTreeInode(ino).thenValue(
-      [dirList = std::move(dirList), offset, context = context.copy()](
-          TreeInodePtr inode) mutable {
+  return inodeMap_->lookupTreeInode(ino, context)
+      .thenValue([dirList = std::move(dirList),
+                  offset,
+                  context = context.copy()](TreeInodePtr inode) mutable {
         inode->markGcRef();
         return inode->fuseReaddir(std::move(dirList), offset, context);
       });
@@ -517,12 +528,12 @@ ImmediateFuture<fuse_entry_out> FuseDispatcherImpl::mknod(
     mode_t mode,
     dev_t rdev,
     const ObjectFetchContextPtr& context) {
-  return inodeMap_->lookupTreeInode(parent).thenValue(
-      [this,
-       childName = PathComponent{name},
-       mode = S_ISDIR(mode) ? mode : stripPrivilegeBits(mode),
-       rdev,
-       context = context.copy()](const TreeInodePtr& inode) {
+  return inodeMap_->lookupTreeInode(parent, context)
+      .thenValue([this,
+                  childName = PathComponent{name},
+                  mode = S_ISDIR(mode) ? mode : stripPrivilegeBits(mode),
+                  rdev,
+                  context = context.copy()](const TreeInodePtr& inode) {
         auto child =
             inode->mknod(childName, mode, rdev, InvalidationRequired::No);
         FuseDispatcher::Attr attr{
@@ -538,9 +549,11 @@ ImmediateFuture<fuse_entry_out> FuseDispatcherImpl::mkdir(
     PathComponentPiece name,
     mode_t mode,
     const ObjectFetchContextPtr& context) {
-  return inodeMap_->lookupTreeInode(parent).thenValue(
-      [this, childName = PathComponent{name}, mode, context = context.copy()](
-          const TreeInodePtr& inode) {
+  return inodeMap_->lookupTreeInode(parent, context)
+      .thenValue([this,
+                  childName = PathComponent{name},
+                  mode,
+                  context = context.copy()](const TreeInodePtr& inode) {
         auto child = inode->mkdir(childName, mode, InvalidationRequired::No);
         FuseDispatcher::Attr attr{
             child->statNewlyCreated(*context), computeTtl()};
@@ -554,9 +567,9 @@ ImmediateFuture<folly::Unit> FuseDispatcherImpl::unlink(
     InodeNumber parent,
     PathComponentPiece name,
     const ObjectFetchContextPtr& context) {
-  return inodeMap_->lookupTreeInode(parent).thenValue(
-      [context = context.copy(),
-       childName = PathComponent{name}](const TreeInodePtr& inode) {
+  return inodeMap_->lookupTreeInode(parent, context)
+      .thenValue([context = context.copy(),
+                  childName = PathComponent{name}](const TreeInodePtr& inode) {
         // No need to flush the kernel cache because FUSE will do that for us.
         return inode->unlink(childName, InvalidationRequired::No, context);
       });
@@ -566,9 +579,9 @@ ImmediateFuture<folly::Unit> FuseDispatcherImpl::rmdir(
     InodeNumber parent,
     PathComponentPiece name,
     const ObjectFetchContextPtr& context) {
-  return inodeMap_->lookupTreeInode(parent).thenValue(
-      [context = context.copy(),
-       childName = PathComponent{name}](const TreeInodePtr& inode) {
+  return inodeMap_->lookupTreeInode(parent, context)
+      .thenValue([context = context.copy(),
+                  childName = PathComponent{name}](const TreeInodePtr& inode) {
         // No need to flush the kernel cache because FUSE will do that for us.
         return inode->rmdir(childName, InvalidationRequired::No, context);
       });
@@ -579,11 +592,11 @@ ImmediateFuture<fuse_entry_out> FuseDispatcherImpl::symlink(
     PathComponentPiece name,
     StringPiece link,
     const ObjectFetchContextPtr& context) {
-  return inodeMap_->lookupTreeInode(parent).thenValue(
-      [this,
-       linkContents = link.str(),
-       childName = PathComponent{name},
-       context = context.copy()](const TreeInodePtr& inode) {
+  return inodeMap_->lookupTreeInode(parent, context)
+      .thenValue([this,
+                  linkContents = link.str(),
+                  childName = PathComponent{name},
+                  context = context.copy()](const TreeInodePtr& inode) {
         auto symlinkInode =
             inode->symlink(childName, linkContents, InvalidationRequired::No);
         FuseDispatcher::Attr attr{
@@ -640,8 +653,8 @@ ImmediateFuture<folly::Unit> FuseDispatcherImpl::renameImpl(
     bool noReplace,
     const ObjectFetchContextPtr& context) {
   // Start looking up both parents
-  auto parentFuture = inodeMap_->lookupTreeInode(parent);
-  auto newParentFuture = inodeMap_->lookupTreeInode(newParent);
+  auto parentFuture = inodeMap_->lookupTreeInode(parent, context);
+  auto newParentFuture = inodeMap_->lookupTreeInode(newParent, context);
   // Do the rename once we have looked up both parents.
   return std::move(parentFuture)
       .thenValue(
@@ -681,18 +694,22 @@ ImmediateFuture<string> FuseDispatcherImpl::getxattr(
     InodeNumber ino,
     StringPiece name,
     const ObjectFetchContextPtr& context) {
-  return inodeMap_->lookupInode(ino).thenValue(
-      [attrName = name.str(), context = context.copy()](const InodePtr& inode) {
+  return inodeMap_->lookupInode(ino, context)
+      .thenValue([attrName = name.str(),
+                  context = context.copy()](const InodePtr& inode) {
         inode->markGcRef();
         return inode->getxattr(attrName, context);
       });
 }
 
-ImmediateFuture<vector<string>> FuseDispatcherImpl::listxattr(InodeNumber ino) {
-  return inodeMap_->lookupInode(ino).thenValue([](const InodePtr& inode) {
-    inode->markGcRef();
-    return inode->listxattr();
-  });
+ImmediateFuture<vector<string>> FuseDispatcherImpl::listxattr(
+    InodeNumber ino,
+    const ObjectFetchContextPtr& context) {
+  return inodeMap_->lookupInode(ino, context)
+      .thenValue([](const InodePtr& inode) {
+        inode->markGcRef();
+        return inode->listxattr();
+      });
 }
 
 ImmediateFuture<struct fuse_kstatfs> FuseDispatcherImpl::statfs(

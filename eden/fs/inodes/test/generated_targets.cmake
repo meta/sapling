@@ -27,6 +27,7 @@ eden_add_test(eden_fs_inodes_test_checkout
     eden_fs_prjfs
     eden_fs_service_pretty_printers
     eden_fs_store
+    eden_fs_store_context
     eden_fs_testharness_fake_backing_store_and_tree_builder
     eden_fs_testharness_inode_unloader
     eden_fs_testharness_test_checks

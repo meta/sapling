@@ -917,7 +917,8 @@ class EdenMount : public std::enable_shared_from_this<EdenMount> {
   /**
    * Chown the repository to the given uid and gid
    */
-  ImmediateFuture<folly::Unit> chown(uid_t uid, gid_t gid);
+  ImmediateFuture<folly::Unit>
+  chown(uid_t uid, gid_t gid, const ObjectFetchContextPtr& context);
 
   [[nodiscard]] folly::coro::now_task<std::unique_ptr<ScmStatus>> co_diff(
       TreeInodePtr rootInode,

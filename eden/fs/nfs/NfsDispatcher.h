@@ -100,7 +100,9 @@ class NfsDispatcher {
    * Record a reference to the inode for inode garbage collection. Parents
    * won't be updated.
    */
-  virtual ImmediateFuture<folly::Unit> markGcRef(InodeNumber ino) = 0;
+  virtual ImmediateFuture<folly::Unit> markGcRef(
+      InodeNumber ino,
+      const ObjectFetchContextPtr& context) = 0;
 
   /**
    * Find the given name in the passed in directory. Its InodeNumber and

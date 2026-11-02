@@ -1476,7 +1476,10 @@ void TreeInode::loadUnlinkedChildInode(
   }
 }
 
-void TreeInode::loadChildInode(PathComponentPiece name, InodeNumber number) {
+void TreeInode::loadChildInode(
+    PathComponentPiece name,
+    InodeNumber number,
+    const ObjectFetchContextPtr& context) {
   std::optional<PathComponent> inodeName;
   auto future = Future<unique_ptr<InodeBase>>::makeEmpty();
   // Set when the entry no longer refers to the requested inode. The load is
@@ -1538,11 +1541,6 @@ void TreeInode::loadChildInode(PathComponentPiece name, InodeNumber number) {
       getInodeMap()->inodeLoadFailed(number, bug);
       return;
     } else {
-      // loadChildInode is called by InodeMap during FUSE_LOOKUP processing.
-      // Pass a null fetch context because we don't need to record statistics.
-      static auto context = ObjectFetchContext::getNullContextWithCauseDetail(
-          ObjectFetchContext::StaticCauseDetail::fromLiteral(
-              "TreeInode::loadChildInode"));
       future = startLoadingInodeNoThrow(entry, name, context, false);
     }
   }

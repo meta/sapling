@@ -2382,7 +2382,8 @@ folly::coro::now_task<folly::Unit> EdenMount::co_flushInvalidations() {
 }
 
 #ifndef _WIN32
-ImmediateFuture<folly::Unit> EdenMount::chown(uid_t uid, gid_t gid) {
+ImmediateFuture<folly::Unit>
+EdenMount::chown(uid_t uid, gid_t gid, const ObjectFetchContextPtr& context) {
   // 1) Ensure we are running in either a fuse or nfs mount
   Nfsd3* nfsChannel = nullptr;
   FuseChannel* fuseChannel = getFuseChannel();
@@ -2423,7 +2424,7 @@ ImmediateFuture<folly::Unit> EdenMount::chown(uid_t uid, gid_t gid) {
     std::vector<ImmediateFuture<InodePtr>> futures;
     futures.reserve(inodesToInvalidate.size());
     for (const auto& ino : inodesToInvalidate) {
-      futures.emplace_back(inodeMap->lookupInode(ino));
+      futures.emplace_back(inodeMap->lookupInode(ino, context));
     }
 
     return collectAllSafe(std::move(futures))

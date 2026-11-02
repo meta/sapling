@@ -66,10 +66,18 @@ TYPED_TEST(UnloadTest, inodesAreUnloaded) {
   auto code_ino = load("src/code.c"_relpath);
   auto test_ino = load("test/test.c"_relpath);
 
-  EXPECT_TRUE(inodeMap->lookupInode(readme_ino).get());
-  EXPECT_TRUE(inodeMap->lookupInode(wholefish_ino).get());
-  EXPECT_TRUE(inodeMap->lookupInode(code_ino).get());
-  EXPECT_TRUE(inodeMap->lookupInode(test_ino).get());
+  EXPECT_TRUE(
+      inodeMap->lookupInode(readme_ino, ObjectFetchContext::getNullContext())
+          .get());
+  EXPECT_TRUE(
+      inodeMap->lookupInode(wholefish_ino, ObjectFetchContext::getNullContext())
+          .get());
+  EXPECT_TRUE(
+      inodeMap->lookupInode(code_ino, ObjectFetchContext::getNullContext())
+          .get());
+  EXPECT_TRUE(
+      inodeMap->lookupInode(test_ino, ObjectFetchContext::getNullContext())
+          .get());
 
   // Now decrement the FUSE refcounts.
   inodeMap->decFsRefcount(readme_ino, 1);
@@ -232,7 +240,9 @@ TEST(UnloadLastAccessedBefore, unloadsInodesByLastGcRefTimeNotMetadataAtime) {
   EXPECT_LT(countsAfter.fileCount, countsBefore.fileCount);
 
   // new.txt should still be loadable (still in loaded inodes)
-  EXPECT_TRUE(inodeMap->lookupInode(newIno).get());
+  EXPECT_TRUE(
+      inodeMap->lookupInode(newIno, ObjectFetchContext::getNullContext())
+          .get());
 }
 
 TEST(UnloadLastAccessedBefore, cancellationStopsUnloading) {
@@ -283,7 +293,9 @@ TEST(UnloadLastAccessedBefore, preservesLastGcRefTimeAcrossReload) {
   EXPECT_FALSE(inodeMap->lookupLoadedInode(inodeNumber));
   EXPECT_GT(inodeMap->getInodeCounts().unloadedInodeCount, 0);
 
-  auto reloaded = inodeMap->lookupInode(inodeNumber).get();
+  auto reloaded =
+      inodeMap->lookupInode(inodeNumber, ObjectFetchContext::getNullContext())
+          .get();
   EXPECT_EQ(lastGcRefTime, reloaded->getLastGcRefTime());
 }
 

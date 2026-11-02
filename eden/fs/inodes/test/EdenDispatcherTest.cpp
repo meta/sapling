@@ -302,7 +302,10 @@ TEST(RawEdenDispatcherTest, lookup_updates_last_used_time) {
               0, kRootNodeId, "hello"_pc, ObjectFetchContext::getNullContext())
           .get(0ms);
   auto ino = InodeNumber{entry.nodeid};
-  auto inode = mount.getEdenMount()->getInodeMap()->lookupInode(ino).get(0ms);
+  auto inode = mount.getEdenMount()
+                   ->getInodeMap()
+                   ->lookupInode(ino, ObjectFetchContext::getNullContext())
+                   .get(0ms);
   auto timeAfterLookup = inode->getLastGcRefTime();
 
   // Advance the clock
@@ -330,7 +333,10 @@ TEST(RawEdenDispatcherTest, getattr_updates_last_used_time) {
               0, kRootNodeId, "hello"_pc, ObjectFetchContext::getNullContext())
           .get(0ms);
   auto ino = InodeNumber{entry.nodeid};
-  auto inode = mount.getEdenMount()->getInodeMap()->lookupInode(ino).get(0ms);
+  auto inode = mount.getEdenMount()
+                   ->getInodeMap()
+                   ->lookupInode(ino, ObjectFetchContext::getNullContext())
+                   .get(0ms);
 
   // Advance the clock
   mount.getClock().advance(60s);

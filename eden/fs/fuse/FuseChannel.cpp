@@ -2907,9 +2907,8 @@ ImmediateFuture<folly::Unit> FuseChannel::fuseFsync(
   XLOG(DBG7, "FUSE_FSYNC");
 
   auto ino = InodeNumber{header.nodeid};
-  return dispatcher_->fsync(ino, datasync).thenValue([&request](auto&&) {
-    request.replyError(0);
-  });
+  return dispatcher_->fsync(ino, datasync, request.getObjectFetchContext())
+      .thenValue([&request](auto&&) { request.replyError(0); });
 }
 
 ImmediateFuture<folly::Unit> FuseChannel::fuseSetXAttr(
@@ -2964,8 +2963,9 @@ ImmediateFuture<folly::Unit> FuseChannel::fuseListXAttr(
   const auto listattr = reinterpret_cast<const fuse_getxattr_in*>(arg.data());
   XLOG(DBG7, "FUSE_LISTXATTR");
   InodeNumber ino{header.nodeid};
-  return dispatcher_->listxattr(ino).thenValue(
-      [&request, size = listattr->size](const std::vector<std::string>& attrs) {
+  return dispatcher_->listxattr(ino, request.getObjectFetchContext())
+      .thenValue([&request, size = listattr->size](
+                     const std::vector<std::string>& attrs) {
         // Initialize count to include the \0 for each
         // entry.
         size_t count = attrs.size();

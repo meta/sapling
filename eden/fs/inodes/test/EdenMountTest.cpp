@@ -33,6 +33,7 @@
 #include "eden/fs/journal/JournalDelta.h"
 #include "eden/fs/model/TestOps.h"
 #include "eden/fs/store/IObjectStore.h"
+#include "eden/fs/store/ObjectFetchContext.h"
 #include "eden/fs/testharness/FakeBackingStore.h"
 #include "eden/fs/testharness/FakeFuse.h"
 #include "eden/fs/testharness/FakePrivHelper.h"
@@ -715,12 +716,15 @@ TEST_F(ChownTest, UnloadedInodeWithZeroRefCount) {
   auto inodeMap = edenMount_->getInodeMap();
 
   auto fileIno = load();
-  EXPECT_TRUE(inodeMap->lookupInode(fileIno).get());
+  EXPECT_TRUE(
+      inodeMap->lookupInode(fileIno, ObjectFetchContext::getNullContext())
+          .get());
   // now unload it with a zero ref count
   inodeMap->decFsRefcount(fileIno, 1);
   edenMount_->getRootInode()->unloadChildrenNow();
 
-  auto chownFuture = edenMount_->chown(uid, gid);
+  auto chownFuture =
+      edenMount_->chown(uid, gid, ObjectFetchContext::getNullContext());
   EXPECT_FALSE(invalidatedFileInode(fileIno));
   std::move(chownFuture).get(10s);
 
@@ -731,11 +735,14 @@ TEST_F(ChownTest, UnloadedInodeWithPositiveRefCount) {
   auto inodeMap = edenMount_->getInodeMap();
 
   auto fileIno = load();
-  EXPECT_TRUE(inodeMap->lookupInode(fileIno).get());
+  EXPECT_TRUE(
+      inodeMap->lookupInode(fileIno, ObjectFetchContext::getNullContext())
+          .get());
   // now unload it with a positive ref count
   edenMount_->getRootInode()->unloadChildrenNow();
 
-  auto chownFuture = edenMount_->chown(uid, gid);
+  auto chownFuture =
+      edenMount_->chown(uid, gid, ObjectFetchContext::getNullContext());
   EXPECT_TRUE(invalidatedFileInode(fileIno));
   std::move(chownFuture).get(10s);
 
@@ -746,10 +753,13 @@ TEST_F(ChownTest, LoadedInode) {
   auto inodeMap = edenMount_->getInodeMap();
 
   auto fileIno = load();
-  EXPECT_TRUE(inodeMap->lookupInode(fileIno).get());
+  EXPECT_TRUE(
+      inodeMap->lookupInode(fileIno, ObjectFetchContext::getNullContext())
+          .get());
   edenMount_->getRootInode()->unloadChildrenNow();
 
-  auto chownFuture = edenMount_->chown(uid, gid);
+  auto chownFuture =
+      edenMount_->chown(uid, gid, ObjectFetchContext::getNullContext());
   EXPECT_TRUE(invalidatedFileInode(fileIno));
   std::move(chownFuture).get(10s);
 

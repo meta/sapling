@@ -41,6 +41,7 @@
 #include "eden/fs/service/gen-cpp2/eden_types.h"
 #include "eden/fs/store/DiffContext.h"
 #include "eden/fs/store/IObjectStore.h"
+#include "eden/fs/store/ObjectFetchContext.h"
 #include "eden/fs/store/ObjectStore.h"
 #include "eden/fs/store/ScmStatusDiffCallback.h"
 #include "eden/fs/store/TreeCache.h"
@@ -1640,7 +1641,8 @@ TEST_P(CheckoutTest, checkoutUpdatesUnlinkedStatusForLoadedTrees) {
   // unlinked bit wasn't set correctly.
   subTree = testMount.getEdenMount()
                 ->getInodeMap()
-                ->lookupTreeInode(subInodeNumber)
+                ->lookupTreeInode(
+                    subInodeNumber, ObjectFetchContext::getNullContext())
                 .get(1ms);
   {
     auto subTreeContents = subTree->lockContentsRead();
@@ -1694,11 +1696,13 @@ TEST_P(CheckoutTest, checkoutRemembersInodeNumbersAfterCheckoutAndTakeover) {
 
   // Try to load the same tree by its inode number and verify its parents have
   // the same inode numbers.
-  auto subTreeFut = testMount.getEdenMount()
-                        ->getInodeMap()
-                        ->lookupTreeInode(subInodeNumber)
-                        .semi()
-                        .via(executor);
+  auto subTreeFut =
+      testMount.getEdenMount()
+          ->getInodeMap()
+          ->lookupTreeInode(
+              subInodeNumber, ObjectFetchContext::getNullContext())
+          .semi()
+          .via(executor);
   testMount.drainServerExecutor();
 
   subTree = std::move(subTreeFut).get(1ms);
@@ -2147,14 +2151,19 @@ TYPED_TEST(
 
   auto edenMount = testMount.getEdenMount();
 
-  abcfile1 =
-      edenMount->getInodeMap()->lookupFileInode(abcfile1InodeNumber).get(1ms);
+  abcfile1 = edenMount->getInodeMap()
+                 ->lookupFileInode(
+                     abcfile1InodeNumber, ObjectFetchContext::getNullContext())
+                 .get(1ms);
   EXPECT_TRUE(abcfile1->isUnlinked());
 
   // Referenced but modified directories are not unlinked - they're updated in
   // place.
 
-  auto def = edenMount->getInodeMap()->lookupTreeInode(defInodeNumber).get(1ms);
+  auto def = edenMount->getInodeMap()
+                 ->lookupTreeInode(
+                     defInodeNumber, ObjectFetchContext::getNullContext())
+                 .get(1ms);
   EXPECT_FALSE(def->isUnlinked());
 }
 #endif
@@ -2941,10 +2950,12 @@ TEST(Checkout, forceCheckoutRemovesLoadedRestrictedTree) {
   ASSERT_TRUE(checkoutResult.isReady());
   EXPECT_EQ(0, checkoutResult.value().conflicts.size());
 
-  restrictedTree = testMount.getEdenMount()
-                       ->getInodeMap()
-                       ->lookupTreeInode(restrictedInodeNumber)
-                       .get(1ms);
+  restrictedTree =
+      testMount.getEdenMount()
+          ->getInodeMap()
+          ->lookupTreeInode(
+              restrictedInodeNumber, ObjectFetchContext::getNullContext())
+          .get(1ms);
   EXPECT_TRUE(restrictedTree->isUnlinked());
 
   EXPECT_THROW_ERRNO(
@@ -3026,10 +3037,12 @@ TEST(Checkout, forceCheckoutReplacesLoadedRestrictedTreeWithFile) {
   ASSERT_TRUE(checkoutResult.isReady());
   EXPECT_EQ(0, checkoutResult.value().conflicts.size());
 
-  restrictedTree = testMount.getEdenMount()
-                       ->getInodeMap()
-                       ->lookupTreeInode(restrictedInodeNumber)
-                       .get(1ms);
+  restrictedTree =
+      testMount.getEdenMount()
+          ->getInodeMap()
+          ->lookupTreeInode(
+              restrictedInodeNumber, ObjectFetchContext::getNullContext())
+          .get(1ms);
   EXPECT_TRUE(restrictedTree->isUnlinked());
   EXPECT_FILE_INODE(
       testMount.getFileInode("project/notes/restricted_child"_relpath),
@@ -3456,7 +3469,10 @@ TEST_P(
   EXPECT_EQ(0, std::move(checkoutResult).get().conflicts.size());
 
   EXPECT_TRUE(outer->isRestricted());
-  child = inodeMap->lookupTreeInode(childInodeNumber).get(1ms);
+  child = inodeMap
+              ->lookupTreeInode(
+                  childInodeNumber, ObjectFetchContext::getNullContext())
+              .get(1ms);
   ASSERT_TRUE(child->getObjectId().has_value());
   EXPECT_EQ(childTreeId, *child->getObjectId());
 }
