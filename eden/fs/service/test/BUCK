@@ -217,6 +217,27 @@ cpp_unittest(
 )
 
 cpp_unittest(
+    name = "thrift_get_object_impl_test",
+    srcs = ["ThriftGetObjectImplTest.cpp"],
+    compatible_with = [
+        "ovr_config//os:linux",
+        "ovr_config//os:windows",
+    ],
+    network_access = network_access_utils.none(),
+    supports_static_listing = False,
+    deps = [
+        "fbsource//third-party/googletest:gtest",
+        "fbsource//xplat/folly:try",
+        "//eden/common/utils:case_sensitivity",
+        "//eden/fs/model:model",
+        "//eden/fs/service:thrift-cpp2-types",
+        "//eden/fs/service:thrift_get_object_impl",
+        "//eden/fs/testharness:fake_backing_store_and_tree_builder",
+        "//eden/fs/testharness:test_mount",
+    ],
+)
+
+cpp_unittest(
     name = "eden_state_dir_test",
     srcs = ["EdenStateDirTest.cpp"],
     network_access = network_access_utils.none(),

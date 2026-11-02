@@ -8,6 +8,7 @@
 
 import binascii
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -32,7 +33,7 @@ from eden.fs.service.eden.thrift_types import (
     SyncBehavior,
 )
 
-from .lib import testcase
+from .lib import hgrepo, testcase
 
 
 @testcase.eden_repo_test
@@ -370,6 +371,32 @@ class DebugTreeHgTest(testcase.HgRepoTestMixin, testcase.EdenRepoTest):
             ),
             response,
         )
+
+    async def test_debug_tree_of_empty_tree(self) -> None:
+        # A commit without files has an empty root tree. `debugGetTree` returns
+        # an `ScmTreeOrError` with no arm set for it, so `eden debug tree`
+        # fails on the client instead of printing an empty tree.
+        repo = self.repo
+        assert isinstance(repo, hgrepo.HgRepository)
+        repo.hg("rm", "testDir/testTree/binary")
+        empty_commit = repo.commit("Remove every file.")
+        manifest = repo.hg("log", "-r", empty_commit, "-T", "{manifest}").strip()
+
+        async with self.eden.get_async_thrift_client() as client:
+            response = await client.debugGetTree(
+                DebugGetScmTreeRequest(
+                    mountId=MountId(mountPoint=self.mount.encode()),
+                    id=manifest.encode(),
+                    origins=DataFetchOrigin.ANYWHERE,
+                )
+            )
+        tree = response.trees[0].scmTreeData
+        self.assertEqual(ScmTreeOrError.Type.EMPTY, tree.type)
+
+        result = self.eden.run_unchecked(
+            "debug", "tree", self.mount, manifest, stdout=subprocess.PIPE
+        )
+        self.assertNotEqual(0, result.returncode)
 
     async def test_debug_tree_locations(self) -> None:
         async with self.eden.get_async_thrift_client() as client:

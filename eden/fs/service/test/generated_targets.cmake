@@ -173,6 +173,22 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR APPLE)
   )
 endif ()
 
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WIN32)
+  eden_add_test(eden_fs_service_test_thrift_get_object_impl_test
+    SRCS
+      ThriftGetObjectImplTest.cpp
+    DEPS
+      ${LIBGMOCK_LIBRARIES}
+      Folly::folly_try
+      eden_fs_model
+      eden_fs_service_thrift_get_object_impl
+      eden_fs_testharness_fake_backing_store_and_tree_builder
+      eden_fs_testharness_test_mount
+      eden_service_thrift_cpp
+      edencommon::edencommon_utils
+  )
+endif ()
+
 eden_add_test(eden_fs_service_test_eden_state_dir_test
   SRCS
     EdenStateDirTest.cpp
