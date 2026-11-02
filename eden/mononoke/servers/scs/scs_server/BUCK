@@ -1,4 +1,5 @@
 load("@fbcode_macros//build_defs:cpp_library.bzl", "cpp_library")
+load("@fbcode_macros//build_defs/lib:rust_oss.bzl", "rust_oss")
 load("@fbsource//tools/build_defs:rust_binary.bzl", "rust_binary")
 load("@fbsource//tools/target_determinator/macros:ci.bzl", "ci")
 load("//eden/mononoke/facebook:lib.bzl", "tokio_dependency_test")
@@ -8,10 +9,14 @@ oncall("scm_server_infra")
 rust_binary(
     name = "scs_server",
     srcs = glob(["src/**/*.rs"]),
-    cpp_deps = [
-        ":metadata",
-    ],
-    cxx_bridge = "src/facebook/metadata.rs",
+    cpp_deps = (
+        []
+        if rust_oss.is_oss_build()
+        else [
+            ":metadata",
+        ]
+    ),
+    cxx_bridge = (None if rust_oss.is_oss_build() else "src/facebook/metadata.rs"),
     labels = [
         ci.heavyweight(),
     ],
@@ -19,23 +24,18 @@ rust_binary(
         "fbsource//third-party/rust:anyhow",
         "fbsource//third-party/rust:async-trait",
         "fbsource//third-party/rust:clap",
-        "fbsource//third-party/rust:cxx",
         "fbsource//third-party/rust:futures",
         "fbsource//third-party/rust:tokio",
         "fbsource//third-party/rust:tokio-stream",
         "fbsource//third-party/rust:tracing",
-        "//common/rust/base_controller:thrift_factory",
-        "//common/rust/mysql:mysql_client",
         "//common/rust/shed/fbinit:fbinit",
         "//common/rust/shed/panichandler:panichandler",
-        "//common/rust/srserver:srserver",
         "//eden/mononoke/cmdlib:cmdlib_logging",
         "//eden/mononoke/cmdlib:environment",
         "//eden/mononoke/cmdlib/mononoke_app:mononoke_app",
         "//eden/mononoke/cmdlib/sharding:executor_lib",
         "//eden/mononoke/cmdlib/sharding_ext:sharding_ext",
         "//eden/mononoke/cmdlib/thrift_server:mononoke_thrift_server",
-        "//eden/mononoke/common/facebook/sql_storage:sql_storage",
         "//eden/mononoke/common/memory:memory",
         "//eden/mononoke/common/rust/justknobs_ext:justknobs",
         "//eden/mononoke/common/sql_construct:sql_construct",
@@ -47,7 +47,18 @@ rust_binary(
         "//eden/mononoke/scs/if:source_control-rust-services",
         "//eden/mononoke/servers/scs/scs_methods:scs_methods",
         "//eden/scm/lib/clientinfo:clientinfo",
-    ],
+    ]
+    + (
+        []
+        if rust_oss.is_oss_build()
+        else [
+            "fbsource//third-party/rust:cxx",
+            "//common/rust/base_controller:thrift_factory",
+            "//common/rust/mysql:mysql_client",
+            "//common/rust/srserver:srserver",
+            "//eden/mononoke/common/facebook/sql_storage:sql_storage",
+        ]
+    ),
 )
 
 cpp_library(

@@ -117,6 +117,10 @@ pub struct SourceControlServiceImpl {
     pub(crate) async_requests_queue: Option<Arc<AsyncMethodRequestQueue>>,
     #[allow(unused)]
     pub(crate) git_source_of_truth_config: Arc<dyn GitSourceOfTruthConfig>,
+    #[cfg_attr(
+        not(fbcode_build),
+        expect(dead_code, reason = "only read by the fbcode-only repo creation path")
+    )]
     pub(crate) mysql_options: MysqlOptions,
     pub(crate) watchdog_max_poll: u64,
     pub(crate) remote_diff_options: RemoteDiffOptions,

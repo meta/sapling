@@ -27,6 +27,8 @@ pub(crate) mod file;
 pub(crate) mod git;
 pub(crate) mod git_repo_state;
 pub(crate) mod megarepo;
+#[cfg(not(fbcode_build))]
+mod oss;
 pub(crate) mod repo;
 pub(crate) mod tree;
 

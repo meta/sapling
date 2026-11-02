@@ -47,9 +47,13 @@ use tracing::info;
 #[cfg(fbcode_build)]
 mod facebook;
 mod monitoring;
+#[cfg(not(fbcode_build))]
+mod oss;
 
 #[cfg(fbcode_build)]
 use facebook as platform;
+#[cfg(not(fbcode_build))]
+use oss as platform;
 
 const SERVICE_NAME: &str = "mononoke_scs_server";
 const SM_CLEANUP_TIMEOUT_SECS: u64 = 60;

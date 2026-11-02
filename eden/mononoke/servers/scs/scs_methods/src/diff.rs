@@ -36,6 +36,10 @@ use source_control as thrift;
 mod facebook;
 #[cfg(fbcode_build)]
 use facebook as platform;
+#[cfg(not(fbcode_build))]
+mod oss;
+#[cfg(not(fbcode_build))]
+use oss as platform;
 
 /// Trait for extracting declared errors from diff-service RPC failures.
 trait DiffServiceError {
@@ -154,6 +158,13 @@ impl<'a> DiffRouter<'a> {
     }
 
     /// Check if remote diff should be used for this repo
+    #[cfg_attr(
+        not(fbcode_build),
+        expect(
+            unused_variables,
+            reason = "OSS gates on config, not per-repo JustKnobs"
+        )
+    )]
     fn should_use_remote_diff(&self, repo_name: &str) -> bool {
         // Gate 1: CLI flag must be enabled
         if !self.diff_options.diff_remotely {
@@ -161,7 +172,13 @@ impl<'a> DiffRouter<'a> {
         }
 
         // Gate 2: Check JK - this is the kill switch in production
-        justknobs::eval("scm/mononoke:remote_diff", None, Some(repo_name))
+        #[cfg(fbcode_build)]
+        return justknobs::eval("scm/mononoke:remote_diff", None, Some(repo_name));
+
+        // OSS has no JustKnobs rollout, so route remotely exactly when an
+        // address is configured.
+        #[cfg(not(fbcode_build))]
+        self.remote_diff_config.is_some()
     }
 
     /// Generate headerless unified diff between two files.
@@ -245,6 +262,13 @@ impl<'a> DiffRouter<'a> {
 
     /// Check if remote commit_compare should be used for this repo.
     /// Uses a separate JK from file-level diffs for independent rollout.
+    #[cfg_attr(
+        not(fbcode_build),
+        expect(
+            unused_variables,
+            reason = "OSS gates on config, not per-repo JustKnobs"
+        )
+    )]
     pub fn should_use_remote_commit_compare(&self, repo_name: &str) -> bool {
         // Gate 1: CLI flag must be enabled
         if !self.diff_options.diff_remotely {
@@ -252,7 +276,13 @@ impl<'a> DiffRouter<'a> {
         }
 
         // Gate 2: Check JK - this is the kill switch in production
-        justknobs::eval("scm/mononoke:remote_commit_compare", None, Some(repo_name))
+        #[cfg(fbcode_build)]
+        return justknobs::eval("scm/mononoke:remote_commit_compare", None, Some(repo_name));
+
+        // OSS has no JustKnobs rollout, so route remotely exactly when an
+        // address is configured.
+        #[cfg(not(fbcode_build))]
+        self.remote_diff_config.is_some()
     }
 
     /// Forward a commit_compare request to the remote diff_service.

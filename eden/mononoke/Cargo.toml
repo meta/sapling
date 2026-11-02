@@ -532,6 +532,7 @@ members = [
   "servers/lfs/lfs_server",
   "servers/scs/scs_errors",
   "servers/scs/scs_methods",
+  "servers/scs/scs_server",
   "servers/slapi/slapi_server",
   "servers/slapi/slapi_server/context",
   "servers/slapi/slapi_server/qps",
