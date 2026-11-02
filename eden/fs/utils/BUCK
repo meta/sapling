@@ -74,18 +74,6 @@ cpp_library(
 )
 
 cpp_library(
-    name = "glob_path",
-    headers = [
-        "GlobPath.h",
-    ],
-    exported_deps = [
-        "fbsource//xplat/folly:range",
-        "fbsource//xplat/folly/io:iobuf",
-        "//eden/common/utils:path",
-    ],
-)
-
-cpp_library(
     name = "glob",
     srcs = [
         "GlobNodeImpl.cpp",
@@ -105,10 +93,10 @@ cpp_library(
         "fbsource//xplat/folly/coro:task",
         "fbsource//xplat/folly/coro/safe:now_task",
         "fbsource//xplat/folly/futures:core",
-        ":glob_path",
         ":matcher",
         "//eden/common/utils:case_sensitivity",
         "//eden/common/utils:enum",
+        "//eden/common/utils:glob_path",
         "//eden/common/utils:path",
         "//eden/common/utils:utils",
         "//eden/fs/model:model",

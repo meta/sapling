@@ -51,13 +51,6 @@ eden_add_library(eden_fs_utils_matcher
     edencommon::edencommon_utils
 )
 
-eden_add_library(eden_fs_utils_glob_path
-  EXPORTED_DEPS
-    Folly::folly_io_iobuf
-    Folly::folly_range
-    edencommon::edencommon_utils
-)
-
 eden_add_library(eden_fs_utils_glob
   SRCS
     GlobNodeImpl.cpp
@@ -73,7 +66,6 @@ eden_add_library(eden_fs_utils_glob
     eden_fs_model
     eden_fs_store
     eden_fs_telemetry_task_trace
-    eden_fs_utils_glob_path
     eden_fs_utils_matcher
     edencommon::edencommon_utils
     sigbus_memops

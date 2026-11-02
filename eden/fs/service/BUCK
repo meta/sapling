@@ -544,7 +544,7 @@ cpp_library(
 thrift_library(
     name = "thrift",
     cpp2_deps = [
-        "//eden/fs/utils:glob_path",
+        "//eden/common/utils:glob_path",
     ],
     languages = [
         "cpp2",

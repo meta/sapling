@@ -110,15 +110,6 @@ eden_add_test(eden_fs_utils_test_glob_test
     fmt::fmt
 )
 
-eden_add_test(eden_fs_utils_test_glob_path_test
-  SRCS
-    GlobPathTest.cpp
-  DEPS
-    ${LIBGMOCK_LIBRARIES}
-    FBThrift::thriftcpp2
-    eden_fs_utils_glob_path
-)
-
 eden_add_test(eden_fs_utils_test_request_permit_vendor_test
   SRCS
     RequestPermitVendorTest.cpp
