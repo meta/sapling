@@ -870,4 +870,4 @@ class FsckThreadCountTest(unittest.TestCase):
         instance.get_config_int.assert_called_once_with(
             "fsck.num-error-discovery-threads", 4
         )
-        self.assertIn("--num_error_discovery_threads=4", argv)
+        self.assertIn("--num_error_discovery_threads=16", argv)

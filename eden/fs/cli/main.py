@@ -1523,8 +1523,9 @@ class FsckCmd(Subcmd):
     ) -> int:
         print(f"Checking {checkout_path}...")
         overlay_path = state_dir / "local"
-        num_threads = args.num_error_discovery_threads
-        instance.get_config_int("fsck.num-error-discovery-threads", num_threads)
+        num_threads = instance.get_config_int(
+            "fsck.num-error-discovery-threads", args.num_error_discovery_threads
+        )
         return subprocess.call(
             [
                 get_fsck_command(),
