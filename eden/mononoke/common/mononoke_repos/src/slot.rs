@@ -5,6 +5,7 @@
  * GNU General Public License version 2.
  */
 
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -90,8 +91,8 @@ enum Claim<R> {
     /// A recent build failed and the retry window has not elapsed.
     Failed(Arc<Error>),
     /// This caller won the race: run the build, report it through the
-    /// completion handle, then wait on the shared handle like everyone else.
-    Start(BuildCompletion<R>, SharedBuild<R>),
+    /// sender, then wait on the shared handle like everyone else.
+    Start(oneshot::Sender<BuildOutcome<R>>, SharedBuild<R>),
 }
 
 impl<R> RepoSlot<R> {
@@ -159,9 +160,7 @@ impl<R> RepoSlot<R> {
     /// the obligation to run one. The build is not run here and needs no
     /// runtime: this decides *who* builds, not *how*.
     ///
-    /// Exactly one caller is handed [`Claim::Start`] per build, and dropping
-    /// its [`BuildCompletion`] without finishing publishes a failure, so a
-    /// claim can never be silently abandoned.
+    /// Exactly one caller is handed [`Claim::Start`] per build.
     ///
     /// Single-flight holds **per slot, not per repo name**: `remove` followed
     /// by a re-`add` of the same name makes a *new* slot, so a build against
@@ -171,7 +170,7 @@ impl<R> RepoSlot<R> {
     /// anyone still waits on its build: the async-requests worker, which unloads
     /// an on-demand repo when its last request finishes, holds each request's
     /// reference until that request has seen the build complete.
-    fn claim_build(self: &Arc<Self>) -> Claim<R> {
+    fn claim_build(&self) -> Claim<R> {
         if let Some(claim) = self.peek() {
             return claim;
         }
@@ -190,13 +189,7 @@ impl<R> RepoSlot<R> {
             .store(Arc::new(SlotState::Building(pending.clone())));
         drop(transition);
 
-        Claim::Start(
-            BuildCompletion {
-                repo_slot: Arc::clone(self),
-                send_outcome: Some(send_outcome),
-            },
-            pending,
-        )
+        Claim::Start(send_outcome, pending)
     }
 
     /// Publishes a finished build into this slot.
@@ -254,7 +247,7 @@ impl<R> RepoSlot<R> {
                 ));
             }
             Claim::Wait(pending) => pending,
-            Claim::Start(completion, pending) => {
+            Claim::Start(send_outcome, pending) => {
                 // Detached rather than driven by the caller's future: a caller
                 // that goes away mid-build (client disconnect, deadline) must
                 // neither cancel the build nor force the next caller to restart
@@ -267,9 +260,23 @@ impl<R> RepoSlot<R> {
                 // unbuilt repos callers ask for at once. The async-requests
                 // worker is bounded by how many requests it runs at once, and
                 // request-time loading by the loader `mononoke_app` installs.
-                let repo_name = self.name.clone();
+                let repo_slot = Arc::clone(self);
                 mononoke::spawn_task(async move {
-                    completion.finish(loader.load(repo_name).await.map(Arc::new).map_err(Arc::new));
+                    let repo_name = repo_slot.name.clone();
+                    // A panicking build must still publish an outcome: left
+                    // `Building`, the slot would never be claimable again.
+                    let outcome = AssertUnwindSafe(async move { loader.load(repo_name).await })
+                        .catch_unwind()
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(anyhow!("Build of repo {} panicked", repo_slot.name))
+                        })
+                        .map(Arc::new)
+                        .map_err(Arc::new);
+                    // Applied before sending, so a woken waiter sees the final
+                    // state rather than still `Building`.
+                    repo_slot.apply_outcome(&outcome);
+                    let _ = send_outcome.send(outcome);
                 });
                 pending
             }
@@ -282,57 +289,10 @@ impl<R> RepoSlot<R> {
         match pending.await {
             Ok(Ok(repo)) => Ok(repo),
             Ok(Err(error)) => Err(anyhow!("Failed to build repo {}: {error:#}", self.name)),
-            // Unreachable while `BuildCompletion` is the only way to finish a
-            // build, since it reports on `Drop` as well as on `finish` and so
-            // cannot lose the sender. Kept as the honest answer if that ever
-            // stops being true.
+            // Only when the build task is dropped unfinished, which happens
+            // only as the runtime shuts down.
             Err(oneshot::Canceled) => Err(anyhow!("Build task for repo {} went away", self.name)),
         }
-    }
-}
-
-/// The obligation that comes with winning a [`Claim::Start`]: publish the
-/// build's result into the slot and hand it to every waiter.
-///
-/// Dropping it without calling [`BuildCompletion::finish`] publishes a failure
-/// instead, so a build that panics, or is dropped by a shutting-down runtime,
-/// cannot leave the slot stuck in [`SlotState::Building`] behind an
-/// already-resolved handle - a state nothing recovers from, because the slot
-/// never looks claimable again.
-struct BuildCompletion<R> {
-    repo_slot: Arc<RepoSlot<R>>,
-    send_outcome: Option<oneshot::Sender<BuildOutcome<R>>>,
-}
-
-impl<R> BuildCompletion<R> {
-    /// Publishes the result of the build. Takes `self` by value so the
-    /// obligation is discharged exactly once.
-    fn finish(mut self, outcome: BuildOutcome<R>) {
-        self.publish(outcome);
-    }
-
-    /// Applies the outcome before sending, so a waiter woken by it always
-    /// observes the slot in its final state rather than still `Building`.
-    fn publish(&mut self, outcome: BuildOutcome<R>) {
-        let Some(send_outcome) = self.send_outcome.take() else {
-            return;
-        };
-        self.repo_slot.apply_outcome(&outcome);
-        let _ = send_outcome.send(outcome);
-    }
-}
-
-impl<R> Drop for BuildCompletion<R> {
-    fn drop(&mut self) {
-        // `publish` would no-op anyway once `finish` has taken the sender. The
-        // check is to not build an error message on every successful build.
-        if self.send_outcome.is_none() {
-            return;
-        }
-        let repo_name = self.repo_slot.name().to_string();
-        self.publish(Err(Arc::new(anyhow!(
-            "Build of repo {repo_name} ended without producing a result"
-        ))));
     }
 }
 
