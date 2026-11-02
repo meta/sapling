@@ -45,6 +45,7 @@
         "sapling.commandPath": {
           "type": "string",
           "default": "",
+          "scope": "machine",
           "description": "%settings.commandPath.description%"
         },
         "sapling.showInlineBlame": {
