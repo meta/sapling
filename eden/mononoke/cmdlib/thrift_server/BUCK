@@ -1,0 +1,53 @@
+load("@fbcode_macros//build_defs/lib:rust_oss.bzl", "rust_oss")
+load("@fbsource//tools/build_defs:rust_library.bzl", "rust_library")
+
+oncall("scm_server_infra")
+
+OSS_DEPS = [
+    "fbsource//third-party/rust:bytes",
+    "fbsource//third-party/rust:tracing",
+    "//eden/mononoke/common/oss/thrift_transport:oss_thrift_transport",
+]
+
+OSS_TEST_DEPS = [
+    "fbsource//third-party/rust:async-trait",
+    "//common/rust/shed/fbinit:fbinit-tokio",
+    "//fb303/thrift:fb303_core-rust",
+    "//fb303/thrift:fb303_core-rust-clients",
+    "//fb303/thrift:fb303_core-rust-services",
+]
+
+rust_library(
+    name = "mononoke_thrift_server",
+    srcs = glob(["src/**/*.rs"]),
+    autocargo = {
+        "cargo_toml_config": {
+            # Autocargo reads this file as an fbcode build, so it does not
+            # see the OSS backend's dependencies.
+            "extra_buck_dependencies": {
+                "dependencies": OSS_DEPS,
+                "dev-dependencies": OSS_TEST_DEPS,
+            },
+        },
+    },
+    test_deps = [
+        "//eden/mononoke/common/mononoke_macros:mononoke_macros",
+    ]
+    + (OSS_TEST_DEPS if rust_oss.is_oss_build() else []),
+    deps = [
+        "fbsource//third-party/rust:anyhow",
+        "fbsource//third-party/rust:tokio",
+        "//common/rust/shed/fbinit:fbinit",
+        "//thrift/lib/rust:fbthrift",
+    ]
+    + (
+        OSS_DEPS
+        if rust_oss.is_oss_build()
+        else [
+            "fbsource//third-party/rust:cxx",
+            "//common/rust/srserver:load_monitor_module",
+            "//common/rust/srserver:srserver",
+            "//common/rust/srserver:srserver-service-framework-light",
+        ]
+    ),
+)
