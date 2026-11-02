@@ -43,11 +43,10 @@ type SharedBuild<R> = Shared<oneshot::Receiver<BuildOutcome<R>>>;
 /// # Experimental: use at your own risk
 ///
 /// This type is part of the inexpensive-repos work (lazy repo loading), which
-/// is still rolling out. Request-time loading
-/// (`MononokeReposManager::get_or_load_repo`) and the async-requests worker's
-/// on-demand repos already create unbuilt slots, but what an unbuilt repo
-/// means for callers is not settled, and the semantics here (single-flight,
-/// failed-build hold, eviction) may still change.
+/// is still rolling out. Every repo `MononokeReposManager` holds is built
+/// through a slot, eager or lazy, but what an unbuilt repo means for callers
+/// is not settled, and the semantics here (single-flight, failed-build hold,
+/// eviction) may still change.
 ///
 /// If you build on `RepoSlot` or its unbuilt state, expect to follow those
 /// changes, and give lmvasquezg a heads-up so the rollout knows about you.
@@ -69,8 +68,13 @@ pub struct RepoSlot<R> {
 enum SlotState<R> {
     /// Assigned to this host, but not built.
     Empty,
-    /// A build is in flight; this is the handle it reports through.
-    Building(SharedBuild<R>),
+    /// A build is in flight; `pending` is the handle it reports through.
+    /// `stale` is the repo it replaces, served until the build finishes and
+    /// kept if it fails.
+    Building {
+        stale: Option<Arc<R>>,
+        pending: SharedBuild<R>,
+    },
     /// Built, and available to serve.
     Ready(Arc<R>),
     /// A build failed recently. Kept rather than dropped back to `Empty` so
@@ -124,23 +128,33 @@ impl<R> RepoSlot<R> {
     /// The built repo, or `None` if this slot has not been built.
     pub fn loaded(&self) -> Option<Arc<R>> {
         match &**self.state.load() {
-            SlotState::Empty | SlotState::Building(_) | SlotState::Failed { .. } => None,
-            SlotState::Ready(repo) => Some(Arc::clone(repo)),
+            SlotState::Empty
+            | SlotState::Building { stale: None, .. }
+            | SlotState::Failed { .. } => None,
+            SlotState::Ready(repo)
+            | SlotState::Building {
+                stale: Some(repo), ..
+            } => Some(Arc::clone(repo)),
         }
     }
 
-    /// The claim this slot can answer without taking the lock. `None` when it
-    /// is `Empty`, the one case that needs a writer.
-    fn peek(&self) -> Option<Claim<R>> {
+    /// The claim this slot can answer without taking the lock. `None` when
+    /// it needs a writer to start a build. A `fresh` caller wants a new build
+    /// even of a built repo, so only an in-flight build or a held failure
+    /// answers it.
+    fn peek(&self, fresh: bool) -> Option<Claim<R>> {
         match &**self.state.load() {
-            SlotState::Ready(repo) => Some(Claim::Ready(Arc::clone(repo))),
-            SlotState::Building(pending) => Some(Claim::Wait(pending.clone())),
+            SlotState::Ready(repo)
+            | SlotState::Building {
+                stale: Some(repo), ..
+            } if !fresh => Some(Claim::Ready(Arc::clone(repo))),
+            SlotState::Building { pending, .. } => Some(Claim::Wait(pending.clone())),
             SlotState::Failed { error, retry_after } if Instant::now() < *retry_after => {
                 Some(Claim::Failed(Arc::clone(error)))
             }
             // An elapsed failure is retryable, which needs a writer to claim,
             // exactly like `Empty`.
-            SlotState::Empty | SlotState::Failed { .. } => None,
+            SlotState::Ready(_) | SlotState::Empty | SlotState::Failed { .. } => None,
         }
     }
 
@@ -160,8 +174,8 @@ impl<R> RepoSlot<R> {
     /// anyone still waits on its build: the async-requests worker, which unloads
     /// an on-demand repo when its last request finishes, holds each request's
     /// reference until that request has seen the build complete.
-    fn claim_build(self: &Arc<Self>) -> Claim<R> {
-        if let Some(claim) = self.peek() {
+    fn claim_build(self: &Arc<Self>, fresh: bool) -> Claim<R> {
+        if let Some(claim) = self.peek(fresh) {
             return claim;
         }
 
@@ -169,19 +183,23 @@ impl<R> RepoSlot<R> {
 
         // Another writer may have started or finished a build since the peek
         // above.
-        if let Some(claim) = self.peek() {
+        if let Some(claim) = self.peek(fresh) {
             return claim;
         }
 
+        let stale = self.loaded();
         let (send_outcome, outcome) = oneshot::channel();
         let pending = outcome.shared();
-        self.state
-            .store(Arc::new(SlotState::Building(pending.clone())));
+        self.state.store(Arc::new(SlotState::Building {
+            stale: stale.clone(),
+            pending: pending.clone(),
+        }));
         drop(transition);
 
         Claim::Start(
             BuildCompletion {
                 repo_slot: Arc::clone(self),
+                stale,
                 send_outcome: Some(send_outcome),
             },
             pending,
@@ -195,14 +213,16 @@ impl<R> RepoSlot<R> {
     /// replacing `add` detached is unreachable whatever is written to it. Keep
     /// it that way - writing back to the map from here would reintroduce the
     /// race `reload_if_present` exists to close.
-    fn apply_outcome(&self, outcome: &BuildOutcome<R>) {
-        let next = match outcome {
-            Ok(repo) => SlotState::Ready(Arc::clone(repo)),
+    fn apply_outcome(&self, outcome: &BuildOutcome<R>, stale: Option<Arc<R>>) {
+        let next = match (outcome, stale) {
+            (Ok(repo), _) => SlotState::Ready(Arc::clone(repo)),
+            // A failed rebuild keeps serving the repo it was meant to replace.
+            (Err(_), Some(stale)) => SlotState::Ready(stale),
             // A repo that never builds would otherwise look slow rather than
             // broken. This crate has no stats dependency and should keep it
             // that way, so the failure is counted by the loader that owns the
             // build (`mononoke.app.lazy_repo_build_failed` in `mononoke_app`).
-            Err(error) => SlotState::Failed {
+            (Err(error), None) => SlotState::Failed {
                 error: Arc::clone(error),
                 retry_after: Instant::now() + FAILED_BUILD_TTL,
             },
@@ -233,7 +253,18 @@ impl<R> RepoSlot<R> {
     where
         R: Send + Sync + 'static,
     {
-        let pending = match self.claim_build() {
+        self.build_inner(false, loader).await
+    }
+
+    async fn build_inner(
+        self: &Arc<Self>,
+        fresh: bool,
+        loader: Arc<dyn RepoLoader<R>>,
+    ) -> Result<Arc<R>>
+    where
+        R: Send + Sync + 'static,
+    {
+        let pending = match self.claim_build(fresh) {
             Claim::Ready(repo) => return Ok(repo),
             Claim::Failed(error) => {
                 return Err(anyhow!(
@@ -290,6 +321,7 @@ impl<R> RepoSlot<R> {
 /// never looks claimable again.
 struct BuildCompletion<R> {
     repo_slot: Arc<RepoSlot<R>>,
+    stale: Option<Arc<R>>,
     send_outcome: Option<oneshot::Sender<BuildOutcome<R>>>,
 }
 
@@ -306,7 +338,7 @@ impl<R> BuildCompletion<R> {
         let Some(send_outcome) = self.send_outcome.take() else {
             return;
         };
-        self.repo_slot.apply_outcome(&outcome);
+        self.repo_slot.apply_outcome(&outcome, self.stale.take());
         let _ = send_outcome.send(outcome);
     }
 }
