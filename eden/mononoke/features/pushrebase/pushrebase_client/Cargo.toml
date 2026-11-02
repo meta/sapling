@@ -27,6 +27,7 @@ land_service_if = { version = "0.1.0", path = "../../../servers/land_service/if"
 land_service_if_clients = { version = "0.1.0", path = "../../../servers/land_service/if/clients" }
 metaconfig_types = { version = "0.1.0", path = "../../../metaconfig/types" }
 mononoke_types = { version = "0.1.0", path = "../../../mononoke_types" }
+oss_thrift_transport = { version = "0.1.0", path = "../../../common/oss/thrift_transport" }
 pushrebase = { version = "0.1.0", path = ".." }
 pushrebase_hooks = { version = "0.1.0", path = "../pushrebase_hooks" }
 repo_authorization = { version = "0.1.0", path = "../../../repo_authorization" }

@@ -22,9 +22,8 @@ use pushrebase::PushrebaseOutcome;
 use repo_authorization::AuthorizationContext;
 use scuba_ext::MononokeScubaSampleBuilder;
 
+use crate::LandServicePushrebaseClient;
 use crate::PushrebaseClient;
-#[cfg(fbcode_build)]
-use crate::facebook::land_service::LandServicePushrebaseClient;
 use crate::local::LocalPushrebaseClient;
 
 pub async fn normal_pushrebase<'a>(
@@ -129,20 +128,12 @@ async fn address_from_land_service<'a>(
     ctx: &'a CoreContext,
     repo: &'a impl Repo,
 ) -> anyhow::Result<Option<Box<dyn PushrebaseClient + 'a>>> {
-    #[cfg(fbcode_build)]
-    {
-        match address {
-            metaconfig_types::Address::Tier(tier) => Ok(Some(Box::new(
-                LandServicePushrebaseClient::from_tier(ctx, tier.clone(), repo).await?,
-            ))),
-            metaconfig_types::Address::HostPort(host_port) => Ok(Some(Box::new(
-                LandServicePushrebaseClient::from_host_port(ctx, host_port.clone(), repo).await?,
-            ))),
-        }
-    }
-    #[cfg(not(fbcode_build))]
-    {
-        let _ = (address, ctx, repo);
-        unreachable!()
+    match address {
+        metaconfig_types::Address::Tier(tier) => Ok(Some(Box::new(
+            LandServicePushrebaseClient::from_tier(ctx, tier.clone(), repo).await?,
+        ))),
+        metaconfig_types::Address::HostPort(host_port) => Ok(Some(Box::new(
+            LandServicePushrebaseClient::from_host_port(ctx, host_port.clone(), repo).await?,
+        ))),
     }
 }

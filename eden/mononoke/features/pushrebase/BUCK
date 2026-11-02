@@ -118,7 +118,18 @@ rust_library(
 rust_library(
     name = "pushrebase_client",
     srcs = glob(["pushrebase_client/**/*.rs"]),
-    autocargo = {"cargo_toml_dir": "pushrebase_client"},
+    autocargo = {
+        "cargo_toml_config": {
+            # Autocargo reads this file as an fbcode build, so it does not
+            # see the OSS backend's dependencies.
+            "extra_buck_dependencies": {
+                "dependencies": [
+                    "//eden/mononoke/common/oss/thrift_transport:oss_thrift_transport",
+                ],
+            },
+        },
+        "cargo_toml_dir": "pushrebase_client",
+    },
     deps = (
         [
             "fbsource//third-party/rust:anyhow",
@@ -128,7 +139,6 @@ rust_library(
             ":pushrebase",
             ":pushrebase_hooks",
             "//common/rust/shed/futures_stats:futures_stats",
-            "//eden/mononoke/common/facebook/thrift_client:thrift_client",
             "//eden/mononoke/common/scuba_ext:scuba_ext",
             "//eden/mononoke/features/hooks:hooks",
             "//eden/mononoke/metaconfig:metaconfig_types",
@@ -137,19 +147,22 @@ rust_library(
             "//eden/mononoke/repo_attributes/bookmarks/bookmarks_movement:bookmarks_movement",
             "//eden/mononoke/repo_attributes/bookmarks/bookmarks_types:bookmarks_types",
             "//eden/mononoke/repo_attributes/hook_manager/hook_manager:hook_manager",
+            "//eden/mononoke/repo_attributes/repo_identity:repo_identity",
             "//eden/mononoke/repo_authorization:repo_authorization",
+            "//eden/mononoke/servers/land_service/if:land_service_if-rust",
+            "//eden/mononoke/servers/land_service/if:land_service_if-rust-clients",
             "//eden/mononoke/servers/slapi/slapi_server/context:context",
         ]
         + (
-            []
+            [
+                "//eden/mononoke/common/oss/thrift_transport:oss_thrift_transport",
+            ]
             if rust_oss.is_oss_build()
             else [
                 "fbsource//third-party/rust:arc-swap",
-                "//eden/mononoke/common/rust/justknobs_ext:justknobs",
-                "//eden/mononoke/servers/land_service/if:land_service_if-rust",
-                "//eden/mononoke/servers/land_service/if:land_service_if-rust-clients",
-                "//eden/mononoke/repo_attributes/repo_identity:repo_identity",
                 "//eden/mononoke/common/facebook/db_primary_region:db_primary_region",
+                "//eden/mononoke/common/facebook/thrift_client:thrift_client",
+                "//eden/mononoke/common/rust/justknobs_ext:justknobs",
             ]
         )
     ),

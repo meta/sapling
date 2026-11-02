@@ -9,7 +9,10 @@ mod batched;
 #[cfg(fbcode_build)]
 mod facebook;
 mod hybrid;
+mod land_service;
 mod local;
+#[cfg(not(fbcode_build))]
+mod oss;
 
 use std::collections::HashMap;
 
@@ -20,13 +23,16 @@ use bookmarks_types::BookmarkKey;
 use bytes::Bytes;
 use context::CoreContext;
 #[cfg(fbcode_build)]
-pub use facebook::land_service::LandServicePushrebaseClient;
+use facebook as platform;
 #[cfg(fbcode_build)]
-pub use facebook::land_service::override_certificate_paths as land_service_override_certificate_paths;
+pub use facebook::override_certificate_paths as land_service_override_certificate_paths;
 use hooks::CrossRepoPushSource;
 pub use hybrid::normal_pushrebase;
+pub use land_service::LandServicePushrebaseClient;
 pub use local::LocalPushrebaseClient;
 use mononoke_types::BonsaiChangeset;
+#[cfg(not(fbcode_build))]
+use oss as platform;
 use pushrebase::PushrebaseOutcome;
 use repo_authorization::AuthorizationContext;
 
