@@ -13,7 +13,7 @@ log = { version = "0.4.34", features = ["kv_unstable", "kv_unstable_std"] }
 sapling-commitcloudsubscriber = { version = "0.1.0", path = "../../lib/commitcloudsubscriber" }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 thiserror = "2.0.21"
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 toml = { version = "1.1.8", features = ["preserve_order"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

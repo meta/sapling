@@ -13,7 +13,7 @@ chrono = { version = "0.4.45", features = ["clock", "serde", "std"], default-fea
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 maplit = "1.0"
 thiserror = "2.0.21"
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 
 [dev-dependencies]
 anyhow = "1.0.104"

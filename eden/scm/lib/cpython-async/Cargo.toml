@@ -21,4 +21,4 @@ sapling-async-runtime = { version = "0.1.0", path = "../async-runtime" }
 sapling-cpython-ext = { version = "0.1.0", path = "../cpython-ext" }
 
 [dev-dependencies]
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }

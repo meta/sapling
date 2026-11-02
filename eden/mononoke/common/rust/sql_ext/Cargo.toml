@@ -45,7 +45,7 @@ stats = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust
 strum = { version = "0.28.0", features = ["derive"] }
 thiserror = "2.0.21"
 time_measuring = { version = "0.1.0", path = "../../time_measuring" }
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 twox-hash = "2.1.5"
 vec1 = { version = "1.12.1", features = ["serde"] }

@@ -33,5 +33,5 @@ repo_blobstore = { version = "0.1.0", path = "../../../../repo_attributes/repo_b
 repo_identity = { version = "0.1.0", path = "../../../../repo_attributes/repo_identity" }
 sharding_ext = { version = "0.1.0", path = "../../../../cmdlib/sharding_ext" }
 sql_commit_graph_storage = { version = "0.1.0", path = "../../../../repo_attributes/commit_graph/sql_commit_graph_storage" }
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }

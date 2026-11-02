@@ -66,4 +66,4 @@ paste = "1.0.14"
 pretty_assertions = { version = "1.4.1", features = ["alloc"], default-features = false }
 rand = "0.10.3"
 serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }

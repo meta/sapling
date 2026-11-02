@@ -46,7 +46,7 @@ scs_methods = { version = "0.1.0", path = "../../../servers/scs/scs_methods" }
 source_control = { version = "0.1.0", path = "../../../scs/if" }
 stats = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 throttledblob = { version = "0.1.0", path = "../../../blobstore/throttledblob" }
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [dev-dependencies]

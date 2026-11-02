@@ -30,4 +30,4 @@ sql_query_telemetry = { version = "0.1.0", path = "../../../../common/rust/sql_e
 [dev-dependencies]
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
 request_context_ext = { version = "0.1.0", path = "../../../../common/rust/request_context_ext" }
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }

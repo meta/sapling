@@ -30,7 +30,7 @@ strum = { version = "0.28.0", features = ["derive"] }
 subprocess = "0.2.15"
 sysinfo = "0.39.6"
 thiserror = "2.0.21"
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tokio-uds-compat = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 toml = { version = "1.1.8", features = ["preserve_order"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }

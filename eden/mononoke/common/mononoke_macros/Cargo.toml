@@ -11,7 +11,7 @@ license = "GPLv2+"
 justknobs_ext = { version = "0.1.0", path = "../rust/justknobs_ext" }
 mononoke_proc_macros = { version = "0.1.0", path = "proc_macros" }
 request_context_ext = { version = "0.1.0", path = "../rust/request_context_ext" }
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [dev-dependencies]

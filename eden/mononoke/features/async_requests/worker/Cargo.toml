@@ -27,6 +27,6 @@ mononoke_app = { version = "0.1.0", path = "../../../cmdlib/mononoke_app" }
 mononoke_types = { version = "0.1.0", path = "../../../mononoke_types" }
 requests_table = { version = "0.1.0", path = "../requests_table" }
 sharding_ext = { version = "0.1.0", path = "../../../cmdlib/sharding_ext" }
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 worker_lib = { version = "0.1.0", path = "../worker_lib" }

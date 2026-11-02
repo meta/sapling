@@ -20,7 +20,7 @@ nom = "8"
 pin-project = "1.1.13"
 qps = { version = "0.1.0", path = "../../servers/slapi/slapi_server/qps" }
 thiserror = "2.0.21"
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tokio-util = { version = "0.7.20", features = ["full"] }
 
 [dev-dependencies]

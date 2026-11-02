@@ -60,7 +60,7 @@ stats = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust
 textwrap = { version = "0.16.3", features = ["terminal_size"] }
 thiserror = "2.0.21"
 time_ext = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tokio-openssl = "0.6.5"
 tokio-util = { version = "0.7.20", features = ["full"] }
 tower-service = "0.3.3"

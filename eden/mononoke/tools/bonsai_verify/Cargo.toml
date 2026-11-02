@@ -34,6 +34,6 @@ repo_derived_data = { version = "0.1.0", path = "../../repo_attributes/repo_deri
 restricted_paths = { version = "0.1.0", path = "../../repo_attributes/restricted_paths" }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_derive = "1.0.229"
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 toml = { version = "1.1.8", features = ["preserve_order"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }

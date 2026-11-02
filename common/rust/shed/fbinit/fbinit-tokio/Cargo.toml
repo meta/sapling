@@ -14,7 +14,7 @@ path = "lib.rs"
 
 [dependencies]
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fbcode_build)"]}

@@ -13,7 +13,7 @@ hickory-resolver = { version = "0.26.3", features = ["system-config", "tokio"] }
 permission_checker = { version = "0.1.0", path = "../permission_checker" }
 sapling-clientinfo = { version = "0.1.0", path = "../../../scm/lib/clientinfo" }
 session_id = { version = "0.1.0", path = "../session_id" }
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 
 [dev-dependencies]
 mononoke_macros = { version = "0.1.0", path = "../mononoke_macros" }

@@ -22,7 +22,7 @@ serde = { version = "1.0.229", features = ["derive", "rc"] }
 stats = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 strum = { version = "0.28.0", features = ["derive"] }
 thiserror = "2.0.21"
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 
 [dev-dependencies]
 justknobs_ext = { version = "0.1.0", path = "../rust/justknobs_ext" }

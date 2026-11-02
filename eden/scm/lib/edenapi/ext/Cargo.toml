@@ -31,7 +31,7 @@ sapling-types = { version = "0.1.0", path = "../../types" }
 sapling-util = { version = "0.2.0", path = "../../util" }
 sapling-vfs = { version = "0.1.0", path = "../../vfs" }
 serde_cbor = "0.11.2"
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [dev-dependencies]

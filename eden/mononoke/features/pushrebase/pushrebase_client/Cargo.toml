@@ -30,4 +30,4 @@ pushrebase_hooks = { version = "0.1.0", path = "../pushrebase_hooks" }
 repo_authorization = { version = "0.1.0", path = "../../../repo_authorization" }
 repo_identity = { version = "0.1.0", path = "../../../repo_attributes/repo_identity" }
 scuba_ext = { version = "0.1.0", path = "../../../common/scuba_ext" }
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }

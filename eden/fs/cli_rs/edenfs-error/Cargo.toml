@@ -13,4 +13,4 @@ sapling-thrift-types = { version = "0.1.0", path = "../../../scm/lib/thrift-type
 thiserror = "2.0.21"
 thrift_clients = { version = "0.1.0", path = "../../service/clients" }
 thrift_streaming_clients = { version = "0.1.0", path = "../../service/thrift_streaming/clients" }
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }

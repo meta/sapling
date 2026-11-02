@@ -20,6 +20,6 @@ sapling-spawn-ext = { version = "0.1.0", path = "../../../scm/lib/spawn-ext" }
 sapling-util = { version = "0.2.0", path = "../../../scm/lib/util" }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 whoami = "2.1.3"

@@ -30,4 +30,4 @@ ctor = "1.0.13"
 sapling-dev-logger = { version = "0.1.0", path = "../dev-logger" }
 sapling-manifest = { version = "0.1.0", path = "../manifest" }
 sha1 = "0.10.7"
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }

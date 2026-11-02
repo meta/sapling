@@ -30,5 +30,5 @@ sapling-clientinfo = { version = "0.1.0", path = "../../../../scm/lib/clientinfo
 scuba_ext = { version = "0.1.0", path = "../../../common/scuba_ext" }
 secure_utils = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 sharding_ext = { version = "0.1.0", path = "../../../cmdlib/sharding_ext" }
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }

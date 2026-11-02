@@ -45,7 +45,7 @@ sapling-repourl = { version = "0.1.0", path = "../../../scm/lib/repo/url" }
 scuba_ext = { version = "0.1.0", path = "../../common/scuba_ext" }
 sharding_ext = { version = "0.1.0", path = "../../cmdlib/sharding_ext" }
 thiserror = "2.0.21"
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 zk_leader_election = { version = "0.1.0", path = "../../cmdlib/zk_leader_election" }
 

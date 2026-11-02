@@ -27,4 +27,4 @@ sapling-clientinfo = { version = "0.1.0", path = "../../../scm/lib/clientinfo" }
 scuba_ext = { version = "0.1.0", path = "../../common/scuba_ext" }
 sql_ext = { version = "0.1.0", path = "../../common/rust/sql_ext" }
 strum = { version = "0.28.0", features = ["derive"] }
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }

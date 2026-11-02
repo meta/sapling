@@ -49,7 +49,7 @@ rustc-hash = "2.1.3"
 scuba_ext = { version = "0.1.0", path = "../../common/scuba_ext" }
 sha1 = "0.10.7"
 tempfile = "3.27.0"
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tokio-stream = { version = "0.1.19", features = ["fs", "io-util", "net", "signal", "sync", "time"] }
 tokio-util = { version = "0.7.20", features = ["full"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }

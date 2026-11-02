@@ -22,5 +22,5 @@ microwave_if = { version = "0.1.0", path = "../../if" }
 mononoke_types = { version = "0.1.0", path = "../../../../mononoke_types" }
 mutable_blobstore = { version = "0.1.0", path = "../../../../repo_attributes/mutable_blobstore" }
 repo_identity = { version = "0.1.0", path = "../../../../repo_attributes/repo_identity" }
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }

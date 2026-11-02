@@ -15,4 +15,4 @@ context = { version = "0.1.0", path = "../../servers/slapi/slapi_server/context"
 mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
 rand = "0.10.3"
 rand_distr = "0.6"
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }

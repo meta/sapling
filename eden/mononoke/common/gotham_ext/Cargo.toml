@@ -50,7 +50,7 @@ scopeguard = "1.2.0"
 scuba_ext = { version = "0.1.0", path = "../scuba_ext" }
 serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 time_ext = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tokio-openssl = "0.6.5"
 tokio-util = { version = "0.7.20", features = ["full"] }
 tower-service = "0.3.3"

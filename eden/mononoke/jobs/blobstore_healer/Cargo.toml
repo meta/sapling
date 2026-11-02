@@ -29,7 +29,7 @@ mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
 rand = "0.10.3"
 sql_construct = { version = "0.1.0", path = "../../common/sql_construct" }
 sql_ext = { version = "0.1.0", path = "../../common/rust/sql_ext" }
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 wait_for_replication = { version = "0.1.0", path = "../../common/wait_for_replication" }
 

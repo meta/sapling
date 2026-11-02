@@ -16,4 +16,4 @@ name = "async_runtime"
 [dependencies]
 futures = { version = "0.3.34", features = ["async-await", "std"], default-features = false }
 num_cpus = "1.16"
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }

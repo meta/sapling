@@ -33,5 +33,5 @@ mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
 prefixblob = { version = "0.1.0", path = "../../blobstore/prefixblob" }
 rand = "0.10.3"
 throttledblob = { version = "0.1.0", path = "../../blobstore/throttledblob" }
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tokio-util = { version = "0.7.20", features = ["full"] }

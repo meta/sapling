@@ -15,4 +15,4 @@ mononoke_macros = { version = "0.1.0", path = "../mononoke_macros" }
 parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard"] }
 
 [dev-dependencies]
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }

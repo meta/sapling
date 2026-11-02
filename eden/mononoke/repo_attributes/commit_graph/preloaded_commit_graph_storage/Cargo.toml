@@ -22,7 +22,7 @@ mononoke_macros = { version = "0.1.0", path = "../../../common/mononoke_macros" 
 mononoke_types = { version = "0.1.0", path = "../../../mononoke_types" }
 reloader = { version = "0.1.0", path = "../../../common/reloader" }
 repo_identity = { version = "0.1.0", path = "../../repo_identity" }
-tokio = { version = "1.53.2", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 vec1 = { version = "1.12.1", features = ["serde"] }
 
