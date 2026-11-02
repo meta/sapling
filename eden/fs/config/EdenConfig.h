@@ -2662,7 +2662,7 @@ class EdenConfig : private ConfigSettingManager {
    * Controls the timeout (in seconds) that is set when calling the Thrift mount
    * endpoint from the CLI during clone. A value of 0 means no timeout.
    */
-  ConfigSetting<size_t> cloneMountTimeout{"clone:mount-timeout", 20, this};
+  ConfigSetting<size_t> cloneMountTimeout{"clone:mount-timeout", 30, this};
 
   /**
    * Maximum number of Eden checkouts allowed on this host. When the count of

@@ -154,7 +154,7 @@ automatically remount your checkouts.
 
 # Default Thrift client timeout values (in seconds). Some of these might be
 # overridden or turned off by configs.
-MOUNT_TIMEOUT_SECONDS = 20
+MOUNT_TIMEOUT_SECONDS = 30
 UNMOUNT_TIMEOUT_SECONDS = 60
 
 
