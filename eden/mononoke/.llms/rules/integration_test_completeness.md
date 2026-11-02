@@ -16,7 +16,8 @@ metadata:
 - A new SCS method or EdenAPI handler with no `.t` integration test
 - Integration tests that only cover the happy path -- e.g., only testing "changed" files, not "added" or "removed"; or only one input shape when the API accepts multiple
 - A new git protocol feature without a test comparing Mononoke's output against native git's output for the same operation
-- SCS integration tests placed in `tests/integration/` instead of `tests/integration/facebook/scs/` (breaks OSS builds)
+- SCS integration tests placed outside `tests/integration/scs/` or SCS-backed land tests placed outside `tests/integration/land_scs/`, when they could run in OSS builds
+- Tests that can only pass with Meta-internal infrastructure left in the common tree and excluded via a BUCK blocklist, instead of living under `facebook/`
 
 ## Do NOT Flag
 
@@ -82,25 +83,38 @@ metadata:
   $ diff -r git_clone_dir/.git/shallow mononoke_clone_dir/.git/shallow
 ```
 
-**BAD (SCS test in wrong directory):**
-```
-# tests/integration/test-scs-redaction.t
-# This test uses SCS but is in the main integration dir.
-# It won't work in OSS mode.
-```
-
-**GOOD (SCS test in facebook/scs):**
+**BAD (OSS-capable SCS test hidden in the Facebook-only tree):**
 ```
 # tests/integration/facebook/scs/test-scs-redaction.t
+# The SCS server and client are available in @mode/dev-rust-oss, so this
+# belongs in the common tree.
+```
+
+**GOOD (OSS-capable SCS test in the common tree):**
+```
+# tests/integration/scs/test-scs-redaction.t
+```
+
+**BAD (internal-only test kept in the common tree behind a blocklist):**
+```python
+# tests/integration/scs/BUCK
+OSS_EXCLUDED_TESTS = ["test-scs-path-acls.t"]  # needs ACLs, which OSS lacks
+```
+ShipIt still exports the test, so it ships to GitHub as a test that can never
+pass, and getdeps picks it up. A rename also silently re-enables it in OSS.
+
+**GOOD (internal-only test under facebook/, which ShipIt strips):**
+```
+# tests/integration/facebook/scs/test-scs-path-acls.t
 ```
 
 ## Recommendation
 
-Every new API endpoint or protocol feature should have integration tests that cover: (1) the success case for each supported input type, (2) at least one error case (invalid input, missing resource), and (3) edge cases relevant to the feature (empty inputs, large inputs, binary content). For git protocol features, compare Mononoke's output against native git to validate correctness -- don't just check that "something is returned." Place SCS-specific tests in `tests/integration/facebook/scs/` for OSS compatibility.
+Every new API endpoint or protocol feature should have integration tests that cover: (1) the success case for each supported input type, (2) at least one error case (invalid input, missing resource), and (3) edge cases relevant to the feature (empty inputs, large inputs, binary content). For git protocol features, compare Mononoke's output against native git to validate correctness -- don't just check that "something is returned." Place SCS-specific tests in `tests/integration/scs/`, and tests that exercise SCS through land service in `tests/integration/land_scs/`. Do not move a whole suite under `facebook/` just because some of it is internal -- split the internal cases out instead. Individual tests that can only pass with Meta-internal infrastructure (authenticated identities, ACL providers, srclient, the async requests worker) belong in the matching `facebook/` directory, which `[shipit.strip]` removes from the OSS export; a BUCK blocklist leaves them in the export as tests that can never pass. Reserve the blocklist for tests that are OSS-relevant but cannot run in a particular sandbox, as `edenapi/BUCK` does for network-dependent tests.
 
 ## Evidence
 
 - D57561919: Review comment -- "I'd like to see a more 'real-life' example, like shallow-cloning a large repo and comparing the `.git` directories for both to show we're doing exactly what git would have done."
 - D81597780: Review comment -- "We should try to test all cases. The case of an added or removed file, although simple, is still worth testing."
 - D82918207: Review comment on needing more generic ways of specifying both sides of the diff, not just one hard-coded case.
-- D88865547: Review comment -- "scs tests need to go in the facebook/scs directory as they don't work in OSS mode."
+- D88865547: Review comment -- "scs tests need to go in the facebook/scs directory as they don't work in OSS mode." Superseded: SCS now builds under `@mode/dev-rust-oss`, so only the individually internal-only cases stay under `facebook/scs/`.

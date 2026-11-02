@@ -16,10 +16,19 @@ from pathlib import Path
 from sys import platform
 
 
+THRIFT_SERVICE_TEST_DIRS = {
+    "bookmark_service",
+    "diff_service",
+    "land_scs",
+    "land_service",
+    "scs",
+}
+
+
 class TestGroup(Enum):
     PASSING = "passing"
     TIMING_OUT = "timing_out"
-    REQUIRING_SCS = "requiring_scs"
+    REQUIRING_SERVICES = "requiring_services"
     FLAKY = "flaky"
     BROKEN = "broken"
     ALL = "all"
@@ -187,8 +196,6 @@ def get_test_groups():
             "cross_repo/test-cross-repo-commit-sync-live-via-extra.t",
             # output differs in what looks like harmless way
             "cross_repo/test-cross-repo-initial-import-and-merge-into-existing-megarepo.t",
-            # mononoke_hg_sync_loop fails with exit status 1, differs on: -  * successful sync of entries [6]* (glob)
-            "mononoke_hg_sync/test-mononoke-hg-sync-job.t",
             # Differs on diff -w
             "mononoke_git_server/test-mononoke-git-server-filemode-delta-cycle.t",
             # Differs on diff at end
@@ -201,10 +208,6 @@ def get_test_groups():
             "mononoke_git_server/test-mononoke-git-server-push-with-tags.t",
             # gives: Blob is missing: hgaugmentedmanifest.sha1.317229df66cfb6504b14a0818288e8a9b236a688"
             "mononoke_re_cas/test-mononoke-cas-sync-job-random.t",
-            # missing indexedloghistorystore in cachepath on OSS
-            "test-gettreepack.t",
-            # output differs
-            "test-infinitepush.t",
         },
     }
 
@@ -234,11 +237,12 @@ def get_test_groups():
     )
 
     rest_groups = all_tests - manual_groups
-    # The test-scs* tests use scsc which is not buildable via getdeps/cargo yet
-    test_groups[TestGroup.REQUIRING_SCS] = requiring_scs = {
-        t for t in rest_groups if "test-scs" in t
+    # Tests of the Thrift services and their clients do not run here yet: the
+    # getdeps build has not been shown to produce those binaries.
+    test_groups[TestGroup.REQUIRING_SERVICES] = requiring_services = {
+        t for t in rest_groups if t.split("/")[0] in THRIFT_SERVICE_TEST_DIRS
     }
-    test_groups[TestGroup.PASSING] = rest_groups - requiring_scs
+    test_groups[TestGroup.PASSING] = rest_groups - requiring_services
 
     return test_groups
 
