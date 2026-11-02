@@ -171,7 +171,7 @@ async fn get_repo_objects_count(
             Ok(over)
         }
         None => {
-            let maybe_bookmark = bookmarks
+            let mut maybe_bookmark = bookmarks
                 .get(
                     ctx.clone(),
                     bookmark_name,
@@ -180,6 +180,20 @@ async fn get_repo_objects_count(
                     bookmarks::Freshness::MaybeStale,
                 )
                 .await?;
+            if repo_config.bookmark_name_for_objects_count.is_none() {
+                for fallback_name in ["heads/master", "heads/main"] {
+                    if maybe_bookmark.is_some() {
+                        break;
+                    }
+                    maybe_bookmark = bookmarks
+                        .get(
+                            ctx.clone(),
+                            &BookmarkKey::new(fallback_name)?,
+                            bookmarks::Freshness::MaybeStale,
+                        )
+                        .await?;
+                }
+            }
             if let Some(cs_id) = maybe_bookmark {
                 let count = get_descendant_count(
                     ctx,
