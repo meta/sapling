@@ -39,3 +39,22 @@ class TopTest(unittest.TestCase):
         self.assertEqual(format_duration(1 * 1000 * 1000 * 1000 * 60), "1m")
         self.assertEqual(format_duration(1 * 1000 * 1000 * 1000 * 60 * 60), "1h")
         self.assertEqual(format_duration(1 * 1000 * 1000 * 1000 * 60 * 60 * 24), "1d")
+
+
+class ProcessAggregationTest(unittest.TestCase):
+    def test_aggregate_running_process_with_older_access(self) -> None:
+        exited = Process(100, b"hg status", b"/data/users/alice/fbsource")
+        exited.last_access = 1000.0
+        exited.is_running = False
+        exited.set_fetches(3)
+        running = Process(200, b"hg status", b"/data/users/alice/fbsource")
+        running.last_access = 900.0
+        running.is_running = True
+        running.set_fetches(5)
+
+        exited.aggregate(running)
+
+        self.assertEqual(exited.pid, 200)
+        self.assertTrue(exited.is_running)
+        self.assertEqual(exited.last_access, 900.0)
+        self.assertEqual(exited.fuseFetch, 3)
