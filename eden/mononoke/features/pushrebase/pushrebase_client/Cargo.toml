@@ -23,6 +23,8 @@ futures_stats = { version = "0.1.0", git = "https://github.com/facebookexperimen
 hook_manager = { version = "0.1.0", path = "../../../repo_attributes/hook_manager/hook_manager" }
 hooks = { version = "0.1.0", path = "../../hooks" }
 justknobs_ext = { version = "0.1.0", path = "../../../common/rust/justknobs_ext" }
+land_service_if = { version = "0.1.0", path = "../../../servers/land_service/if" }
+land_service_if_clients = { version = "0.1.0", path = "../../../servers/land_service/if/clients" }
 metaconfig_types = { version = "0.1.0", path = "../../../metaconfig/types" }
 mononoke_types = { version = "0.1.0", path = "../../../mononoke_types" }
 pushrebase = { version = "0.1.0", path = ".." }

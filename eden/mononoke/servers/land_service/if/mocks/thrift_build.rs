@@ -7,8 +7,6 @@ use thrift_compiler::Config;
 use thrift_compiler::GenContext;
 const CRATEMAP: &str = "\
 eden/mononoke/servers/land_service/if/land_service.thrift crate //eden/mononoke/servers/land_service/if:land_service_if-rust
-fb303/thrift/fb303_core.thrift fb303_core //fb303/thrift:fb303_core-rust
-thrift/annotation/cpp.thrift fb303_core->cpp //thrift/annotation:cpp-rust
 thrift/annotation/rust.thrift rust //thrift/annotation:rust-rust
 thrift/annotation/scope.thrift rust->scope //thrift/annotation:scope-rust
 thrift/annotation/thrift.thrift thrift //thrift/annotation:thrift-rust
