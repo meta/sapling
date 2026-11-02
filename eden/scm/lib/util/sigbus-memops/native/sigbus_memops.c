@@ -13,7 +13,6 @@
 #include "sigbus_memops_config.h"
 
 #include <errno.h>
-#include <stdatomic.h>
 #include <string.h>
 
 bool sigbus_is_protected(void) {
@@ -84,6 +83,7 @@ bool sigbus_try_store_u64(void* dst, uint64_t value) {
 
 #include <pthread.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <unistd.h>
 
