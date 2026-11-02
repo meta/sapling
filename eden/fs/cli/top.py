@@ -387,6 +387,10 @@ class Window:
             self.scrollable_section_window_start + self.scrollable_section_window_size
         )
         self.scrollable = False
+        farthest_scroll = max(
+            0, (self.number_scrollable_lines - self.scrollable_section_window_size)
+        )
+        self.scrollable_offset = min(farthest_scroll, self.scrollable_offset)
 
     # first line number to be written in the scrollable section
     def get_scrollable_top_line(self) -> int:

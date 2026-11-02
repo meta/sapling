@@ -104,8 +104,8 @@ class WindowScrollTest(unittest.TestCase):
         self.assertEqual(window.scrollable_offset, 7)
 
         render_scrollable_rows(window, 3)
-        self.assertEqual(window.scrollable_offset, 7)
-        self.assertFalse(
+        self.assertEqual(window.scrollable_offset, 0)
+        self.assertTrue(
             window.in_scrollable_section(window.scrollable_section_window_start)
         )
         window.move_scrollable_down()
