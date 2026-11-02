@@ -256,6 +256,23 @@ impl<R> RepoSlot<R> {
         self.build_inner(false, loader).await
     }
 
+    /// A newly built repo, even if this slot already holds one: the eager
+    /// counterpart of [`Self::get_or_build`], for callers that want the
+    /// repo's current config applied now.
+    ///
+    /// The built repo keeps being served while its replacement builds, and
+    /// stays if that build fails. A caller arriving while any build is in
+    /// flight shares it rather than starting another.
+    pub(crate) async fn build_now(
+        self: &Arc<Self>,
+        loader: Arc<dyn RepoLoader<R>>,
+    ) -> Result<Arc<R>>
+    where
+        R: Send + Sync + 'static,
+    {
+        self.build_inner(true, loader).await
+    }
+
     async fn build_inner(
         self: &Arc<Self>,
         fresh: bool,

@@ -436,6 +436,34 @@ impl<R> MononokeRepos<R> {
         };
         repo_slot.get_or_build(loader).await
     }
+
+    /// Builds a repo that is already built here again with `loader`, through
+    /// its slot. `None`, without building, if the repo is not built here, or
+    /// was removed before its new build finished: a rebuild never builds an
+    /// unbuilt repo nor resurrects a removed one.
+    pub async fn rebuild_if_present(
+        &self,
+        repo_name: &str,
+        loader: Arc<dyn RepoLoader<R>>,
+    ) -> Result<Option<Arc<R>>>
+    where
+        R: Send + Sync + 'static,
+    {
+        let Some(repo_slot) = self.name_to_repo_map.load().get(repo_name).cloned() else {
+            return Ok(None);
+        };
+        if repo_slot.loaded().is_none() {
+            return Ok(None);
+        }
+
+        let repo = repo_slot.build_now(loader).await?;
+        let still_present = self
+            .name_to_repo_map
+            .load()
+            .get(repo_name)
+            .is_some_and(|current| Arc::ptr_eq(current, &repo_slot));
+        Ok(still_present.then_some(repo))
+    }
 }
 
 #[cfg(test)]
