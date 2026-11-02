@@ -793,6 +793,7 @@ impl EdenFsClient {
             COUNTER_FS_WRITE,
             COUNTER_FS_GETATTR,
             COUNTER_FS_SETATTR,
+            COUNTER_FS_STATFS,
             COUNTER_FS_LOOKUP,
             COUNTER_FS_ACCESS,
             COUNTER_FS_MKDIR,
@@ -1199,7 +1200,7 @@ mod tests {
 
         let counters = client.get_telemetry_counters().await?;
         assert_eq!(counters.fs_stats.syscall_open, 1);
-        assert_eq!(counters.fs_stats.syscall_statfs, 0);
+        assert_eq!(counters.fs_stats.syscall_statfs, 29131);
         Ok(())
     }
 }

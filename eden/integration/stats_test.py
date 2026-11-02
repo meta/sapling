@@ -120,9 +120,8 @@ class GenericStatsTest(testcase.EdenRepoTest):
             env={"EDENFSCTL_ONLY_RUST": "1"},
         )
         fs_stats = json.loads(output)["fs_stats"]
-        # The statfs counter is never requested from the daemon, so it is
-        # reported as 0 although the daemon counted the calls above.
-        self.assertEqual(fs_stats["syscall_statfs"], 0, msg=f"output: {output}")
+        # The statfs counter is requested from the daemon and reported.
+        self.assertGreater(fs_stats["syscall_statfs"], 0, msg=f"output: {output}")
         self.assertGreater(fs_stats["syscall_lookup"], 0, msg=f"output: {output}")
 
     def test_writing_untracked_file_bumps_write_counter(self) -> None:
