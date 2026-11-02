@@ -398,9 +398,6 @@ impl<R> MononokeRepos<R> {
     /// `None` covers both "not assigned to this service" and "assigned, but
     /// this collection cannot load anything", deliberately: splitting them
     /// would send a reader looking at shard assignment over a wiring mistake.
-    ///
-    /// Bounded because the build runs on a detached task. The bound is on the
-    /// method so a collection that never builds stays usable for any `R`.
     pub async fn get(&self, repo_name: &str) -> Result<Option<Arc<R>>>
     where
         R: Send + Sync + 'static,
@@ -417,10 +414,7 @@ impl<R> MononokeRepos<R> {
             return Ok(None);
         };
 
-        repo_slot
-            .get_or_build(move |repo_name| loader.load(repo_name))
-            .await
-            .map(Some)
+        repo_slot.get_or_build(loader).await.map(Some)
     }
 }
 
