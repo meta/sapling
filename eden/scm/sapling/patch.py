@@ -1676,7 +1676,12 @@ class binhunk:
                     _('could not decode "%s" binary patch: %s') % (self._fname, str(e))
                 )
             line = getline(lr, self.hunk)
-        text = zlib.decompress(b"".join(dec))
+        try:
+            text = zlib.decompress(b"".join(dec))
+        except zlib.error as e:
+            raise PatchError(
+                _('could not decode "%s" binary patch: %s') % (self._fname, str(e))
+            )
         if len(text) != size:
             raise PatchError(
                 _('"%s" length is %d bytes, should be %d')

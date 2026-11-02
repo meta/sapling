@@ -547,6 +547,23 @@ Invalid base85 content
   abort: could not extract "binary2" binary data
   [255]
 
+Truncated zlib stream (the data line is cut short)
+
+  $ sl revert -aq
+  $ sl import -d "1000000 0" -m truncated-binary - <<"EOF"
+  > diff --git a/text2 b/binary2
+  > rename from text2
+  > rename to binary2
+  > index 78981922613b2afb6025042ff6bd878ac1994e85..10efcb362e9f3b3420fcfbfc0e37f3dc16e29757
+  > GIT binary patch
+  > literal 5
+  > Mc$`b*O5$Pw
+  > 
+  > EOF
+  applying patch from stdin
+  abort: could not decode "binary2" binary patch: Error -5 while decompressing data: incomplete or truncated stream
+  [255]
+
 Simulate a copy/paste turning LF into CRLF (issue2870)
 
   $ sl revert -aq
