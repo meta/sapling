@@ -45,6 +45,7 @@ pub enum UseCaseId {
     Hack,
     IslServerNode,
     MeerkatCli,
+    NestCli,
     NodeClient,
     ReloadCoordinator,
     ScmEdenContainer,
@@ -227,5 +228,11 @@ mod tests {
             UseCaseId::EdenSearch
         );
         assert_eq!(<&'static str>::from(UseCaseId::EdenSearch), "edensearch");
+    }
+
+    #[test]
+    fn nest_cli_round_trips_through_its_string() {
+        assert_eq!(UseCaseId::from_str("nest-cli").unwrap(), UseCaseId::NestCli);
+        assert_eq!(<&'static str>::from(UseCaseId::NestCli), "nest-cli");
     }
 }
