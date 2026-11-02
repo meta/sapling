@@ -41,16 +41,16 @@ include_directories(${WANGLE_INCLUDE_DIR})
 fb_find_or_fetch(FBThrift)
 include_directories(${FBTHRIFT_INCLUDE_DIR})
 
-# The Python CLI uses fb303's thrift-python modules, which, like thrift-python,
-# getdeps only builds on Linux.
+# The Python CLI, which eden builds only on Linux, uses fb303's thrift-python
+# modules.
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set(FB303_THRIFT_PYTHON ON)
 endif()
 fb_find_or_fetch(fb303)
 include_directories(${FB303_INCLUDE_DIR})
 
-# The thrift crates' build scripts run THRIFT, or thrift1 found on getdeps'
-# PATH, which finds .thrift includes through getdeps' THRIFT_INCLUDE_PATH.
+# The thrift crates' build scripts run THRIFT, or else a thrift1 on PATH, which
+# finds .thrift includes through THRIFT_INCLUDE_PATH.
 if (WIN32)
   set(eden_thrift_path_separator "$<SEMICOLON>")
 else()
@@ -153,8 +153,8 @@ if (NOT BLAKE3_FOUND)
 endif()
 include_directories(${BLAKE3_INCLUDE_DIR})
 
-# The Python CLI uses thrift-python, which getdeps only builds on Linux, and
-# the thrift-python modules that fb303 builds with FB303_THRIFT_PYTHON.
+# The Python CLI, built only on Linux, uses thrift-python and the thrift-python
+# modules that fb303 builds with FB303_THRIFT_PYTHON.
 if (ENABLE_THRIFT_PYTHON AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
   include(FBThriftPythonLibrary)
   if (ENABLE_THRIFT_PYTHON STREQUAL "AUTO")
@@ -231,14 +231,6 @@ endif()
 
 if (NOT WIN32)
   find_package(CURL REQUIRED)
-  # The static libcurl that getdeps builds also needs nghttp2.
-  find_library(NGHTTP2_LIBRARY nghttp2)
-  if(NGHTTP2_LIBRARY AND CURL_LIBRARY MATCHES "\\.a$")
-    set_property(
-      TARGET CURL::libcurl
-      APPEND PROPERTY INTERFACE_LINK_LIBRARIES "${NGHTTP2_LIBRARY}"
-    )
-  endif()
   find_library(SYSTEMD_LIBRARY systemd)
   if(SYSTEMD_LIBRARY)
     set(SYSTEMD_LIBRARIES "${SYSTEMD_LIBRARY}")

@@ -79,10 +79,6 @@ else()
 endif()
 string(TIMESTAMP EDEN_BUILD_TIME_UNIX "%s")
 
-# Tell CMake to also look in the directories where getdeps.py installs
-# our third-party dependencies.
-list(APPEND CMAKE_PREFIX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/external/install")
-
 # CMake include directories
 set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/CMake"
   # For shipit-transformed builds
@@ -172,14 +168,6 @@ if(WIN32)
     get_target_property(python_dll Python3::Python LOCATION)
     install(FILES "${python_dll}" DESTINATION bin)
   endif()
-
-  # Also a emit a file listing additional directories containing runtime
-  # library dependencies.  On Windows this is needed to help figure out runtime
-  # dependencies needed to run the generated build artifacts.  This file can be
-  # processed by getdeps.py
-  get_filename_component(python_dll_dir "${python_dll}" DIRECTORY)
-  file(TO_NATIVE_PATH "${python_dll_dir}" python_dll_dir)
-  file(WRITE "${CMAKE_BINARY_DIR}/LIBRARY_DEP_DIRS.txt" "${python_dll_dir}\n")
 endif()
 
 configure_file(
