@@ -51,8 +51,8 @@ def get_version_info(
 
     ages_deltas: Optional[int] = (
         (running_version_age - installed_version_age)
-        if running_version_age
-        and installed_version_age
+        if running_version_age is not None
+        and installed_version_age is not None
         and running_version_age != installed_version_age
         else None
     )

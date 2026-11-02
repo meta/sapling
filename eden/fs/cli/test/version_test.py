@@ -40,7 +40,7 @@ class VersionAgesTest(unittest.TestCase):
 
         self.assertEqual(info.installed_version_age, 0)
         self.assertEqual(info.running_version_age, 60)
-        self.assertIsNone(info.ages_deltas)
+        self.assertEqual(info.ages_deltas, 60)
 
     def test_ages_delta_when_both_builds_are_older_than_today(self) -> None:
         installed_version = (FIXED_NOW - timedelta(days=1)).strftime("%Y%m%d-%H%M%S")
