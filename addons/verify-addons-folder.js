@@ -12,6 +12,7 @@
 
 const {spawn} = require('child_process');
 const path = require('path');
+const os = require('os');
 const process = require('process');
 
 const addons = __dirname;
@@ -24,6 +25,16 @@ Requirements:
 
 const TASK_LABEL_WIDTH = 14;
 const COMMAND_LABEL_WIDTH = 34;
+
+/**
+ * `isl/` has by far the largest unit test suite, so it is the long pole of this script.
+ * Give it more Jest workers than the other packages when the host has the cores for it,
+ * but stay bounded so concurrent Jest pools do not exhaust a CI container's memory.
+ */
+const ISL_TEST_WORKERS = Math.max(
+  2,
+  Math.min(6, Math.floor((os.availableParallelism?.() ?? os.cpus().length) / 4)),
+);
 
 /**
  * @typedef {{
@@ -188,28 +199,39 @@ async function verifyIsl(args) {
   const vscode = path.join(addons, 'vscode');
 
   await runTask(['yarn', 'codegen'], islServer);
-  await Promise.all([runTask(['yarn', 'build'], islServer), runTask(['yarn', 'build'], isl)]);
   await Promise.all([
-    runTask(['yarn', 'build-extension'], vscode),
-    runTask(['yarn', 'build-webview'], vscode),
+    (async () => {
+      await Promise.all([runTask(['yarn', 'build'], islServer), runTask(['yarn', 'build'], isl)]);
+      await Promise.all([
+        runTask(['yarn', 'build-extension'], vscode),
+        runTask(['yarn', 'build-webview'], vscode),
+      ]);
+      await Promise.all([
+        lintAndTest(isl, ISL_TEST_WORKERS),
+        lintAndTest(islServer),
+        lintAndTest(vscode),
+      ]);
+    })(),
+    // Integration tests run serially (one Jest worker) and import sources, not build output,
+    // so run them alongside the builds and unit tests instead of after them.
+    args.skipIntegrationTests
+      ? Promise.resolve()
+      : runTask(['yarn', 'integration', '--watchAll=false'], isl),
   ]);
-  await Promise.all([lintAndTest(isl), lintAndTest(islServer), lintAndTest(vscode)]);
-  if (!args.skipIntegrationTests) {
-    await runTask(['yarn', 'integration', '--watchAll=false'], isl);
-  }
 }
 
 /**
  * @param {string} cwd
+ * @param {number} testWorkers
  * @returns {Promise<void>}
  */
-async function lintAndTest(cwd) {
+async function lintAndTest(cwd, testWorkers = 2) {
   await Promise.all([
     runTask(['yarn', 'run', 'lint'], cwd),
     runTask(['yarn', 'run', 'tsc', '--noEmit'], cwd),
     // Packages run concurrently. Bound each Jest pool so they do not each consume
     // the host's CPU count in workers and exhaust the CI container's memory.
-    runTask(['yarn', 'test', '--watchAll=false', '--maxWorkers=2'], cwd),
+    runTask(['yarn', 'test', '--watchAll=false', `--maxWorkers=${testWorkers}`], cwd),
   ]);
 }
 
