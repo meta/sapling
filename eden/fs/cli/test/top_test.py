@@ -8,7 +8,7 @@
 
 import unittest
 
-from ..top import format_duration, Process
+from ..top import format_duration, Process, Window
 from ..util import format_cmd, format_mount
 
 
@@ -58,3 +58,55 @@ class ProcessAggregationTest(unittest.TestCase):
         self.assertTrue(exited.is_running)
         self.assertEqual(exited.last_access, 1000.0)
         self.assertEqual(exited.fuseFetch, 8)
+
+
+class FakeScreen:
+    def __init__(self, height: int = 24, width: int = 80) -> None:
+        self.height = height
+        self.width = width
+
+    def timeout(self, milliseconds: int) -> None:
+        pass
+
+    def getmaxyx(self) -> tuple[int, int]:
+        return (self.height, self.width)
+
+    def erase(self) -> None:
+        pass
+
+    def redrawwin(self) -> None:
+        pass
+
+    def refresh(self) -> None:
+        pass
+
+    def addnstr(self, y: int, x: int, text: str, n: int, attr: int) -> None:
+        pass
+
+    def getch(self) -> int:
+        return -1
+
+
+def render_scrollable_rows(window: Window, rows: int) -> None:
+    window.reset()
+    window.start_scrollable_section(5)
+    for i in range(rows):
+        window.write_line(f"row {i}")
+    window.end_scrollable_section()
+
+
+class WindowScrollTest(unittest.TestCase):
+    def test_offset_after_the_rows_shrink(self) -> None:
+        window = Window(FakeScreen(), refresh_rate=1)
+        render_scrollable_rows(window, 12)
+        for _ in range(7):
+            window.move_scrollable_down()
+        self.assertEqual(window.scrollable_offset, 7)
+
+        render_scrollable_rows(window, 3)
+        self.assertEqual(window.scrollable_offset, 7)
+        self.assertFalse(
+            window.in_scrollable_section(window.scrollable_section_window_start)
+        )
+        window.move_scrollable_down()
+        self.assertEqual(window.scrollable_offset, 0)
