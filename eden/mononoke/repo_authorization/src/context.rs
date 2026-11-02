@@ -100,6 +100,15 @@ impl AuthorizationContext {
         AuthorizationContext::FullAccess
     }
 
+    /// Authorization context for requests to a server built for OSS. Such
+    /// servers only accept loopback connections and cannot authenticate
+    /// callers, so every request is allowed, as with
+    /// [`Self::new_bypass_access_control`].
+    #[cfg(not(fbcode_build))]
+    pub fn new_oss_local() -> AuthorizationContext {
+        AuthorizationContext::FullAccess
+    }
+
     /// Returns true if this context is for a service write.
     pub fn is_service(&self) -> bool {
         matches!(self, AuthorizationContext::Service(_))

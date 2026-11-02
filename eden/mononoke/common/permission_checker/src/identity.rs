@@ -111,6 +111,15 @@ impl MononokeIdentity {
         Self(auth_id)
     }
 
+    /// Identity of every caller of a server built for OSS. The OSS Thrift
+    /// transport does not authenticate callers, so this marks requests as
+    /// coming from an unverified local process. It is not a `USER` identity,
+    /// so nothing infers a commit author from it.
+    #[cfg(not(fbcode_build))]
+    pub fn oss_local() -> Self {
+        Self::from_legacy_type_data("OSS_LOCAL", "loopback")
+    }
+
     pub fn id_type(&self) -> &str {
         self.0.identity.id_type.as_str()
     }
@@ -411,6 +420,17 @@ mod tests {
     use mononoke_macros::mononoke;
 
     use super::*;
+
+    #[cfg(not(fbcode_build))]
+    #[mononoke::test]
+    fn test_oss_local_identity() {
+        let id = MononokeIdentity::oss_local();
+        assert_eq!(id.id_type(), "OSS_LOCAL");
+        assert_eq!(id.id_data(), "loopback");
+        // Must not collide with an empty identity or a real user identity.
+        assert_ne!(id, MononokeIdentity::from_legacy_type_data("", ""));
+        assert!(!id.is_of_type("USER"));
+    }
 
     #[mononoke::test]
     fn test_ipv6_identity() {
