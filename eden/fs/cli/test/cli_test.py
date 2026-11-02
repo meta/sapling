@@ -853,3 +853,21 @@ class ClonePrecheckTest(unittest.TestCase, TemporaryDirectoryMixin):
             ):
                 with self.assertRaisesRegex(Exception, "already configured"):
                     instance.clone(MagicMock(), mount_path, "0" * 40)
+
+
+class FsckThreadCountTest(unittest.TestCase):
+    def test_error_discovery_threads_from_config(self) -> None:
+        cmd = main_mod.FsckCmd(argparse.ArgumentParser())
+        args = argparse.Namespace(
+            num_error_discovery_threads=4, check_only=True, force=False
+        )
+        instance = MagicMock()
+        instance.get_config_int.return_value = 16
+        with patch.object(main_mod, "get_fsck_command", return_value="eden_fsck"):
+            with patch.object(main_mod.subprocess, "call", return_value=0) as call:
+                cmd.check_one(args, instance, Path("/checkout"), Path("/state"))
+        argv = call.call_args[0][0]
+        instance.get_config_int.assert_called_once_with(
+            "fsck.num-error-discovery-threads", 4
+        )
+        self.assertIn("--num_error_discovery_threads=4", argv)

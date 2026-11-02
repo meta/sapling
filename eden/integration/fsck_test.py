@@ -6,6 +6,7 @@
 
 # pyre-strict
 
+import os
 import pathlib
 import subprocess
 from pathlib import Path
@@ -166,6 +167,33 @@ class FsckTest(testcase.EdenRepoTest):
             f"fsck:{self.eden_dir}/clients/fourth_mount/local: completed checking for errors, no problems found",
             fsck_out,
         )
+
+    def test_fsck_ignores_configured_error_discovery_threads(self) -> None:
+        """`eden fsck` reads fsck.num-error-discovery-threads from the config
+        but spawns eden_fsck with the command-line default instead."""
+        self.write_configs(
+            {"fsck": ['num-error-discovery-threads = "16"']},
+            os.path.join(self.home_dir, ".edenrc"),
+        )
+        fake_bin = Path(self.tmp_dir) / "fake_fsck_bin"
+        fake_bin.mkdir()
+        argv_file = fake_bin / "argv"
+        fake_fsck = fake_bin / "eden_fsck"
+        fake_fsck.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" > "{argv_file}"\n')
+        fake_fsck.chmod(0o755)
+
+        self.eden.run_cmd("unmount", self.mount)
+        cmd_result = self.eden.run_unchecked(
+            "fsck",
+            self.mount,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env={"EDENFS_FSCK": str(fake_fsck)},
+        )
+        self.assertEqual(0, cmd_result.returncode, cmd_result.stdout)
+        argv = argv_file.read_text().splitlines()
+        self.assertIn("--num_error_discovery_threads=4", argv)
+        self.assertNotIn("--num_error_discovery_threads=16", argv)
 
 
 @testcase.eden_test
