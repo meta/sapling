@@ -22,6 +22,7 @@ export class RemoveWorktreeOperation extends Operation {
       'worktree',
       'remove',
       this.worktreePath,
+      '--force',
     ];
   }
 }

@@ -263,7 +263,9 @@ export const vscodeCommands = {
       return;
     }
     const choice = await vscode.window.showWarningMessage(
-      t('Are you sure you want to remove this worktree?'),
+      t(
+        'Are you sure you want to remove this worktree? Any uncommitted changes and shelves in this worktree will be lost forever.',
+      ),
       t('Cancel'),
       t('Remove'),
     );

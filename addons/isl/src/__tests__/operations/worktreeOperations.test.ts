@@ -54,6 +54,7 @@ describe('RemoveWorktreeOperation', () => {
       'worktree',
       'remove',
       '/home/user/feature-x',
+      '--force',
     ]);
   });
 
