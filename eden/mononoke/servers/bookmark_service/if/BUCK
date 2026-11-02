@@ -1,0 +1,22 @@
+load("@fbcode_macros//build_defs:thrift_library.bzl", "thrift_library")
+
+oncall("scm_server_infra")
+
+thrift_library(
+    name = "bookmark_service_if",
+    languages = [
+        "python",
+        "rust",
+    ],
+    py3_namespace = "eden.mononoke.facebook.bookmark_service",
+    rust_gen_metadata = True,
+    thrift_rust_options = ["default_enum_zero"],
+    thrift_srcs = {
+        "bookmark_service.thrift": ["BookmarkService"],
+    },
+    deps = [
+        "//eden/mononoke/mononoke_types/serialization:mononoke_types_serialization",
+        "//thrift/annotation:rust",
+        "//thrift/annotation:thrift",
+    ],
+)

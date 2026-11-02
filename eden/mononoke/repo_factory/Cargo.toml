@@ -20,6 +20,7 @@ bonsai_hg_mapping = { version = "0.1.0", path = "../repo_attributes/bonsai_hg_ma
 bonsai_p4_mapping = { version = "0.1.0", path = "../repo_attributes/bonsai_p4_mapping" }
 bonsai_svnrev_mapping = { version = "0.1.0", path = "../repo_attributes/bonsai_svnrev_mapping" }
 bonsai_tag_mapping = { version = "0.1.0", path = "../repo_attributes/bonsai_tag_mapping" }
+bookmark_service_client = { version = "0.1.0", path = "../clients/bookmark_service_client" }
 bookmarks = { version = "0.1.0", path = "../repo_attributes/bookmarks" }
 bookmarks_cache = { version = "0.1.0", path = "../repo_attributes/bookmarks/bookmarks_cache" }
 bundle_uri = { version = "0.1.0", path = "../git/bundle_uri" }

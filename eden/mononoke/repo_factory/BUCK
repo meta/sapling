@@ -33,7 +33,7 @@ rust_library(
         "//eden/mononoke/blobstore:readonlyblob",
         "//eden/mononoke/blobstore:redactedblobstore",
         "//eden/mononoke/blobstore:virtually_sharded_blobstore",
-        "//eden/mononoke/clients/facebook/bookmark_service_client:bookmark_service_client",
+        "//eden/mononoke/clients/bookmark_service_client:bookmark_service_client",
         "//eden/mononoke/clients/facebook/derived_data_service_client:derived_data_client_library",
         "//eden/mononoke/cmdlib:environment",
         "//eden/mononoke/common/acl_regions:acl_regions",

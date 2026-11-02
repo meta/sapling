@@ -1,0 +1,69 @@
+load("@fbcode_macros//build_defs/lib:rust_oss.bzl", "rust_oss")
+load("@fbsource//tools/build_defs:rust_binary.bzl", "rust_binary")
+
+oncall("scm_server_infra")
+
+rust_binary(
+    name = "bookmark_service_server",
+    srcs = glob([
+        "server/**/*.rs",
+    ]),
+    test_deps = [
+        "//common/rust/shed/fbinit:fbinit-tokio",
+        "//eden/mononoke/cmdlib/mononoke_app:mononoke_app",
+        "//eden/mononoke/common/mononoke_macros:mononoke_macros",
+        "//eden/mononoke/common/mononoke_repos:mononoke_repos",
+        "//eden/mononoke/common/scuba_ext:scuba_ext",
+        "//eden/mononoke/derived_data/mercurial_derivation:mercurial_derivation",
+        "//eden/mononoke/repo_attributes/bonsai_hg_mapping:bonsai_hg_mapping",
+        "//eden/mononoke/repo_attributes/bookmarks:bookmarks",
+        "//eden/mononoke/repo_attributes/bookmarks/warm_bookmarks_cache:warm_bookmarks_cache",
+        "//eden/mononoke/repo_attributes/commit_graph/commit_graph:commit_graph",
+        "//eden/mononoke/repo_attributes/filestore:filestore",
+        "//eden/mononoke/repo_attributes/repo_blobstore:repo_blobstore",
+        "//eden/mononoke/repo_attributes/repo_derivation_queues/if:derivation_queue_thrift-rust",
+        "//eden/mononoke/repo_attributes/repo_derived_data:repo_derived_data",
+        "//eden/mononoke/repo_attributes/repo_event_publisher:repo_event_publisher",
+        "//eden/mononoke/tests/fixtures:fixtures",
+        "//eden/mononoke/tests/utils:tests_utils",
+    ],
+    deps = [
+        "fbsource//third-party/rust:anyhow",
+        "fbsource//third-party/rust:async-trait",
+        "fbsource//third-party/rust:clap",
+        "fbsource//third-party/rust:futures",
+        "fbsource//third-party/rust:thiserror",
+        "fbsource//third-party/rust:tokio",
+        "fbsource//third-party/rust:tracing",
+        "//common/rust/shed/facet:facet",
+        "//common/rust/shed/fbinit:fbinit",
+        "//common/rust/shed/futures_stats:futures_stats",
+        "//common/rust/shed/shared_error:shared_error",
+        "//common/rust/shed/stats:stats",
+        "//common/rust/shed/time_ext:time_ext",
+        "//eden/mononoke/cmdlib:environment",
+        "//eden/mononoke/cmdlib/mononoke_app:mononoke_app",
+        "//eden/mononoke/cmdlib/sharding:executor_lib",
+        "//eden/mononoke/cmdlib/sharding_ext:sharding_ext",
+        "//eden/mononoke/cmdlib/thrift_server:mononoke_thrift_server",
+        "//eden/mononoke/common/metadata:metadata",
+        "//eden/mononoke/common/scuba_ext:scuba_ext",
+        "//eden/mononoke/derived_data:derived_data",
+        "//eden/mononoke/metaconfig:metaconfig_types",
+        "//eden/mononoke/repo_attributes/bookmarks/bookmarks_cache:bookmarks_cache",
+        "//eden/mononoke/repo_attributes/bookmarks/bookmarks_types:bookmarks_types",
+        "//eden/mononoke/repo_attributes/repo_identity:repo_identity",
+        "//eden/mononoke/servers/bookmark_service/if:BookmarkService-metadata-sys",
+        "//eden/mononoke/servers/bookmark_service/if:bookmark_service_if-rust",
+        "//eden/mononoke/servers/bookmark_service/if:bookmark_service_if-rust-services",
+        "//eden/mononoke/servers/slapi/slapi_server/context:context",
+    ]
+    + (
+        []
+        if rust_oss.is_oss_build()
+        else [
+            "fbsource//third-party/rust:serde_json",
+            "//eden/scm/lib/clientinfo:clientinfo",
+        ]
+    ),
+)

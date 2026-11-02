@@ -58,9 +58,7 @@ use bonsai_svnrev_mapping::SqlBonsaiSvnrevMappingBuilder;
 use bonsai_tag_mapping::ArcBonsaiTagMapping;
 use bonsai_tag_mapping::CachedBonsaiTagMapping;
 use bonsai_tag_mapping::SqlBonsaiTagMappingBuilder;
-#[cfg(fbcode_build)]
 use bookmark_service_client::BookmarkServiceClient;
-#[cfg(fbcode_build)]
 use bookmark_service_client::RepoBookmarkServiceClient;
 use bookmarks::ArcBookmarkUpdateLog;
 use bookmarks::ArcBookmarks;
@@ -109,7 +107,6 @@ use derived_data_remote::DerivationClient;
 use derived_data_remote::RemoteDerivationOptions;
 use enabled_derived_data_types::ArcEnabledDerivedDataTypes;
 use enabled_derived_data_types::SqlEnabledDerivedDataTypesBuilder;
-#[cfg(fbcode_build)]
 use environment::BookmarkCacheAddress;
 use environment::BookmarkCacheDerivedData;
 use environment::BookmarkCacheKind;
@@ -1907,7 +1904,6 @@ impl RepoFactory {
                 Ok(Arc::new(wbc_builder.build().watched().await?)
                     as Arc<dyn CombinedBookmarksCache + Send + Sync>)
             }
-            #[cfg(fbcode_build)]
             BookmarkCacheKind::Remote(address) => {
                 match effective_derived_data {
                     BookmarkCacheDerivedData::SpecificTypes(_) => {
@@ -1927,15 +1923,24 @@ impl RepoFactory {
                     BookmarkCacheAddress::HostPort(host_port) => {
                         BookmarkServiceClient::from_host_port(self.env.fb, host_port.to_string())?
                     }
+                    #[cfg(fbcode_build)]
                     BookmarkCacheAddress::SmcTier(tier_name) => {
                         BookmarkServiceClient::from_tier_name(self.env.fb, tier_name.to_string())?
                     }
+                    #[cfg(fbcode_build)]
                     BookmarkCacheAddress::ShardManagerTier(tier_name) => {
                         BookmarkServiceClient::from_sm_tier_name(
                             self.env.fb,
                             tier_name.to_string(),
                             repo_identity.name().to_string(),
                         )?
+                    }
+                    #[cfg(not(fbcode_build))]
+                    BookmarkCacheAddress::SmcTier(_)
+                    | BookmarkCacheAddress::ShardManagerTier(_) => {
+                        anyhow::bail!(
+                            "bookmark service tier addresses are unavailable in OSS mode; configure a loopback host:port address"
+                        )
                     }
                 };
                 let repo_client = RepoBookmarkServiceClient::new(
@@ -1945,12 +1950,6 @@ impl RepoFactory {
                 );
 
                 Ok(Arc::new(repo_client) as Arc<dyn CombinedBookmarksCache + Send + Sync>)
-            }
-            #[cfg(not(fbcode_build))]
-            BookmarkCacheKind::Remote(_addr) => {
-                return Err(anyhow::anyhow!(
-                    "Remote bookmark cache not supported in non-fbcode builds"
-                ));
             }
             BookmarkCacheKind::Disabled => Ok(Arc::new(NoopBookmarksCache::new(bookmarks.clone()))
                 as Arc<dyn CombinedBookmarksCache + Send + Sync>),

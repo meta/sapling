@@ -24,7 +24,6 @@ thrift_library(
         "//eden/mononoke/derived_data:changeset_info",
         "//eden/mononoke/derived_data:changeset_info-unittest",
         "//eden/mononoke/derived_data/remote/if:",
-        "//eden/mononoke/facebook/bookmark_service/if:",
         "//eden/mononoke/facebook/derivation_pipeline_worker/if:",
         "//eden/mononoke/facebook/diff_service/if:",
         "//eden/mononoke/facebook/get_bundle:bundle_store_lib",
@@ -52,6 +51,7 @@ thrift_library(
         "//eden/mononoke/repo_attributes/filenodes/if:",
         "//eden/mononoke/repo_attributes/mutable_renames/if:",
         "//eden/mononoke/repo_attributes/repo_derivation_queues/if:",
+        "//eden/mononoke/servers/bookmark_service/if:",
     ],
     deps = [
         "//thrift/annotation:rust",

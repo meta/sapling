@@ -1,0 +1,71 @@
+load("@fbcode_macros//build_defs/lib:rust_oss.bzl", "rust_oss")
+load("@fbsource//tools/build_defs:rust_binary.bzl", "rust_binary")
+load("@fbsource//tools/build_defs:rust_library.bzl", "rust_library")
+
+oncall("scm_server_infra")
+
+rust_binary(
+    name = "bookmark_service_client_cli",
+    srcs = glob(["bin/**/*.rs"]),
+    deps = [
+        "fbsource//third-party/rust:anyhow",
+        "fbsource//third-party/rust:clap",
+        "fbsource//third-party/rust:futures",
+        "fbsource//third-party/rust:prettytable-rs",
+        ":bookmark_service_client",
+        "//common/rust/shed/fbinit:fbinit",
+        "//common/rust/shed/fbinit:fbinit-tokio",
+        "//eden/mononoke/cmdlib:cmdlib_logging",
+        "//eden/mononoke/repo_attributes/bookmarks/bookmarks_cache:bookmarks_cache",
+        "//eden/mononoke/repo_attributes/bookmarks/bookmarks_types:bookmarks_types",
+        "//eden/mononoke/servers/slapi/slapi_server/context:context",
+        "//eden/scm/lib/clientinfo:clientinfo",
+    ]
+    + (
+        []
+        if rust_oss.is_oss_build()
+        else [
+            "fbsource//third-party/rust:log",
+            "//common/rust/cpp_log_spew:cpp_log_spew",
+        ]
+    ),
+)
+
+rust_library(
+    name = "bookmark_service_client",
+    srcs = glob([
+        "lib/**/*.rs",
+    ]),
+    autocargo = {
+        "cargo_toml_config": {
+            "extra_buck_dependencies": {
+                "dependencies": [
+                    "//eden/mononoke/common/oss/thrift_transport:oss_thrift_transport",
+                ],
+            },
+        },
+    },
+    deps = [
+        "fbsource//third-party/rust:anyhow",
+        "fbsource//third-party/rust:async-trait",
+        "//common/rust/shed/facet:facet",
+        "//common/rust/shed/fbinit:fbinit",
+        "//eden/mononoke/mononoke_types:mononoke_types",
+        "//eden/mononoke/repo_attributes/bookmarks/bookmarks_cache:bookmarks_cache",
+        "//eden/mononoke/repo_attributes/bookmarks/bookmarks_types:bookmarks_types",
+        "//eden/mononoke/servers/bookmark_service/if:bookmark_service_if-rust",
+        "//eden/mononoke/servers/bookmark_service/if:bookmark_service_if-rust-clients",
+        "//eden/mononoke/servers/slapi/slapi_server/context:context",
+        "//fb303/thrift:fb303_core-rust",
+    ]
+    + (
+        [
+            "//eden/mononoke/common/oss/thrift_transport:oss_thrift_transport",
+        ]
+        if rust_oss.is_oss_build()
+        else [
+            "//common/thrift/thrift:status-rust-clients",
+            "//eden/mononoke/common/facebook/thrift_client:thrift_client",
+        ]
+    ),
+)
