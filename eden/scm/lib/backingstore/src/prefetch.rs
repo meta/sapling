@@ -426,18 +426,15 @@ impl Manager {
             // would share the root's pacing budget, with the shallow one spending it far ahead of
             // the walker while the deep ones starve. A deeper walk replaces the prefetch from the
             // top, since the deeper files under directories already passed are wanted too; the
-            // new one passes already-fetched directories quickly from local trees.
-            if let Some((prefetched, handle)) = self.prefetches.files.get(&root)
-                && *prefetched < depth
-            {
-                tracing::debug!(%root, depth, "replacing shallower prefetch");
-                if !handle.is_paused() {
-                    slots += 1;
-                }
-                self.prefetches.files.remove(&root);
-            }
-            let is_new = !self.prefetches.files.contains_key(&root);
-            if is_new && slots == 0 {
+            // new one passes already-fetched directories quickly from local trees. The shallower
+            // prefetch runs until the deeper one has started, so a full manifest-walk limit
+            // leaves the root with that prefetch rather than none until the next tick.
+            let needs_slot = self
+                .prefetches
+                .files
+                .get(&root)
+                .is_none_or(|(_, handle)| handle.is_paused());
+            if needs_slot && slots == 0 {
                 tracing::debug!(%root, depth, "not kicking off file walk - prefetches full");
                 continue;
             }
@@ -454,10 +451,13 @@ impl Manager {
                 tracing::debug!(%root, depth, "not kicking off file walk - manifest walks full");
                 continue;
             };
+            if self.prefetches.files.contains_key(&root) {
+                tracing::debug!(%root, depth, "replacing shallower prefetch");
+            }
             tracing::debug!(%root, depth, "kicking off file prefetch");
             self.prefetches.handled_files.insert((root.clone(), depth));
             self.prefetches.files.insert(root, (depth, handle));
-            if is_new {
+            if needs_slot {
                 slots -= 1;
             }
         }
@@ -2108,6 +2108,96 @@ mod test {
         // requested again (served locally) along with the depth-1 files.
         let keys = inner.fetches().swap_remove(1);
         assert_eq!(keys.len(), 6, "{keys:?}");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_deeper_walk_keeps_prefetch_until_replacement_starts() -> anyhow::Result<()> {
+        let tree_store = Arc::new(TestStore::new());
+        let inner = Arc::new(TestStore::new());
+        let released = Arc::new(AtomicBool::new(false));
+        let file_store = Arc::new(GatedFileStore {
+            inner: inner.clone(),
+            released: released.clone(),
+        });
+        let mut mf = TreeManifest::ephemeral(tree_store.clone());
+        for path in ["r/a", "r/b", "r/d1/x", "r/d1/y", "r/d2/x", "r/d2/y"] {
+            let repo_path: RepoPathBuf = path.to_string().try_into()?;
+            let hgid = inner.insert_data(Default::default(), &repo_path, path.as_bytes().into())?;
+            mf.insert(repo_path, FileMetadata::new(hgid, types::FileType::Regular))?;
+        }
+        let root_hgid = mf.persist(&[])?;
+        let mut rng = ChaChaRng::from_seed([0u8; 32]);
+        let commit_id = HgId::random(&mut rng);
+        let mut detector = walkdetector::Detector::new();
+        detector.set_walk_threshold(2);
+        // A single manifest-walk permit, and the manager ticked by hand so its state can be
+        // checked between ticks.
+        let config = Config {
+            max_concurrent_manifest_walks: 1,
+            ..Config::default()
+        };
+        let mut manager = Manager {
+            config,
+            tree_resolver: Arc::new(TestTreeResolver::new(tree_store, [(commit_id, root_hgid)])),
+            file_store,
+            current_commit_id: Arc::new(RwLock::new(Some(commit_id.to_hex()))),
+            detector: detector.clone(),
+            repo_root: "".into(),
+            make_matcher: Box::new(make_test_sparse_matcher),
+            limits: Limits::new(&config),
+            commit: None,
+            prefetches: Prefetches::default(),
+            last_tick: None,
+        };
+        let root: RepoPathBuf = "r".to_string().try_into()?;
+        let wait_until = |done: &dyn Fn() -> bool, what: &str| {
+            for _ in 0..2000 {
+                if done() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            panic!("timed out waiting for {what}");
+        };
+
+        detector.file_loaded(RepoPath::from_static_str("r/a"), 0);
+        detector.file_loaded(RepoPath::from_static_str("r/b"), 0);
+        manager.tick();
+        assert_eq!(manager.prefetches.files[&root].0, 0);
+        let shallow = manager.prefetches.files[&root].1.clone();
+        // The depth-0 prefetch holds the only permit while its fetch is held.
+        wait_until(
+            &|| inner.fetches().len() == 1,
+            "the shallow prefetch's fetch",
+        );
+
+        detector.file_loaded(RepoPath::from_static_str("r/d1/x"), 0);
+        detector.file_loaded(RepoPath::from_static_str("r/d1/y"), 0);
+        detector.file_loaded(RepoPath::from_static_str("r/d2/x"), 0);
+        detector.file_loaded(RepoPath::from_static_str("r/d2/y"), 0);
+        assert_eq!(detector.file_walks(), vec![(root.clone(), 1)]);
+        manager.tick();
+        // No permit for the deeper prefetch: the shallower one keeps running and the deeper
+        // walk is left unhandled for a later tick.
+        assert!(shallow.is_in_progress());
+        assert_eq!(manager.prefetches.files[&root].0, 0);
+        assert!(
+            !manager
+                .prefetches
+                .handled_files
+                .contains(&(root.clone(), 1))
+        );
+
+        released.store(true, Ordering::Release);
+        wait_until(&|| shallow.is_done(), "the shallow prefetch to finish");
+        manager.tick();
+        assert_eq!(manager.prefetches.files[&root].0, 1);
+        wait_until(
+            &|| inner.fetches().len() == 2,
+            "the deeper prefetch's fetch",
+        );
 
         Ok(())
     }
