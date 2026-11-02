@@ -7,11 +7,9 @@
 
 use std::cmp::Ordering;
 use std::iter::once;
-use std::sync::Arc;
 
 use context::CoreContext;
 use metaconfig_types::CommonCommitSyncConfig;
-use mononoke_api::Mononoke;
 use mononoke_api::Repo;
 use mononoke_api::RepoContext;
 use mononoke_types::ChangesetId;
@@ -24,14 +22,20 @@ use crate::source_control_impl::SourceControlServiceImpl;
 #[derive(Debug, Clone)]
 struct RepoChangeset(String, ChangesetId);
 
+/// Pushrebase history is traversed across repo boundaries (xrepo sync), so
+/// repos are discovered by name rather than by the caller's specifier.
+fn repo_specifier(name: &str) -> thrift::RepoSpecifier {
+    thrift::RepoSpecifier {
+        name: name.to_string(),
+        ..Default::default()
+    }
+}
+
 impl RepoChangeset {
     fn into_thrift(self) -> thrift::CommitSpecifier {
         let RepoChangeset(name, cs_id) = self;
         thrift::CommitSpecifier {
-            repo: thrift::RepoSpecifier {
-                name,
-                ..Default::default()
-            },
+            repo: repo_specifier(&name),
             id: thrift::CommitId::bonsai(cs_id.as_ref().to_vec()),
             ..Default::default()
         }
@@ -41,23 +45,23 @@ impl RepoChangeset {
 // Struct that represents current pushrebase history. Provides a simple
 // interface which allows extending the history by looking into different
 // mappings.
-struct RepoChangesetsPushrebaseHistory {
+struct RepoChangesetsPushrebaseHistory<'a> {
     ctx: CoreContext,
-    mononoke: Arc<Mononoke<Repo>>,
+    scs: &'a SourceControlServiceImpl,
     head: RepoChangeset,
     changesets: Vec<RepoChangeset>,
 }
 
-impl RepoChangesetsPushrebaseHistory {
+impl<'a> RepoChangesetsPushrebaseHistory<'a> {
     fn new(
         ctx: CoreContext,
-        mononoke: Arc<Mononoke<Repo>>,
+        scs: &'a SourceControlServiceImpl,
         repo_name: String,
         changeset: ChangesetId,
     ) -> Self {
         Self {
             ctx,
-            mononoke,
+            scs,
             head: RepoChangeset(repo_name, changeset),
             changesets: vec![],
         }
@@ -78,18 +82,10 @@ impl RepoChangesetsPushrebaseHistory {
         }
     }
 
-    async fn repo(
-        &self,
-        repo_name: &String,
-    ) -> Result<RepoContext<Repo>, scs_errors::ServiceError> {
-        let repo = self
-            .mononoke
-            .repo(self.ctx.clone(), repo_name)
-            .await?
-            .ok_or_else(|| scs_errors::repo_not_found(repo_name.clone()))?
-            .build()
-            .await?;
-        Ok(repo)
+    async fn repo(&self, repo_name: &str) -> Result<RepoContext<Repo>, scs_errors::ServiceError> {
+        self.scs
+            .repo(self.ctx.clone(), &repo_specifier(repo_name))
+            .await
     }
 
     async fn ensure_head_is_public(&self) -> Result<(), scs_errors::ServiceError> {
@@ -192,7 +188,7 @@ impl RepoChangesetsPushrebaseHistory {
             let Some(entries) = by_target_repo.remove(&target_repo_id) else {
                 continue;
             };
-            if let Some(target_repo_name) = self.mononoke.repo_name_from_id(target_repo_id) {
+            if let Some(target_repo_name) = self.scs.mononoke.repo_name_from_id(target_repo_id) {
                 synced_changesets.extend(entries.into_iter().filter_map(|entry| {
                     let traverse = match entry.maybe_source_repo {
                         // source_repo information can be absent e.g. for old commits but
@@ -254,7 +250,7 @@ impl SourceControlServiceImpl {
         let (repo, changeset) = self.repo_changeset(ctx.clone(), &commit).await?;
         let mut history = RepoChangesetsPushrebaseHistory::new(
             ctx,
-            self.mononoke.clone(),
+            self,
             repo.name().to_string(),
             changeset.id(),
         );
