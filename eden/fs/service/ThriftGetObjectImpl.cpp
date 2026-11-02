@@ -59,9 +59,10 @@ ScmTreeWithOrigin transformToTreeFromOrigin(
           "no tree found for id ",
           edenMount->getObjectStore()->renderObjectId(id));
     } else {
+      treeOrError.treeEntries().ensure();
       for (const auto& entry : *(tree.value())) {
         const auto& [name, treeEntry] = entry;
-        treeOrError.treeEntries().ensure().emplace_back();
+        treeOrError.treeEntries()->emplace_back();
         auto& out = treeOrError.treeEntries()->back();
         out.name() = name.asString();
         out.mode() = modeFromTreeEntryType(treeEntry.getType());

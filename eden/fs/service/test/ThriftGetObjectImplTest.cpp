@@ -33,7 +33,8 @@ TEST(ThriftGetObjectImplTest, emptyTreeFromOrigin) {
       folly::Try<std::shared_ptr<const Tree>>{emptyTree},
       DataFetchOrigin::MEMORY_CACHE);
 
-  EXPECT_EQ(ScmTreeOrError::Type::__EMPTY__, result.scmTreeData()->getType());
+  EXPECT_EQ(ScmTreeOrError::Type::treeEntries, result.scmTreeData()->getType());
+  EXPECT_TRUE(result.scmTreeData()->treeEntries()->empty());
 }
 
 } // namespace facebook::eden

@@ -8,7 +8,6 @@
 
 import binascii
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -374,8 +373,8 @@ class DebugTreeHgTest(testcase.HgRepoTestMixin, testcase.EdenRepoTest):
 
     async def test_debug_tree_of_empty_tree(self) -> None:
         # A commit without files has an empty root tree. `debugGetTree` returns
-        # an `ScmTreeOrError` with no arm set for it, so `eden debug tree`
-        # fails on the client instead of printing an empty tree.
+        # an empty `treeEntries` list for it and `eden debug tree` prints an
+        # empty tree.
         repo = self.repo
         assert isinstance(repo, hgrepo.HgRepository)
         repo.hg("rm", "testDir/testTree/binary")
@@ -391,12 +390,11 @@ class DebugTreeHgTest(testcase.HgRepoTestMixin, testcase.EdenRepoTest):
                 )
             )
         tree = response.trees[0].scmTreeData
-        self.assertEqual(ScmTreeOrError.Type.EMPTY, tree.type)
+        self.assertEqual(ScmTreeOrError.Type.treeEntries, tree.type)
+        self.assertEqual([], list(tree.treeEntries))
 
-        result = self.eden.run_unchecked(
-            "debug", "tree", self.mount, manifest, stdout=subprocess.PIPE
-        )
-        self.assertNotEqual(0, result.returncode)
+        output = self.eden.run_cmd("debug", "tree", self.mount, manifest)
+        self.assertEqual("", output)
 
     async def test_debug_tree_locations(self) -> None:
         async with self.eden.get_async_thrift_client() as client:
