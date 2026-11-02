@@ -36,6 +36,7 @@
 #include <folly/SocketAddress.h>
 #include <folly/String.h>
 #include <folly/portability/Unistd.h>
+#include <thrift/lib/cpp/util/EnumUtils.h>
 
 #include <folly/json/json.h>
 #ifdef __APPLE__
@@ -3652,7 +3653,11 @@ folly::Future<TakeoverData> EdenServer::startTakeoverShutdownNow(bool force) {
         if (!mount->isSafeForInodeAccess()) {
           serverState_->getStats()->increment(&TakeoverStats::sendFailure);
           return makeFuture<TakeoverData>(std::runtime_error(
-              "can only perform graceful restart when all mount points are initialized"));
+              fmt::format(
+                  "can only perform graceful restart when all mount points are "
+                  "initialized; mount {} is in state {}",
+                  mount->getPath(),
+                  apache::thrift::util::enumNameSafe(mount->getState()))));
           // TODO(xavierd): There is still a potential race after this check if
           // a mount is initiated at this point. Injecting a block below and
           // starting a mount would manifest it. In practice, this should be

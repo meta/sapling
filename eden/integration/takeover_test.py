@@ -508,6 +508,20 @@ class TakeoverTest(TakeoverTestBase):
 
         self.eden.assert_running_fuse_transports()
 
+    def test_takeover_with_checkout_missing_snapshot(self) -> None:
+        broken_mount = Path(self.mounts_dir) / "missing-snapshot"
+        self.eden.clone(self.repo.path, broken_mount)
+        client_dir = self.eden.client_dir_for_mount(broken_mount)
+        self.eden.shutdown()
+        (client_dir / "SNAPSHOT").unlink()
+        self.eden.start()
+
+        self.assertEqual(
+            {self.mount: "RUNNING", str(broken_mount): "NOT_RUNNING"},
+            self.eden.list_cmd_simple(),
+        )
+        self.eden.graceful_restart()
+
 
 @testcase.eden_repo_test(run_on_nfs=False)
 class TakeoverTestNoNFSServer(TakeoverTestBase):

@@ -363,6 +363,22 @@ InodeCatalogType EdenMount::getInodeCatalogType(
 
   transitionState(State::UNINITIALIZED, State::INITIALIZING);
 
+  return makeImmediateFutureWith([&] {
+           return initializeImpl(std::move(progressCallback), takeover);
+         })
+      .thenTry([this](auto&& result) {
+        if (result.hasException()) {
+          transitionState(State::INITIALIZING, State::INIT_ERROR);
+        } else {
+          transitionState(State::INITIALIZING, State::INITIALIZED);
+        }
+        return std::move(result);
+      });
+}
+
+ImmediateFuture<folly::Unit> EdenMount::initializeImpl(
+    OverlayChecker::ProgressCallback&& progressCallback,
+    const std::optional<SerializedInodeMap>& takeover) {
   auto parentCommit = checkoutConfig_->getParentCommit();
   auto parent =
       parentCommit.getLastCheckoutId(ParentCommit::RootIdPreference::To)
@@ -437,14 +453,6 @@ InodeCatalogType EdenMount::getInodeCatalogType(
         // allocating inode numbers for the Tree's entries. This would give the
         // .eden directory inode number 2.
         return setupDotEden(std::move(initTreeNode));
-      })
-      .thenTry([this](auto&& result) {
-        if (result.hasException()) {
-          transitionState(State::INITIALIZING, State::INIT_ERROR);
-        } else {
-          transitionState(State::INITIALIZING, State::INITIALIZED);
-        }
-        return std::move(result);
       });
 }
 

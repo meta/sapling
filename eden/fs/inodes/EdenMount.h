@@ -377,6 +377,8 @@ class EdenMount : public std::enable_shared_from_this<EdenMount> {
    * Asynchronous EdenMount initialization - post instantiation.
    *
    * If takeover data is specified, it is used to initialize the inode map.
+   *
+   * On any error, the mount moves to INIT_ERROR and the returned future fails.
    */
   [[nodiscard]] ImmediateFuture<folly::Unit> initialize(
       OverlayChecker::ProgressCallback&& progressCallback = [](auto) {},
@@ -1329,6 +1331,10 @@ class EdenMount : public std::enable_shared_from_this<EdenMount> {
   // Forbidden copy constructor and assignment operator
   EdenMount(EdenMount const&) = delete;
   EdenMount& operator=(EdenMount const&) = delete;
+
+  ImmediateFuture<folly::Unit> initializeImpl(
+      OverlayChecker::ProgressCallback&& progressCallback,
+      const std::optional<SerializedInodeMap>& takeover);
 
   TreeInodePtr createRootInode(std::shared_ptr<const Tree> tree);
 

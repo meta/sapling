@@ -18,6 +18,7 @@
 #include <folly/futures/Promise.h>
 #include <folly/test/TestUtils.h>
 #include <gtest/gtest.h>
+#include <filesystem>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -1121,6 +1122,19 @@ TEST(EdenMountState, mountIsUninitializedAfterConstruction) {
   testMount.createMountWithoutInitializing(builder);
   EXPECT_EQ(
       testMount.getEdenMount()->getState(), EdenMount::State::UNINITIALIZED);
+}
+
+TEST(EdenMountState, mountIsInitErrorWhenSnapshotIsMissing) {
+  auto testMount = TestMount{};
+  auto builder = FakeTreeBuilder{};
+  testMount.createMountWithoutInitializing(builder);
+  auto& mount = *testMount.getEdenMount();
+  ASSERT_TRUE(
+      std::filesystem::remove(
+          mount.getCheckoutConfig()->getSnapshotPath().asString()));
+
+  EXPECT_THROW(mount.initialize().get(kTimeout), std::system_error);
+  EXPECT_EQ(mount.getState(), EdenMount::State::INIT_ERROR);
 }
 
 TEST(EdenMountState, mountIsInitializedAfterInitializationCompletes) {
