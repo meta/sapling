@@ -190,9 +190,7 @@ pub struct GraphRowShape<N> {
 impl<N> GraphRowShape<N> {
     /// True if the ancestry line contains an indirect ancestor edge.
     pub fn has_indirect_ancestor(&self) -> bool {
-        self.ancestry_line
-            .iter()
-            .any(|line| *line == PadLine::Ancestor)
+        self.ancestry_line.contains(&PadLine::Ancestor)
     }
 
     /// Derive the repeatable padding line before the node line.
