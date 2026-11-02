@@ -1,3 +1,4 @@
+load("@fbcode_macros//build_defs/lib:rust_oss.bzl", "rust_oss")
 load("@fbsource//tools/build_defs:rust_library.bzl", "rust_library")
 
 oncall("scm_server_infra")
@@ -5,9 +6,19 @@ oncall("scm_server_infra")
 rust_library(
     name = "scs_client_raw",
     srcs = glob(["src/**/*.rs"]),
-    allow_oss_build = False,
-    autocargo = {"ignore_rule": True},
-    test_deps = [
+    autocargo = {
+        "cargo_toml_config": {
+            "extra_buck_dependencies": {
+                "dependencies": [
+                    "//eden/mononoke/common/oss/thrift_transport:oss_thrift_transport",
+                ],
+            },
+        },
+    },
+    # The tests live in the fbcode-only client module.
+    test_deps = []
+    if rust_oss.is_oss_build()
+    else [
         "//eden/mononoke/common/mononoke_macros:mononoke_macros",
     ],
     # Not a public library.
@@ -23,27 +34,36 @@ rust_library(
     ],
     deps = [
         "fbsource//third-party/rust:anyhow",
-        "//artillery/artillery2/api/cpp/cli_lite/rust:art_cli_lite_rs",
-        "//c2p/secure_thrift/rust/client:x2pclient",
-        "//common/rust/shed/fbinit:fbinit",
-        "//eden/mononoke/cmdlib/sharding_ext:sharding_ext",
         "//eden/mononoke/scs/if:source_control-rust",
         "//eden/mononoke/scs/if:source_control-rust-clients",
-        "//eden/mononoke/scs/if:source_control-rust-x2pclients",
-        "//eden/scm/lib/clientinfo:clientinfo",
-    ] + select({
-        "DEFAULT": [],
-        "ovr_config//os:linux": [
-            "//common/rust/identity:identity",
-            "//common/rust/thrift/bareclient:thriftclient",
-            "//common/rust/thrift/srclient:srclient",
-            "//eden/mononoke/scs/if:source_control-rust-srclients",
-            "//eden/mononoke/scs/if:source_control-rust-thriftclients",
-        ],
-        "ovr_config//os:macos": [
-            "//common/rust/identity:identity",
-            "//common/rust/thrift/bareclient:thriftclient",
-            "//eden/mononoke/scs/if:source_control-rust-thriftclients",
-        ],
-    }),
+    ]
+    + (
+        [
+            "//eden/mononoke/common/oss/thrift_transport:oss_thrift_transport",
+        ]
+        if rust_oss.is_oss_build()
+        else [
+            "//artillery/artillery2/api/cpp/cli_lite/rust:art_cli_lite_rs",
+            "//common/rust/shed/fbinit:fbinit",
+            "//c2p/secure_thrift/rust/client:x2pclient",
+            "//eden/mononoke/cmdlib/sharding_ext:sharding_ext",
+            "//eden/mononoke/scs/if:source_control-rust-x2pclients",
+            "//eden/scm/lib/clientinfo:clientinfo",
+        ]
+        + select({
+            "DEFAULT": [],
+            "ovr_config//os:linux": [
+                "//common/rust/identity:identity",
+                "//common/rust/thrift/bareclient:thriftclient",
+                "//common/rust/thrift/srclient:srclient",
+                "//eden/mononoke/scs/if:source_control-rust-srclients",
+                "//eden/mononoke/scs/if:source_control-rust-thriftclients",
+            ],
+            "ovr_config//os:macos": [
+                "//common/rust/identity:identity",
+                "//common/rust/thrift/bareclient:thriftclient",
+                "//eden/mononoke/scs/if:source_control-rust-thriftclients",
+            ],
+        })
+    ),
 )

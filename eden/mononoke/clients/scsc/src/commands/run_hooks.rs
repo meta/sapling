@@ -8,15 +8,15 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", fbcode_build))]
 use anyhow::Context;
 use anyhow::Result;
 use commit_id_types::CommitIdArgs;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", fbcode_build))]
 use percent_encoding::percent_decode;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", fbcode_build))]
 use permission_checker::MononokeIdentity;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", fbcode_build))]
 use permission_checker::MononokeIdentitySet;
 use scs_client_raw::thrift;
 use serde::Serialize;
@@ -35,7 +35,7 @@ use crate::render::Render;
 /// The hooks that would run when you push this commit to bookmark will run now
 /// and their outcomes will be reported. A success does NOT guarantee
 /// the commit will successfully land (e.g. conflicts may prevent landing).
-pub(super) struct CommandArgs {
+pub(crate) struct CommandArgs {
     #[clap(flatten)]
     repo_args: RepoArgs,
     #[clap(flatten)]
@@ -46,13 +46,16 @@ pub(super) struct CommandArgs {
     /// Name of the bookmark you would push to if pushing for real
     to: String,
     // `--run-as` / `--run-as-encoded` serialize an `AuthenticatedIdentity`
-    // envelope via permission_checker, which is Linux-only.
-    #[cfg(target_os = "linux")]
+    // envelope with `MononokeIdentity::serialize_thrift_compact_bytes`, which
+    // exists only in Linux fbcode builds. Impersonation would be meaningless in
+    // OSS regardless: that server rejects caller-supplied identities and runs
+    // every request with access control bypassed.
+    #[cfg(all(target_os = "linux", fbcode_build))]
     #[clap(long = "run-as", value_name = "TYPE:DATA")]
     /// Run the hooks as if the push was performed by these identities instead
     /// of your own (format: TYPE:data, e.g. USER:alice).
     run_as: Vec<String>,
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", fbcode_build))]
     #[clap(
         long = "run-as-encoded",
         value_name = "ENCODED",
@@ -80,7 +83,7 @@ pub(super) struct CommandArgs {
 /// which clap keeps mutually exclusive. Both forms are sent as a
 /// compact-encoded `AuthenticatedIdentity` list so identity attributes survive
 /// the wire.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", fbcode_build))]
 fn run_as_identities(
     run_as: &[String],
     run_as_encoded: Option<&str>,
@@ -155,7 +158,7 @@ impl Render for RunHooksOutput {
     }
 }
 
-pub(super) async fn run(app: ScscApp, args: CommandArgs) -> Result<()> {
+pub(crate) async fn run(app: ScscApp, args: CommandArgs) -> Result<()> {
     let repo = args.repo_args.clone().into_repo_specifier();
     let original_commit_id = args.commit_id_args.clone().into_commit_id();
     let conn = app.get_connection(Some(&repo.name)).await?;
@@ -167,9 +170,9 @@ pub(super) async fn run(app: ScscApp, args: CommandArgs) -> Result<()> {
     };
     let bookmark: String = args.to.clone();
     let pushvars = args.pushvar_args.clone().into_pushvars();
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", fbcode_build))]
     let run_as = run_as_identities(&args.run_as, args.run_as_encoded.as_deref())?;
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(all(target_os = "linux", fbcode_build)))]
     let run_as = None;
 
     let params = thrift::CommitRunHooksParams {
@@ -212,7 +215,7 @@ pub(super) async fn run(app: ScscApp, args: CommandArgs) -> Result<()> {
     app.target.render_one(&args, output).await
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, target_os = "linux", fbcode_build))]
 mod tests {
     use mononoke_macros::mononoke;
     use permission_checker::MononokeIdentitySetExt;

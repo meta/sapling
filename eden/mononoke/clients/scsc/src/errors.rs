@@ -122,13 +122,13 @@ macro_rules! return_if_selection_error {
 macro_rules! impl_handle_selection_error {
     ($type: ident) => {
         impl SelectionErrorExt for $type {
-            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            #[cfg(all(fbcode_build, not(any(target_os = "macos", target_os = "windows"))))]
             fn handle_selection_error(self, repo: &thrift::RepoSpecifier) -> Error {
                 return_if_selection_error!(self, $type, repo);
                 self.into()
             }
 
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            #[cfg(any(not(fbcode_build), target_os = "macos", target_os = "windows"))]
             fn handle_selection_error(self, _repo: &thrift::RepoSpecifier) -> Error {
                 self.into()
             }
@@ -141,7 +141,7 @@ macro_rules! impl_handle_selection_error {
 macro_rules! impl_handle_selection_error_with_restricted_paths {
     ($type: ident) => {
         impl SelectionErrorExt for $type {
-            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            #[cfg(all(fbcode_build, not(any(target_os = "macos", target_os = "windows"))))]
             fn handle_selection_error(self, repo: &thrift::RepoSpecifier) -> Error {
                 return_if_selection_error!(self, $type, repo);
                 if let $type::restricted_paths_authorization_error(ref e) = self {
@@ -150,7 +150,7 @@ macro_rules! impl_handle_selection_error_with_restricted_paths {
                 self.into()
             }
 
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            #[cfg(any(not(fbcode_build), target_os = "macos", target_os = "windows"))]
             fn handle_selection_error(self, _repo: &thrift::RepoSpecifier) -> Error {
                 if let $type::restricted_paths_authorization_error(ref e) = self {
                     return format_restricted_paths_authz(e);

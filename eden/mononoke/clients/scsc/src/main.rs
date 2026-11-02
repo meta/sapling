@@ -9,17 +9,11 @@
 
 //! Command-line client for the Source Control Service.
 
-// The test-support build of the scmquery client is a separate crate
-// (`scmqueryclient_rust_test_support`) so it can coexist with the prod crate in
-// one build graph without a name collision; alias it back to the canonical
-// `scmqueryclient_rust::` path so submodules don't care which is linked.
-// Linux-only: it transitively depends on srclients, which is Linux-only.
-#[cfg(target_os = "linux")]
-extern crate scmqueryclient_rust_test_support as scmqueryclient_rust;
-
 use std::env;
 use std::io::IsTerminal;
 use std::io::stderr;
+#[cfg(not(fbcode_build))]
+use std::process::ExitCode;
 use std::sync::LazyLock;
 
 use ansi_term::Colour;
@@ -28,51 +22,35 @@ use clap::ArgMatches;
 use clap::CommandFactory;
 use clap::FromArgMatches;
 use clap::Parser;
+#[cfg(fbcode_build)]
 use cli::ExitCode;
 use fbinit::FacebookInit;
 use scs_client_raw::ScsClient;
 
-use crate::connection::ConnectionArgs;
 use crate::render::OutputFormat;
 
 mod args;
 mod commands;
-mod connection;
 mod errors;
+#[cfg(fbcode_build)]
+mod facebook;
 pub(crate) mod library;
+#[cfg(not(fbcode_build))]
+mod oss;
 mod render;
 pub(crate) mod util;
+
+#[cfg(fbcode_build)]
+use facebook as platform;
+#[cfg(not(fbcode_build))]
+use oss as platform;
+use platform::ConnectionArgs;
 
 const SCSC_ADMIN_ENABLED_ENV: &str = "SCSC_ADMIN_ENABLED";
 const SCSC_PRINT_CORRELATOR_ENV: &str = "SCSC_PRINT_CORRELATOR";
 
-static SHORT_VERSION: LazyLock<String> = LazyLock::new(|| {
-    #[cfg(target_os = "windows")]
-    {
-        String::from("for Windows")
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        use build_info::BuildInfo;
-        format!(
-            "{}-{}",
-            BuildInfo::get_package_version(),
-            BuildInfo::get_package_release(),
-        )
-    }
-});
-
-static LONG_VERSION: LazyLock<String> = LazyLock::new(|| {
-    #[cfg(target_os = "windows")]
-    {
-        String::from("(BuildInfo not available on Windows)")
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        use build_info::BuildInfo;
-        format!("{BuildInfo:#?}")
-    }
-});
+static SHORT_VERSION: LazyLock<String> = LazyLock::new(platform::short_version);
+static LONG_VERSION: LazyLock<String> = LazyLock::new(platform::long_version);
 
 pub(crate) struct ScscApp {
     matches: ArgMatches,
@@ -117,16 +95,11 @@ struct ScscArgs {
     #[clap(long, global = true)]
     json: bool,
 
-    /// Path to a JustKnobs override config (JSON) to load via cached_config.
-    /// Hidden: used by integration tests to flip knobs (e.g.
-    /// `scm/scmquery:direct_scs`) through `merge_just_knobs`.
-    /// Linux-only: cached_config and justknobs are Linux-only deps.
-    #[cfg(target_os = "linux")]
-    #[clap(long, hide = true)]
-    just_knobs_config_path: Option<String>,
-
     #[clap(flatten)]
     connection_args: ConnectionArgs,
+
+    #[clap(flatten)]
+    platform_args: platform::PlatformArgs,
 }
 
 /// Wrapper that lets `cli::main` drive clap parsing while still injecting
@@ -167,38 +140,22 @@ impl FromArgMatches for ScscCli {
     }
 }
 
-#[cfg(target_os = "linux")]
-async fn init_just_knobs_from_config_path(path: &str) -> anyhow::Result<()> {
-    use anyhow::Context;
-    let config_json = tokio::fs::read_to_string(path)
-        .await
-        .with_context(|| format!("reading just-knobs config from {path}"))?;
-    let config_handle = cached_config::ConfigHandle::from_json(&config_json)
-        .context("parsing just-knobs config")?;
-    justknobs::init_cached_config_just_knobs(&(), &config_handle)
-        .context("initializing cached_config JustKnobs")
-}
-
 async fn main_impl(fb: FacebookInit, cli: ScscCli) -> anyhow::Result<()> {
-    cpp_log_spew::disable(fb);
+    platform::disable_cpp_log(fb);
     // Continue an inbound Artillery trace (if any) for this whole invocation so the
-    // SCS calls below join the caller's trace.
+    // SCS calls below join the caller's trace. fbcode-only: OSS builds have no
+    // Artillery, and the guard must live here (not inside `prepare`, where it
+    // would drop at return).
+    #[cfg(fbcode_build)]
     let _artillery_trace_block = art_cli_lite_rs::trace_cli("scsc");
-
-    if hostcaps::is_corp() {
-        //In Corp we should not be using strict mode of fbwhoami, which throws an error if the file is not present.
-        gflags::set_gflag_value(fb, "fbwhoami_strict", gflags::GflagValue::Bool(false))?;
-    }
+    platform::prepare(fb)?;
 
     let ScscCli {
         args: common_args,
         matches,
     } = cli;
     let scsc_admin_enabled = env::var_os(SCSC_ADMIN_ENABLED_ENV).is_some();
-    #[cfg(target_os = "linux")]
-    if let Some(just_knobs_config_path) = &common_args.just_knobs_config_path {
-        init_just_knobs_from_config_path(just_knobs_config_path).await?;
-    }
+    common_args.platform_args.initialize().await?;
     let connection_args = common_args.connection_args;
     let target = if common_args.json {
         OutputFormat::Json
@@ -216,23 +173,45 @@ async fn main_impl(fb: FacebookInit, cli: ScscCli) -> anyhow::Result<()> {
     commands::dispatch(app).await
 }
 
+fn report_error(error: &anyhow::Error) {
+    let prog_name = env::args().next().unwrap_or_else(|| "scsc".to_string());
+    if stderr().is_terminal() {
+        eprintln!(
+            "{}: {} {:#}",
+            prog_name,
+            Colour::Red.bold().paint("error:"),
+            error
+        );
+    } else {
+        eprintln!("{prog_name}: error: {error:#}");
+    }
+}
+
 // `cli::main` requires a `Result`; handled errors are encoded in the `ExitCode`
 // so usage telemetry records failures without changing scsc's error format.
+// The `cli` crate is fbcode-only; OSS builds parse with the same `ScscCli`
+// command definition under `fbinit::main`.
+#[cfg(fbcode_build)]
 #[cli::main("scsc", version = false, author_help = false)]
 async fn main(fb: FacebookInit, cli: ScscCli) -> anyhow::Result<ExitCode> {
-    if let Err(e) = main_impl(fb, cli).await {
-        let prog_name = env::args().next().unwrap_or_else(|| "scsc".to_string());
-        if stderr().is_terminal() {
-            eprintln!(
-                "{}: {} {:#}",
-                prog_name,
-                Colour::Red.bold().paint("error:"),
-                e
-            );
-        } else {
-            eprintln!("{prog_name}: error: {e:#}");
-        }
+    if let Err(error) = main_impl(fb, cli).await {
+        report_error(&error);
         return Ok(ExitCode::FAILURE);
     }
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(not(fbcode_build))]
+#[fbinit::main]
+async fn main(fb: FacebookInit) -> ExitCode {
+    let matches = ScscCli::command().get_matches();
+    let cli = match ScscCli::from_arg_matches(&matches) {
+        Ok(cli) => cli,
+        Err(error) => error.exit(),
+    };
+    if let Err(error) = main_impl(fb, cli).await {
+        report_error(&error);
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
 }

@@ -170,6 +170,8 @@ members = [
   "blobstore_sync_queue",
   "clients/bookmark_service_client",
   "clients/diff_service_client",
+  "clients/scsc",
+  "clients/scsc/raw_client_lib",
   "cmdlib/base_app",
   "cmdlib/caching",
   "cmdlib/commit_id",

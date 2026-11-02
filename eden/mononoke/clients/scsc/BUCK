@@ -1,5 +1,6 @@
 load("@fbcode//clifoundation/cli_target/buck_defs:cli.bzl", "cli")
 load("@fbcode//clifoundation/cli_target/buck_defs:dotslash.bzl", "dotslash")
+load("@fbcode_macros//build_defs/lib:rust_oss.bzl", "rust_oss")
 load("@fbsource//tools/build_defs:rust_binary.bzl", "rust_binary")
 load("//registry:defs.bzl", "rpm")
 
@@ -8,8 +9,18 @@ oncall("scm_server_infra")
 rust_binary(
     name = "scsc",
     srcs = glob(["src/**/*.rs"]),
-    allow_oss_build = False,
-    autocargo = {"ignore_rule": True},
+    autocargo = {
+        "cargo_toml_config": {
+            "extra_buck_dependencies": {
+                # OSS-only dep, in the `rust_oss.is_oss_build()` branch
+                # below: autocargo evaluates that conditional as false and
+                # would otherwise drop it from the manifest.
+                "dependencies": [
+                    "//common/rust/shed/fbinit:fbinit-tokio",
+                ],
+            },
+        },
+    },
     link_style = "static_pic",
     test_deps = [
         "//eden/mononoke/common/mononoke_macros:mononoke_macros",
@@ -37,44 +48,55 @@ rust_binary(
         "fbsource//third-party/rust:tokio-util",
         "fbsource//third-party/rust:unicode-truncate",
         "fbsource//third-party/rust:unicode-width",
-        "//artillery/artillery2/api/cpp/cli_lite/rust:art_cli_lite_rs",
-        "//cli/rust/cli:cli",
-        "//common/rust/cpp_log_spew:cpp_log_spew",
-        "//common/rust/gflags:gflags",
         "//common/rust/shed/bounded_traversal:bounded_traversal",
         "//common/rust/shed/cloned:cloned",
         "//common/rust/shed/fbinit:fbinit",
-        "//common/rust/shed/hostcaps:hostcaps",
         "//eden/mononoke/clients/scsc/raw_client_lib:scs_client_raw",
         "//eden/mononoke/cmdlib/base_app:base_app",
         "//eden/mononoke/cmdlib/commit_id_types:commit_id_types",
         "//eden/mononoke/common/topo_sort:topo_sort",
         "//eden/mononoke/scs/if:source_control-rust",
         "//eden/mononoke/scs/if:source_control-rust-clients",
-    ] + select({
-        "DEFAULT": [],
-        "ovr_config//os:linux": [
-            "fbsource//third-party/rust:percent-encoding",
-            "//common/rust/build_info:build_info",
-            "//common/rust/identity:identity",
-            # Linux-only: these are `compatible_with = ["ovr_config//os:linux"]`,
-            # or transitively depend on srclients, which is. The code guarded by
-            # them is gated on `#[cfg(target_os = "linux")]`.
-            "//common/rust/shed/cached_config:cached_config",
-            "//common/rust/thrift/srclient:srclient",
-            "//eden/mononoke/common/permission_checker:permission_checker",
-            "//eden/mononoke/common/rust/justknobs_ext:justknobs",
-            "//eden/mononoke/scs/if:source_control-rust-thriftclients",
-            "//scm/scmquery/client:scmqueryclient-rust-test-support",
-            "//scm/scmquery/if:scmquery_types-rust",
-            "//tupperware/api/if:common-rust",
-            "//tupperware/api/if:tupperware-rust",
-            "//tupperware/api/if:tupperware-rust-srclients",
-        ],
-        "ovr_config//os:macos": [
-            "//common/rust/build_info:build_info",
-        ],
-    }),
+    ]
+    + (
+        [
+            # `#[fbinit::main] async fn main` expands to `fbinit_tokio`
+            # machinery, which must be a direct dependency.
+            "//common/rust/shed/fbinit:fbinit-tokio",
+        ]
+        if rust_oss.is_oss_build()
+        else [
+            "//artillery/artillery2/api/cpp/cli_lite/rust:art_cli_lite_rs",
+            "//cli/rust/cli:cli",
+            "//common/rust/cpp_log_spew:cpp_log_spew",
+            "//common/rust/gflags:gflags",
+            "//common/rust/shed/hostcaps:hostcaps",
+        ]
+        + select({
+            "DEFAULT": [],
+            "ovr_config//os:linux": [
+                "fbsource//third-party/rust:percent-encoding",
+                "//common/rust/build_info:build_info",
+                "//common/rust/identity:identity",
+                # Linux-only: these are `compatible_with = ["ovr_config//os:linux"]`,
+                # or transitively depend on srclients, which is. The code guarded by
+                # them is gated on `#[cfg(target_os = "linux")]`.
+                "//common/rust/shed/cached_config:cached_config",
+                "//common/rust/thrift/srclient:srclient",
+                "//eden/mononoke/common/permission_checker:permission_checker",
+                "//eden/mononoke/common/rust/justknobs_ext:justknobs",
+                "//eden/mononoke/scs/if:source_control-rust-thriftclients",
+                "//scm/scmquery/client:scmqueryclient-rust-test-support",
+                "//scm/scmquery/if:scmquery_types-rust",
+                "//tupperware/api/if:common-rust",
+                "//tupperware/api/if:tupperware-rust",
+                "//tupperware/api/if:tupperware-rust-srclients",
+            ],
+            "ovr_config//os:macos": [
+                "//common/rust/build_info:build_info",
+            ],
+        })
+    ),
 )
 
 rpm.builder(
