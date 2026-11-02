@@ -1112,7 +1112,15 @@ impl EdenFsClient {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
     use super::*;
+    use crate::client::mock_client::make_boxed_future_result;
+    use crate::client::mock_service::MockEdenFsService;
+    use crate::use_case::UseCase;
+    use crate::use_case::UseCaseId;
+    use crate::utils::get_config_dir;
 
     fn filesystem_counters(value: u64) -> FilesystemTelemetryCounters {
         FilesystemTelemetryCounters {
@@ -1165,5 +1173,33 @@ mod tests {
     #[test]
     fn test_crawling_score_delta_across_a_daemon_restart() {
         assert_eq!(crawling_score(2) - crawling_score(5), crawling_score(0));
+    }
+
+    #[fbinit::test]
+    async fn test_telemetry_counters_statfs() -> anyhow::Result<()> {
+        let config_dir = get_config_dir(&None, &None)?;
+        let use_case = Arc::new(UseCase::new(&config_dir, UseCaseId::EdenFsTests));
+        let mut client = EdenFsClient::new(use_case, PathBuf::new());
+        let mock_client = &mut *client;
+        let mut mock_service = MockEdenFsService::new();
+
+        mock_service
+            .expect_getSelectedCounters()
+            .returning(|keys: &[String]| {
+                let counters: BTreeMap<String, i64> = keys
+                    .iter()
+                    .map(|key| {
+                        let value = if key == COUNTER_FS_STATFS { 29131 } else { 1 };
+                        (key.clone(), value)
+                    })
+                    .collect();
+                make_boxed_future_result(Ok(counters))
+            });
+        mock_client.set_thrift_service(Arc::new(mock_service));
+
+        let counters = client.get_telemetry_counters().await?;
+        assert_eq!(counters.fs_stats.syscall_open, 1);
+        assert_eq!(counters.fs_stats.syscall_statfs, 0);
+        Ok(())
     }
 }

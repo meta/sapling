@@ -96,6 +96,35 @@ class GenericStatsTest(testcase.EdenRepoTest):
         self.assertNotIn("1844674407", output, msg=f"output: {output}")
         self.assertNotIn("lookup", output, msg=f"output: {output}")
 
+    def test_debug_counters_report_statfs(self) -> None:
+        if self.protocol_type() != "fuse":
+            self.skipTest("only FUSE exports a statfs counter")
+        import json
+
+        # Issue statfs calls on the mount and wait for the daemon to count them.
+        for _ in range(5):
+            os.statvfs(self.mount)
+        self.poll_until_counter_condition(
+            lambda counters: self.assertGreater(
+                counters["fuse.statfs_successful.sum"], 0
+            )
+        )
+
+        # `eden debug counters` is a Rust command; force the Rust dispatch so
+        # the test does not depend on the rollout state of this host.
+        output = self.eden.run_cmd(
+            "debug",
+            "counters",
+            "from-start",
+            "--full",
+            env={"EDENFSCTL_ONLY_RUST": "1"},
+        )
+        fs_stats = json.loads(output)["fs_stats"]
+        # The statfs counter is never requested from the daemon, so it is
+        # reported as 0 although the daemon counted the calls above.
+        self.assertEqual(fs_stats["syscall_statfs"], 0, msg=f"output: {output}")
+        self.assertGreater(fs_stats["syscall_lookup"], 0, msg=f"output: {output}")
+
     def test_writing_untracked_file_bumps_write_counter(self) -> None:
         counters_before = self.get_counters()
         path = Path(self.mount) / "new_file"
