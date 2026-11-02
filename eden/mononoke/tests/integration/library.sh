@@ -1977,6 +1977,66 @@ function derivation_worker() {
     "$@"
 }
 
+DIFF_SERVICE_SERVER_ADDR_FILE="$TESTTMP/diff_service_server_addr.txt"
+MONONOKE_DIFF_SERVICE_DEFAULT_START_TIMEOUT=60
+function diff_service() {
+    export DIFF_SERVICE_PORT
+
+    rm -rf "$DIFF_SERVICE_SERVER_ADDR_FILE"
+
+    render_mononoke_config
+    THRIFT_TLS_SRV_CERT="$TEST_CERTDIR/localhost.crt" \
+    THRIFT_TLS_SRV_KEY="$TEST_CERTDIR/localhost.key" \
+    THRIFT_TLS_CL_CA_PATH="$TEST_CERTDIR/root-ca.crt" \
+    THRIFT_TLS_TICKETS="$TEST_CERTDIR/server.pem.seeds" \
+    THRIFT_TLS_CL_CERT_PATH="$TEST_CERTDIR/proxy.crt" \
+    THRIFT_TLS_CL_KEY_PATH="$TEST_CERTDIR/proxy.key" \
+    "$MONONOKE_DIFF_SERVICE_SERVER" "$@" \
+      -p 0 \
+      --config-tier "$MONONOKE_CONFIG_TIER" \
+      --scuba-log-file "$TESTTMP/diff-service.json" \
+      --bound-address-file "$DIFF_SERVICE_SERVER_ADDR_FILE" \
+      --tracing-test-format \
+      "${CACHE_ARGS[@]}" \
+      "${COMMON_ARGS[@]}" >> "$TESTTMP/diff_service.out" 2>&1 &
+
+    pid=$!
+    export DIFF_SERVICE_PID=$!
+    echo "$pid" >> "$DAEMON_PIDS"
+}
+
+function start_and_wait_for_diff_service() {
+    diff_service "$@"
+    wait_for_diff_service
+}
+
+function diff_service_client() {
+    diff_service_client_as client0 "$@"
+}
+
+function diff_service_client_as() {
+    local name="$1"
+    shift
+    THRIFT_TLS_CL_CERT_PATH="$TEST_CERTDIR/$name.crt" \
+    THRIFT_TLS_CL_KEY_PATH="$TEST_CERTDIR/$name.key" \
+    THRIFT_TLS_CL_CA_PATH="$TEST_CERTDIR/root-ca.crt" \
+    $MONONOKE_DIFF_SERVICE_CLIENT \
+      --host "localhost:$DIFF_SERVICE_PORT" \
+      --tracing-test-format \
+      "$@"
+}
+
+function wait_for_diff_service() {
+    export DIFF_SERVICE_PORT
+    wait_for_server "Diff service" DIFF_SERVICE_PORT "$TESTTMP/diff_service.out" \
+      "${MONONOKE_DIFF_SERVICE_START_TIMEOUT:-"$MONONOKE_DIFF_SERVICE_DEFAULT_START_TIMEOUT"}" "$DIFF_SERVICE_SERVER_ADDR_FILE" \
+      diff_service_client status
+}
+
+function diff_service_address() {
+  tr -d '\n' < "$DIFF_SERVICE_SERVER_ADDR_FILE"
+}
+
 function verify_integrity_service_health() {
   $THRIFTDBG sendRequest getStatus "{}" --host "localhost" --port "$VI_SERVICE_PORT"
 }
