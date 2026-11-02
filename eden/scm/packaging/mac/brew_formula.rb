@@ -19,7 +19,7 @@ class Sapling < Formula
   depends_on "openssl@3"
   depends_on "gh"
   depends_on "cmake" => :build
-  depends_on "rustup-init" => :build
+  depends_on "rustup" => :build
   depends_on "yarn" => :build
 
   def install
@@ -37,12 +37,14 @@ class Sapling < Formula
 
     python = Formula["python@3.12"].opt_prefix/"bin/python3.12"
 
+    # rustup is keg-only. Its bin also has the cargo and rustc proxies.
+    ENV.prepend_path "PATH", Formula["rustup"].opt_bin
+
     cd "eden/scm" do
-      system "rustup-init -y"
-      system "source %CACHEDIR%/cargo_cache/env && rustup target add %TARGET%"
-      system "source %CACHEDIR%/cargo_cache/env && "\
-             "#{python} ./build.py --oss --with-python #{python} "\
-             "--with-version %VERSION% --rust-target %TARGET%"
+      system "rustup", "default", "stable"
+      system "rustup", "target", "add", "%TARGET%"
+      system python, "./build.py", "--oss", "--with-python", python,
+             "--with-version", "%VERSION%", "--rust-target", "%TARGET%"
       bin.install "out/sl"
       lib.install "out/isl-dist.tar.xz"
     end

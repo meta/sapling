@@ -80,7 +80,6 @@ def fill_in_formula_template(target, version, tmpdir, filled_formula_dir):
     with open(brew_formula_rb, "r") as f:
         formula = f.read()
     sha256 = run_cmd(["shasum", "-a", "256", "./sapling.tar.gz"]).split()[0]
-    cachedir = run_cmd(["brew", "--cache"])
     formula = formula.replace(
         "%URL%",
         f"file://{os.path.join(os.path.abspath(os.getcwd()), 'sapling.tar.gz')}",
@@ -89,7 +88,6 @@ def fill_in_formula_template(target, version, tmpdir, filled_formula_dir):
     formula = formula.replace("%SHA256%", sha256)
     formula = formula.replace("%TMPDIR%", tmpdir)
     formula = formula.replace("%TARGET%", target)
-    formula = formula.replace("%CACHEDIR%", cachedir)
     with open(filled_formula_dir, "w") as f:
         f.write(formula)
 
