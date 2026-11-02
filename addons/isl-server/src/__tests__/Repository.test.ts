@@ -21,7 +21,12 @@ import * as ejeca from 'shared/ejeca';
 import * as fsUtils from 'shared/fs';
 import {clone, mockLogger} from 'shared/testUtils';
 import {nextTick} from 'shared/utils';
-import {absolutePathForFileInRepo, Repository} from '../Repository';
+import {
+  absolutePathForFileInRepo,
+  isIllegalOperationFlag,
+  Repository,
+  validateMergeToolArgs,
+} from '../Repository';
 import {makeServerSideTracker} from '../analytics/serverSideTracker';
 import {
   extractRepoInfoFromUrl,
@@ -513,6 +518,97 @@ describe('Repository', () => {
         expect.anything(),
       );
     });
+
+    it.each([
+      ['--config=hooks.pre-status=true'],
+      ['--configfile', '/tmp/x.rc'],
+      ['--configfile=/tmp/x.rc'],
+      ['--cwd=/tmp'],
+      ['--repo=/tmp'],
+      ['--repository=/tmp'],
+      ['-R/tmp'],
+    ])('disallows global flag %s in any form', async (...flag) => {
+      await runOperation({
+        args: ['status', ...flag],
+      });
+
+      expect(ejecaSpy).not.toHaveBeenCalledWith(
+        'sl',
+        expect.arrayContaining(flag),
+        expect.anything(),
+      );
+    });
+
+    it('allows free-text values that look like flags', async () => {
+      await runOperation({
+        args: ['commit', '--message', '-Refactor --config handling'],
+      });
+
+      expect(ejecaSpy).toHaveBeenCalledWith(
+        'sl',
+        ['commit', '--message', '-Refactor --config handling', '--noninteractive'],
+        expect.anything(),
+      );
+    });
+
+    it('disallows debugpython', async () => {
+      await runOperation({
+        args: ['debugpython', '-c', 'print(1)'],
+      });
+
+      expect(ejecaSpy).not.toHaveBeenCalledWith(
+        'sl',
+        expect.arrayContaining(['debugpython']),
+        expect.anything(),
+      );
+    });
+
+    it('allows built-in merge tools', async () => {
+      await runOperation({
+        args: ['resolve', '--tool', 'internal:union', '--all'],
+      });
+
+      expect(ejecaSpy).toHaveBeenCalledWith(
+        'sl',
+        ['resolve', '--tool', 'internal:union', '--all', '--noninteractive'],
+        expect.anything(),
+      );
+    });
+
+    it.each([[['--tool', 'sh']], [['--tool=sh']], [['-t', 'sh']]])(
+      'disallows arbitrary merge tool %j',
+      async toolArgs => {
+        await runOperation({
+          args: ['rebase', '-d', 'aaa', ...toolArgs],
+        });
+
+        expect(ejecaSpy).not.toHaveBeenCalledWith(
+          'sl',
+          expect.arrayContaining(toolArgs),
+          expect.anything(),
+        );
+      },
+    );
+  });
+
+  describe('validateMergeToolArgs', () => {
+    it('allows the configured ui.merge tool', () => {
+      expect(() => validateMergeToolArgs(['resolve', '--tool', 'mytool'], 'mytool')).not.toThrow();
+      expect(() => validateMergeToolArgs(['resolve', '--tool', 'other'], 'mytool')).toThrow();
+    });
+
+    it('ignores free-text values', () => {
+      expect(() => validateMergeToolArgs(['commit', '--message', '-tidy up'])).not.toThrow();
+    });
+  });
+
+  describe('isIllegalOperationFlag', () => {
+    it.each(['--rev', '--continue', '--interactive', '-r', '-T', '--', 'commit'])(
+      'allows %s',
+      arg => {
+        expect(isIllegalOperationFlag(arg)).toBe(false);
+      },
+    );
   });
 
   describe('fetchSloc', () => {

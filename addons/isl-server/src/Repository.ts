@@ -698,7 +698,6 @@ export class Repository {
   ): {args: Array<string>; stdin?: string | undefined} {
     const {cwd} = ctx;
     const repoRoot = nullthrows(this.info.repoRoot);
-    const illegalArgs = new Set(['--cwd', '--config', '--insecure', '--repository', '-R']);
     let stdin = operation.stdin;
     const args = [];
     for (const arg of operation.args) {
@@ -739,11 +738,12 @@ export class Repository {
             continue;
         }
       }
-      if (illegalArgs.has(arg)) {
+      if (!isFreeTextValue(args) && isIllegalOperationFlag(arg)) {
         throw new Error(`argument '${arg}' is not allowed`);
       }
       args.push(arg);
     }
+    validateMergeToolArgs(args, ctx.knownConfigs?.get('ui.merge'));
     return {args, stdin};
   }
 
@@ -834,7 +834,14 @@ export class Repository {
 
     ctx.logger.log('run operation: ', command, fullArgs.join(' '));
 
-    const commandBlocklist = new Set(['debugshell', 'dbsh', 'debugsh']);
+    const commandBlocklist = new Set([
+      'debugshell',
+      'dbsh',
+      'debugsh',
+      'debugpython',
+      'debugpy',
+      'debugrunshell',
+    ]);
     if (args.some(arg => commandBlocklist.has(arg))) {
       throw new Error(`command "${args.join(' ')}" is not allowed`);
     }
@@ -1941,6 +1948,61 @@ export function absolutePathForFileInRepo(
 
 function isUnhealthyEdenFs(cwd: string): Promise<boolean> {
   return exists(path.join(cwd, 'README_EDEN.txt'));
+}
+
+/**
+ * Global `sl` flags that change which config or repository a command uses.
+ * Client-supplied operations must use structured `config` args instead.
+ */
+const ILLEGAL_LONG_FLAGS = ['--config', '--configfile', '--cwd', '--insecure', '--repository'];
+
+/**
+ * Whether an operation arg sets one of {@link ILLEGAL_LONG_FLAGS} or `-R`.
+ * `sl` accepts `--flag=value`, unique prefixes of some long flags (`--repo`),
+ * and short flags with attached values (`-R/path`), so exact matching is not enough.
+ */
+export function isIllegalOperationFlag(arg: string): boolean {
+  if (arg.startsWith('--')) {
+    const name = arg.split('=', 1)[0];
+    return name.length > 2 && ILLEGAL_LONG_FLAGS.some(flag => flag.startsWith(name));
+  }
+  return /^-[a-zA-Z]*R/.test(arg);
+}
+
+/** Flags whose value is free text, such as a commit message that may start with `-`. */
+const FREE_TEXT_FLAGS = new Set(['--message', '-m', '--user', '-u']);
+
+/** Whether the next arg is the value of a {@link FREE_TEXT_FLAGS} flag, which `sl` never parses as a flag. */
+function isFreeTextValue(precedingArgs: ReadonlyArray<string>): boolean {
+  const prev = precedingArgs[precedingArgs.length - 1];
+  return prev != null && FREE_TEXT_FLAGS.has(prev);
+}
+
+/**
+ * `--tool` (`-t`) names an external program to run for merges, which is as powerful as `--config`.
+ * Allow only built-in tools and the merge tool the user configured in `ui.merge`.
+ */
+export function validateMergeToolArgs(args: ReadonlyArray<string>, configuredTool?: string) {
+  const isAllowedTool = (tool: string | undefined) =>
+    tool != null && (/^(internal)?:[a-z0-9-]+$/i.test(tool) || tool === configuredTool);
+  args.forEach((arg, i) => {
+    let tool: string | undefined;
+    if (isFreeTextValue(args.slice(0, i))) {
+      return;
+    } else if (arg === '--tool') {
+      tool = args[i + 1];
+    } else if (arg.startsWith('--tool=')) {
+      tool = arg.slice('--tool='.length);
+    } else if (/^-[a-zA-Z]*t/.test(arg)) {
+      // ISL operations always use `--tool`; `-t` would also hide the value from this check.
+      throw new Error(`argument '${arg}' is not allowed`);
+    } else {
+      return;
+    }
+    if (!isAllowedTool(tool)) {
+      throw new Error(`merge tool '${tool}' is not allowed`);
+    }
+  });
 }
 
 async function isEdenFsRepo(repoRoot: AbsolutePath): Promise<boolean> {
