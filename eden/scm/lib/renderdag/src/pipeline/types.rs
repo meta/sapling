@@ -253,8 +253,14 @@ pub struct PrefixLine {
 /// A piece of a graph prefix line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PrefixLinePart {
-    /// Literal graph text.
+    /// Graph text with no column, such as blank cells and the spacing around a node glyph.
     Text(String),
+
+    /// Graph text that draws part of the edge in `column`.
+    ///
+    /// Callers can use the column to style each edge, for example to give each column its own
+    /// color. A connector that joins two columns belongs to the branch that forks or merges there.
+    ColumnText { column: usize, text: String },
 
     /// Placeholder for the rendered node glyph.
     ///
@@ -310,4 +316,16 @@ impl PrefixLineKind {
 pub trait PrefixLineRenderer<N> {
     /// Convert the next graph row shape into prefix lines.
     fn next_prefix_lines(&mut self, row_shape: &GraphRowShape<N>) -> Vec<PrefixLine>;
+}
+
+/// A piece of a rendered graph line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct LinePiece<'a> {
+    /// The column of the edge that this text draws. It is `None` for text that is not part of an
+    /// edge: a node glyph, message text, or spacing.
+    pub column: Option<usize>,
+
+    /// The text of this piece.
+    pub text: &'a str,
 }

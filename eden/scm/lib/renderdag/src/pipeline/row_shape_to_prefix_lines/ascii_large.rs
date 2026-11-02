@@ -6,6 +6,10 @@
  */
 
 use super::ancestry_lines;
+use super::column_part;
+use super::column_parts;
+use super::connector_columns;
+use super::is_horizontal_run;
 use crate::pipeline::types::DashStyle;
 use crate::pipeline::types::GraphRowShape;
 use crate::pipeline::types::LinkLine;
@@ -50,24 +54,15 @@ impl<N> PrefixLineRenderer<N> for AsciiLargePrefixLineRenderer {
         for (i, entry) in line.node_line.iter().enumerate() {
             match entry {
                 NodeLine::Node => {
-                    if i > 0 {
-                        node_line
-                            .parts
-                            .push(PrefixLinePart::Text(String::from(" ")));
-                    }
+                    node_line.parts.extend(gap(i));
                     node_line.parts.push(PrefixLinePart::NodeGlyph);
                     node_line
                         .parts
                         .push(PrefixLinePart::Text(String::from(" ")));
                 }
-                NodeLine::Parent => push_text(&mut node_line, if i > 0 { " | " } else { "| " }),
-                NodeLine::Ancestor => {
-                    if i > 0 {
-                        push_text(&mut node_line, " ");
-                    }
-                    push_text(&mut node_line, ancestor_line);
-                }
-                NodeLine::Blank => push_text(&mut node_line, if i > 0 { "   " } else { "  " }),
+                NodeLine::Parent => node_line.parts.extend(cell(i, "| ")),
+                NodeLine::Ancestor => node_line.parts.extend(cell(i, ancestor_line)),
+                NodeLine::Blank => node_line.parts.extend(cell(i, "  ")),
             }
         }
         lines.push(node_line);
@@ -80,9 +75,24 @@ impl<N> PrefixLineRenderer<N> for AsciiLargePrefixLineRenderer {
 
         // Render the link line
         if let Some(link_row) = line.link_line.as_ref() {
-            let mut top_link_line = String::new();
-            let mut bot_link_line = String::new();
-            for (i, cur) in link_row.iter().enumerate() {
+            let mut top_parts = Vec::new();
+            let mut bot_parts = Vec::new();
+            let mut previous_column = None;
+            for (i, (cur, right_column)) in link_row
+                .iter()
+                .zip(connector_columns(line.node_column, link_row))
+                .enumerate()
+            {
+                let mut top_link_line = String::new();
+                let mut bot_link_line = String::new();
+                // The first column has no left slot.
+                let left_column = previous_column.replace(right_column);
+                let center_column =
+                    if !cur.intersects(LinkLine::VERTICAL) && is_horizontal_run(*cur) {
+                        right_column
+                    } else {
+                        i
+                    };
                 // Top left
                 if i > 0 {
                     if cur.intersects(LinkLine::LEFT_MERGE_PARENT) {
@@ -154,13 +164,18 @@ impl<N> PrefixLineRenderer<N> for AsciiLargePrefixLineRenderer {
                 } else {
                     bot_link_line.push(' ');
                 }
+
+                let top_columns = left_column.into_iter().chain([center_column, right_column]);
+                top_parts.extend(column_parts(&top_link_line, top_columns));
+                let bot_columns = left_column.into_iter().chain([i, right_column]);
+                bot_parts.extend(column_parts(&bot_link_line, bot_columns));
             }
             lines.push(PrefixLine {
-                parts: vec![PrefixLinePart::Text(top_link_line)],
+                parts: top_parts,
                 kind: PrefixLineKind::Link,
             });
             lines.push(PrefixLine {
-                parts: vec![PrefixLinePart::Text(bot_link_line)],
+                parts: bot_parts,
                 kind: PrefixLineKind::Link,
             });
         }
@@ -169,23 +184,20 @@ impl<N> PrefixLineRenderer<N> for AsciiLargePrefixLineRenderer {
         if let Some(term_row) = line.term_line.as_ref() {
             let term_strs = ["| ", "~ "];
             for term_str in term_strs.iter() {
-                let mut term_line = String::new();
-                for (i, term) in term_row.iter().enumerate() {
-                    if i > 0 {
-                        term_line.push(' ');
-                    }
-                    if *term {
-                        term_line.push_str(term_str);
-                    } else {
-                        term_line.push_str(match line.ancestry_line[i] {
-                            PadLine::Parent => "| ",
-                            PadLine::Ancestor => ancestor_line,
-                            PadLine::Blank => "  ",
-                        });
-                    }
-                }
+                let parts = term_row
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(i, term)| {
+                        let text = if *term {
+                            term_str
+                        } else {
+                            pad_cell(ancestor_line, line.ancestry_line[i])
+                        };
+                        cell(i, text)
+                    })
+                    .collect();
                 lines.push(PrefixLine {
-                    parts: vec![PrefixLinePart::Text(term_line)],
+                    parts,
                     kind: PrefixLineKind::Term,
                 });
             }
@@ -204,27 +216,28 @@ fn render_pad_line(
     line: impl IntoIterator<Item = PadLine>,
     kind: PrefixLineKind,
 ) -> PrefixLine {
-    PrefixLine {
-        parts: vec![PrefixLinePart::Text(render_pad_text(ancestor, line))],
-        kind,
+    let parts = line
+        .into_iter()
+        .enumerate()
+        .flat_map(|(i, entry)| cell(i, pad_cell(ancestor, entry)))
+        .collect();
+    PrefixLine { parts, kind }
+}
+
+fn pad_cell(ancestor: &str, entry: PadLine) -> &str {
+    match entry {
+        PadLine::Parent => "| ",
+        PadLine::Ancestor => ancestor,
+        PadLine::Blank => "  ",
     }
 }
 
-fn render_pad_text(ancestor: &str, line: impl IntoIterator<Item = PadLine>) -> String {
-    let mut out = String::new();
-    for (i, entry) in line.into_iter().enumerate() {
-        if i > 0 {
-            out.push(' ');
-        }
-        out.push_str(match entry {
-            PadLine::Parent => "| ",
-            PadLine::Ancestor => ancestor,
-            PadLine::Blank => "  ",
-        });
-    }
-    out
+/// The space before every column but the first. The first column is only 2 characters wide.
+fn gap(column: usize) -> Option<PrefixLinePart> {
+    (column > 0).then(|| PrefixLinePart::Text(String::from(" ")))
 }
 
-fn push_text(line: &mut PrefixLine, text: &str) {
-    line.parts.push(PrefixLinePart::Text(text.to_owned()));
+/// A 2-character cell for `column`, after its gap.
+fn cell(column: usize, text: &str) -> impl Iterator<Item = PrefixLinePart> {
+    gap(column).into_iter().chain([column_part(column, text)])
 }
