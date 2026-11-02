@@ -1,0 +1,22 @@
+load("@fbsource//tools/build_defs:rust_library.bzl", "rust_library")
+
+oncall("scm_server_infra")
+
+rust_library(
+    name = "oss_thrift_transport",
+    srcs = glob(["src/**/*.rs"]),
+    test_deps = [
+        "//fb303/thrift:fb303_core-rust",
+        "//fb303/thrift:fb303_core-rust-services",
+    ],
+    deps = [
+        "fbsource//third-party/rust:anyhow",
+        "fbsource//third-party/rust:async-trait",
+        "fbsource//third-party/rust:bytes",
+        "fbsource//third-party/rust:futures",
+        "fbsource//third-party/rust:tokio",
+        "fbsource//third-party/rust:tracing",
+        "//eden/mononoke/common/mononoke_macros:mononoke_macros",
+        "//thrift/lib/rust:fbthrift",
+    ],
+)

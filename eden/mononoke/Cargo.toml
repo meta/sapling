@@ -215,6 +215,7 @@ members = [
   "common/mononoke_repos",
   "common/observability",
   "common/ods_counters",
+  "common/oss/thrift_transport",
   "common/outbox_publisher",
   "common/path_hash",
   "common/permission_checker",
