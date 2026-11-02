@@ -63,6 +63,44 @@ fn test_storage_is_derived_from_the_org() {
 }
 
 #[mononoke::test]
+fn test_repo_template_follows_validated_batch_storage() {
+    let configs = storage_configs(&[("template", "/db"), ("org_wearables", "/db")]);
+    for (requests, expected_path) in [
+        (
+            vec![storage_request("other/a", None)],
+            DEFAULT_GIT_REPO_SPEC_PATH,
+        ),
+        (
+            vec![
+                storage_request("wearables/a", None),
+                storage_request("wearables/b", Some("org_wearables")),
+            ],
+            ORG_GIT_REPO_SPEC_PATH,
+        ),
+        (
+            vec![storage_request("wearables/a", None)],
+            ORG_GIT_REPO_SPEC_PATH,
+        ),
+    ] {
+        let storage = derive_batch_storage(&requests, &configs).unwrap();
+        assert_eq!(storage.repo_spec_template_path(), expected_path);
+        let params = with_batch_storage(
+            thrift::CreateReposParams {
+                repos: requests,
+                ..Default::default()
+            },
+            &storage,
+        );
+        assert!(
+            params
+                .repos
+                .iter()
+                .all(|request| { request.storage_config.as_deref() == storage.name() })
+        );
+    }
+}
+
+#[mononoke::test]
 fn test_storage_refuses_batches_spanning_engines() {
     let configs = storage_configs(&[("template", "/db"), ("org_wearables", "/db")]);
     let reason = request_error(
@@ -363,7 +401,7 @@ fn test_validate_template_rejects_unusable_templates() {
     ] {
         let msg = reason(validate_template(&bad).expect_err(what));
         assert!(
-            msg.contains(DEFAULT_GIT_REPO_SPEC_PATH),
+            msg.contains(&bad.repo_name),
             "{what}: message must name the template: {msg}"
         );
         assert!(msg.contains(expect), "{what}: {msg}");

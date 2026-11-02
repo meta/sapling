@@ -85,6 +85,7 @@ use crate::source_control_impl::SourceControlServiceImpl;
 pub(crate) const DIFF_AUTHOR: &str = "scm_server_infra";
 const REPO_SPEC_THRIFT_TYPE: &str = "RepoSpec";
 const REPO_SPEC_THRIFT_PATH: &str = "source/scm/mononoke/repos/repos.thrift";
+const ORG_GIT_REPO_SPEC_PATH: &str = "scm/mononoke/repos/common/default_org_git_repo_spec";
 /// JustKnob gating the attach-to-in-flight-mutation idempotency path in
 /// `reserve_repos_ids`. Shared by the production call site and the tests so
 /// the two can never drift.
@@ -116,6 +117,14 @@ struct BatchStorage(Option<String>);
 impl BatchStorage {
     fn name(&self) -> Option<&str> {
         self.0.as_deref()
+    }
+
+    fn repo_spec_template_path(&self) -> &'static str {
+        if self.0.is_some() {
+            ORG_GIT_REPO_SPEC_PATH
+        } else {
+            DEFAULT_GIT_REPO_SPEC_PATH
+        }
     }
 }
 
@@ -499,24 +508,23 @@ struct SymrefStoreFactory {
 /// so it is absent from `repo_configs` by definition and the default git
 /// RepoSpec template is the only thing that can name its database.
 fn default_git_storage_name(configs: &MononokeConfigs) -> Result<String, scs_errors::ServiceError> {
-    let template = load_default_git_repo_spec_template(configs)?;
+    let template = load_git_repo_spec_template(configs, DEFAULT_GIT_REPO_SPEC_PATH)?;
     template_storage_name(&template)
 }
 
-/// Load `DEFAULT_GIT_REPO_SPEC_PATH` and refuse it unless it is usable; every
+/// Load a repo template and refuse it unless it is usable; every
 /// caller gets a validated template or an error, never a half-usable one.
-fn load_default_git_repo_spec_template(
+fn load_git_repo_spec_template(
     configs: &MononokeConfigs,
+    template_path: &str,
 ) -> Result<Arc<RepoSpec>, scs_errors::ServiceError> {
     let config_store = configs.config_store().ok_or_else(|| {
-        scs_errors::internal_error(
-            "No config store available for loading the default git repo spec template",
-        )
+        scs_errors::internal_error("No config store available for loading a git repo spec template")
     })?;
-    let template = configerator_repo_spec_handle(DEFAULT_GIT_REPO_SPEC_PATH, config_store)
+    let template = configerator_repo_spec_handle(template_path, config_store)
         .map_err(|e| {
             scs_errors::internal_error(format!(
-                "Failed to load default git repo spec template: {e:#}"
+                "Failed to load repo spec template '{template_path}': {e:#}"
             ))
         })?
         .get();
@@ -532,16 +540,17 @@ fn load_default_git_repo_spec_template(
 fn validate_template(template: &RepoSpec) -> Result<(), scs_errors::ServiceError> {
     if template.default_commit_identity_scheme != RawCommitIdentityScheme::GIT {
         return Err(scs_errors::internal_error(format!(
-            "{DEFAULT_GIT_REPO_SPEC_PATH} has default_commit_identity_scheme {:?}; \
+            "Template '{}' has default_commit_identity_scheme {:?}; \
              create_repos only creates GIT repos",
-            template.default_commit_identity_scheme
+            template.repo_name, template.default_commit_identity_scheme
         ))
         .into());
     }
     template_storage_name(template)?;
     if template.tiers.is_empty() {
         return Err(scs_errors::internal_error(format!(
-            "{DEFAULT_GIT_REPO_SPEC_PATH} lists no tiers"
+            "Template '{}' lists no tiers",
+            template.repo_name
         ))
         .into());
     }
@@ -555,7 +564,8 @@ fn template_storage_name(template: &RepoSpec) -> Result<String, scs_errors::Serv
         .and_then(|c| c.storage_config.clone())
         .ok_or_else(|| {
             scs_errors::internal_error(format!(
-                "{DEFAULT_GIT_REPO_SPEC_PATH} does not name a storage config"
+                "Template '{}' does not name a storage config",
+                template.repo_name
             ))
             .into()
         })
@@ -1844,6 +1854,7 @@ async fn prepare_repo_configs_mutation_nowait(
     ctx: CoreContext,
     repos_ids_and_requests: Vec<(RepositoryId, thrift::RepoCreationRequest)>,
     configs: &MononokeConfigs,
+    template_path: &str,
 ) -> Result<i64, scs_errors::ServiceError> {
     let configo_client = ConfigoClient::with_client(
         ctx.fb,
@@ -1852,10 +1863,10 @@ async fn prepare_repo_configs_mutation_nowait(
     );
     let mut txn = configo_client.managed_transaction();
 
-    // Load and validate the default git RepoSpec template once, before the
+    // Load and validate the git RepoSpec template once, before the
     // loop and before anything is written to the transaction: a bad template
     // fails the whole call closed rather than landing a bad repo.
-    let template = load_default_git_repo_spec_template(configs)?;
+    let template = load_git_repo_spec_template(configs, template_path)?;
 
     // Write each repo's RepoSpec and derive its repo_index.cinc entry from
     // that same spec, so the index can only ever say what the spec says.
@@ -2026,6 +2037,7 @@ async fn create_repos_in_mononoke(
     symref_store_factory: SymrefStoreFactory,
     params: &thrift::CreateReposParams,
     configs: &MononokeConfigs,
+    template_path: &str,
     write_default_branch_symrefs_enabled: bool,
 ) -> Result<Option<i64>, scs_errors::ServiceError> {
     // ## What:
@@ -2108,7 +2120,14 @@ async fn create_repos_in_mononoke(
         .iter()
         .map(|(_id, request)| request.repo_name.clone())
         .collect::<Vec<_>>();
-    match prepare_repo_configs_mutation_nowait(ctx.clone(), repo_ids_and_requests, configs).await {
+    match prepare_repo_configs_mutation_nowait(
+        ctx.clone(),
+        repo_ids_and_requests,
+        configs,
+        template_path,
+    )
+    .await
+    {
         Ok(mutation_id) => {
             let mut scuba = ctx.scuba().clone();
             scuba.add("action", "create_repos_mutation_prepared");
@@ -2207,6 +2226,7 @@ async fn create_repos_in_mononoke(
     _symref_store_factory: SymrefStoreFactory,
     _params: &thrift::CreateReposParams,
     _configs: &MononokeConfigs,
+    _template_path: &str,
     _write_default_branch_symrefs_enabled: bool,
 ) -> Result<Option<i64>, scs_errors::ServiceError> {
     println!("No access to configo in oss build");
@@ -2265,6 +2285,7 @@ impl SourceControlServiceImpl {
             self.symref_store_factory(),
             &params,
             &self.configs,
+            storage.repo_spec_template_path(),
             write_default_branch_symrefs_enabled,
         )
         .await?;
