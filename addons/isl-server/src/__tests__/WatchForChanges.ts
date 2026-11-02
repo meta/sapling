@@ -14,7 +14,6 @@ import type {Watchman} from '../watchman';
 import fs from 'node:fs';
 import {TypedEventEmitter} from 'shared/TypedEventEmitter';
 import {mockLogger} from 'shared/testUtils';
-import {Internal} from '../Internal';
 import {PageFocusTracker} from '../PageFocusTracker';
 import {WatchForChanges} from '../WatchForChanges';
 import {makeServerSideTracker} from '../analytics/serverSideTracker';
@@ -58,10 +57,6 @@ describe('WatchForChanges - watchman', () => {
   let watch: WatchForChanges;
 
   beforeEach(() => {
-    Internal.fetchFeatureFlag = jest.fn().mockImplementation((_ctx, _flag) => {
-      return Promise.resolve(false);
-    });
-
     const ctx = {
       cmd: 'sl',
       cwd: '/path/to/cwd',
@@ -246,7 +241,7 @@ describe('WatchForChanges - watchman', () => {
 
     watch = new WatchForChanges(mockInfo, focusTracker, onChange, ctx, mockWatchman);
     await watch.waitForDirstateSubscriptionReady();
-    await watch.setupSubscriptions(ctx);
+    await watch.setupSubscriptions();
     expect(onChange).toHaveBeenCalledTimes(1);
     onChange.mockClear();
 
@@ -284,9 +279,6 @@ describe('WatchForChanges - edenfs', () => {
   let emitter1: TypedEventEmitter<string, unknown>;
 
   beforeEach(async () => {
-    Internal.fetchFeatureFlag = jest.fn().mockImplementation((_ctx, _flag) => {
-      return Promise.resolve(true);
-    });
     const ctx = {
       cmd: 'sl',
       cwd: '/path/to/cwd',
@@ -342,15 +334,8 @@ describe('WatchForChanges - edenfs', () => {
   it('Handles results from edenfs', async () => {
     // |-----------1-----------2-----------3-----------4-----------5-----------6-----------7-----------8-----------9----------10----------11----------12----------13----------14----------15----------16 (minutes)
     //                                                                                                                                                                                          ^ poll
-    const ctx = {
-      cmd: 'sl',
-      cwd: '/path/to/cwd',
-      logger: mockLogger,
-      tracker: mockTracker,
-    };
-
     focusTracker.setState('page', 'visible');
-    await watch.setupSubscriptions(ctx);
+    await watch.setupSubscriptions();
 
     // wait an actual async tick so mock subscriptions are set up
     const setImmediate = jest.requireActual('timers').setImmediate;

@@ -898,7 +898,7 @@ export class Repository {
   ref() {
     this.refcount++;
     if (this.refcount === 1) {
-      this.watchForChanges.setupSubscriptions(this.initialConnectionContext);
+      this.watchForChanges.setupSubscriptions();
     }
   }
   unref() {

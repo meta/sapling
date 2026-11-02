@@ -12,7 +12,6 @@ import type {Logger} from './logger';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {debounce} from 'shared/debounce';
-import {Internal} from './Internal';
 import {stagedThrottler} from './StagedThrottler';
 import type {SubscriptionCallback} from './__generated__/node-edenfs-notifications-client';
 import {EdenFSUtils} from './__generated__/node-edenfs-notifications-client';
@@ -67,7 +66,7 @@ export class WatchForChanges {
     this.edenfs = edenfs ?? new EdenFSNotifications(ctx.logger, repoRoot);
 
     // Watch dirstate right away for commit changes
-    this.dirstateSubscriptionPromise = this.setupDirstateSubscriptions(ctx);
+    this.dirstateSubscriptionPromise = this.setupDirstateSubscriptions();
     this.setupPolling();
     this.pageFocusTracker.onChange(this.poll.bind(this));
     // poll right away so we get data immediately, without waiting for timeout on startup
@@ -149,18 +148,9 @@ export class WatchForChanges {
     }
   };
 
-  private async setupDirstateSubscriptions(ctx: RepositoryContext) {
-    const enabled = await Internal.fetchFeatureFlag?.(ctx, 'isl_use_edenfs_notifications');
-    this.logger.info('dirstate edenfs notifications flag state: ', enabled);
-    if (enabled) {
-      if (this.repoInfo.isEdenFs === true) {
-        this.logger.info('Valid eden repo'); // For testing, remove when implemented
-        await this.setupEdenDirstateSubscriptions();
-        return;
-      } else {
-        this.logger.info('Non-eden repo');
-        await this.setupWatchmanDirstateSubscriptions();
-      }
+  private async setupDirstateSubscriptions() {
+    if (this.repoInfo.isEdenFs === true) {
+      await this.setupEdenDirstateSubscriptions();
     } else {
       await this.setupWatchmanDirstateSubscriptions();
     }
@@ -324,19 +314,13 @@ export class WatchForChanges {
     }
   }
 
-  public async setupSubscriptions(ctx: RepositoryContext) {
+  public async setupSubscriptions() {
     await this.waitForDirstateSubscriptionReady();
-    const enabled = await Internal.fetchFeatureFlag?.(ctx, 'isl_use_edenfs_notifications');
-    this.logger.info('subscription edenfs notifications flag state: ', enabled);
-    if (enabled) {
-      if (this.repoInfo.isEdenFs === true) {
-        await this.setupEdenSubscriptions();
-        return;
-      }
+    if (this.repoInfo.isEdenFs === true) {
+      await this.setupEdenSubscriptions();
     } else {
-      // TODO: move watchman here after implementing eden
+      await this.setupWatchmanSubscriptions();
     }
-    await this.setupWatchmanSubscriptions();
   }
 
   /**
