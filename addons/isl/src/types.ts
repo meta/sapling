@@ -1214,12 +1214,6 @@ export type ClientToServerMessage =
       name: string;
     }
   | {
-      type: 'runDevmateCommand';
-      args: Array<string>;
-      cwd: string;
-      requestId: string;
-    }
-  | {
       type: 'fetchSubscribedFullRepoBranches';
       id: string;
     }
@@ -1410,19 +1404,6 @@ export type ServerToClientMessage =
       type: 'fetchedTaskDetails';
       id: string;
       result: Result<InternalTypes['InternalTaskDetails']>;
-    }
-  | {
-      type: 'devmateCommandResult';
-      result: (
-        | {
-            type: 'value';
-            stdout: string;
-          }
-        | {
-            type: 'error';
-            stderr: string;
-          }
-      ) & {requestId: string};
     }
   | {
       type: 'fetchedSubscribedFullRepoBranches';
