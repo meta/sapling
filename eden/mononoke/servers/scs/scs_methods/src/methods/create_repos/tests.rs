@@ -689,6 +689,13 @@ fn test_github_mirror_acl_grants() {
         grant_entries(&grants, "read").contains(&group),
         "the oncall can read"
     );
+    assert!(
+        grant_entries(&grants, "read").contains(&(
+            DATA_PROJECT.to_string(),
+            GITHUB_MIRROR_VERIFIER_DATA_PROJECT.to_string()
+        )),
+        "the verifier sweep can read, or it never dispatches the first sync",
+    );
     assert_eq!(
         grant_entries(&grants, "maintainers"),
         vec![group.clone(), (AUTH_SET.to_string(), "scm".to_string())],
@@ -768,36 +775,32 @@ fn test_missing_github_mirror_entries() {
 #[cfg(fbcode_build)]
 #[mononoke::test]
 fn test_validate_github_mirror_request_shape() {
-    let refusal = |request: &thrift::RepoCreationRequest, batch_size: usize| -> String {
+    let refusal = |request: &thrift::RepoCreationRequest| -> String {
         format!(
             "{:?}",
-            validate_github_mirror_request_shape(request, batch_size)
+            validate_github_mirror_request_shape(request)
                 .expect_err("the request should be refused")
         )
     };
 
     assert!(
-        validate_github_mirror_request_shape(&mirror_request("o/r", Some("luisa")), 1).is_ok(),
-        "a single repo may get its own ACL",
+        validate_github_mirror_request_shape(&mirror_request("o/r", Some("luisa"))).is_ok(),
+        "a mirror may get its own ACL, in a batch or alone",
     );
     assert!(
-        validate_github_mirror_request_shape(&mirror_request("o/r", None), 2).is_ok(),
-        "a batch of mirrors inheriting the org ACL is accepted",
+        validate_github_mirror_request_shape(&mirror_request("o/r", None)).is_ok(),
+        "a mirror inheriting the org ACL is accepted",
     );
     assert!(
-        validate_github_mirror_request_shape(&thrift::RepoCreationRequest::default(), 2).is_ok(),
+        validate_github_mirror_request_shape(&thrift::RepoCreationRequest::default()).is_ok(),
         "a request without github_mirror is not this check's business",
     );
 
-    assert!(
-        refusal(&mirror_request("o/r", Some("luisa")), 2).contains("single-repo call"),
-        "a batch cannot create per-repo ACLs",
-    );
     let writable = thrift::RepoCreationRequest {
         readonly: Some(false),
         ..mirror_request("o/r", None)
     };
-    assert!(refusal(&writable, 1).contains("always read-only"));
+    assert!(refusal(&writable).contains("always read-only"));
     let with_custom_acl = thrift::RepoCreationRequest {
         custom_acl: Some(thrift::CustomAclParams {
             hipster_group: "team".to_string(),
@@ -805,7 +808,7 @@ fn test_validate_github_mirror_request_shape() {
         }),
         ..mirror_request("o/r", None)
     };
-    assert!(refusal(&with_custom_acl, 1).contains("cannot be combined"));
+    assert!(refusal(&with_custom_acl).contains("cannot be combined"));
 
     let org_acl = thrift::RepoCreationRequest {
         org_acl: Some(thrift::OrgAclParams {
@@ -817,7 +820,7 @@ fn test_validate_github_mirror_request_shape() {
         ..mirror_request("testorg/repo", None)
     };
     assert!(
-        validate_github_mirror_request_shape(&org_acl, 2).is_ok(),
+        validate_github_mirror_request_shape(&org_acl).is_ok(),
         "a batch of mirrors may ask for a missing org ACL to be created",
     );
     let own_acl_and_org_acl = thrift::RepoCreationRequest {
@@ -825,7 +828,7 @@ fn test_validate_github_mirror_request_shape() {
         ..mirror_request("testorg/repo", Some("team_a"))
     };
     assert!(
-        refusal(&own_acl_and_org_acl, 1).contains("org_acl does not apply"),
+        refusal(&own_acl_and_org_acl).contains("org_acl does not apply"),
         "a repo with its own ACL does not inherit the org ACL",
     );
 }
@@ -850,6 +853,13 @@ fn test_org_acl_grants_carry_the_sync_grants_only_for_mirrors() {
         mirror.iter().filter(|g| g.action == "write").count(),
         1,
         "the sync's write lands on the standard write grant",
+    );
+    assert!(
+        grant_entries(&mirror, "read").contains(&(
+            DATA_PROJECT.to_string(),
+            GITHUB_MIRROR_VERIFIER_DATA_PROJECT.to_string()
+        )),
+        "the verifier sweep reads every mirror in the org through this ACL",
     );
     assert_eq!(
         grant_entries(&mirror, "maintainers"),

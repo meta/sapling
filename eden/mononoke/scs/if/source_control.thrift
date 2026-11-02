@@ -2202,9 +2202,9 @@ struct OrgAclParams {
 struct GithubMirrorParams {
   /// Give the repo its own ACL `repos/git/<org>/<repo>`, maintained and
   /// readable by this oncall (short name) and with it as point of contact,
-  /// instead of inheriting `repos/git/<org>`. The ACL also gets the mirror
-  /// sync's grants. Only accepted when the call creates a single repo; a batch
-  /// inherits the org ACL.
+  /// instead of inheriting `repos/git/<org>`. The ACL also gets the grants of
+  /// the mirror sync and its verifier sweep. Each repo in a batch may name its
+  /// own oncall.
   1: optional string maintainer_oncall;
 }
 
