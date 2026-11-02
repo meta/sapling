@@ -614,4 +614,151 @@ mod tests {
             .expect("a panicking build must leave the slot retryable");
         assert_eq!(*repo, 42);
     }
+
+    #[mononoke::test]
+    async fn test_build_now_builds_an_empty_slot() {
+        let repo_slot = Arc::new(RepoSlot::empty("foo".to_string()));
+
+        let repo = repo_slot
+            .build_now(Arc::new(TestLoader::Ready))
+            .await
+            .unwrap();
+        assert_eq!(*repo, 42);
+        assert_eq!(repo_slot.loaded().as_deref(), Some(&42));
+    }
+
+    #[mononoke::test]
+    async fn test_build_now_serves_the_old_repo_until_the_new_one_is_built() {
+        let gate = Arc::new(Gate::default());
+        let repo_slot = Arc::new(RepoSlot::ready("foo".to_string(), Arc::new(100)));
+
+        let rebuild = {
+            let (repo_slot, gate) = (Arc::clone(&repo_slot), Arc::clone(&gate));
+            mononoke::spawn_task(
+                async move { repo_slot.build_now(Arc::new(GatedLoader(gate))).await },
+            )
+        };
+        gate.started.notified().await;
+
+        assert_eq!(
+            repo_slot.loaded().as_deref(),
+            Some(&100),
+            "readers keep the old repo while its replacement builds"
+        );
+        let repo = repo_slot
+            .get_or_build(Arc::new(TestLoader::Never))
+            .await
+            .unwrap();
+        assert_eq!(*repo, 100, "a lazy caller must not wait on a rebuild");
+
+        gate.release.notify_one();
+        assert_eq!(*rebuild.await.unwrap().unwrap(), 42);
+        assert_eq!(repo_slot.loaded().as_deref(), Some(&42));
+    }
+
+    #[mononoke::test]
+    async fn test_a_failed_rebuild_keeps_the_old_repo_without_a_hold() {
+        let repo_slot = Arc::new(RepoSlot::ready("foo".to_string(), Arc::new(100)));
+
+        let err = repo_slot
+            .build_now(Arc::new(TestLoader::Failed))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Failed to build repo foo"),
+            "unexpected error: {err:#}"
+        );
+        assert_eq!(repo_slot.loaded().as_deref(), Some(&100));
+
+        // The old repo is still served, so there is no failure to hold.
+        let repo = repo_slot
+            .build_now(Arc::new(TestLoader::Ready))
+            .await
+            .unwrap();
+        assert_eq!(*repo, 42);
+    }
+
+    #[mononoke::test]
+    async fn test_a_panicking_rebuild_keeps_the_old_repo() {
+        let repo_slot = Arc::new(RepoSlot::ready("foo".to_string(), Arc::new(100)));
+
+        assert!(
+            repo_slot
+                .build_now(Arc::new(TestLoader::Panics))
+                .await
+                .is_err()
+        );
+        assert_eq!(repo_slot.loaded().as_deref(), Some(&100));
+    }
+
+    #[mononoke::test]
+    async fn test_build_now_shares_an_in_flight_build() {
+        let gate = Arc::new(Gate::default());
+        let repo_slot = Arc::new(RepoSlot::empty("foo".to_string()));
+
+        let first = call(&repo_slot, &gate);
+        gate.started.notified().await;
+        let eager = {
+            let repo_slot = Arc::clone(&repo_slot);
+            mononoke::spawn_task(
+                async move { repo_slot.build_now(Arc::new(TestLoader::Never)).await },
+            )
+        };
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
+        gate.release.notify_one();
+
+        assert_eq!(*first.await.unwrap().unwrap(), 42);
+        assert_eq!(*eager.await.unwrap().unwrap(), 42);
+        assert_eq!(gate.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[mononoke::test]
+    async fn test_build_now_serves_a_held_failure() {
+        let repo_slot = Arc::new(RepoSlot::empty("foo".to_string()));
+
+        assert!(
+            repo_slot
+                .get_or_build(Arc::new(TestLoader::Failed))
+                .await
+                .is_err()
+        );
+        let err = repo_slot
+            .build_now(Arc::new(TestLoader::Never))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Not retrying build of repo foo"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    struct PanicsOnLoad;
+
+    impl RepoLoader<i32> for PanicsOnLoad {
+        fn load(&self, repo_name: String) -> BoxFuture<'static, Result<i32>> {
+            panic!("load of {repo_name} blew up before returning a future")
+        }
+    }
+
+    #[mononoke::test]
+    async fn test_a_loader_panicking_before_returning_a_future_finishes_the_build() {
+        for old_repo in [None, Some(100)] {
+            let repo_slot = Arc::new(match old_repo {
+                None => RepoSlot::empty("foo".to_string()),
+                Some(repo) => RepoSlot::ready("foo".to_string(), Arc::new(repo)),
+            });
+
+            assert!(repo_slot.build_now(Arc::new(PanicsOnLoad)).await.is_err());
+            assert_eq!(repo_slot.loaded().as_deref(), old_repo.as_ref());
+
+            repo_slot.expire_cached_failure();
+            let repo = repo_slot
+                .build_now(Arc::new(TestLoader::Ready))
+                .await
+                .expect("a loader panic must not leave the slot stuck building");
+            assert_eq!(*repo, 42);
+        }
+    }
 }
