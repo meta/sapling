@@ -17,7 +17,7 @@ def list_srcs(target_to_update) -> filter[str]:
     return filter(None, output.decode("ascii").split("\n"))
 
 
-def find_known_buck_targets():
+def find_known_buck_targets() -> tuple[dict[str, str], dict[str, str]]:
     common_rust_folders = ["//eden/mononoke/...", "//common/rust/..."]
     deps = ["deps('{}')".format(folder) for folder in common_rust_folders]
     deps = " + ".join(deps)
