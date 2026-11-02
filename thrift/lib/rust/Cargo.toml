@@ -22,7 +22,7 @@ json5 = "0.4"
 memchr = "2.8.3"
 num-derive = "0.4.2"
 num-traits = { version = "0.2.19", default-features = false }
-ordered-float = { version = "5.5.0", features = ["serde"] }
+ordered-float = { version = "5.5.1", features = ["serde"] }
 panic-message = "0.3"
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
