@@ -2037,6 +2037,75 @@ function diff_service_address() {
   tr -d '\n' < "$DIFF_SERVICE_SERVER_ADDR_FILE"
 }
 
+BOOKMARK_SERVICE_SERVER_ADDR_FILE="$TESTTMP/bookmark_service_server_addr.txt"
+MONONOKE_BOOKMARK_SERVICE_DEFAULT_START_TIMEOUT=60
+function bookmark_service() {
+  export BOOKMARK_SERVICE_PORT
+
+  rm -rf "$BOOKMARK_SERVICE_SERVER_ADDR_FILE"
+
+  render_mononoke_config
+  THRIFT_TLS_SRV_CERT="$TEST_CERTDIR/localhost.crt" \
+  THRIFT_TLS_SRV_KEY="$TEST_CERTDIR/localhost.key" \
+  THRIFT_TLS_CL_CA_PATH="$TEST_CERTDIR/root-ca.crt" \
+  THRIFT_TLS_TICKETS="$TEST_CERTDIR/server.pem.seeds" \
+  THRIFT_TLS_CL_CERT_PATH="$TEST_CERTDIR/proxy.crt" \
+  THRIFT_TLS_CL_KEY_PATH="$TEST_CERTDIR/proxy.key" \
+  "$MONONOKE_BOOKMARK_SERVICE_SERVER" "$@" \
+    -p 0 \
+    --config-tier "$MONONOKE_CONFIG_TIER" \
+    --scuba-log-file "$TESTTMP/bookmark-service.json" \
+    --bound-address-file "$BOOKMARK_SERVICE_SERVER_ADDR_FILE" \
+    --tracing-test-format \
+    "${CACHE_ARGS[@]}" \
+    "${COMMON_ARGS[@]}" >> "$TESTTMP/bookmark_service.out" 2>&1 &
+
+  pid=$!
+  export BOOKMARK_SERVICE_PID=$!
+  echo "$pid" >> "$DAEMON_PIDS"
+}
+
+function start_and_wait_for_bookmark_service() {
+  bookmark_service "$@"
+  wait_for_bookmark_service
+}
+
+function bookmark_service_client() {
+  THRIFT_TLS_CL_CERT_PATH="$TEST_CERTDIR/client0.crt" \
+  THRIFT_TLS_CL_KEY_PATH="$TEST_CERTDIR/client0.key" \
+  THRIFT_TLS_CL_CA_PATH="$TEST_CERTDIR/root-ca.crt" \
+  $MONONOKE_BOOKMARK_SERVICE_CLIENT \
+    --host "localhost:$BOOKMARK_SERVICE_PORT" \
+    --tracing-test-format \
+    "$@"
+}
+
+function wait_for_bookmark_service() {
+  export BOOKMARK_SERVICE_PORT
+  wait_for_server "Bookmark service" BOOKMARK_SERVICE_PORT "$TESTTMP/bookmark_service.out" \
+    "${MONONOKE_BOOKMARK_SERVICE_START_TIMEOUT:-"$MONONOKE_BOOKMARK_SERVICE_DEFAULT_START_TIMEOUT"}" "$BOOKMARK_SERVICE_SERVER_ADDR_FILE" \
+  bookmark_service_client status
+}
+
+# Because of warm bookmark cache the SCS bookmark updates are async.
+# This function allows to wait for them.
+function wait_for_bookmark_service_update() {
+  local repo="$1"
+  local bookmark="$2"
+  local target="$3"
+  local attempt=1
+  sleep 2
+  while [[ "$(bookmark_service_client get -R "$repo" "$bookmark")" != "$target" ]]
+  do
+    attempt=$((attempt + 1))
+    if [[ $attempt -gt 5 ]]
+    then
+        echo "bookmark move of $bookmark to $target has not happened"
+        return 1
+    fi
+    sleep 2
+  done
+}
 function verify_integrity_service_health() {
   $THRIFTDBG sendRequest getStatus "{}" --host "localhost" --port "$VI_SERVICE_PORT"
 }

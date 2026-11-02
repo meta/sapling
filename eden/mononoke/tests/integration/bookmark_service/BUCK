@@ -1,0 +1,20 @@
+load(
+    "//eden/mononoke/tests/integration/facebook:fb_manifest_deps.bzl",
+    "dott_test",
+)
+
+oncall("scm_server_infra")
+
+dott_test(
+    name = "bookmark_service",
+    dott_files = glob(["*.t"]),
+    deps = [
+        "//eden/mononoke:mononoke",
+        "//eden/mononoke/clients/bookmark_service_client:bookmark_service_client_cli",
+        "//eden/mononoke/clients/scsc:scsc",
+        "//eden/mononoke/servers/bookmark_service:bookmark_service_server",
+        "//eden/mononoke/servers/scs/scs_server:scs_server",
+        "//eden/mononoke/tools/admin:admin",
+        "//eden/mononoke/tools/testtool:testtool",
+    ],
+)
