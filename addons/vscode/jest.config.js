@@ -9,5 +9,7 @@
 /** @type {import('ts-jest/dist/types').InitialOptionsTsJest} */
 module.exports = {
   preset: 'ts-jest',
+  // Transpile each file on its own instead of type-checking it; `tsc --noEmit` covers types.
+  transform: {'^.+\\.tsx?$': ['ts-jest', {isolatedModules: true}]},
   testEnvironment: 'node',
 };

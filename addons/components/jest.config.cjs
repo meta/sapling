@@ -9,6 +9,8 @@
 /** @type {import('ts-jest/dist/types').JestConfigWithTsJest} */
 module.exports = {
   preset: 'ts-jest',
+  // Transpile each file on its own instead of type-checking it; `tsc --noEmit` covers types.
+  transform: {'^.+\\.tsx?$': ['ts-jest', {isolatedModules: true}]},
   testEnvironment: 'jsdom',
   collectCoverageFrom: ['**/*.{js,jsx,ts,tsx}', '!**/*.d.ts'],
   setupFilesAfterEnv: ['<rootDir>/__tests__/setupTests.ts'],

@@ -7,7 +7,9 @@
 
 const {default: tsJest} = require('ts-jest');
 
-const transformer = tsJest.createTransformer({diagnostics: false});
+// `isolatedModules` transpiles each file on its own instead of building a full program,
+// which is much faster. `tsc --noEmit` covers type checking.
+const transformer = tsJest.createTransformer({diagnostics: false, isolatedModules: true});
 
 /**
  * Replace 'import.meta.hot' with 'undefined' to make Jest happy.
