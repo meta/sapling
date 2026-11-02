@@ -13,21 +13,33 @@
 //! edits apply without a restart. Repos are selected by ID; emitted series use
 //! the repo's canonical name. `--source` offers the same selection as CLI args
 //! for tests and manual runs.
+//!
+//! With `--sharded-service-name`/`--sharded-scope-name`, the job joins
+//! ShardManager and samples only its assigned repo shards: each repo is
+//! sampled by exactly one single-primary task, and a dead task or region
+//! fails over automatically. Without those flags it samples the whole
+//! selection standalone (tests, manual runs, the single-replica AWS pod).
 
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
+use async_trait::async_trait;
 use bookmarks::BookmarkKey;
 use bookmarks::BookmarkUpdateLog;
 use bookmarks::BookmarkUpdateLogRef;
 use bookmarks::Freshness;
+use cached_config::ConfigHandle;
 use clap::Parser;
 use cmdlib_caching::CacheMode;
 use context::CoreContext;
+use executor_lib::RepoShardedProcess;
+use executor_lib::RepoShardedProcessExecutor;
+use executor_lib::args::ShardedExecutorArgs;
 use fbinit::FacebookInit;
 use futures::TryStreamExt;
 use futures::stream::StreamExt;
@@ -44,8 +56,10 @@ use repo_identity::RepoIdentity;
 use repo_identity::RepoIdentityRef;
 use repo_state_logger::RepoStateLoggerConfig;
 use repo_state_logger::ValueSource;
+use sharding_ext::RepoShard;
 use stats::define_stats;
 use stats::prelude::*;
+use tokio::sync::watch;
 
 /// Floor for the sampling interval: never poll faster than once a minute,
 // no matter what the config says.
@@ -56,6 +70,11 @@ const MIN_POLL_INTERVAL: Duration = Duration::from_secs(60);
 /// growing the selection (e.g. per-repo values across the fleet) never needs
 /// a code change.
 const MAX_CONCURRENT_REQUESTS: usize = 16;
+
+/// Seconds ShardManager waits for a dropped shard's sweep loop to notice
+/// cancellation before force-terminating it. stop() signals promptly, so this
+/// only bounds pathological hangs (at most one in-flight sweep).
+const SM_CLEANUP_TIMEOUT_SECS: u64 = 60;
 
 define_stats! {
     prefix = "mononoke.repo_state_logger";
@@ -90,6 +109,10 @@ struct LoggerArgs {
     /// Sample once and exit.
     #[clap(long)]
     once: bool,
+    /// Join ShardManager and sample only assigned repo shards (single
+    /// primary per repo, automatic failover). Absent = standalone.
+    #[clap(flatten)]
+    sharded_executor_args: ShardedExecutorArgs,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,6 +141,21 @@ impl fmt::Display for RepoSelector {
 struct SampledRepo {
     repo: RepoSelector,
     sources: Vec<Source>,
+}
+
+fn validate_args(args: &LoggerArgs) -> Result<()> {
+    if args.selection_config.is_some() == !args.source.is_empty() {
+        anyhow::bail!("pass exactly one of --selection-config or --source");
+    }
+    if args.sharded_executor_args.clone().is_sharded() {
+        if args.selection_config.is_none() {
+            anyhow::bail!("sharded mode requires --selection-config");
+        }
+        if args.once {
+            anyhow::bail!("--once cannot be combined with sharded mode");
+        }
+    }
+    Ok(())
 }
 
 fn parse_source_spec(spec: &str) -> Result<(RepoSelector, Source)> {
@@ -184,6 +222,42 @@ fn clamp_poll_interval(config: &RepoStateLoggerConfig) -> Duration {
     Duration::from_secs(secs).max(MIN_POLL_INTERVAL)
 }
 
+fn source_from_value(source: &ValueSource, repo_id: i64) -> Option<Source> {
+    match source {
+        ValueSource::counter(counter) => Some(Source::Counter {
+            name: counter.counter_name.clone(),
+        }),
+        ValueSource::bookmark_tip(tip) => Some(Source::BookmarkTip {
+            name: tip.bookmark.clone(),
+        }),
+        _ => {
+            tracing::warn!(
+                repo_id,
+                "skipping unsupported value source variant (newer config?)"
+            );
+            STATS::sample_errors.increment_value(1);
+            None
+        }
+    }
+}
+
+/// Sources configured for one repo ID. Empty when the repo is absent from the
+/// selection (a shard with nothing to sample idles until stopped).
+fn sources_for_repo(config: &RepoStateLoggerConfig, repo_id: RepositoryId) -> Vec<Source> {
+    let key = i64::from(repo_id.id());
+    config
+        .repos
+        .get(&key)
+        .map(|selection| {
+            selection
+                .sources
+                .iter()
+                .filter_map(|source| source_from_value(source, key))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn selection_from_config(config: &RepoStateLoggerConfig) -> Vec<SampledRepo> {
     config
         .repos
@@ -202,22 +276,7 @@ fn selection_from_config(config: &RepoStateLoggerConfig) -> Vec<SampledRepo> {
             let sources = selection
                 .sources
                 .iter()
-                .filter_map(|source| match source {
-                    ValueSource::counter(counter) => Some(Source::Counter {
-                        name: counter.counter_name.clone(),
-                    }),
-                    ValueSource::bookmark_tip(tip) => Some(Source::BookmarkTip {
-                        name: tip.bookmark.clone(),
-                    }),
-                    _ => {
-                        tracing::warn!(
-                            repo_id = *repo,
-                            "skipping unsupported value source variant (newer config?)"
-                        );
-                        STATS::sample_errors.increment_value(1);
-                        None
-                    }
-                })
+                .filter_map(|source| source_from_value(source, *repo))
                 .collect();
             Some(SampledRepo {
                 repo: RepoSelector::Id(RepositoryId::new(id)),
@@ -277,6 +336,34 @@ async fn sample_source(ctx: &CoreContext, repo: &Repo, source: &Source) -> Resul
     }
 }
 
+/// Samples one source and emits the result (value, missing, or error count).
+/// Shared by the standalone sweep and the sharded per-repo sweep loop.
+async fn sample_and_emit(ctx: &CoreContext, repo: &Repo, name: &str, source: &Source) {
+    let key = stats_key(name, source);
+    match sample_source(ctx, repo, source).await {
+        Ok(Some(value)) => {
+            tracing::info!(repo = name, key, value, "sampled");
+            STATS::sampled_value.add_value(value, (key,));
+        }
+        Ok(None) => {
+            tracing::info!(repo = name, key, "no value (absent counter or bookmark)");
+            STATS::missing_values.increment_value(1);
+        }
+        Err(e) => {
+            tracing::warn!(repo = name, key, "sample failed: {e:?}");
+            STATS::sample_errors.increment_value(1);
+        }
+    }
+}
+
+/// Samples one repo's sources. A sharded executor holds a single repo with a
+/// handful of sources, so a plain sequential loop is enough here.
+async fn sample_repo_sources(ctx: &CoreContext, repo: &Repo, name: &str, sources: &[Source]) {
+    for source in sources {
+        sample_and_emit(ctx, repo, name, source).await;
+    }
+}
+
 /// Samples every source once, concurrently. Per-source failures are logged and
 /// counted, never fatal: one bad repo or counter must not silence the rest.
 async fn sample_all(
@@ -297,23 +384,7 @@ async fn sample_all(
         )
     });
     stream::iter(samples.flatten())
-        .map(|(name, repo, source)| async move {
-            let key = stats_key(name, source);
-            match sample_source(ctx, repo, source).await {
-                Ok(Some(value)) => {
-                    tracing::info!(repo = name, key, value, "sampled");
-                    STATS::sampled_value.add_value(value, (key,));
-                }
-                Ok(None) => {
-                    tracing::info!(repo = name, key, "no value (absent counter or bookmark)");
-                    STATS::missing_values.increment_value(1);
-                }
-                Err(e) => {
-                    tracing::warn!(repo = name, key, "sample failed: {e:?}");
-                    STATS::sample_errors.increment_value(1);
-                }
-            }
-        })
+        .map(|(name, repo, source)| sample_and_emit(ctx, repo, name, source))
         .buffer_unordered(MAX_CONCURRENT_REQUESTS)
         .for_each(|()| async {})
         .await;
@@ -322,8 +393,9 @@ async fn sample_all(
 
 async fn async_main(app: MononokeApp) -> Result<()> {
     let args: LoggerArgs = app.args()?;
-    if args.selection_config.is_some() == !args.source.is_empty() {
-        anyhow::bail!("pass exactly one of --selection-config or --source");
+    validate_args(&args)?;
+    if args.sharded_executor_args.clone().is_sharded() {
+        return run_sharded(app, &args).await;
     }
     let ctx = CoreContext::new(app.fb);
 
@@ -396,6 +468,127 @@ async fn async_main(app: MononokeApp) -> Result<()> {
         // changes. No interval object, no missed-tick semantics to reason about.
         tokio::time::sleep(period).await;
     }
+}
+
+/// Sleeps `period` unless `cancel` fires first. Returns true when cancelled
+/// (including when the sender is gone — a dropped stopper also ends the loop).
+async fn sleep_or_cancelled(period: Duration, cancel: &mut watch::Receiver<bool>) -> bool {
+    tokio::select! {
+        _ = tokio::time::sleep(period) => false,
+        _ = cancel.changed() => true,
+    }
+}
+
+/// ShardManager process: sets up one sampling executor per assigned repo shard.
+/// Holds no repo-specific state itself (one instance serves all shards).
+struct RepoSamplerProcess {
+    app: MononokeApp,
+    selection_config: String,
+}
+
+#[async_trait]
+impl RepoShardedProcess for RepoSamplerProcess {
+    async fn setup(&self, repo: &RepoShard) -> anyhow::Result<Arc<dyn RepoShardedProcessExecutor>> {
+        // Shards are named by repo; the selection is keyed by ID, so open the
+        // repo first and resolve its ID for the selection lookup.
+        let repo_name = repo.repo_name.clone();
+        let repo_args = SourceRepoArgs::with_name(repo_name.clone());
+        let repo: Repo = self
+            .app
+            .open_repo::<Repo>(&repo_args)
+            .await
+            .with_context(|| format!("opening repo for shard {repo_name}"))?;
+        let repo_id = repo.repo_identity().id();
+        let name = repo.repo_identity().name().to_string();
+        let config_handle = self
+            .app
+            .config_store()
+            .get_config_handle::<RepoStateLoggerConfig>(self.selection_config.clone())
+            .with_context(|| format!("loading logger config {:?}", self.selection_config))?;
+        let (cancel, _) = watch::channel(false);
+        tracing::info!(shard = repo_name, repo_id = %repo_id, "shard assigned");
+        Ok(Arc::new(RepoSamplerExecutor {
+            repo,
+            repo_id,
+            name,
+            ctx: CoreContext::new(self.app.fb),
+            config_handle,
+            cancel,
+        }))
+    }
+}
+
+/// Samples one assigned repo every poll period until stopped. A repo absent
+/// from the selection idles (sleep loop, no sampling) until the shard is
+/// dropped or the selection covers it.
+struct RepoSamplerExecutor {
+    repo: Repo,
+    repo_id: RepositoryId,
+    name: String,
+    ctx: CoreContext,
+    config_handle: ConfigHandle<RepoStateLoggerConfig>,
+    cancel: watch::Sender<bool>,
+}
+
+#[async_trait]
+impl RepoShardedProcessExecutor for RepoSamplerExecutor {
+    async fn execute(&self) -> Result<()> {
+        let mut cancel = self.cancel.subscribe();
+        // A stop() landing before this subscribe() never fires changed()
+        // (subscribe marks the current value seen), so check the flag first:
+        // otherwise a quick shard drop silently degrades to a 60s force-abort.
+        if *cancel.borrow() {
+            return Ok(());
+        }
+        loop {
+            let config = self.config_handle.get();
+            let period = clamp_poll_interval(&config);
+            let sources = sources_for_repo(&config, self.repo_id);
+            if !sources.is_empty() {
+                sample_repo_sources(&self.ctx, &self.repo, &self.name, &sources).await;
+                STATS::heartbeat.add_value(1);
+            }
+            if sleep_or_cancelled(period, &mut cancel).await {
+                return Ok(());
+            }
+        }
+    }
+
+    async fn stop(&self) -> Result<()> {
+        // Never blocks or errors: wakes the sweep sleep (or no-ops when the
+        // loop already exited).
+        self.cancel.send_replace(true);
+        Ok(())
+    }
+}
+
+async fn run_sharded(app: MononokeApp, args: &LoggerArgs) -> Result<()> {
+    let process = Arc::new(RepoSamplerProcess {
+        app,
+        selection_config: args
+            .selection_config
+            .clone()
+            .expect("sharded mode requires --selection-config (checked by validate_args)"),
+    });
+    let sharded_args = args.sharded_executor_args.clone();
+    if let Some(executor) = sharded_args.build_executor(
+        process.app.fb,
+        process.app.runtime().clone(),
+        || process.clone(),
+        true, // shard-level healing: restart this repo's loop if it dies
+        SM_CLEANUP_TIMEOUT_SECS,
+    )? {
+        tracing::info!("Running sharded sampling loop");
+        // Never sent: the loop runs until the task dies. Kept alive so the
+        // receiver never resolves (a dropped sender would end execution).
+        let (sender, receiver) = tokio::sync::oneshot::channel::<bool>();
+        executor.block_and_execute(receiver).await?;
+        drop(sender);
+    } else {
+        // Unreachable: async_main only reaches here when is_sharded().
+        anyhow::bail!("sharded executor unavailable despite sharded args");
+    }
+    Ok(())
 }
 
 #[fbinit::main]
@@ -591,5 +784,55 @@ mod tests {
         assert_eq!(clamp_poll_interval(&config(-5)), MIN_POLL_INTERVAL);
         assert_eq!(clamp_poll_interval(&config(30)), MIN_POLL_INTERVAL);
         assert_eq!(clamp_poll_interval(&config(300)), Duration::from_secs(300));
+    }
+
+    fn test_args(
+        selection_config: Option<&str>,
+        source: &[&str],
+        once: bool,
+        sharded: bool,
+    ) -> LoggerArgs {
+        LoggerArgs {
+            selection_config: selection_config.map(str::to_string),
+            source: source.iter().map(|s| s.to_string()).collect(),
+            once,
+            sharded_executor_args: ShardedExecutorArgs {
+                sharded_service_name: sharded.then(|| "svc".to_string()),
+                sharded_scope_name: sharded.then(|| "scope".to_string()),
+            },
+        }
+    }
+
+    #[mononoke::test]
+    fn args_require_exactly_one_selection() {
+        assert!(validate_args(&test_args(Some("cfg"), &[], false, false)).is_ok());
+        assert!(validate_args(&test_args(None, &["a:b:c"], false, false)).is_ok());
+        assert!(validate_args(&test_args(Some("cfg"), &["a:b:c"], false, false)).is_err());
+        assert!(validate_args(&test_args(None, &[], false, false)).is_err());
+    }
+
+    #[mononoke::test]
+    fn sharded_mode_requires_config_and_rejects_once() {
+        assert!(validate_args(&test_args(Some("cfg"), &[], false, true)).is_ok());
+        assert!(validate_args(&test_args(None, &["a:b:c"], false, true)).is_err());
+        assert!(validate_args(&test_args(Some("cfg"), &[], true, true)).is_err());
+    }
+
+    #[mononoke::test]
+    async fn sleep_or_cancelled_returns_promptly_on_cancel() {
+        let (cancel, _) = watch::channel(false);
+        let mut waiter = cancel.subscribe();
+        cancel.send_replace(true);
+        // An hour-long sleep must still return immediately once cancelled.
+        let cancelled = sleep_or_cancelled(Duration::from_secs(3600), &mut waiter).await;
+        assert!(cancelled, "cancelled sleep must report true");
+    }
+
+    #[mononoke::test]
+    async fn sleep_or_cancelled_sleeps_through_short_period() {
+        let (cancel, _) = watch::channel(false);
+        let mut waiter = cancel.subscribe();
+        let cancelled = sleep_or_cancelled(Duration::from_millis(1), &mut waiter).await;
+        assert!(!cancelled, "uninterrupted sleep must report false");
     }
 }
