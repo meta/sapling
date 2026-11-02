@@ -438,6 +438,67 @@ mod tests {
     }
 
     #[mononoke::fbinit_test]
+    async fn test_get_repo_objects_count_bookmark_selection(fb: FacebookInit) -> Result<(), Error> {
+        let ctx = CoreContext::test_mock(fb);
+        let factory = TestRepoFactory::new(fb)?;
+        let repo: Repo = factory.build().await?;
+        let small = CreateCommitContext::new_root(&ctx, &repo)
+            .add_file("a", "a")
+            .commit()
+            .await?;
+        let main = CreateCommitContext::new(&ctx, &repo, vec![small])
+            .add_file("b", "b")
+            .commit()
+            .await?;
+        let git_master = CreateCommitContext::new(&ctx, &repo, vec![main])
+            .add_file("c", "c")
+            .commit()
+            .await?;
+        bookmark(&ctx, &repo, "heads/main").set_to(main).await?;
+        bookmark(&ctx, &repo, "custom").set_to(small).await?;
+
+        for (new_bookmark, default_count, git_master_count, master_count) in [
+            (None, 2, 42, 42),
+            (Some(("heads/master", git_master)), 3, 3, 42),
+            (Some(("master", small)), 1, 3, 1),
+        ] {
+            if let Some((name, cs_id)) = new_bookmark {
+                bookmark(&ctx, &repo, name).set_to(cs_id).await?;
+            }
+            for (configured_bookmark, expected_count) in [
+                (None, default_count),
+                (Some("heads/main"), 2),
+                (Some("heads/master"), git_master_count),
+                (Some("master"), master_count),
+                (Some("custom"), 1),
+                (Some("missing"), 42),
+            ] {
+                let repo_config = Arc::new(RepoConfig {
+                    bookmark_name_for_objects_count: configured_bookmark.map(str::to_owned),
+                    default_objects_count: Some(42),
+                    ..Default::default()
+                });
+                let bookmark_name = get_repo_bookmark_name(repo_config.clone())?;
+                let count = get_repo_objects_count(
+                    &ctx,
+                    "repo",
+                    &repo_config,
+                    &bookmark_name,
+                    repo.bookmarks_arc(),
+                    repo.repo_blobstore_arc(),
+                    repo.repo_derived_data_arc(),
+                )
+                .await?;
+                assert_eq!(
+                    count, expected_count,
+                    "configured bookmark: {configured_bookmark:?}, newly added bookmark: {new_bookmark:?}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
     async fn test_get_repo_objects_count(fb: FacebookInit) -> Result<(), Error> {
         let ctx = CoreContext::test_mock(fb);
         let factory = TestRepoFactory::new(fb)?;
