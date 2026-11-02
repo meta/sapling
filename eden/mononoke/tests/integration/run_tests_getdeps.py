@@ -234,9 +234,9 @@ def get_test_groups():
     )
 
     rest_groups = all_tests - manual_groups
-    # The test-scs* tests use the scs_server which is not buildable in OSS yet
+    # The test-scs* tests use scsc which is not buildable via getdeps/cargo yet
     test_groups[TestGroup.REQUIRING_SCS] = requiring_scs = {
-        t for t in rest_groups if t.startswith("test-scs")
+        t for t in rest_groups if "test-scs" in t
     }
     test_groups[TestGroup.PASSING] = rest_groups - requiring_scs
 
