@@ -437,18 +437,19 @@ impl<R> MononokeRepos<R> {
         repo_slot.get_or_build(loader).await
     }
 
-    /// Builds a repo that is already built here again with `loader`, through
-    /// its slot. `None`, without building, if the repo is not built here, or
-    /// was removed before its new build finished: a rebuild never builds an
-    /// unbuilt repo nor resurrects a removed one.
+    /// Builds a repo that is already built here again with `loader`, and
+    /// swaps it in. The old repo keeps serving until then, and stays if the
+    /// build fails. `None`, without building, if the repo is not built here,
+    /// or was removed before its new build finished: a rebuild never builds
+    /// an unbuilt repo nor resurrects a removed one.
+    ///
+    /// Runs on the caller's task, outside the slot's single-flight: there is
+    /// nothing to share, as a built slot has no build in flight.
     pub async fn rebuild_if_present(
         &self,
         repo_name: &str,
         loader: Arc<dyn RepoLoader<R>>,
-    ) -> Result<Option<Arc<R>>>
-    where
-        R: Send + Sync + 'static,
-    {
+    ) -> Result<Option<Arc<R>>> {
         let Some(repo_slot) = self.name_to_repo_map.load().get(repo_name).cloned() else {
             return Ok(None);
         };
@@ -456,13 +457,14 @@ impl<R> MononokeRepos<R> {
             return Ok(None);
         }
 
-        let repo = repo_slot.build_now(loader).await?;
+        let repo = Arc::new(loader.load(repo_name.to_string()).await?);
+        let replaced = repo_slot.replace(Arc::clone(&repo));
         let still_present = self
             .name_to_repo_map
             .load()
             .get(repo_name)
             .is_some_and(|current| Arc::ptr_eq(current, &repo_slot));
-        Ok(still_present.then_some(repo))
+        Ok((replaced && still_present).then_some(repo))
     }
 }
 

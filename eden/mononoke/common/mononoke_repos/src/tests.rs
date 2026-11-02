@@ -429,3 +429,47 @@ async fn test_rebuild_if_present_does_not_resurrect_a_repo_removed_mid_build() {
     assert!(repos.get_by_name("foo").is_none(), "removed repo came back");
     assert_eq!(repos.iter_names().count(), 0);
 }
+
+#[mononoke::test]
+async fn test_rebuild_if_present_serves_the_old_repo_until_the_new_one_is_built() {
+    let gate = Arc::new(Gate::default());
+    let repos = Arc::new(MononokeRepos::new());
+    repos.add("foo", 1, 100);
+
+    let rebuild = {
+        let repos = Arc::clone(&repos);
+        let loader = Arc::new(GatedLoader(Arc::clone(&gate)));
+        mononoke::spawn_task(async move { repos.rebuild_if_present("foo", loader).await })
+    };
+    gate.started.notified().await;
+    assert_eq!(
+        repos.get_by_name("foo").as_deref(),
+        Some(&100),
+        "readers keep the old repo while its replacement builds"
+    );
+
+    gate.release.notify_one();
+    assert_eq!(rebuild.await.unwrap().unwrap().as_deref(), Some(&42));
+    assert_eq!(repos.get_by_name("foo").as_deref(), Some(&42));
+}
+
+#[mononoke::test]
+async fn test_a_failed_rebuild_keeps_the_old_repo_without_a_hold() {
+    let repos: MononokeRepos<i32> = MononokeRepos::new();
+    repos.add("foo", 1, 100);
+
+    assert!(
+        repos
+            .rebuild_if_present("foo", Arc::new(FailingLoader))
+            .await
+            .is_err()
+    );
+    assert_eq!(repos.get_by_name("foo").as_deref(), Some(&100));
+
+    // No failure hold: the next rebuild runs.
+    let repo = repos
+        .rebuild_if_present("foo", Arc::new(CountingLoader::default()))
+        .await
+        .unwrap();
+    assert_eq!(repo.as_deref(), Some(&42));
+}

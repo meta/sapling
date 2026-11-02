@@ -68,13 +68,8 @@ pub struct RepoSlot<R> {
 enum SlotState<R> {
     /// Assigned to this host, but not built.
     Empty,
-    /// A build is in flight; `pending` is the handle it reports through.
-    /// `stale` is the repo it replaces, served until the build finishes and
-    /// kept if it fails.
-    Building {
-        stale: Option<Arc<R>>,
-        pending: SharedBuild<R>,
-    },
+    /// A build is in flight; this is the handle it reports through.
+    Building(SharedBuild<R>),
     /// Built, and available to serve.
     Ready(Arc<R>),
     /// A build failed recently. Kept rather than dropped back to `Empty` so
@@ -128,33 +123,35 @@ impl<R> RepoSlot<R> {
     /// The built repo, or `None` if this slot has not been built.
     pub fn loaded(&self) -> Option<Arc<R>> {
         match &**self.state.load() {
-            SlotState::Empty
-            | SlotState::Building { stale: None, .. }
-            | SlotState::Failed { .. } => None,
-            SlotState::Ready(repo)
-            | SlotState::Building {
-                stale: Some(repo), ..
-            } => Some(Arc::clone(repo)),
+            SlotState::Empty | SlotState::Building(_) | SlotState::Failed { .. } => None,
+            SlotState::Ready(repo) => Some(Arc::clone(repo)),
         }
     }
 
-    /// The claim this slot can answer without taking the lock. `None` when
-    /// it needs a writer to start a build. A `fresh` caller wants a new build
-    /// even of a built repo, so only an in-flight build or a held failure
-    /// answers it.
-    fn peek(&self, fresh: bool) -> Option<Claim<R>> {
+    /// Swaps in a newly built repo for the one this slot serves. `false`,
+    /// without swapping, if the slot is not built: a build in flight would
+    /// overwrite the swap with its own outcome.
+    pub(crate) fn replace(&self, repo: Arc<R>) -> bool {
+        let _transition = self.transition.lock();
+        if !matches!(**self.state.load(), SlotState::Ready(_)) {
+            return false;
+        }
+        self.state.store(Arc::new(SlotState::Ready(repo)));
+        true
+    }
+
+    /// The claim this slot can answer without taking the lock. `None` when it
+    /// is `Empty`, the one case that needs a writer.
+    fn peek(&self) -> Option<Claim<R>> {
         match &**self.state.load() {
-            SlotState::Ready(repo)
-            | SlotState::Building {
-                stale: Some(repo), ..
-            } if !fresh => Some(Claim::Ready(Arc::clone(repo))),
-            SlotState::Building { pending, .. } => Some(Claim::Wait(pending.clone())),
+            SlotState::Ready(repo) => Some(Claim::Ready(Arc::clone(repo))),
+            SlotState::Building(pending) => Some(Claim::Wait(pending.clone())),
             SlotState::Failed { error, retry_after } if Instant::now() < *retry_after => {
                 Some(Claim::Failed(Arc::clone(error)))
             }
             // An elapsed failure is retryable, which needs a writer to claim,
             // exactly like `Empty`.
-            SlotState::Ready(_) | SlotState::Empty | SlotState::Failed { .. } => None,
+            SlotState::Empty | SlotState::Failed { .. } => None,
         }
     }
 
@@ -174,8 +171,8 @@ impl<R> RepoSlot<R> {
     /// anyone still waits on its build: the async-requests worker, which unloads
     /// an on-demand repo when its last request finishes, holds each request's
     /// reference until that request has seen the build complete.
-    fn claim_build(self: &Arc<Self>, fresh: bool) -> Claim<R> {
-        if let Some(claim) = self.peek(fresh) {
+    fn claim_build(self: &Arc<Self>) -> Claim<R> {
+        if let Some(claim) = self.peek() {
             return claim;
         }
 
@@ -183,23 +180,19 @@ impl<R> RepoSlot<R> {
 
         // Another writer may have started or finished a build since the peek
         // above.
-        if let Some(claim) = self.peek(fresh) {
+        if let Some(claim) = self.peek() {
             return claim;
         }
 
-        let stale = self.loaded();
         let (send_outcome, outcome) = oneshot::channel();
         let pending = outcome.shared();
-        self.state.store(Arc::new(SlotState::Building {
-            stale: stale.clone(),
-            pending: pending.clone(),
-        }));
+        self.state
+            .store(Arc::new(SlotState::Building(pending.clone())));
         drop(transition);
 
         Claim::Start(
             BuildCompletion {
                 repo_slot: Arc::clone(self),
-                stale,
                 send_outcome: Some(send_outcome),
             },
             pending,
@@ -213,16 +206,14 @@ impl<R> RepoSlot<R> {
     /// replacing `add` detached is unreachable whatever is written to it. Keep
     /// it that way - writing back to the map from here would reintroduce the
     /// race `reload_if_present` exists to close.
-    fn apply_outcome(&self, outcome: &BuildOutcome<R>, stale: Option<Arc<R>>) {
-        let next = match (outcome, stale) {
-            (Ok(repo), _) => SlotState::Ready(Arc::clone(repo)),
-            // A failed rebuild keeps serving the repo it was meant to replace.
-            (Err(_), Some(stale)) => SlotState::Ready(stale),
+    fn apply_outcome(&self, outcome: &BuildOutcome<R>) {
+        let next = match outcome {
+            Ok(repo) => SlotState::Ready(Arc::clone(repo)),
             // A repo that never builds would otherwise look slow rather than
             // broken. This crate has no stats dependency and should keep it
             // that way, so the failure is counted by the loader that owns the
             // build (`mononoke.app.lazy_repo_build_failed` in `mononoke_app`).
-            (Err(error), None) => SlotState::Failed {
+            Err(error) => SlotState::Failed {
                 error: Arc::clone(error),
                 retry_after: Instant::now() + FAILED_BUILD_TTL,
             },
@@ -253,35 +244,7 @@ impl<R> RepoSlot<R> {
     where
         R: Send + Sync + 'static,
     {
-        self.build_inner(false, loader).await
-    }
-
-    /// A newly built repo, even if this slot already holds one: the eager
-    /// counterpart of [`Self::get_or_build`], for callers that want the
-    /// repo's current config applied now.
-    ///
-    /// The built repo keeps being served while its replacement builds, and
-    /// stays if that build fails. A caller arriving while any build is in
-    /// flight shares it rather than starting another.
-    pub(crate) async fn build_now(
-        self: &Arc<Self>,
-        loader: Arc<dyn RepoLoader<R>>,
-    ) -> Result<Arc<R>>
-    where
-        R: Send + Sync + 'static,
-    {
-        self.build_inner(true, loader).await
-    }
-
-    async fn build_inner(
-        self: &Arc<Self>,
-        fresh: bool,
-        loader: Arc<dyn RepoLoader<R>>,
-    ) -> Result<Arc<R>>
-    where
-        R: Send + Sync + 'static,
-    {
-        let pending = match self.claim_build(fresh) {
+        let pending = match self.claim_build() {
             Claim::Ready(repo) => return Ok(repo),
             Claim::Failed(error) => {
                 return Err(anyhow!(
@@ -338,7 +301,6 @@ impl<R> RepoSlot<R> {
 /// never looks claimable again.
 struct BuildCompletion<R> {
     repo_slot: Arc<RepoSlot<R>>,
-    stale: Option<Arc<R>>,
     send_outcome: Option<oneshot::Sender<BuildOutcome<R>>>,
 }
 
@@ -355,7 +317,7 @@ impl<R> BuildCompletion<R> {
         let Some(send_outcome) = self.send_outcome.take() else {
             return;
         };
-        self.repo_slot.apply_outcome(&outcome, self.stale.take());
+        self.repo_slot.apply_outcome(&outcome);
         let _ = send_outcome.send(outcome);
     }
 }
@@ -615,125 +577,6 @@ mod tests {
         assert_eq!(*repo, 42);
     }
 
-    #[mononoke::test]
-    async fn test_build_now_builds_an_empty_slot() {
-        let repo_slot = Arc::new(RepoSlot::empty("foo".to_string()));
-
-        let repo = repo_slot
-            .build_now(Arc::new(TestLoader::Ready))
-            .await
-            .unwrap();
-        assert_eq!(*repo, 42);
-        assert_eq!(repo_slot.loaded().as_deref(), Some(&42));
-    }
-
-    #[mononoke::test]
-    async fn test_build_now_serves_the_old_repo_until_the_new_one_is_built() {
-        let gate = Arc::new(Gate::default());
-        let repo_slot = Arc::new(RepoSlot::ready("foo".to_string(), Arc::new(100)));
-
-        let rebuild = {
-            let (repo_slot, gate) = (Arc::clone(&repo_slot), Arc::clone(&gate));
-            mononoke::spawn_task(
-                async move { repo_slot.build_now(Arc::new(GatedLoader(gate))).await },
-            )
-        };
-        gate.started.notified().await;
-
-        assert_eq!(
-            repo_slot.loaded().as_deref(),
-            Some(&100),
-            "readers keep the old repo while its replacement builds"
-        );
-        let repo = repo_slot
-            .get_or_build(Arc::new(TestLoader::Never))
-            .await
-            .unwrap();
-        assert_eq!(*repo, 100, "a lazy caller must not wait on a rebuild");
-
-        gate.release.notify_one();
-        assert_eq!(*rebuild.await.unwrap().unwrap(), 42);
-        assert_eq!(repo_slot.loaded().as_deref(), Some(&42));
-    }
-
-    #[mononoke::test]
-    async fn test_a_failed_rebuild_keeps_the_old_repo_without_a_hold() {
-        let repo_slot = Arc::new(RepoSlot::ready("foo".to_string(), Arc::new(100)));
-
-        let err = repo_slot
-            .build_now(Arc::new(TestLoader::Failed))
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("Failed to build repo foo"),
-            "unexpected error: {err:#}"
-        );
-        assert_eq!(repo_slot.loaded().as_deref(), Some(&100));
-
-        // The old repo is still served, so there is no failure to hold.
-        let repo = repo_slot
-            .build_now(Arc::new(TestLoader::Ready))
-            .await
-            .unwrap();
-        assert_eq!(*repo, 42);
-    }
-
-    #[mononoke::test]
-    async fn test_a_panicking_rebuild_keeps_the_old_repo() {
-        let repo_slot = Arc::new(RepoSlot::ready("foo".to_string(), Arc::new(100)));
-
-        assert!(
-            repo_slot
-                .build_now(Arc::new(TestLoader::Panics))
-                .await
-                .is_err()
-        );
-        assert_eq!(repo_slot.loaded().as_deref(), Some(&100));
-    }
-
-    #[mononoke::test]
-    async fn test_build_now_shares_an_in_flight_build() {
-        let gate = Arc::new(Gate::default());
-        let repo_slot = Arc::new(RepoSlot::empty("foo".to_string()));
-
-        let first = call(&repo_slot, &gate);
-        gate.started.notified().await;
-        let eager = {
-            let repo_slot = Arc::clone(&repo_slot);
-            mononoke::spawn_task(
-                async move { repo_slot.build_now(Arc::new(TestLoader::Never)).await },
-            )
-        };
-        for _ in 0..100 {
-            tokio::task::yield_now().await;
-        }
-        gate.release.notify_one();
-
-        assert_eq!(*first.await.unwrap().unwrap(), 42);
-        assert_eq!(*eager.await.unwrap().unwrap(), 42);
-        assert_eq!(gate.calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[mononoke::test]
-    async fn test_build_now_serves_a_held_failure() {
-        let repo_slot = Arc::new(RepoSlot::empty("foo".to_string()));
-
-        assert!(
-            repo_slot
-                .get_or_build(Arc::new(TestLoader::Failed))
-                .await
-                .is_err()
-        );
-        let err = repo_slot
-            .build_now(Arc::new(TestLoader::Never))
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("Not retrying build of repo foo"),
-            "unexpected error: {err:#}"
-        );
-    }
-
     struct PanicsOnLoad;
 
     impl RepoLoader<i32> for PanicsOnLoad {
@@ -744,21 +587,35 @@ mod tests {
 
     #[mononoke::test]
     async fn test_a_loader_panicking_before_returning_a_future_finishes_the_build() {
-        for old_repo in [None, Some(100)] {
-            let repo_slot = Arc::new(match old_repo {
-                None => RepoSlot::empty("foo".to_string()),
-                Some(repo) => RepoSlot::ready("foo".to_string(), Arc::new(repo)),
-            });
+        let repo_slot = Arc::new(RepoSlot::empty("foo".to_string()));
 
-            assert!(repo_slot.build_now(Arc::new(PanicsOnLoad)).await.is_err());
-            assert_eq!(repo_slot.loaded().as_deref(), old_repo.as_ref());
-
-            repo_slot.expire_cached_failure();
-            let repo = repo_slot
-                .build_now(Arc::new(TestLoader::Ready))
+        assert!(
+            repo_slot
+                .get_or_build(Arc::new(PanicsOnLoad))
                 .await
-                .expect("a loader panic must not leave the slot stuck building");
-            assert_eq!(*repo, 42);
-        }
+                .is_err()
+        );
+        assert!(repo_slot.loaded().is_none());
+
+        repo_slot.expire_cached_failure();
+        let repo = repo_slot
+            .get_or_build(Arc::new(TestLoader::Ready))
+            .await
+            .expect("a loader panic must not leave the slot stuck building");
+        assert_eq!(*repo, 42);
+    }
+
+    #[mononoke::test]
+    fn test_replace_swaps_only_a_built_repo() {
+        let repo_slot = RepoSlot::ready("foo".to_string(), Arc::new(100));
+        assert!(repo_slot.replace(Arc::new(42)));
+        assert_eq!(repo_slot.loaded().as_deref(), Some(&42));
+
+        let repo_slot: RepoSlot<i32> = RepoSlot::empty("foo".to_string());
+        assert!(
+            !repo_slot.replace(Arc::new(42)),
+            "an unbuilt slot must not be filled by a rebuild"
+        );
+        assert!(repo_slot.loaded().is_none());
     }
 }
