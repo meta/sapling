@@ -42,7 +42,7 @@ class MockWebSocketImpl extends EventTarget implements WebSocket {
   onmessage = null;
   onopen = null;
   protocol = '';
-  readyState = 0;
+  readyState: WebSocket['readyState'] = 0;
 
   readonly OPEN = 1 as const;
   readonly CONNECTING = 0 as const;

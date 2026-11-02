@@ -8,7 +8,7 @@
     "@testing-library/dom": "^10.0.0",
     "@testing-library/react": "^16.0.0",
     "@testing-library/user-event": "^13.2.1",
-    "@types/node": "^16.7.13",
+    "@types/node": "^22.9.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^6.0.1",
@@ -21,7 +21,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "shared": "0.1.0",
-    "typescript": "5.5.4",
+    "typescript": "7.0.2",
     "unplugin": "^2.3.11",
     "vite": "^8.0.5",
     "vite-tsconfig-paths": "^6.1.1",
@@ -37,11 +37,12 @@
     "ts-jest": "29"
   },
   "scripts": {
+    "tsc": "tsc",
     "start": "vite",
     "build": "vite build",
     "textmate": "node ./textmate.js",
     "test": "jest",
-    "integration": "jest --config=./integrationTests/integration.jest.config.ts",
+    "integration": "jest --config=./integrationTests/integration.jest.config.cjs",
     "lint": "oxlint -c ../.oxlintrc.json --react-plugin --import-plugin --ignore-pattern 'src/third-party/**' ./src"
   }
 }

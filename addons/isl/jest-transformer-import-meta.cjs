@@ -9,7 +9,12 @@ const {default: tsJest} = require('ts-jest');
 
 // `isolatedModules` transpiles each file on its own instead of building a full program,
 // which is much faster. `tsc --noEmit` covers type checking.
-const transformer = tsJest.createTransformer({diagnostics: false, isolatedModules: true});
+// TypeScript 7 has no JavaScript API, so ts-jest transpiles with the TypeScript 6 compatibility package.
+const transformer = tsJest.createTransformer({
+  diagnostics: false,
+  isolatedModules: true,
+  compiler: '@typescript/typescript6',
+});
 
 /**
  * Replace 'import.meta.hot' with 'undefined' to make Jest happy.

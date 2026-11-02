@@ -15,6 +15,7 @@
  *   `ChildProcessResponse`.
  */
 
+import type {MessageOptions} from 'node:child_process';
 import type {StartServerArgs, StartServerResult} from './server';
 
 import {registerUncaughtExceptionHandler} from './uncaughtException';
@@ -36,7 +37,8 @@ export type ChildProcessResponse =
 function sendMessageToParentProcess(msg: ChildProcessResponse): void {
   if (process.connected) {
     // The background launcher can exit between the check and the send.
-    process.send?.(msg, undefined, {swallowErrors: true}, () => {});
+    // `swallowErrors` is supported by Node.js but missing from `MessageOptions` in @types/node.
+    process.send?.(msg, undefined, {swallowErrors: true} as MessageOptions, () => {});
   }
 }
 

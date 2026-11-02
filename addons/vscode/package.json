@@ -375,6 +375,7 @@
     }
   },
   "scripts": {
+    "tsc": "tsc",
     "lint": "oxlint -c ../.oxlintrc.json --react-plugin --import-plugin extension webview",
     "test": "jest",
     "watch-extension": "rolldown -c rolldown.extension.config.ts --watch",
@@ -385,7 +386,7 @@
   },
   "devDependencies": {
     "@types/jest": "29.5.12",
-    "@types/node": "^16.11.7",
+    "@types/node": "^22.9.1",
     "@types/react-dom": "^19",
     "@types/vscode": "^1.34.0",
     "@vitejs/plugin-react": "^6.0.1",
@@ -398,7 +399,7 @@
     "react-dom": "^19.0.0",
     "ts-jest": "29",
     "tsx": "^4.16.2",
-    "typescript": "5.5.4",
+    "typescript": "7.0.2",
     "unplugin": "^2.3.11",
     "vite": "^8.0.5",
     "vscode-uri": "^3.0.6"

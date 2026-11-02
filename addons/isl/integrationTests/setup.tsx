@@ -254,7 +254,7 @@ commit(date='now')
     } {
       const cb = (e: string | ArrayBuffer) => {
         e instanceof ArrayBuffer
-          ? handler(e as Buffer, true)
+          ? handler(Buffer.from(e), true)
           : handler(Buffer.from(e, 'utf8'), false);
       };
       clientToServer.on('data', cb);

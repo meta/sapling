@@ -64,7 +64,7 @@ export function buildPathTree<T>(paths: Record<RepoPath, T>): PathTree<T> {
       const resultTree = recurse(value);
       // if a folder 'a' contains exactly one subfolder 'b', we can collapse it into just 'a/b'
       if (resultTree.size === 1) {
-        const [innerkey, inner] = resultTree.entries().next().value;
+        const [innerkey, inner] = resultTree.entries().next().value!;
         if (!(inner instanceof Map)) {
           // the single file is the bottom of the tree, don't absorb it
           tree.set(key, resultTree);

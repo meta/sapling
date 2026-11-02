@@ -5,9 +5,9 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import type {Config} from '@jest/types';
-
-const config: Config.InitialOptions = {
+/* global module */
+/** @type {import('@jest/types').Config.InitialOptions} */
+module.exports = {
   verbose: true,
   testRegex: '/integrationTests/.*\\.test\\.tsx?',
 
@@ -41,4 +41,3 @@ const config: Config.InitialOptions = {
     '^.+\\.module\\.(css|sass|scss)$',
   ],
 };
-export default config;

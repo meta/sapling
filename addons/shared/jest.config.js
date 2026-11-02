@@ -10,7 +10,13 @@
 module.exports = {
   preset: 'ts-jest',
   // Transpile each file on its own instead of type-checking it; `tsc --noEmit` covers types.
-  transform: {'^.+\\.tsx?$': ['ts-jest', {isolatedModules: true}]},
+  // TypeScript 7 has no JavaScript API, so ts-jest uses the TypeScript 6 compatibility package.
+  transform: {
+    '^.+\\.tsx?$': [
+      'ts-jest',
+      {isolatedModules: true, diagnostics: false, compiler: '@typescript/typescript6'},
+    ],
+  },
   testEnvironment: 'node',
   moduleNameMapper: {
     '\\.(css|less)$': '<rootDir>/__mocks__/styleMock.ts',

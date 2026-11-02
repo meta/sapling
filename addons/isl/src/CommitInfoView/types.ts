@@ -5,6 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+import type {ComponentType} from 'react';
+
 /**
  * Either a commit hash, or 'commit/foo' when making a new commit on top of commit hash 'foo'.
  */
@@ -85,13 +87,13 @@ export type FieldConfig = {
     }
   | {
       type: 'custom';
-      renderEditor: React.ComponentType<{
+      renderEditor: ComponentType<{
         field: FieldConfig;
         content: string;
         setEditedField: (fieldValue: string) => unknown;
         autoFocus?: boolean;
         extraProps?: Record<string, unknown>;
       }>;
-      renderDisplay: React.ComponentType<{content: string}>;
+      renderDisplay: ComponentType<{content: string}>;
     }
 );

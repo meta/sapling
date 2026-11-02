@@ -2,6 +2,7 @@
   "compilerOptions": {
     "target": "es6",
     "lib": ["ES2021.WeakRef", "dom", "dom.iterable", "esnext"],
+    "types": ["node", "jest"],
     "allowJs": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
@@ -12,7 +13,7 @@
     "noFallthroughCasesInSwitch": true,
     "sourceMap": true,
     "module": "esnext",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "jsx": "react-jsx"
   },

@@ -33,6 +33,9 @@ eden/addons/
 | Run integration tests    | `cd isl && yarn integration`         |
 | Format code              | `arc f -a`                           |
 | Lint                     | `yarn lint`                          |
+| Type check (per package) | `yarn tsc --noEmit`                  |
+
+**TypeScript:** packages type-check with TypeScript 7 (`yarn tsc`). TypeScript 7 has no JavaScript API, so tools that need one (ts-jest, `prettier-plugin-organize-imports`) use the root `typescript` 5.x or `@typescript/typescript6`.
 
 **Prettier config:** single quotes, 2-space indent, 100 print width, trailing commas, no bracket spacing. Imports are auto-organized via `prettier-plugin-organize-imports`.
 

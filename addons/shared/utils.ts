@@ -299,7 +299,8 @@ export function* mapIterable<T, R>(iterable: Iterable<T>, mapFn: (t: T) => R): I
 }
 
 export function base64Decode(data: string): ArrayBuffer {
-  return Buffer.from(data, 'base64');
+  // Copy into a standalone ArrayBuffer: a Buffer's backing store may be a shared pool.
+  return new Uint8Array(Buffer.from(data, 'base64')).buffer as ArrayBuffer;
 }
 
 /** Deduplicate items in an array. */
