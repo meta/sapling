@@ -5,7 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import type {IGrammar} from 'vscode-textmate';
+import type {IGrammar, StackElement} from 'vscode-textmate';
 
 import {INITIAL} from 'vscode-textmate';
 
@@ -51,8 +51,21 @@ export function tokenizeLines(
   grammar: IGrammar,
   timeLimit: number = DEFAULT_TOKENIZE_TIMEOUT_MS,
 ): Array<Array<HighlightedToken>> {
-  let state = INITIAL;
-  return lines.map((line: string) => {
+  return tokenizeLinesFromState(lines, grammar, INITIAL, timeLimit).tokens;
+}
+
+/**
+ * Like `tokenizeLines`, but starts from `initialState` instead of the start of a file,
+ * and also returns the state after the last line, so tokenizing can continue from there.
+ */
+export function tokenizeLinesFromState(
+  lines: ReadonlyArray<string>,
+  grammar: IGrammar,
+  initialState: StackElement,
+  timeLimit: number = DEFAULT_TOKENIZE_TIMEOUT_MS,
+): {tokens: Array<Array<HighlightedToken>>; state: StackElement} {
+  let state = initialState;
+  const tokens = lines.map((line: string) => {
     // Line-processing logic taken from:
     // https://github.com/microsoft/vscode-textmate/blob/cc8ae321cfb47940470bd82c87a8ac61366fbd80/src/tests/themedTokenizer.ts#L20-L41
     const result = grammar.tokenizeLine2(line, state, timeLimit);
@@ -93,4 +106,5 @@ export function tokenizeLines(
     state = result.stoppedEarly ? state : result.ruleStack;
     return singleLine;
   });
+  return {tokens, state};
 }

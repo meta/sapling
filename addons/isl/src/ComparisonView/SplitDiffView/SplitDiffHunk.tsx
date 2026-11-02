@@ -26,6 +26,7 @@ import {useTableColumnSelection} from './copyFromSelectedColumn';
 import {useTokenizedContents, useTokenizedHunks} from './syntaxHighlighting';
 
 const MAX_INPUT_LENGTH_FOR_INTRALINE_DIFF = 300;
+const MAX_CONTEXT_LINES_FOR_SYNTAX_HIGHLIGHTING = 10000;
 
 export type SplitDiffTableProps = {
   ctx: Context;
@@ -49,7 +50,13 @@ export const SplitDiffTable = React.memo(
     );
 
     const t = ctx.t ?? (s => s);
-    const tokenization = useTokenizedHunks(patch.newFileName ?? '', patch.hunks, ctx.useThemeHook);
+    const contextLinesBefore = useContextLinesBeforeHunks(ctx, patch.hunks);
+    const tokenization = useTokenizedHunks(
+      patch.newFileName ?? '',
+      patch.hunks,
+      ctx.useThemeHook,
+      contextLinesBefore,
+    );
 
     const {className: tableSelectionClassName, ...tableSelectionProps} = useTableColumnSelection();
 
@@ -586,4 +593,51 @@ function useFetchLines(ctx: Context, numLines: number, start: number) {
   }, [invalidationKey, ctx.id.path, comparisonKey, numLines, start]);
 
   return fetchedLines;
+}
+
+/**
+ * Fetches the lines of the "before" file above the last hunk, so syntax highlighting can
+ * start each hunk in the right state, for example inside a multi-line string or comment.
+ */
+function useContextLinesBeforeHunks(
+  ctx: Context,
+  hunks: ParsedDiff['hunks'],
+): Array<string> | undefined {
+  const [fetched, setFetched] = useState<{key: string; lines: Array<string>} | undefined>(
+    undefined,
+  );
+
+  const lastHunk = hunks.at(-1);
+  // A hunk that only adds lines comes after line `oldStart`, so that line is context too.
+  const numLines =
+    lastHunk == null ? 0 : lastHunk.oldLines === 0 ? lastHunk.oldStart : lastHunk.oldStart - 1;
+  const shouldFetch = numLines > 0 && numLines <= MAX_CONTEXT_LINES_FOR_SYNTAX_HIGHLIGHTING;
+
+  // Use-case controlled key that allows invalidating the fetched lines.
+  const invalidationKey = ctx.useComparisonInvalidationKeyHook?.();
+
+  const comparisonKey = comparisonStringKey(ctx.id.comparison);
+  // Lines fetched for an earlier comparison or file must not be used for this one.
+  const key = `${invalidationKey}:${comparisonKey}:${ctx.id.path}:${numLines}`;
+  useEffect(() => {
+    if (!shouldFetch) {
+      return;
+    }
+    let isCancelled = false;
+    ctx
+      .fetchAdditionalLines?.(ctx.id, 1, numLines)
+      .then(result => {
+        if (!isCancelled && result.value != null) {
+          setFetched({key, lines: result.value});
+        }
+      })
+      // Without the lines, hunks keep their per-hunk highlighting.
+      .catch(() => undefined);
+    return () => {
+      isCancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, shouldFetch]);
+
+  return shouldFetch && fetched?.key === key ? fetched.lines : undefined;
 }

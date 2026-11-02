@@ -1332,7 +1332,14 @@ export type ServerToClientMessage =
   | {type: 'uploadFileResult'; id: string; result: Result<string>}
   | {type: 'gotRepoUrlAtHash'; url: Result<string>}
   | {type: 'comparison'; comparison: Comparison; data: ComparisonData; ignoreWhitespace?: boolean}
-  | {type: 'comparisonContextLines'; path: RepoRelativePath; lines: Result<Array<string>>}
+  | {
+      type: 'comparisonContextLines';
+      path: RepoRelativePath;
+      lines: Result<Array<string>>;
+      /** The `start` and `numLines` of the request this answers. */
+      start?: number;
+      numLines?: number;
+    }
   | {type: 'beganLoadingMoreCommits'}
   | {type: 'commitsShownRange'; rangeInDays: number | undefined}
   | {type: 'additionalCommitAvailability'; moreAvailable: boolean}

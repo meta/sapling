@@ -13,6 +13,7 @@ import path from 'node:path';
 import {ComparisonType} from 'shared/Comparison';
 import {nextTick, nullthrows} from 'shared/utils';
 import App from '../App';
+import serverAPI from '../ClientToServerAPI';
 import {showComparison} from '../ComparisonView/atoms';
 import {cancelAllHighlightingTasks} from '../ComparisonView/SplitDiffView/syntaxHighlighting';
 import {parsePatchAndFilter, sortFilesByType} from '../ComparisonView/utils';
@@ -85,6 +86,33 @@ diff --git someFile.js someFile.js
 +  const variable_in_after = 1;
    console.log(variable_in_content_line);
  }
+`;
+
+const DIFF_STARTING_INSIDE_TEMPLATE_LITERAL = `\
+diff --git templateFile.js templateFile.js
+--- templateFile.js
++++ templateFile.js
+@@ -2,3 +2,3 @@
+ inside template
+ \`;
+-const variable_after_template_before = 'a_string_literal';
++const variable_after_template_after = 'a_string_literal';
+`;
+
+const DIFF_WITH_TEMPLATE_LITERAL_BETWEEN_HUNKS = `\
+diff --git twoHunks.js twoHunks.js
+--- twoHunks.js
++++ twoHunks.js
+@@ -1,3 +1,3 @@
+-const first_change_before = 1;
++const first_change_after = 1;
+ const a = 2;
+ const b = 3;
+@@ -8,3 +8,3 @@
+ inside template
+ \`;
+-const variable_after_second_template_before = 'a_string_literal';
++const variable_after_second_template_after = 'a_string_literal';
 `;
 
 Object.defineProperty(navigator, 'clipboard', {
@@ -233,6 +261,44 @@ describe('ComparisonView', () => {
       expect(inComparisonView().getAllByText('line 5')[0]).toBeInTheDocument();
       expect(inComparisonView().getAllByText('line 6')[0]).toBeInTheDocument();
     });
+    unmountNow();
+  });
+
+  it('ignores context lines sent for a different range', async () => {
+    await openUncommittedChangesComparison();
+    act(() => {
+      fireEvent.click(inComparisonView().getByText('Expand 6 lines'));
+    });
+    await waitFor(() => {
+      expectMessageSentToServer({
+        type: 'requestComparisonContextLines',
+        id: {path: 'someFile.txt', comparison: {type: ComparisonType.UncommittedChanges}},
+        numLines: 6,
+        start: 1,
+      });
+    });
+    act(() => {
+      simulateMessageFromServer({
+        type: 'comparisonContextLines',
+        lines: {value: ['other range line']},
+        path: 'someFile.txt',
+        start: 20,
+        numLines: 1,
+      });
+    });
+    act(() => {
+      simulateMessageFromServer({
+        type: 'comparisonContextLines',
+        lines: {value: ['line 1', 'line 2', 'line 3', 'line 4', 'line 5', 'line 6']},
+        path: 'someFile.txt',
+        start: 1,
+        numLines: 6,
+      });
+    });
+    await waitFor(() => {
+      expect(inComparisonView().getAllByText('line 1')[0]).toBeInTheDocument();
+    });
+    expect(inComparisonView().queryByText('other range line')).not.toBeInTheDocument();
     unmountNow();
   });
 
@@ -657,6 +723,101 @@ describe('ComparisonView', () => {
       });
       unmountNow();
     });
+
+    it('highlights hunks using the file lines above them', async () => {
+      await openUncommittedChangesComparison(DIFF_STARTING_INSIDE_TEMPLATE_LITERAL);
+      await waitFor(() => {
+        expectMessageSentToServer({
+          type: 'requestComparisonContextLines',
+          id: {path: 'templateFile.js', comparison: {type: ComparisonType.UncommittedChanges}},
+          numLines: 1,
+          start: 1,
+        });
+      });
+      act(() => {
+        simulateMessageFromServer({
+          type: 'comparisonContextLines',
+          lines: {value: ['const template = `']},
+          path: 'templateFile.js',
+          start: 1,
+          numLines: 1,
+        });
+      });
+      await waitFor(() => {
+        // Code after the closing backtick is highlighted as code, not as part of a string.
+        const variableColor = colorClassOf(
+          inComparisonView().getByText('variable_after_template_after'),
+        );
+        const stringColors = inComparisonView()
+          .getAllByText(/a_string_literal/)
+          .map(colorClassOf);
+        expect(variableColor).toBeDefined();
+        expect(stringColors).not.toContain(variableColor);
+      });
+      unmountNow();
+    });
+
+    it('carries the highlighting state through the unchanged lines between hunks', async () => {
+      await openUncommittedChangesComparison(DIFF_WITH_TEMPLATE_LITERAL_BETWEEN_HUNKS);
+      await waitFor(() => {
+        // One request covers every hunk: the lines above the last one.
+        expectMessageSentToServer({
+          type: 'requestComparisonContextLines',
+          id: {path: 'twoHunks.js', comparison: {type: ComparisonType.UncommittedChanges}},
+          numLines: 7,
+          start: 1,
+        });
+      });
+      act(() => {
+        simulateMessageFromServer({
+          type: 'comparisonContextLines',
+          lines: {
+            value: [
+              'const first_change_before = 1;',
+              'const a = 2;',
+              'const b = 3;',
+              'const c = 4;',
+              'const template = `',
+              'line one',
+              'line two',
+            ],
+          },
+          path: 'twoHunks.js',
+          start: 1,
+          numLines: 7,
+        });
+      });
+      await waitFor(() => {
+        // The template literal opens between the hunks, so the second hunk starts inside it.
+        const variableColor = colorClassOf(
+          inComparisonView().getByText('variable_after_second_template_after'),
+        );
+        const stringColors = inComparisonView()
+          .getAllByText(/a_string_literal/)
+          .map(colorClassOf);
+        expect(variableColor).toBeDefined();
+        expect(stringColors).not.toContain(variableColor);
+      });
+      unmountNow();
+    });
+
+    it('falls back to per-hunk highlighting when fetching context lines fails', async () => {
+      // A rejected fetch that nothing handles fails the test as an unhandled rejection.
+      const realPostMessage = serverAPI.postMessage.bind(serverAPI);
+      const postMessage = jest.spyOn(serverAPI, 'postMessage').mockImplementation(message => {
+        if (message.type === 'requestComparisonContextLines') {
+          throw new Error('message bus closed');
+        }
+        realPostMessage(message);
+      });
+      try {
+        await openUncommittedChangesComparison(DIFF_STARTING_INSIDE_TEMPLATE_LITERAL);
+        await waitForSyntaxHighlightingToAppear(screen.getByTestId('comparison-view'));
+      } finally {
+        postMessage.mockRestore();
+        unmountNow();
+      }
+    });
   });
 
   const makeFileDiff = (name: string, content: string) => {
@@ -791,6 +952,10 @@ ${content}
     });
   });
 });
+
+function colorClassOf(token: HTMLElement): string | undefined {
+  return /mtk\d+/.exec(token.className)?.[0];
+}
 
 function waitForSyntaxHighlightingToAppear(inside: HTMLElement): Promise<void> {
   return waitFor(() => {

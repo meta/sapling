@@ -645,6 +645,8 @@ export default class ServerToClientAPI {
               type: 'comparisonContextLines',
               lines: {value: content.split('\n').slice(start - 1, start - 1 + numLines)},
               path: relativePath,
+              start,
+              numLines,
             }),
           )
           .catch((error: Error) =>
@@ -652,6 +654,8 @@ export default class ServerToClientAPI {
               type: 'comparisonContextLines',
               lines: {error},
               path: relativePath,
+              start,
+              numLines,
             }),
           );
         break;

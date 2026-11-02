@@ -628,7 +628,10 @@ function ComparisonViewFile({
 
       const result = await serverAPI.nextMessageMatching(
         'comparisonContextLines',
-        msg => msg.path === id.path,
+        msg =>
+          msg.path === id.path &&
+          // Older servers don't say which lines they sent.
+          (msg.start == null || (msg.start === start && msg.numLines === numLines)),
       );
 
       return result.lines;

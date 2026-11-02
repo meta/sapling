@@ -110,13 +110,14 @@ function getWorker(): Promise<WorkerApi<SyntaxWorkerRequest, SyntaxWorkerRespons
  * Given a set of hunks from a diff view,
  * asynchronously provide syntax highlighting by tokenizing.
  *
- * Note that we reconstruct the file contents from the diff,
- * so syntax highlighting can be inaccurate since it's missing full context.
+ * Note that we reconstruct the file contents from the diff. Without `contextLinesBefore`,
+ * syntax highlighting can be inaccurate since it's missing the lines above each hunk.
  */
 export function useTokenizedHunks(
   path: string,
   hunks: ParsedDiff['hunks'],
   useThemeHook: () => ThemeColor,
+  contextLinesBefore?: Array<string>,
 ): TokenizedDiffHunks | undefined {
   const theme = useThemeHook();
 
@@ -125,14 +126,16 @@ export function useTokenizedHunks(
   useEffect(() => {
     const token = newTrackedCancellationToken();
     getWorker().then(worker =>
-      worker.request({type: 'tokenizeHunks', theme, path, hunks}, token).then(result => {
-        if (!token.isCancelled) {
-          setTokenized(result.result);
-        }
-      }),
+      worker
+        .request({type: 'tokenizeHunks', theme, path, hunks, contextLinesBefore}, token)
+        .then(result => {
+          if (!token.isCancelled) {
+            setTokenized(result.result);
+          }
+        }),
     );
     return () => token.cancel();
-  }, [theme, path, hunks]);
+  }, [theme, path, hunks, contextLinesBefore]);
   return tokenized;
 }
 

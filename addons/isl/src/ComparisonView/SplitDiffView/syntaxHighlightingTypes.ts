@@ -42,6 +42,11 @@ export type SyntaxWorkerRequest =
       theme: ThemeColor;
       path: string;
       hunks: ParsedDiff['hunks'];
+      /**
+       * Lines of the "before" file, starting at line 1, that come before the last hunk.
+       * Lets each hunk start from the grammar state the lines above it leave, for example inside a multi-line string.
+       */
+      contextLinesBefore?: Array<string>;
     };
 
 export type SyntaxWorkerResponse =
