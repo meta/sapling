@@ -1037,7 +1037,6 @@ export const settableConfigNames = [
   'isl.copy-commit-hash-format',
   'github.preferred_submit_command',
   'ui.allowemptycommit',
-  'ui.merge',
   'amend.autorestack',
   'isl.show-authored-diffs',
   'isl.show-ai-reviewing-badge',
