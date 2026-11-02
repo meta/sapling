@@ -11,7 +11,7 @@ rust_binary(
     cpp_deps = [
         ":metadata",
     ],
-    cxx_bridge = "src/metadata.rs",
+    cxx_bridge = "src/facebook/metadata.rs",
     labels = [
         ci.heavyweight(),
     ],
@@ -35,7 +35,6 @@ rust_binary(
         "//eden/mononoke/cmdlib/sharding:executor_lib",
         "//eden/mononoke/cmdlib/sharding_ext:sharding_ext",
         "//eden/mononoke/cmdlib/thrift_server:mononoke_thrift_server",
-        "//eden/mononoke/common/connection_security_checker:connection_security_checker",
         "//eden/mononoke/common/facebook/sql_storage:sql_storage",
         "//eden/mononoke/common/memory:memory",
         "//eden/mononoke/common/rust/justknobs_ext:justknobs",

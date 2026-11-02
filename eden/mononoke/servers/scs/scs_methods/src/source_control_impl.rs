@@ -6,35 +6,17 @@
  */
 
 use std::borrow::Cow;
-use std::collections::HashSet;
 use std::future::Future;
-use std::net::IpAddr;
 use std::num::NonZeroU64;
 use std::pin::Pin;
 use std::sync::Arc;
-#[cfg(fbcode_build)]
-use std::sync::LazyLock;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-#[cfg(fbcode_build)]
-use MononokeScsRequest_ods3::Instrument_MononokeScsRequest;
-#[cfg(fbcode_build)]
-use MononokeScsRequest_ods3_types::MononokeScsRequest;
-#[cfg(fbcode_build)]
-use MononokeScsRequest_ods3_types::SCSRequestEvent;
-#[cfg(fbcode_build)]
-use MononokeScsRequest_ods3_types::SCSRequestOutcome as Outcome;
-#[cfg(fbcode_build)]
-use MononokeScsRequest_ods3_types::SCSRequestType;
 use async_requests::AsyncMethodRequestQueue;
-use clientinfo::CLIENT_INFO_HEADER;
-use clientinfo::ClientEntryPoint;
-use clientinfo::ClientInfo;
 use cloned::cloned;
-use connection_security_checker::ConnectionSecurityChecker;
 use environment::RemoteDiffOptions;
 use ephemeral_blobstore::BubbleId;
 use ephemeral_blobstore::RepoEphemeralStore;
@@ -52,12 +34,8 @@ use futures_stats::TimedTryStreamExt;
 use futures_stats::TryStreamStats;
 use futures_watchdog::WatchdogExt;
 use git_source_of_truth::GitSourceOfTruthConfig;
-use identity::Identity;
-use login_objects_thrift::EnvironmentType;
 use megarepo_api::MegarepoApi;
 use memory::MemoryStats;
-use metaconfig_types::CommonConfig;
-use metadata::ClientPathAclCompatibility;
 use metadata::Metadata;
 use mononoke_api::ChangesetContext;
 use mononoke_api::ChangesetId;
@@ -72,54 +50,35 @@ use mononoke_api::SessionContainer;
 use mononoke_api::TreeContext;
 use mononoke_app::MononokeApp;
 use mononoke_configs::MononokeConfigs;
+use mononoke_thrift_server::RequestContext;
 use mononoke_types::ContentManifestId;
 use mononoke_types::hash::Sha1;
 use mononoke_types::hash::Sha256;
-use permission_checker::AclProvider;
-use permission_checker::MononokeIdentity;
-use permission_checker::MononokeIdentitySet;
 use repo_authorization::AuthorizationContext;
 use scribe_ext::Scribe;
 use scs_errors::LoggableError;
 use scs_errors::ServiceErrorResultExt;
 use scs_errors::Status;
 use scuba_ext::MononokeScubaSampleBuilder;
-use scuba_ext::ScubaValue;
 use source_control as thrift;
 use source_control_services::SourceControlService;
 use source_control_services::errors::source_control_service as service;
 use sql_ext::facebook::MysqlOptions;
-use srserver::RequestContext;
 use stats::prelude::*;
-use time_ext::DurationExt;
 use tracing::Instrument;
 use tracing::debug;
 
 use crate::from_request::FromRequest;
+use crate::platform;
+use crate::request_observability::RequestEvent;
+use crate::request_observability::RequestOutcome;
+use crate::request_observability::RequestType;
 use crate::scuba_params::AddScubaParams;
 use crate::scuba_response::AddScubaResponse;
 use crate::specifiers::SpecifierExt;
 
-const FORWARDED_AUTHENTICATED_IDENTITIES_THRIFT_HEADER: &str =
-    "scm_forwarded_authenticated_identities_thrift";
-const FORWARDED_CLIENT_IP_HEADER: &str = "scm_forwarded_client_ip";
-const FORWARDED_CLIENT_PORT_HEADER: &str = "scm_forwarded_client_port";
-const FORWARDED_CLIENT_DEBUG_HEADER: &str = "scm_forwarded_client_debug";
-const FORWARDED_OTHER_CATS_HEADER: &str = "scm_forwarded_other_cats";
-const FORWARDED_CLIENT_ID_HEADER: &str = "scm_forwarded_client_id";
-// Header names are fixed by the upstream proxy that forwards its caller's CATs.
-const FORWARDED_UNVERIFIED_CATS_HEADER: &str = "raw_customer_cats";
-const FORWARDED_UNVERIFIED_CATS_VERIFIER_HEADER: &str = "customer_cats_verifier_service_identity";
-const ALWAYS_LOG_HEADER: &str = "always_log";
-const SCS_PATH_ACL_COMPATIBLE_HEADER: &str = "scs_path_acl_compatible";
-const SCS_PARTIAL_RESPONSES_OPT_IN_HEADER: &str = "scs_partial_responses_opt_in";
-const SCS_PARTIAL_RESPONSES_OPT_OUT_HEADER: &str = "scs_partial_responses_opt_out";
 const PER_REQUEST_READ_QPS: usize = 4000;
 const PER_REQUEST_WRITE_QPS: usize = 4000;
-
-#[cfg(fbcode_build)]
-static SCS_REQUEST_STATS_INSTRUMENT: LazyLock<Instrument_MononokeScsRequest> =
-    LazyLock::new(Instrument_MononokeScsRequest::new);
 
 define_stats! {
     prefix = "mononoke.scs_server";
@@ -143,21 +102,7 @@ define_stats! {
 
     total_method_requests:  dynamic_timeseries("method.{}.total_method_requests", (method: String); Rate, Sum),
     total_method_internal_failure:  dynamic_timeseries("method.{}.total_method_internal_failure", (method: String); Rate, Sum),
-    malformed_path_acl_compatibility_header: timeseries(Rate, Sum),
 
-}
-
-fn classify_client_path_acl_compatibility(
-    header: anyhow::Result<Option<Vec<u8>>>,
-) -> ClientPathAclCompatibility {
-    match header {
-        Ok(None) => ClientPathAclCompatibility::Absent,
-        Ok(Some(value)) if value == b"1" => ClientPathAclCompatibility::ReadyV1,
-        Ok(Some(_)) | Err(_) => {
-            STATS::malformed_path_acl_compatibility_header.add_value(1);
-            ClientPathAclCompatibility::Malformed
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -166,20 +111,16 @@ pub struct SourceControlServiceImpl {
     pub(crate) mononoke: Arc<Mononoke<Repo>>,
     pub(crate) megarepo_api: Arc<MegarepoApi<Repo>>,
     pub(crate) scuba_builder: MononokeScubaSampleBuilder,
-    pub(crate) identity: Identity,
+    pub(crate) request_state: platform::RequestState,
     pub(crate) scribe: Scribe,
     pub(crate) configs: Arc<MononokeConfigs>,
     pub(crate) async_requests_queue: Option<Arc<AsyncMethodRequestQueue>>,
-    identity_proxy_checker: Arc<ConnectionSecurityChecker>,
-    pub(crate) acl_provider: Arc<dyn AclProvider>,
     #[allow(unused)]
     pub(crate) git_source_of_truth_config: Arc<dyn GitSourceOfTruthConfig>,
     pub(crate) mysql_options: MysqlOptions,
     pub(crate) watchdog_max_poll: u64,
     pub(crate) remote_diff_options: RemoteDiffOptions,
-    /// KCB request-primary identity types, loaded once from Configerator at
-    /// startup with a fail-secure fallback to the compile-time consts.
-    request_primary_identity_types: Arc<HashSet<String>>,
+    thrift_cache_policy: platform::ThriftCachePolicy,
 }
 
 pub struct SourceControlServiceThriftImpl(Arc<SourceControlServiceImpl>);
@@ -192,34 +133,30 @@ impl SourceControlServiceImpl {
         megarepo_api: Arc<MegarepoApi<Repo>>,
         mut scuba_builder: MononokeScubaSampleBuilder,
         scribe: Scribe,
-        identity_proxy_checker: ConnectionSecurityChecker,
         configs: Arc<MononokeConfigs>,
-        common_config: &CommonConfig,
         async_requests_queue: Option<Arc<AsyncMethodRequestQueue>>,
         git_source_of_truth_config: Arc<dyn GitSourceOfTruthConfig>,
         watchdog_max_poll: u64,
     ) -> Result<Self, anyhow::Error> {
         scuba_builder.add_common_server_data();
 
+        let request_state = platform::RequestState::new(app).await?;
+        let thrift_cache_policy = platform::ThriftCachePolicy::new(app);
+
         Ok(Self {
             fb,
             mononoke: mononoke.clone(),
             megarepo_api,
             scuba_builder,
-            identity: Identity::new(
-                common_config.internal_identity.id_type.as_str(),
-                common_config.internal_identity.id_data.as_str(),
-            ),
+            request_state,
             scribe,
             configs,
-            identity_proxy_checker: Arc::new(identity_proxy_checker),
             async_requests_queue,
-            acl_provider: app.environment().acl_provider.clone(),
             git_source_of_truth_config,
             mysql_options: app.mysql_options().clone(),
             watchdog_max_poll,
             remote_diff_options: app.environment().remote_diff_options.clone(),
-            request_primary_identity_types: load_request_primary_identity_types(app),
+            thrift_cache_policy,
         })
     }
 
@@ -243,10 +180,7 @@ impl SourceControlServiceImpl {
         let session_uuid = session.metadata().session_id().to_string();
         scuba.add("session_uuid", session_uuid.clone());
 
-        let always_log = req_ctxt
-            .header(ALWAYS_LOG_HEADER)
-            .map_err(scs_errors::internal_error)?
-            .is_some();
+        let always_log = self.request_state.always_log(req_ctxt)?;
         if always_log {
             scuba.unsampled();
         }
@@ -279,16 +213,6 @@ impl SourceControlServiceImpl {
         scuba.add("method", name);
         if let Some(specifier) = specifier {
             if let Some(reponame) = specifier.scuba_reponame() {
-                // Per-repo config provenance; mutation id is always None until plumbed.
-                if let Some(repo_config) = self.configs.repo_configs().repos.get(reponame.as_str())
-                {
-                    if let Some(version) = repo_config.config_version.clone() {
-                        scuba.add("repo_config_version", version);
-                    }
-                    if let Some(mutation_id) = repo_config.config_mutation_id {
-                        scuba.add("repo_config_mutation_id", mutation_id);
-                    }
-                }
                 scuba.add("reponame", reponame);
             }
             if let Some(commit) = specifier.scuba_commit() {
@@ -296,9 +220,6 @@ impl SourceControlServiceImpl {
             }
             if let Some(path) = specifier.scuba_path() {
                 scuba.add("path", path);
-            }
-            if let Some(tree_specifier) = specifier.scuba_param_tree_specifier() {
-                scuba.add("param_tree_specifier", tree_specifier);
             }
         }
 
@@ -313,28 +234,15 @@ impl SourceControlServiceImpl {
         }
 
         params.add_scuba_params(&mut scuba);
-
-        const CLIENT_HEADERS: &[&str] = &[
-            "client_id",
-            "client_type",
-            "client_correlator",
-            "proxy_client_id",
-        ];
-        for &header in CLIENT_HEADERS.iter() {
-            let value = req_ctxt
-                .header(header)
-                .map_err(scs_errors::internal_error)?;
-            if let Some(value) = value {
-                scuba.add(header, value);
-            }
-        }
+        self.request_state
+            .add_scuba_params(req_ctxt, specifier, &self.configs, &mut scuba)?;
 
         scuba.add(
             "identities",
             identities
                 .iter()
                 .map(|id| id.to_string())
-                .collect::<ScubaValue>(),
+                .collect::<Vec<_>>(),
         );
 
         scuba.add(
@@ -342,7 +250,7 @@ impl SourceControlServiceImpl {
             identities
                 .iter()
                 .map(|id| id.to_typed_string())
-                .collect::<ScubaValue>(),
+                .collect::<Vec<_>>(),
         );
         scuba.add(
             "client_path_acl_compatibility",
@@ -355,7 +263,7 @@ impl SourceControlServiceImpl {
                 forwarded
                     .iter()
                     .map(|id| id.to_string())
-                    .collect::<ScubaValue>(),
+                    .collect::<Vec<_>>(),
             );
         }
         scuba.add_opt(
@@ -368,168 +276,11 @@ impl SourceControlServiceImpl {
                 verifiers
                     .iter()
                     .map(|id| id.to_string())
-                    .collect::<ScubaValue>(),
+                    .collect::<Vec<_>>(),
             );
         }
 
         Ok(scuba)
-    }
-
-    async fn create_metadata(
-        &self,
-        req_ctxt: &RequestContext,
-    ) -> Result<Metadata, scs_errors::ServiceError> {
-        let header = |h: &str| req_ctxt.header(h).map_err(scs_errors::invalid_request);
-        let mut metadata = self.create_base_metadata(req_ctxt).await?;
-        metadata.add_client_path_acl_compatibility(classify_client_path_acl_compatibility(
-            req_ctxt.header_as_bytes(SCS_PATH_ACL_COMPATIBLE_HEADER),
-        ));
-        metadata
-            .add_partial_responses_opt_in(header(SCS_PARTIAL_RESPONSES_OPT_IN_HEADER)?.is_some());
-        metadata
-            .add_partial_responses_opt_out(header(SCS_PARTIAL_RESPONSES_OPT_OUT_HEADER)?.is_some());
-
-        let client_info: Option<ClientInfo> = header(CLIENT_INFO_HEADER)?
-            .as_ref()
-            .and_then(|ci| serde_json::from_str(ci).ok());
-        metadata.add_client_info(
-            client_info.unwrap_or_else(|| {
-                ClientInfo::default_with_entry_point(ClientEntryPoint::ScsServer)
-            }),
-        );
-        if let Some(client_id) = header(FORWARDED_CLIENT_ID_HEADER)?.or(header("client_id")?) {
-            metadata.add_upstream_client_id(client_id);
-        }
-
-        // Forwarded caller CATs are parsed without verification and only logged;
-        // they never join `identities`.
-        if justknobs::eval(
-            "scm/mononoke:scs_log_unverified_forwarded_identities",
-            None,
-            None,
-        ) {
-            if let (Some(verifier), Some(raw_cats)) = (
-                header(FORWARDED_UNVERIFIED_CATS_VERIFIER_HEADER)?,
-                header(FORWARDED_UNVERIFIED_CATS_HEADER)?,
-            ) {
-                match cats::unverified_identities_from_serialized_list(&raw_cats) {
-                    Ok((identities, token_verifiers)) => {
-                        metadata.add_unverified_forwarded_identities(
-                            verifier,
-                            identities,
-                            token_verifiers,
-                        );
-                    }
-                    Err(e) => {
-                        debug!("Ignoring unparsable {FORWARDED_UNVERIFIED_CATS_HEADER}: {e:#}")
-                    }
-                }
-            }
-        }
-        Ok(metadata)
-    }
-
-    /// Resolve the request's identities and connection details into a `Metadata`.
-    async fn create_base_metadata(
-        &self,
-        req_ctxt: &RequestContext,
-    ) -> Result<Metadata, scs_errors::ServiceError> {
-        let header = |h: &str| req_ctxt.header(h).map_err(scs_errors::invalid_request);
-
-        // `authenticated_identities_struct()` already returns a normalized
-        // `AuthenticatedIdentity` list — the C++ side wraps legacy custom-OID identities via
-        // `getAuthenticatedIdentitiesFrom(ExtractedIdentityCert*)` (see
-        // `fbcode/access/lib/authn/X509AuthenticationProvider.cpp:30-48`), so no Rust-side
-        // fallback to legacy `identities()` is needed.
-        let tls_identities: MononokeIdentitySet = req_ctxt
-            .authenticated_identities_struct()
-            .map_err(scs_errors::internal_error)?
-            .into_iter()
-            .map(MononokeIdentity::from)
-            .collect();
-
-        // Get any valid CAT identities.
-        let cats_identities: MononokeIdentitySet = req_ctxt
-            .authenticated_identities_cats_struct(
-                &self.identity,
-                &[EnvironmentType::PROD, EnvironmentType::CORP],
-            )
-            .map_err(scs_errors::internal_error)?
-            .into_iter()
-            .map(MononokeIdentity::from)
-            .collect();
-
-        if let (
-            Some(forwarded_authenticated_identities_thrift),
-            Some(forwarded_ip),
-            Some(forwarded_port),
-        ) = (
-            header(FORWARDED_AUTHENTICATED_IDENTITIES_THRIFT_HEADER)?,
-            header(FORWARDED_CLIENT_IP_HEADER)?,
-            header(FORWARDED_CLIENT_PORT_HEADER)?,
-        ) {
-            let is_trusted = self
-                .identity_proxy_checker
-                .check_if_trusted(&tls_identities)
-                .await;
-            if is_trusted {
-                let mut header_identities: MononokeIdentitySet =
-                    MononokeIdentity::try_from_thrift_compact_encoded(
-                        forwarded_authenticated_identities_thrift.as_str(),
-                    )
-                    .map_err(scs_errors::invalid_request)?;
-                debug!("Parsed authenticated identities");
-                let client_ip = Some(
-                    forwarded_ip
-                        .parse::<IpAddr>()
-                        .map_err(scs_errors::invalid_request)?,
-                );
-                let client_port = Some(
-                    forwarded_port
-                        .parse::<u16>()
-                        .map_err(scs_errors::invalid_request)?,
-                );
-                let client_debug = header(FORWARDED_CLIENT_DEBUG_HEADER)?.is_some();
-
-                header_identities.extend(cats_identities);
-                let mut metadata = Metadata::new(
-                    None,
-                    header_identities,
-                    client_debug,
-                    metadata::security::is_client_untrusted(|h| req_ctxt.header(h))
-                        .map_err(scs_errors::invalid_request)?,
-                    client_ip,
-                    client_port,
-                )
-                .await;
-
-                metadata.add_original_identities(tls_identities);
-
-                if let Some(other_cats) = header(FORWARDED_OTHER_CATS_HEADER)? {
-                    metadata.add_raw_encoded_cats(other_cats);
-                }
-                return Ok(metadata);
-            }
-        }
-
-        Ok(Metadata::new(
-            None,
-            tls_identities.union(&cats_identities).cloned().collect(),
-            false,
-            metadata::security::is_client_untrusted(|h| req_ctxt.header(h))
-                .map_err(scs_errors::invalid_request)?,
-            Some(
-                req_ctxt
-                    .get_peer_ip_address()
-                    .map_err(scs_errors::internal_error)?,
-            ),
-            Some(
-                req_ctxt
-                    .get_peer_port()
-                    .map_err(scs_errors::internal_error)?,
-            ),
-        )
-        .await)
     }
 
     /// Create and configure the session container for a request.
@@ -537,7 +288,7 @@ impl SourceControlServiceImpl {
         &self,
         req_ctxt: &RequestContext,
     ) -> Result<SessionContainer, scs_errors::ServiceError> {
-        let metadata = self.create_metadata(req_ctxt).await?;
+        let metadata = self.request_state.create_metadata(req_ctxt).await?;
         let session = SessionContainer::builder(self.fb)
             .metadata(Arc::new(metadata))
             .blobstore_maybe_read_qps_limiter(PER_REQUEST_READ_QPS)
@@ -554,7 +305,7 @@ impl SourceControlServiceImpl {
         ctx: CoreContext,
         repo: &thrift::RepoSpecifier,
     ) -> Result<RepoContext<Repo>, scs_errors::ServiceError> {
-        let authz = AuthorizationContext::new(&ctx);
+        let authz = platform::request_authorization_context(&ctx);
         self.repo_impl(ctx, repo, authz, |_| async { Ok(None) })
             .await
     }
@@ -567,10 +318,7 @@ impl SourceControlServiceImpl {
         repo: &thrift::RepoSpecifier,
         service_name: Option<String>,
     ) -> Result<RepoContext<Repo>, scs_errors::ServiceError> {
-        let authz = match service_name {
-            Some(service_name) => AuthorizationContext::new_for_service_writes(service_name),
-            None => AuthorizationContext::new(&ctx),
-        };
+        let authz = platform::service_authorization_context(&ctx, service_name)?;
         self.repo_impl(ctx, repo, authz, |_| async { Ok(None) })
             .await
     }
@@ -598,7 +346,7 @@ impl SourceControlServiceImpl {
             .with_authorization_context(authz)
             .build()
             .await?;
-        maybe_set_nocache_thriftcache(&self.request_primary_identity_types, &ctx, &repo)?;
+        self.thrift_cache_policy.apply(&ctx, &repo)?;
         Ok(repo)
     }
 
@@ -618,7 +366,7 @@ impl SourceControlServiceImpl {
         commit: &thrift::CommitSpecifier,
     ) -> Result<(RepoContext<Repo>, ChangesetContext<Repo>), scs_errors::ServiceError> {
         let changeset_specifier = ChangesetSpecifier::from_request(&commit.id)?;
-        let authz = AuthorizationContext::new(&ctx);
+        let authz = platform::request_authorization_context(&ctx);
         let bubble_fetcher =
             self.bubble_fetcher_for_changeset(ctx.clone(), changeset_specifier.clone());
         let repo = self
@@ -648,7 +396,7 @@ impl SourceControlServiceImpl {
         let other_changeset_specifier = ChangesetSpecifier::from_request(other_commit)
             .context("invalid or missing other commit id")?;
 
-        let authz = AuthorizationContext::new(&ctx);
+        let authz = platform::request_authorization_context(&ctx);
         // Create separate repo contexts for each changeset to support cross-bubble diffs.
         // Each repo context is opened with its own bubble, allowing access to snapshot
         // data regardless of which bubble it's in.
@@ -838,160 +586,6 @@ fn ensure_repo_requests_allowed(repo_name: &str) -> Result<(), scs_errors::Servi
 
     Ok(())
 }
-
-/// Configerator path of the runtime-updatable `ClientIdentifierPolicy`, mirrored
-/// from the compile-time consts in `client_identifier.thrift`.
-const CLIENT_IDENTIFIER_POLICY_CONFIG_PATH: &str = "ucache/security/client_identifier_policy";
-
-/// Loads the KCB request-primary identity types from Configerator once at
-/// startup. Falls back to the compile-time `REQUEST_PRIMARY_IDENTITY_TYPES`
-/// consts (fail-secure) when the config is missing, unreadable, or empty, so the
-/// pre-rollout window keeps parity with the previous const-only behavior.
-fn load_request_primary_identity_types(app: &MononokeApp) -> Arc<HashSet<String>> {
-    let from_config = match app
-        .environment()
-        .config_store
-        .get_config_handle::<client_identifier_policy::ClientIdentifierPolicy>(
-        CLIENT_IDENTIFIER_POLICY_CONFIG_PATH.to_string(),
-    ) {
-        Ok(handle) => Some(
-            handle
-                .get()
-                .requestPrimaryIdentityTypes
-                .iter()
-                .cloned()
-                .collect::<HashSet<String>>(),
-        ),
-        Err(err) => {
-            tracing::warn!(
-                "Failed to load ClientIdentifierPolicy from Configerator path '{}': {:#}; \
-                 falling back to compile-time REQUEST_PRIMARY_IDENTITY_TYPES",
-                CLIENT_IDENTIFIER_POLICY_CONFIG_PATH,
-                err
-            );
-            None
-        }
-    };
-
-    if matches!(&from_config, Some(types) if types.is_empty()) {
-        tracing::warn!(
-            "ClientIdentifierPolicy at '{}' has empty requestPrimaryIdentityTypes; \
-             falling back to compile-time REQUEST_PRIMARY_IDENTITY_TYPES",
-            CLIENT_IDENTIFIER_POLICY_CONFIG_PATH
-        );
-    }
-
-    Arc::new(resolve_request_primary_identity_types(from_config))
-}
-
-/// Applies the fail-secure fallback: use the configured set when it is present
-/// and non-empty, otherwise the compile-time consts.
-fn resolve_request_primary_identity_types(from_config: Option<HashSet<String>>) -> HashSet<String> {
-    match from_config {
-        Some(types) if !types.is_empty() => types,
-        _ => fallback_request_primary_identity_types(),
-    }
-}
-
-/// The compile-time `REQUEST_PRIMARY_IDENTITY_TYPES` consts as an owned set.
-fn fallback_request_primary_identity_types() -> HashSet<String> {
-    client_identifier_structs::consts::REQUEST_PRIMARY_IDENTITY_TYPES
-        .iter()
-        .map(|id_type| id_type.to_string())
-        .collect()
-}
-
-/// Returns true if the given identity type is covered by KCB's
-/// request-primary identity types.
-fn is_kcb_covered(request_primary_identity_types: &HashSet<String>, id_type: &str) -> bool {
-    request_primary_identity_types.contains(id_type)
-}
-
-/// Returns true if the nocache flag should be set, given the repo-level and
-/// path-level ACL-deciding identity types. The flag is set when any identity
-/// type is NOT covered by KCB's request-primary identity types.
-fn should_set_nocache_for_identity_types(
-    request_primary_identity_types: &HashSet<String>,
-    repo_id_type: Option<&str>,
-    path_id_types: &[String],
-) -> bool {
-    repo_id_type.is_some_and(|id| !is_kcb_covered(request_primary_identity_types, id))
-        || path_id_types
-            .iter()
-            .any(|id| !is_kcb_covered(request_primary_identity_types, id))
-}
-
-/// Dedicated Scuba dataset for SCS's server-side ACL-check decisions
-const SCS_ACL_CHECKS_SCUBA_TABLE: &str = "mononoke_scs_acl_checks";
-
-/// Checks if any ACL-deciding identity type on the RepoContext is not covered
-/// by KCB's REQUEST_PRIMARY_IDENTITY_TYPES, and if so, sets the nocache_thriftcache
-/// flag on the CoreContext. The thrift macro will then set the ThriftCache nocache
-/// response header.
-fn maybe_set_nocache_thriftcache(
-    request_primary_identity_types: &HashSet<String>,
-    ctx: &CoreContext,
-    repo_ctx: &RepoContext<Repo>,
-) -> Result<(), scs_errors::ServiceError> {
-    if !justknobs::eval(
-        "scm/mononoke:scs_thriftcache_nocache_for_non_kcb_identities",
-        None,
-        None,
-    ) {
-        return Ok(());
-    }
-
-    let repo_id_type = repo_ctx.repo_acl_deciding_identity_type();
-    let path_id_types = repo_ctx.path_acl_deciding_identity_types();
-    let is_cacheable = !should_set_nocache_for_identity_types(
-        request_primary_identity_types,
-        repo_id_type,
-        &path_id_types,
-    );
-    if !is_cacheable {
-        ctx.set_nocache_thriftcache();
-    }
-
-    log_nocache_decision(ctx, repo_ctx, repo_id_type, &path_id_types, is_cacheable);
-
-    Ok(())
-}
-
-/// Logs the server-side ACL-check decision
-fn log_nocache_decision(
-    ctx: &CoreContext,
-    repo_ctx: &RepoContext<Repo>,
-    repo_id_type: Option<&str>,
-    path_id_types: &[String],
-    is_cacheable: bool,
-) {
-    let mut scuba = match MononokeScubaSampleBuilder::new(ctx.fb, SCS_ACL_CHECKS_SCUBA_TABLE) {
-        Ok(scuba) => scuba,
-        Err(_) => return,
-    };
-    scuba.add_common_server_data();
-    scuba.add("repo_name", repo_ctx.name());
-    scuba.add("is_cacheable", is_cacheable);
-    scuba.add(
-        "repo_acl_deciding_identity_type",
-        repo_id_type.unwrap_or(""),
-    );
-    scuba.add("path_acl_deciding_identity_types", path_id_types.join(","));
-    let accessors = ctx
-        .metadata()
-        .identities()
-        .iter()
-        .map(|id| id.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    scuba.add("accessors", accessors);
-    if let Some(client_info) = ctx.metadata().client_request_info() {
-        scuba.add("client_correlator", client_info.correlator.as_str());
-    }
-    scuba.add("session_id", ctx.metadata().session_id().to_string());
-    scuba.log();
-}
-
 fn log_start(ctx: &CoreContext, _method: &str) -> Option<MemoryStats> {
     let mut start_mem_stats = None;
     let mut scuba = ctx.scuba().clone();
@@ -1021,8 +615,8 @@ fn add_request_end_memory_stats(
 fn log_result<T: AddScubaResponse>(
     ctx: CoreContext,
     tag: &'static str,
-    request_type: SCSRequestType,
-    event: SCSRequestEvent,
+    request_type: RequestType,
+    event: RequestEvent,
     method: &str,
     repo: Option<String>,
     stats: &FutureStats,
@@ -1036,17 +630,22 @@ fn log_result<T: AddScubaResponse>(
     let (status, outcome, error, invalid_request, internal_failure, overloaded) = match result {
         Ok(response) => {
             response.add_scuba_response(&mut scuba);
-            ("SUCCESS", Outcome::Success, None, 0, 0, 0)
+            ("SUCCESS", RequestOutcome::Success, None, 0, 0, 0)
         }
         Err(err) => {
             let (status, desc) = err.status_and_description();
             match status {
-                Status::RequestError => {
-                    ("REQUEST_ERROR", Outcome::RequestError, Some(desc), 1, 0, 0)
-                }
+                Status::RequestError => (
+                    "REQUEST_ERROR",
+                    RequestOutcome::RequestError,
+                    Some(desc),
+                    1,
+                    0,
+                    0,
+                ),
                 Status::InternalError => (
                     "INTERNAL_ERROR",
-                    Outcome::InternalError,
+                    RequestOutcome::InternalError,
                     Some(desc),
                     0,
                     1,
@@ -1054,13 +653,13 @@ fn log_result<T: AddScubaResponse>(
                 ),
                 Status::OverloadError => (
                     "OVERLOAD_ERROR",
-                    Outcome::OverloadError,
+                    RequestOutcome::OverloadError,
                     Some(desc),
                     0,
                     0,
                     1,
                 ),
-                Status::PollError => ("POLL_ERROR", Outcome::PollError, Some(desc), 0, 1, 0),
+                Status::PollError => ("POLL_ERROR", RequestOutcome::PollError, Some(desc), 0, 1, 0),
             }
         }
     };
@@ -1102,17 +701,14 @@ fn log_result<T: AddScubaResponse>(
     }
     scuba.log_with_msg(tag, None);
 
-    #[cfg(fbcode_build)]
-    SCS_REQUEST_STATS_INSTRUMENT.observe(MononokeScsRequest {
-        method: Some(method.to_string()),
+    platform::observe_request(
+        method,
         repo,
-        request_type: Some(request_type),
-        event: Some(event),
-        outcome: Some(outcome),
-        requests: Some(1.0),
-        duration_ms: Some(stats.completion_time.as_millis_unchecked() as f64),
-        ..Default::default()
-    });
+        request_type,
+        event,
+        Some(outcome),
+        Some(stats.completion_time),
+    );
 }
 
 fn log_stream_chunk<T: AddScubaResponse>(
@@ -1127,17 +723,22 @@ fn log_stream_chunk<T: AddScubaResponse>(
     let (status, outcome, error, invalid_request, internal_failure, overloaded) = match result {
         Ok(response) => {
             response.add_scuba_response(&mut scuba);
-            ("SUCCESS", Outcome::Success, None, 0, 0, 0)
+            ("SUCCESS", RequestOutcome::Success, None, 0, 0, 0)
         }
         Err(err) => {
             let (status, desc) = err.status_and_description();
             match status {
-                Status::RequestError => {
-                    ("REQUEST_ERROR", Outcome::RequestError, Some(desc), 1, 0, 0)
-                }
+                Status::RequestError => (
+                    "REQUEST_ERROR",
+                    RequestOutcome::RequestError,
+                    Some(desc),
+                    1,
+                    0,
+                    0,
+                ),
                 Status::InternalError => (
                     "INTERNAL_ERROR",
-                    Outcome::InternalError,
+                    RequestOutcome::InternalError,
                     Some(desc),
                     0,
                     1,
@@ -1145,13 +746,13 @@ fn log_stream_chunk<T: AddScubaResponse>(
                 ),
                 Status::OverloadError => (
                     "OVERLOAD_ERROR",
-                    Outcome::OverloadError,
+                    RequestOutcome::OverloadError,
                     Some(desc),
                     0,
                     0,
                     1,
                 ),
-                Status::PollError => ("POLL_ERROR", Outcome::PollError, Some(desc), 0, 0, 1),
+                Status::PollError => ("POLL_ERROR", RequestOutcome::PollError, Some(desc), 0, 0, 1),
             }
         }
     };
@@ -1184,16 +785,14 @@ fn log_stream_chunk<T: AddScubaResponse>(
     }
     scuba.log_with_msg("Request stream chunk", None);
 
-    #[cfg(fbcode_build)]
-    SCS_REQUEST_STATS_INSTRUMENT.observe(MononokeScsRequest {
-        method: Some(method.to_string()),
+    platform::observe_request(
+        method,
         repo,
-        request_type: Some(SCSRequestType::Stream),
-        event: Some(SCSRequestEvent::StreamChunk),
-        outcome: Some(outcome),
-        requests: Some(1.0),
-        ..Default::default()
-    });
+        RequestType::Stream,
+        RequestEvent::StreamChunk,
+        Some(outcome),
+        None,
+    );
 }
 
 fn log_stream_complete(
@@ -1212,12 +811,17 @@ fn log_stream_complete(
     let (status, outcome, error, invalid_request, internal_failure, overloaded) =
         match mb_status_and_description {
             Some((status, desc)) => match status {
-                Status::RequestError => {
-                    ("REQUEST_ERROR", Outcome::RequestError, Some(desc), 1, 0, 0)
-                }
+                Status::RequestError => (
+                    "REQUEST_ERROR",
+                    RequestOutcome::RequestError,
+                    Some(desc),
+                    1,
+                    0,
+                    0,
+                ),
                 Status::InternalError => (
                     "INTERNAL_ERROR",
-                    Outcome::InternalError,
+                    RequestOutcome::InternalError,
                     Some(desc),
                     0,
                     1,
@@ -1225,15 +829,15 @@ fn log_stream_complete(
                 ),
                 Status::OverloadError => (
                     "OVERLOAD_ERROR",
-                    Outcome::OverloadError,
+                    RequestOutcome::OverloadError,
                     Some(desc),
                     0,
                     0,
                     1,
                 ),
-                Status::PollError => ("POLL_ERROR", Outcome::PollError, Some(desc), 0, 1, 0),
+                Status::PollError => ("POLL_ERROR", RequestOutcome::PollError, Some(desc), 0, 1, 0),
             },
-            None => ("SUCCESS", Outcome::Success, None, 0, 0, 0),
+            None => ("SUCCESS", RequestOutcome::Success, None, 0, 0, 0),
         };
 
     if justknobs::eval("scm/mononoke:scs_alert_on_methods", None, Some(method)) {
@@ -1300,17 +904,14 @@ fn log_stream_complete(
     }
     scuba.log_with_msg("Request complete", None);
 
-    #[cfg(fbcode_build)]
-    SCS_REQUEST_STATS_INSTRUMENT.observe(MononokeScsRequest {
-        method: Some(method.to_string()),
+    platform::observe_request(
+        method,
         repo,
-        request_type: Some(SCSRequestType::Stream),
-        event: Some(SCSRequestEvent::StreamComplete),
-        outcome: Some(outcome),
-        requests: Some(1.0),
-        duration_ms: Some(initial_future_stats.completion_time.as_millis_unchecked() as f64),
-        ..Default::default()
-    });
+        RequestType::Stream,
+        RequestEvent::StreamComplete,
+        Some(outcome),
+        Some(initial_future_stats.completion_time),
+    );
 }
 
 fn log_cancelled(
@@ -1338,15 +939,14 @@ fn log_cancelled(
     scuba.add("status", "CANCELLED");
     scuba.log_with_msg("Request cancelled", None);
 
-    #[cfg(fbcode_build)]
-    SCS_REQUEST_STATS_INSTRUMENT.observe(MononokeScsRequest {
-        method: Some(method.to_string()),
+    platform::observe_request(
+        method,
         repo,
-        request_type: Some(SCSRequestType::Stream),
-        event: Some(SCSRequestEvent::Cancelled),
-        requests: Some(1.0),
-        ..Default::default()
-    });
+        RequestType::Stream,
+        RequestEvent::Cancelled,
+        None,
+        None,
+    );
 }
 
 fn check_memory_usage(
@@ -1465,7 +1065,7 @@ macro_rules! impl_thrift_methods {
                             .timed()
                             .on_cancel_with_data(|stats| log_cancelled(&ctx, stringify!($method_name), repo_name.clone(), &stats, start_mem_stats.as_ref()))
                             .await;
-                            log_result(ctx, "Request complete", SCSRequestType::Normal, SCSRequestEvent::Complete, stringify!($method_name), repo_name, &stats, &res, start_mem_stats.as_ref());
+                            log_result(ctx, "Request complete", RequestType::Normal, RequestEvent::Complete, stringify!($method_name), repo_name, &stats, &res, start_mem_stats.as_ref());
                             res.map_err(Into::into)
                         }
                         .instrument(span)
@@ -1480,7 +1080,7 @@ macro_rules! impl_thrift_methods {
                     // incomplete data); the exact verdict travels in the typed
                     // response instead.
                     if ctx.nocache_thriftcache() || ctx.partial_response() {
-                        let _ = req_ctxt.set_header("nocache", "1");
+                        platform::set_nocache_header(req_ctxt);
                     }
 
                     result
@@ -1531,9 +1131,9 @@ macro_rules! impl_thrift_stream_methods {
                             .on_cancel_with_data(|stats| log_cancelled(&ctx, stringify!($method_name), repo_name.clone(), &stats, start_mem_stats.as_ref()))
                             .await;
                             if res.is_ok() {
-                                log_result(ctx.clone(), "Request stream started", SCSRequestType::Stream, SCSRequestEvent::StreamStarted, stringify!($method_name), repo_name.clone(), &stats, &res, start_mem_stats.as_ref());
+                                log_result(ctx.clone(), "Request stream started", RequestType::Stream, RequestEvent::StreamStarted, stringify!($method_name), repo_name.clone(), &stats, &res, start_mem_stats.as_ref());
                             } else {
-                                log_result(ctx.clone(), "Request complete", SCSRequestType::Stream, SCSRequestEvent::Complete, stringify!($method_name), repo_name.clone(), &stats, &res, start_mem_stats.as_ref());
+                                log_result(ctx.clone(), "Request complete", RequestType::Stream, RequestEvent::Complete, stringify!($method_name), repo_name.clone(), &stats, &res, start_mem_stats.as_ref());
                             }
                             let first_error = Arc::new(OnceLock::new());
                             let chunk_counter = AtomicU64::new(0);
@@ -1575,7 +1175,7 @@ macro_rules! impl_thrift_stream_methods {
                         || ctx.partial_response()
                         || ctx.potential_partial_response()
                     {
-                        let _ = req_ctxt.set_header("nocache", "1");
+                        platform::set_nocache_header(req_ctxt);
                     }
                     result
                 };
@@ -2044,8 +1644,11 @@ impl SourceControlService for SourceControlServiceThriftImpl {
     }
 }
 
+#[cfg(fbcode_build)]
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use justknobs::test_helpers::JustKnobsInMemory;
     use justknobs::test_helpers::KnobVal;
     use justknobs::test_helpers::with_just_knobs;
@@ -2053,39 +1656,10 @@ mod tests {
     use mononoke_macros::mononoke;
 
     use super::*;
-
-    #[mononoke::test]
-    fn test_classify_client_path_acl_compatibility() {
-        assert_eq!(
-            classify_client_path_acl_compatibility(Ok(None)),
-            ClientPathAclCompatibility::Absent,
-        );
-        assert_eq!(
-            classify_client_path_acl_compatibility(Ok(Some(b"1".to_vec()))),
-            ClientPathAclCompatibility::ReadyV1,
-        );
-
-        for malformed in [
-            Vec::new(),
-            b"0".to_vec(),
-            b"true".to_vec(),
-            b" 1".to_vec(),
-            b"1 ".to_vec(),
-            b"1,1".to_vec(),
-            vec![0xff],
-            vec![b'1'; 1024],
-        ] {
-            assert_eq!(
-                classify_client_path_acl_compatibility(Ok(Some(malformed))),
-                ClientPathAclCompatibility::Malformed,
-            );
-        }
-
-        assert_eq!(
-            classify_client_path_acl_compatibility(Err(anyhow::anyhow!("header read failed"))),
-            ClientPathAclCompatibility::Malformed,
-        );
-    }
+    use crate::platform::fallback_request_primary_identity_types;
+    use crate::platform::is_kcb_covered;
+    use crate::platform::resolve_request_primary_identity_types;
+    use crate::platform::should_set_nocache_for_identity_types;
 
     /// The compile-time-const KCB request-primary identity types used by the
     /// tests below (also the fail-secure fallback set).

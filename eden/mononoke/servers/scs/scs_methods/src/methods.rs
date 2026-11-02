@@ -21,12 +21,12 @@ pub(crate) mod commit_lookup_pushrebase_history;
 pub(crate) mod commit_path;
 pub(crate) mod commit_restricted_paths;
 pub mod commit_sparse_profile_info;
-pub(crate) mod create_repos;
+#[cfg(fbcode_build)]
+mod facebook;
 pub(crate) mod file;
 pub(crate) mod git;
 pub(crate) mod git_repo_state;
 pub(crate) mod megarepo;
-pub(crate) mod org_storage_config;
 pub(crate) mod repo;
 pub(crate) mod tree;
 

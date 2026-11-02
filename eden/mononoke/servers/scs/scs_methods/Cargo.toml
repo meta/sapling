@@ -60,6 +60,7 @@ mononoke_api_hg = { version = "0.1.0", path = "../../../mononoke_api_hg" }
 mononoke_app = { version = "0.1.0", path = "../../../cmdlib/mononoke_app" }
 mononoke_configs = { version = "0.1.0", path = "../../../common/mononoke_configs" }
 mononoke_macros = { version = "0.1.0", path = "../../../common/mononoke_macros" }
+mononoke_thrift_server = { version = "0.1.0", path = "../../../cmdlib/thrift_server" }
 mononoke_types = { version = "0.1.0", path = "../../../mononoke_types" }
 permission_checker = { version = "0.1.0", path = "../../../common/permission_checker" }
 pushrebase = { version = "0.1.0", path = "../../../features/pushrebase" }

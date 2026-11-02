@@ -6,21 +6,13 @@
  */
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use bonsai_tag_mapping::BonsaiTagMappingRef;
 use bytes::Bytes;
 use context::CoreContext;
-use everstore_client::EverstoreClient;
-use everstore_client::cpp_client::ClientOptionsBuilder;
-use everstore_client::cpp_client::EverstoreCppClient;
-use everstore_client::file_mock_client::EverstoreFileMockClient;
-use everstore_client::write::WriteRequestOptionsBuilder;
-use fbtypes::FBType;
 use futures::StreamExt;
 use futures::TryStreamExt;
 use futures::stream;
-use futures_util::try_join;
 use git_types::GitError;
 use git_types::fetch_non_blob_git_object;
 use mononoke_api::ChangesetId;
@@ -34,8 +26,6 @@ use scs_errors::invalid_request;
 use source_control as thrift;
 
 use crate::source_control_impl::SourceControlServiceImpl;
-
-const EVERSTORE_CONTEXT: &str = "mononoke/scs";
 
 impl SourceControlServiceImpl {
     /// Upload raw git object to Mononoke data store for back-and-forth translation.
@@ -165,85 +155,6 @@ impl SourceControlServiceImpl {
             .await?;
         Ok(thrift::CreateGitTagResponse {
             created_changeset_id: changeset_context.id().as_ref().to_vec(),
-            ..Default::default()
-        })
-    }
-
-    /// Generate Git bundle for the given stack of commits with the ref BUNDLE_HEAD
-    /// pointing to the top of the stack. Store the bundle in everstore and return
-    /// the everstore handle associated with it.
-    pub(crate) async fn repo_stack_git_bundle_store(
-        &self,
-        ctx: CoreContext,
-        repo: thrift::RepoSpecifier,
-        params: thrift::RepoStackGitBundleStoreParams,
-    ) -> Result<thrift::RepoStackGitBundleStoreResponse, scs_errors::ServiceError> {
-        let repo_ctx = self
-            .repo_for_service(ctx, &repo, params.service_identity.clone())
-            .await
-            .with_context(|| format!("Error in opening repo using specifier {repo:?}"))?;
-        // Parse the input as appropriate types
-        let (base_changeset_id, head_changeset_id) = try_join!(
-            self.changeset_id(&repo_ctx, &params.base),
-            self.changeset_id(&repo_ctx, &params.head),
-        )?;
-
-        // Generate the bundle
-        let bundle_content = repo_ctx
-            .repo_stack_git_bundle(head_changeset_id, base_changeset_id)
-            .await?;
-
-        // Store the contents of the bundle in everstore
-        // TODO(mitrandir): the everstore client should be a repo property and instantiated in the
-        // repo factory.
-        let client: Arc<dyn EverstoreClient + Send + Sync> =
-            match &repo_ctx.config().everstore_local_path {
-                None => {
-                    let client_options =
-                        ClientOptionsBuilder::default().build().map_err(|err| {
-                            internal_error(format!(
-                                "Error in building Everstore client options. Cause: {err:#}"
-                            ))
-                        })?;
-                    Arc::new(
-                        EverstoreCppClient::from_options(repo_ctx.ctx().fb, &client_options)
-                            .map_err(|err| {
-                                internal_error(format!(
-                                    "Error in building Everstore client. Cause: {err:#}"
-                                ))
-                            })?,
-                    )
-                }
-                Some(path) => Arc::new(EverstoreFileMockClient::new(path.clone().into())),
-            };
-        let fbtype = FBType::EVERSTORE_SOURCE_BUNDLE.0 as u32;
-        let write_req_opts = WriteRequestOptionsBuilder::default()
-            .fbtype(fbtype)
-            .lower_bound(10) // We should be able to store even small bundles
-            .build()
-            .map_err(|err| {
-                internal_error(format!(
-                    "Error in building Everstore write request options. Cause: {err:#}"
-                ))
-            })?;
-        let mut write_req = client
-            .create_write_request(&write_req_opts)
-            .map_err(|err| {
-                internal_error(format!(
-                    "Error in creating Everstore write request. Cause: {err:#}"
-                ))
-            })?;
-        let everstore_handle = write_req
-            .write(EVERSTORE_CONTEXT, bundle_content.into())
-            .await
-            .map_err(|err| {
-                internal_error(format!(
-                    "Error in storing Git bundle in Everstore. Cause: {err:#}"
-                ))
-            })?
-            .to_string();
-        Ok(thrift::RepoStackGitBundleStoreResponse {
-            everstore_handle,
             ..Default::default()
         })
     }
