@@ -7,8 +7,6 @@
 
 #![type_length_limit = "2097152"]
 
-use std::fs::File;
-use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -40,11 +38,14 @@ use mononoke_app::args::HooksAppExtension;
 use mononoke_app::args::RepoFilterAppExtension;
 use mononoke_app::args::ShutdownTimeoutArgs;
 use mononoke_app::args::WarmBookmarksCacheExtension;
+use mononoke_thrift_server::DEFAULT_THRIFT_HOST;
+use mononoke_thrift_server::LoadMonitorConfig;
+use mononoke_thrift_server::MononokeThriftServer;
+use mononoke_thrift_server::ThriftServerBuilder;
 use mysql_client::ConnectionOptions;
 use mysql_client::ConnectionPoolOptions;
 use panichandler::Fate;
 use scs_methods::source_control_impl::SourceControlServiceImpl;
-use service_framework_load_monitor_module::LoadMonitorModule;
 use sharding_ext::RepoShard;
 use source_control_services::make_SourceControlService_server;
 use sql_construct::SqlConstruct;
@@ -53,14 +54,6 @@ use sql_storage::XdbFactory;
 use srserver::BetterOverloadHandlerConfig;
 use srserver::BohPidConfig;
 use srserver::BohResourceConfig;
-use srserver::ThriftServer;
-use srserver::ThriftServerBuilder;
-use srserver_service_framework_light::BuildModule;
-use srserver_service_framework_light::ContextPropModule;
-use srserver_service_framework_light::Fb303Module;
-use srserver_service_framework_light::ProfileModule;
-use srserver_service_framework_light::ServiceFramework;
-use srserver_service_framework_light::ThriftStatsModule;
 use thrift_factory::ThriftFactoryBuilder;
 use tokio::task;
 use tracing::info;
@@ -83,7 +76,7 @@ struct ScsServerArgs {
     #[clap(long, default_value = "false")]
     trace: bool,
     /// Thrift host
-    #[clap(long, short = 'H', default_value = "::")]
+    #[clap(long, short = 'H', default_value = DEFAULT_THRIFT_HOST)]
     host: String,
     /// Thrift port
     #[clap(long, short = 'p', default_value_t = 8367)]
@@ -327,43 +320,14 @@ fn main(fb: FacebookInit) -> Result<(), Error> {
             .await
             .expect("Failed to build thrift factory")
     });
-    let thrift = setup_thrift_server(&app, &args, source_control_server, factory)
+    let mut server = setup_thrift_server(&app, &args, source_control_server, factory)
         .context("Failed to set up Thrift server")?;
 
-    let mut service_framework = ServiceFramework::from_server(SERVICE_NAME, thrift)
-        .context("Failed to create service framework server")?;
-
-    service_framework.add_module(BuildModule)?;
-    service_framework.add_module(ThriftStatsModule)?;
-    service_framework.add_module(Fb303Module)?;
-    service_framework.add_module(ProfileModule)?;
-    service_framework.add_module(ContextPropModule)?;
-    service_framework.add_module(
-        LoadMonitorModule::builder()
-            .fb(fb)
-            .memory_stats_ttl(Duration::from_millis(50))
-            .cgroup_stats_ttl(Duration::from_millis(50))
-            .counters_update_interval(Duration::from_millis(100))
-            .cgroup_root_path("/cgroup2".into())
-            .build(),
-    )?;
-
-    service_framework
-        .serve_background()
-        .expect("failed to start thrift service");
-
-    let bound_addr = format!(
-        "{}:{}",
-        args.host,
-        service_framework.get_address()?.get_port()?
-    );
-    info!("Listening on {}", bound_addr);
+    info!("Listening on {}", server.bound_address()?);
 
     // Write out the bound address if requested, this is helpful in tests when using automatic binding with :0
-    if let Some(bound_addr_path) = args.bound_address_file {
-        let mut writer = File::create(bound_addr_path)?;
-        writer.write_all(bound_addr.as_bytes())?;
-        writer.write_all(b"\n")?;
+    if let Some(bound_addr_path) = &args.bound_address_file {
+        server.write_bound_address(bound_addr_path)?;
     }
 
     if let Some(executor) = args.sharded_executor_args.build_executor(
@@ -382,6 +346,7 @@ fn main(fb: FacebookInit) -> Result<(), Error> {
     // stats aggregation.
     app.start_stats_aggregation()?;
 
+    let handle = server.into_shutdown_handle();
     app.wait_until_terminated(
         move || {
             let _ = sm_shutdown_sender.send(true);
@@ -390,7 +355,7 @@ fn main(fb: FacebookInit) -> Result<(), Error> {
         async {
             let _ = task::spawn_blocking(move || {
                 // Calling `stop` blocks until the service has completed all requests.
-                service_framework.stop();
+                handle.stop();
             })
             .await;
         },
@@ -408,44 +373,53 @@ fn setup_thrift_server(
     args: &ScsServerArgs,
     source_control_server: SourceControlServiceImpl,
     exec: thrift_factory::ThriftFactory,
-) -> anyhow::Result<ThriftServer> {
+) -> anyhow::Result<MononokeThriftServer> {
     let service = {
         move |proto| make_SourceControlService_server(proto, source_control_server.thrift_server())
     };
 
-    // BetterOverloadHandler: memory-based overload protection at the Thrift
-    // layer, before requests are dispatched to Rust. This is a safety net
-    // against OOMs from large request payloads (see S627561).
-    // PID values from recommended starting config:
-    // https://www.internalfb.com/wiki/Users/sazonovk/Thrift/BetterOverloadHandler/
-    let mem_limit = 0.9;
-    let mem_boh_config = BohResourceConfig {
-        setpoint: 0.8,
-        limit: Some(&mem_limit),
-        pid_config: BohPidConfig {
-            k_p: 4.0,
-            k_i: 0.3,
-            k_d: 0.1,
-            dt: 0.1,
-        },
-    };
-    let boh_config = BetterOverloadHandlerConfig {
-        interval_ms: 100,
-        cpu_config: None,
-        mem_config: Some(&mem_boh_config),
-        net_config: None,
-    };
-
-    Ok(ThriftServerBuilder::new(app.fb)
-        .with_name(SERVICE_NAME)
-        .expect("failed to set name")
-        .with_address(&args.host, args.port, false)?
+    ThriftServerBuilder::new(app.fb)
+        .service_name(SERVICE_NAME)
+        .host(&args.host)
+        .port(args.port)
         .with_tls()
-        .expect("failed to enable TLS")
-        .with_cancel_if_client_disconnected()
+        .with_cancel_on_client_disconnect()
         .with_custom_status_impl(app.server_status())
-        .with_static_better_overload_handler(&boh_config)
-        .context("Failed to configure BetterOverloadHandler")?
-        .add_factory(exec, move || service, Some(metadata::create_metadata()))
-        .build())
+        .with_profile_module()
+        .with_load_monitor(LoadMonitorConfig {
+            memory_stats_ttl: Duration::from_millis(50),
+            cgroup_stats_ttl: Duration::from_millis(50),
+            counters_update_interval: Duration::from_millis(100),
+            cgroup_root_path: "/cgroup2".to_string(),
+        })
+        // BetterOverloadHandler: memory-based overload protection at the Thrift
+        // layer, before requests are dispatched to Rust. This is a safety net
+        // against OOMs from large request payloads (see S627561).
+        // PID values from recommended starting config:
+        // https://www.internalfb.com/wiki/Users/sazonovk/Thrift/BetterOverloadHandler/
+        .configure_raw(|builder| {
+            let mem_limit = 0.9;
+            let mem_boh_config = BohResourceConfig {
+                setpoint: 0.8,
+                limit: Some(&mem_limit),
+                pid_config: BohPidConfig {
+                    k_p: 4.0,
+                    k_i: 0.3,
+                    k_d: 0.1,
+                    dt: 0.1,
+                },
+            };
+            let boh_config = BetterOverloadHandlerConfig {
+                interval_ms: 100,
+                cpu_config: None,
+                mem_config: Some(&mem_boh_config),
+                net_config: None,
+            };
+            builder
+                .with_static_better_overload_handler(&boh_config)
+                .context("Failed to configure BetterOverloadHandler")
+        })
+        .with_metadata(metadata::create_metadata())
+        .factory(exec, move || service)
+        .build()
 }
