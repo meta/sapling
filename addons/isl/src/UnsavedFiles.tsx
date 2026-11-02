@@ -52,6 +52,7 @@ registerDisposable(
 export const disableUnsavedFilesWarning = localStorageBackedAtom<boolean>(
   'isl.disable-unsaved-files-warning',
   false,
+  {portable: true},
 );
 
 export function UnsavedFilesCount() {

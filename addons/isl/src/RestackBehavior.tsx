@@ -26,6 +26,10 @@ const DEFAULT_AMEND_RESTACK_BEHAVIOR = AmendRestackBehavior.ALWAYS;
 export const restackBehaviorAtom = localStorageBackedAtom<AmendRestackBehavior>(
   'isl.amend-autorestack',
   DEFAULT_AMEND_RESTACK_BEHAVIOR,
+  {
+    portable: true,
+    validate: value => Object.values(AmendRestackBehavior).includes(value as AmendRestackBehavior),
+  },
 );
 
 export function RestackBehaviorSetting() {

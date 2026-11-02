@@ -279,6 +279,37 @@ Without them the pills keep tinted fallbacks matching that palette, not ISL's st
 The host and Sapling-served guest ship separately: an older guest ignores `themeColors`, and an older
 host receives the guest's existing palette fallback until both sides are updated.
 
+### AgentCloud settings handoff
+
+ISL keeps its settings in `localStorage`, which belongs to one origin, and AgentCloud frames each
+machine's ISL from that machine's own origin. A host that keeps ISL's settings across machines
+passes them to `agentCloud.html` in `portableSettings`, a JSON object mapping each setting's key to
+its value as ISL stores it (JSON text), beside its own exact origin in `hostOrigin` and
+`portableSettingsNonce`: when it built the frame URL (`Date.now()`), a `-`, and a random id of up to
+64 letters, digits, `-` or `_`.
+
+Settings opt in where they are defined: `localStorageBackedAtom(key, defaultValue, {portable:
+true})`. A portable setting takes the host's value when the page loads and writes it to
+`localStorage`, unless this browser's copy is newer than the frame URL: a reload of the same URL, or
+another pane's URL built earlier, carries the values the host had then. The page keeps, in
+`agentcloud.portable-setting-times`, when its copy of each setting was last current: when it changed
+here, once stored, or the build time of the URL its value came from. The host and the page run in
+the same browser, so their clocks agree. A value whose JSON type differs from the default's, or that
+the setting's own `validate` refuses (the UI zoom's range, a setting's options), is ignored.
+
+Each change to a portable setting is posted to `window.parent` at the host's origin as `{type:
+'agentcloud-isl/setting-changed', v: 2, key, value}`: the new value as JSON text, the default
+included, so a reset reaches the other machines too, or null when the value was cleared or is one
+the other machines would refuse. Values longer than 1024 characters of JSON are neither read nor
+posted.
+
+The frame URL is not a secret, so the page reads and posts settings only for a host origin it
+trusts, only when the host passed `portableSettings` and a nonce, and only when the page that framed
+it, where the browser tells it (`location.ancestorOrigins`, else the referrer), is at that origin;
+otherwise nothing changes. The host builds the frame's URL when it frames the page, so a change made
+on another machine reaches an open page when the host frames it again. A host should accept messages
+only from the frame's own window at the frame's origin.
+
 ## Syncing repository state
 
 ISL started as a way to automatically re-run `sl status` and `sl smartlog` in a loop.

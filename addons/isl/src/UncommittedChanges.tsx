@@ -352,6 +352,7 @@ export function ChangedFiles(props: {
 const generatedFilesInitiallyExpanded = localStorageBackedAtom<boolean>(
   'isl.expand-generated-files',
   false,
+  {portable: true},
 );
 
 export const __TEST__ = {

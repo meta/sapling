@@ -64,6 +64,7 @@ function mapResult<T, U>(result: Result<T>, fn: (t: T) => U): Result<U> {
 const comparisonIgnoreWhitespace = localStorageBackedAtom<boolean>(
   'isl.comparison-ignore-whitespace',
   true,
+  {portable: true},
 );
 
 const currentComparisonData = atomFamilyWeak((comparison: Comparison) =>
@@ -234,6 +235,10 @@ type ComparisonDisplayMode = 'unified' | 'split';
 const comparisonDisplayMode = localStorageBackedAtom<ComparisonDisplayMode | 'responsive'>(
   'isl.comparison-display-mode',
   'responsive',
+  {
+    portable: true,
+    validate: value => ['responsive', 'unified', 'split'].includes(value as string),
+  },
 );
 
 export default function ComparisonView({

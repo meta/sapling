@@ -108,12 +108,14 @@ const dagWithVirtualCommits = atom(get => {
 export const condenseObsoleteStacks = localStorageBackedAtom<boolean | null>(
   'isl.condense-obsolete-stacks',
   true,
+  {portable: true},
 );
 
 /** Opt-in because auto-scrolling on open can be intrusive. */
 export const scrollToYouAreHereOnOpen = localStorageBackedAtom<boolean>(
   'isl.scroll-to-you-are-here-on-open',
   false,
+  {portable: true},
 );
 
 const renderSubsetUnionSelection = atom(get => {

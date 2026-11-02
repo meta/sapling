@@ -21,7 +21,10 @@ export const mainContentWidthState = atom(500);
 export const renderCompactAtom = configBackedAtom<boolean>('isl.render-compact', false);
 
 export const zoomUISettingAtom = atomWithOnChange(
-  localStorageBackedAtom<number>('isl.ui-zoom', 1),
+  localStorageBackedAtom<number>('isl.ui-zoom', 1, {
+    portable: true,
+    validate: zoom => typeof zoom === 'number' && zoom >= 0.5 && zoom <= 3,
+  }),
   newValue => {
     document.body?.style.setProperty('--zoom', `${newValue}`);
   },

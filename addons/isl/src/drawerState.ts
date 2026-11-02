@@ -21,6 +21,10 @@ export type CommitInfoLocationWithAuto = CommitInfoLocation | 'auto';
 export const commitInfoLocationAtom = localStorageBackedAtom<CommitInfoLocationWithAuto>(
   'isl.commit-info-location',
   'auto',
+  {
+    portable: true,
+    validate: value => ['auto', 'right', 'bottom', 'left', 'top'].includes(value as string),
+  },
 );
 
 /**

@@ -31,6 +31,7 @@ import {showModal} from './useModal';
 export const shouldWarnAboutDiagnosticsAtom = localStorageBackedAtom<boolean>(
   'isl.warn-about-diagnostics',
   true,
+  {portable: true},
 );
 
 const DIAGNOSTICS_TIMEOUT_MS = 10_000;
@@ -38,6 +39,7 @@ const DIAGNOSTICS_TIMEOUT_MS = 10_000;
 const hideNonBlockingDiagnosticsAtom = localStorageBackedAtom<boolean>(
   'isl.hide-non-blocking-diagnostics',
   true,
+  {portable: true},
 );
 
 export function isBlockingDiagnostic(

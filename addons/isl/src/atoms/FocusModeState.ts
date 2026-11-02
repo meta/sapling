@@ -7,4 +7,4 @@
 
 import {localStorageBackedAtom} from '../jotaiUtils';
 
-export const focusMode = localStorageBackedAtom<boolean>('isl.focus-mode', false);
+export const focusMode = localStorageBackedAtom<boolean>('isl.focus-mode', false, {portable: true});

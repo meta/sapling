@@ -14,7 +14,11 @@ import {atomFamilyWeak, localStorageBackedAtom} from './jotaiUtils';
 import {repositoryInfo, worktreeInfoData} from './serverAPIState';
 
 /** Whether to show worktree name labels ("You are here" label, checked-out-elsewhere badges). */
-export const showWorktreeLabels = localStorageBackedAtom<boolean>('isl.show-worktree-labels', true);
+export const showWorktreeLabels = localStorageBackedAtom<boolean>(
+  'isl.show-worktree-labels',
+  true,
+  {portable: true},
+);
 
 /**
  * `{info, worktreeInfo}` when worktree data has loaded -- `undefined` otherwise.

@@ -108,16 +108,19 @@ import {short} from './utils';
 export const rebaseOffWarmWarningEnabled = localStorageBackedAtom<boolean>(
   'isl.rebase-off-warm-warning-enabled',
   true,
+  {portable: true},
 );
 
 export const distantRebaseWarningEnabled = localStorageBackedAtom<boolean>(
   'isl.distant-rebase-warning-enabled',
   true,
+  {portable: true},
 );
 
 export const rebaseOntoMasterWarningEnabled = localStorageBackedAtom<boolean>(
   'isl.rebase-onto-master-warning-enabled',
   true,
+  {portable: true},
 );
 
 export type CopyCommitHashFormat = 'long' | 'short';

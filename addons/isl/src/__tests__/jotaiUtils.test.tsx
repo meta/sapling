@@ -8,6 +8,7 @@
 import type {Atom} from 'jotai';
 import type {AtomFamilyWeak} from '../jotaiUtils';
 import type {Platform} from '../platform';
+import platform from '../platform';
 import type {LocalStorageName} from '../types';
 
 import {act, render} from '@testing-library/react';
@@ -21,6 +22,7 @@ import {
   atomFamilyWeak,
   atomResetOnDepChange,
   lazyAtom,
+  localStorageBackedAtom,
   localStorageBackedAtomFamily,
   readAtom,
   useAtomGet,
@@ -490,5 +492,30 @@ describe('localStorageBackedAtomFamily', () => {
     expect(mockPlatform.setPersistedState).toHaveBeenCalledWith('test_a', undefined);
     expect(mockPlatform.getPersistedState('test_a')).toBeUndefined(); // nothing is stored
     expect(readAtom(family('a'))).toEqual(0); // read still gives default value
+  });
+});
+
+describe('localStorageBackedAtom', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('tells the platform which settings are portable, with their default, and nothing for others', () => {
+    const get = jest.spyOn(platform, 'getPersistedState').mockReturnValue(null);
+    const set = jest.spyOn(platform, 'setPersistedState').mockImplementation(() => {});
+    const validate = (zoom: unknown) => zoom !== 9;
+    const zoom = localStorageBackedAtom<number>('isl.ui-zoom', 1, {portable: true, validate});
+    const focus = localStorageBackedAtom<boolean>('isl.focus-mode', false);
+
+    expect(get.mock.calls).toEqual([
+      ['isl.ui-zoom', {portable: true, validate, defaultValue: 1}],
+      ['isl.focus-mode'],
+    ]);
+    writeAtom(zoom, 1.2);
+    writeAtom(focus, true);
+    expect(set.mock.calls).toEqual([
+      ['isl.ui-zoom', 1.2, {portable: true, validate, defaultValue: 1}],
+      ['isl.focus-mode', true],
+    ]);
   });
 });

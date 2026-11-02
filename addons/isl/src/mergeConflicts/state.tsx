@@ -18,6 +18,7 @@ export const shouldAutoResolveAllBeforeContinue = localStorageBackedAtom<boolean
   // OSS doesn't typically use merge drivers, so `sl resolve --all` would be added overhead for little gain.
   // You can still configure this in settings if you want.
   Internal.autoRunMergeDriversByDefault === true,
+  {portable: true},
 );
 
 export function AutoResolveSettingCheckbox({subtle}: {subtle?: boolean}) {
@@ -38,7 +39,9 @@ export function AutoResolveSettingCheckbox({subtle}: {subtle?: boolean}) {
   );
 }
 
-export const shouldPartialAbort = localStorageBackedAtom<boolean>('isl.partial-abort', false);
+export const shouldPartialAbort = localStorageBackedAtom<boolean>('isl.partial-abort', false, {
+  portable: true,
+});
 
 export function PartialAbortSettingCheckbox({subtle}: {subtle?: boolean}) {
   const [isPartialAbort, setShouldPartialAbort] = useAtom(shouldPartialAbort);

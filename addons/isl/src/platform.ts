@@ -26,6 +26,15 @@ import {makeBrowserLikePlatformImpl} from './platform/browserPlatformImpl';
 
 export type InitialParamKeys = 'token' | string;
 
+/** What `localStorageBackedAtom` tells a platform about a setting it stores. */
+export type PersistedStateOptions = {
+  /** A preference that means the same on every machine, which a platform may keep elsewhere too. */
+  portable: true;
+  defaultValue: Json;
+  /** Whether a value kept elsewhere is acceptable here, beyond having the default's JSON type. */
+  validate?: (value: Json) => boolean;
+};
+
 export interface PlatformVisibility {
   getVisibility(): PageVisibility;
   onDidChangeVisibility(callback: (visibility: PageVisibility) => unknown): Disposable;
@@ -58,9 +67,13 @@ export interface Platform {
    * Note: Some platforms may not support this (e.g. browser with localStorage disabled),
    * or it may not be persisted indefinitely---usual localStorage caveats apply.
    */
-  getPersistedState<T extends Json>(key: string): T | null;
+  getPersistedState<T extends Json>(key: string, options?: PersistedStateOptions): T | null;
   /** see getPersistedState  */
-  setPersistedState<T extends Json>(key: string, value: T | undefined): void;
+  setPersistedState<T extends Json>(
+    key: string,
+    value: T | undefined,
+    options?: PersistedStateOptions,
+  ): void;
   /** see getPersistedState  */
   clearPersistedState(): void;
   /** see getPersistedState  */

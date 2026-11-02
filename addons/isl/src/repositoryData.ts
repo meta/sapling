@@ -69,11 +69,13 @@ export const __TEST__ = {isIrrelevantToCwd};
 export const irrelevantCwdDeemphasisEnabled = localStorageBackedAtom<boolean>(
   'isl.deemphasize-cwd-irrelevant-commits',
   true,
+  {portable: true},
 );
 
 export const hideIrrelevantCwdStacks = localStorageBackedAtom<boolean>(
   'isl.hide-cwd-irrelevant-stacks',
   false,
+  {portable: true},
 );
 
 /**
