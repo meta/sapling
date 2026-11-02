@@ -41,9 +41,9 @@ include_directories(${WANGLE_INCLUDE_DIR})
 fb_find_or_fetch(FBThrift)
 include_directories(${FBTHRIFT_INCLUDE_DIR})
 
-# The Python CLI, which eden builds only on Linux, uses fb303's thrift-python
-# modules.
-if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+# The Python CLI, which eden doesn't build on Windows, uses fb303's
+# thrift-python modules.
+if (NOT WIN32)
   set(FB303_THRIFT_PYTHON ON)
 endif()
 fb_find_or_fetch(fb303)
@@ -153,9 +153,9 @@ if (NOT BLAKE3_FOUND)
 endif()
 include_directories(${BLAKE3_INCLUDE_DIR})
 
-# The Python CLI, built only on Linux, uses thrift-python and the thrift-python
-# modules that fb303 builds with FB303_THRIFT_PYTHON.
-if (ENABLE_THRIFT_PYTHON AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+# The Python CLI, not built on Windows, uses thrift-python and the
+# thrift-python modules that fb303 builds with FB303_THRIFT_PYTHON.
+if (ENABLE_THRIFT_PYTHON AND NOT WIN32)
   include(FBThriftPythonLibrary)
   if (ENABLE_THRIFT_PYTHON STREQUAL "AUTO")
     fb_find_thrift_python_runtime(QUIET)
