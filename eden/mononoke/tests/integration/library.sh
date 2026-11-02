@@ -20,6 +20,7 @@ function python_fn() {
   return $rv
 }
 
+SCS_GFLAGS_ARGS=()
 if [ -n "$FB_TEST_FIXTURES" ] && [ -f "$FB_TEST_FIXTURES/fb_library.sh" ]; then
   # shellcheck source=fbcode/eden/mononoke/tests/integration/facebook/fb_library.sh
   . "$FB_TEST_FIXTURES/fb_library.sh"
@@ -601,7 +602,6 @@ function scs {
     BOOKMARK_CACHE_FLAG="--disable-bookmark-cache-warming"
   fi
 
-  # Disable overload load-shedding: its default mem counter counts page cache, so warm test hosts shed every request.
   rm -f "$TESTTMP/scs_server_addr.txt"
   render_mononoke_config
   GLOG_minloglevel=5 \
@@ -620,7 +620,7 @@ function scs {
     --scribe-logging-directory "$TESTTMP/scribe_logs" \
     --tracing-test-format \
     --runtime-thread-stack-size 8388608 \
-    --gflag boh_mem_util_counter= \
+    "${SCS_GFLAGS_ARGS[@]}" \
     $BOOKMARK_CACHE_FLAG \
     "${CACHE_ARGS[@]}" \
     "${COMMON_ARGS[@]}" >> "$TESTTMP/scs_server.out" 2>&1 &
