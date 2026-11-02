@@ -56,5 +56,5 @@ class ProcessAggregationTest(unittest.TestCase):
 
         self.assertEqual(exited.pid, 200)
         self.assertTrue(exited.is_running)
-        self.assertEqual(exited.last_access, 900.0)
-        self.assertEqual(exited.fuseFetch, 3)
+        self.assertEqual(exited.last_access, 1000.0)
+        self.assertEqual(exited.fuseFetch, 8)

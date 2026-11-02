@@ -1061,12 +1061,13 @@ class Process:
 
     def aggregate(self, other: "Process") -> None:
         self.increment_counts(other.access_counts)
+        self.fuseFetch += other.fuseFetch
         self.is_running |= other.is_running
 
         # Check if other is more relevant
         if other.is_running or other.last_access > self.last_access:
             self.pid = other.pid
-            self.last_access = other.last_access
+        self.last_access = max(self.last_access, other.last_access)
 
     def increment_counts(self, access_counts: AccessCounts) -> None:
         # Modern thrift-python types have immutable fields, so create a new object
