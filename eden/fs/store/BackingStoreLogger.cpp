@@ -54,6 +54,9 @@ void BackingStoreLogger::logImport(
     case ObjectFetchContext::Cause::Glob:
       cause_string = "Glob";
       break;
+    case ObjectFetchContext::Cause::InodeGc:
+      cause_string = "InodeGc";
+      break;
     case ObjectFetchContext::Unknown:
       cause_string = "Unknown";
   }

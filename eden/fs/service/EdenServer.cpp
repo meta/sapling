@@ -4486,15 +4486,11 @@ void EdenServer::garbageCollectAllMounts() {
                edenFsEventsLogger,
                pinnedInodes = std::move(pinnedInodes),
                pinScanFailed]() mutable {
-                static auto context =
-                    ObjectFetchContext::getNullContextWithCauseDetail(
-                        ObjectFetchContext::StaticCauseDetail::fromLiteral(
-                            "EdenServer::garbageCollectAllMounts"));
                 return garbageCollectInodesWithLease(
                            mountHandle.getEdenMount(),
                            mountHandle.getRootInode(),
                            cutoff,
-                           context,
+                           ObjectFetchContext::getNullInodeGcContext(),
                            pressureBasedGc,
                            std::move(lease),
                            std::move(shutdownToken),

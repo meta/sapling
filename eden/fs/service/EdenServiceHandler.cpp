@@ -2399,6 +2399,7 @@ void convertHgImportTraceEventToHgEvent(
 
   switch (event.importCause) {
     case ObjectFetchContext::Cause::Unknown:
+    case ObjectFetchContext::Cause::InodeGc:
       te.importCause() = HgImportCause::UNKNOWN;
       break;
     case ObjectFetchContext::Cause::Fs:
@@ -6583,19 +6584,17 @@ EdenServiceHandler::semifuture_debugInvalidateNonMaterialized(
                        mountHandle.getEdenMount(), path, fetchContext)
                 .asTreePtr();
           })
-          .thenValue(
-              [this, mountHandle, cutoff, fetchContext = fetchContext.copy()](
-                  TreeInodePtr inode) mutable {
-                auto pressureBased = mountHandle.getEdenMount()
-                                         .getEdenConfig()
-                                         ->enablePressureBasedGc.getValue();
-                return server_->garbageCollectInodes(
-                    mountHandle.getEdenMount(),
-                    inode,
-                    cutoff,
-                    fetchContext,
-                    pressureBased);
-              })
+          .thenValue([this, mountHandle, cutoff](TreeInodePtr inode) {
+            auto pressureBased = mountHandle.getEdenMount()
+                                     .getEdenConfig()
+                                     ->enablePressureBasedGc.getValue();
+            return server_->garbageCollectInodes(
+                mountHandle.getEdenMount(),
+                inode,
+                cutoff,
+                ObjectFetchContext::getNullInodeGcContext(),
+                pressureBased);
+          })
           .thenValue([](uint64_t numInvalidated) {
             auto ret = std::make_unique<DebugInvalidateResponse>();
             ret->numInvalidated() = numInvalidated;

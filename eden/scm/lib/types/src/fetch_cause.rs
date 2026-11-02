@@ -7,6 +7,8 @@
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum FetchCause {
+    // The fetch originated from EdenFS inode garbage collection
+    EdenInodeGc,
     // Unknown orginination from EdenFS
     EdenUnknown,
     // The fetch originated from a Eden Thrift prefetch endpoint
@@ -42,6 +44,7 @@ pub enum FetchCause {
 impl FetchCause {
     pub fn to_str(&self) -> &str {
         match self {
+            FetchCause::EdenInodeGc => "edenfs-inode-gc",
             FetchCause::EdenUnknown => "edenfs-unknown",
             FetchCause::EdenPrefetch => "edenfs-prefetch",
             FetchCause::EdenGlob => "edenfs-glob",
@@ -66,6 +69,7 @@ impl FetchCause {
             FetchCause::SaplingPrefetch => true,
             FetchCause::EdenWalkPrefetch => true,
 
+            FetchCause::EdenInodeGc => false,
             FetchCause::EdenUnknown => false,
             FetchCause::EdenGlob => false,
             FetchCause::EdenThrift => false,
@@ -87,6 +91,7 @@ impl std::str::FromStr for FetchCause {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
+            "edenfs-inode-gc" => Ok(FetchCause::EdenInodeGc),
             "edenfs-unknown" => Ok(FetchCause::EdenUnknown),
             "edenfs-prefetch" => Ok(FetchCause::EdenPrefetch),
             "edenfs-glob" => Ok(FetchCause::EdenGlob),
@@ -115,6 +120,7 @@ mod tests {
     #[test]
     fn test_fetch_cause_serialisation_deserialisation() {
         let variants = [
+            FetchCause::EdenInodeGc,
             FetchCause::EdenUnknown,
             FetchCause::EdenPrefetch,
             FetchCause::EdenGlob,

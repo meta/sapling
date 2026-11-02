@@ -109,18 +109,26 @@ class ObjectFetchContext : public RefCounted {
   enum Cause : uint8_t {
     /** Lowest Priority - unknown origination */
     Unknown = 0,
+    /** Inode garbage collection loading the trees it scans */
+    InodeGc = 1,
     /** The request originated from a Thrift prefetch endpoint */
-    Prefetch = 1,
+    Prefetch = 2,
     /** The request originated from a Thrift glob endpoint */
-    Glob = 2,
+    Glob = 3,
     /** The request originated from a Thrift endpoint */
-    Thrift = 3,
+    Thrift = 4,
     /** Highest Priority - The request originated from FUSE/NFS/PrjFS */
-    Fs = 4,
+    Fs = 5,
   };
 
+  /**
+   * Whether fetches with this cause are reported to the walk detector. A
+   * prefetch or glob is not a walk by a process, and neither is the inode
+   * garbage collector revisiting the trees of remembered inodes.
+   */
   static constexpr bool shouldTriggerWalkDetection(Cause cause) {
-    return cause != Cause::Prefetch && cause != Cause::Glob;
+    return cause != Cause::Prefetch && cause != Cause::Glob &&
+        cause != Cause::InodeGc;
   }
 
   /**
@@ -371,6 +379,12 @@ class ObjectFetchContext : public RefCounted {
    * Return a no-op fetch context with Cause::Prefetch for tests.
    */
   static ObjectFetchContextPtr getNullPrefetchContext();
+
+  /**
+   * Return a no-op fetch context with Cause::InodeGc for the inode garbage
+   * collector's loads.
+   */
+  static ObjectFetchContextPtr getNullInodeGcContext();
 
   /**
    * Set the time tracer.

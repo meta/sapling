@@ -66,6 +66,20 @@ class NullPrefetchObjectFetchContext : public ObjectFetchContext {
   }
 };
 
+class NullInodeGcObjectFetchContext : public ObjectFetchContext {
+ public:
+  NullInodeGcObjectFetchContext() = default;
+
+  Cause getCause() const override {
+    return Cause::InodeGc;
+  }
+
+  const std::unordered_map<std::string, std::string>* FOLLY_NULLABLE
+  getRequestInfo() const override {
+    return nullptr;
+  }
+};
+
 } // namespace
 
 namespace facebook::eden {
@@ -94,6 +108,11 @@ ObjectFetchContextPtr ObjectFetchContext::getNullFsContext() {
 
 ObjectFetchContextPtr ObjectFetchContext::getNullPrefetchContext() {
   static auto* p = new NullPrefetchObjectFetchContext;
+  return ObjectFetchContextPtr::singleton(*p);
+}
+
+ObjectFetchContextPtr ObjectFetchContext::getNullInodeGcContext() {
+  static auto* p = new NullInodeGcObjectFetchContext;
   return ObjectFetchContextPtr::singleton(*p);
 }
 

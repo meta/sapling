@@ -208,6 +208,9 @@ void InodeAccessLogger::processInodeAccessEvents() {
         case ObjectFetchContext::Glob:
           source = "glob";
           break;
+        case ObjectFetchContext::InodeGc:
+          source = "inode_gc";
+          break;
       }
 
       std::string sourceDetail;

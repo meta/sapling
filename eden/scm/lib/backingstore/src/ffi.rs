@@ -45,16 +45,18 @@ pub(crate) mod ffi {
     #[namespace = "facebook::eden"]
     #[repr(u8)]
     pub enum FetchCause {
-        // Lowest Priority - Unknown orginination
+        // Lowest Priority - unknown origination
         Unknown = 0,
+        // Inode garbage collection loading the trees it scans
+        InodeGc = 1,
         // The request originated from a Thrift prefetch endpoint
-        Prefetch = 1,
+        Prefetch = 2,
         // The request originated from a Thrift glob endpoint
-        Glob = 2,
+        Glob = 3,
         // The request originated from a Thrift endpoint
-        Thrift = 3,
+        Thrift = 4,
         // Highest Priority - The request originated from FUSE/NFS/PrjFS
-        Fs = 4,
+        Fs = 5,
     }
 
     #[namespace = "facebook::eden"]
@@ -519,6 +521,7 @@ impl From<ffi::FetchMode> for FetchMode {
 impl From<ffi::FetchCause> for FetchCause {
     fn from(fetch_cause: ffi::FetchCause) -> Self {
         match fetch_cause {
+            ffi::FetchCause::InodeGc => FetchCause::EdenInodeGc,
             ffi::FetchCause::Unknown => FetchCause::EdenUnknown,
             ffi::FetchCause::Prefetch => FetchCause::EdenPrefetch,
             ffi::FetchCause::Glob => FetchCause::EdenGlob,
@@ -536,14 +539,15 @@ fn select_cause(fetch_causes_iter: impl Iterator<Item = ffi::FetchCause>) -> (Fe
     let mut most_popular_cause = None;
     let mut len = 0;
     let mut max_count = 0;
-    let mut cause_counts = [0; 5];
+    let mut cause_counts = [0; 6];
     for cause in fetch_causes_iter {
         let cause_index = match cause {
             ffi::FetchCause::Unknown => 0,
-            ffi::FetchCause::Prefetch => 1,
-            ffi::FetchCause::Glob => 2,
-            ffi::FetchCause::Thrift => 3,
-            ffi::FetchCause::Fs => 4,
+            ffi::FetchCause::InodeGc => 1,
+            ffi::FetchCause::Prefetch => 2,
+            ffi::FetchCause::Glob => 3,
+            ffi::FetchCause::Thrift => 4,
+            ffi::FetchCause::Fs => 5,
             _ => 0, // should never happen
         };
         len += 1;
@@ -1369,6 +1373,7 @@ mod tests {
     #[test]
     fn test_select_cause() {
         let causes = [
+            ffi::FetchCause::InodeGc,
             ffi::FetchCause::Unknown,
             ffi::FetchCause::Prefetch,
             ffi::FetchCause::Glob,

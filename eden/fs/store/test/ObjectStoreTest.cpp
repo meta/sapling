@@ -264,6 +264,29 @@ TEST_P(ObjectStoreTest, fetches_survive_a_throwing_walk_detector) {
   EXPECT_NE(store->getTree(readyTreeId, context).get(0ms), nullptr);
 }
 
+TEST_P(ObjectStoreTest, inode_gc_fetches_are_not_witnessed) {
+  auto detector = std::make_shared<FakeWalkDetector>();
+  auto store = ObjectStore::create(
+      fakeBackingStore,
+      treeCache,
+      stats.copy(),
+      std::make_shared<ProcessInfoCache>(),
+      makeTestEdenFsEventsLogger(),
+      std::make_shared<ReloadableConfig>(EdenConfig::createTestEdenConfig()),
+      GetParam(),
+      folly::getGlobalCPUExecutor(),
+      detector);
+
+  auto gcContext = ObjectFetchContext::getNullInodeGcContext();
+  store->getTree(readyTreeId, gcContext).get(0ms);
+  store->getBlob(readyBlobId, gcContext).get(0ms);
+  EXPECT_TRUE(detector->treeReads().empty());
+  EXPECT_TRUE(detector->fileReads().empty());
+
+  store->getBlob(readyBlobId, ObjectFetchContext::getNullFsContext()).get(0ms);
+  EXPECT_EQ(std::vector<ObjectId>{readyBlobId}, detector->fileReads());
+}
+
 TEST_P(ObjectStoreTest, getBlob_tracks_backing_store_read) {
   objectStore->getBlob(readyBlobId, context).get(0ms);
   ASSERT_EQ(1, loggingContext->requests.size());

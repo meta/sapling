@@ -736,7 +736,7 @@ SaplingBackingStore::prepareRequests(
 }
 
 // The priority is defined in ObjectFetchContext::Cause
-// FS -> Thrift -> Prefetch -> Unknown
+// FS -> Thrift -> Glob -> Prefetch -> InodeGc -> Unknown
 ObjectFetchContext::Cause SaplingBackingStore::getHighestPriorityFetchCause(
     const ImportRequestsList& importRequestsForId) const {
   ObjectFetchContext::Cause highestPriorityCause =
