@@ -416,6 +416,26 @@ impl<R> MononokeRepos<R> {
 
         repo_slot.get_or_build(loader).await.map(Some)
     }
+
+    /// Registers the repo if it is absent and builds it now with `loader`,
+    /// through its slot, so eager builds share single-flight and the
+    /// failed-build hold with lazy ones. A repo that is already built is
+    /// returned as is.
+    pub async fn add_and_build(
+        &self,
+        repo_name: &str,
+        repo_id: i32,
+        loader: Arc<dyn RepoLoader<R>>,
+    ) -> Result<Arc<R>>
+    where
+        R: Send + Sync + 'static,
+    {
+        self.add_placeholder(repo_name, repo_id);
+        let Some(repo_slot) = self.name_to_repo_map.load().get(repo_name).cloned() else {
+            bail!("Repo {repo_name} was removed before it could be built");
+        };
+        repo_slot.get_or_build(loader).await
+    }
 }
 
 #[cfg(test)]
