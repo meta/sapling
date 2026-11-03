@@ -23,7 +23,11 @@ use crate::HgBlob;
 use crate::HgBlobNode;
 use crate::HgManifestId;
 use crate::HgNodeHash;
+use crate::HgParents;
+use crate::NULL_HASH;
 use crate::NonRootMPath;
+use crate::blobs::ChangesetMetadata;
+use crate::blobs::HgChangesetContent;
 
 const CHANGESET: &[u8] = include_bytes!("cset.bin");
 const CHANGESET_NOEXTRA: &[u8] = include_bytes!("cset_noextra.bin");
@@ -158,4 +162,66 @@ fn extras_roundtrip() {
     QuickCheck::new()
         .tests(50) // more takes too much time
         .quickcheck(extras_roundtrip_prop as fn(BTreeMap<Vec<u8>, Vec<u8>>) -> TestResult);
+}
+
+fn changeset_with_files(files: Vec<NonRootMPath>) -> RevlogChangeset {
+    RevlogChangeset::new_from_parts(
+        HgParents::None,
+        HgManifestId::new(NULL_HASH),
+        Bytes::from_static(b"user"),
+        DateTime::from_timestamp(0, 0).unwrap(),
+        BTreeMap::new(),
+        files,
+        Bytes::from_static(b"msg"),
+    )
+}
+
+fn changeset_content_with_files(files: Vec<NonRootMPath>) -> HgChangesetContent {
+    HgChangesetContent::new_from_parts(
+        HgParents::None,
+        HgManifestId::new(NULL_HASH),
+        ChangesetMetadata {
+            user: "user".to_string(),
+            time: DateTime::from_timestamp(0, 0).unwrap(),
+            extra: BTreeMap::new(),
+            message: "msg".to_string(),
+        },
+        files,
+    )
+}
+
+/// FIXME: BUG! This did write the non-UTF-8 file name `caf\xe9` into the changeset text as
+/// `caf\xef\xbf\xbd` (U+FFFD, through the lossy `Display` of `NonRootMPath`) and hash that
+/// text, but should have written the file name bytes verbatim, as Mercurial does, so that
+/// the text is bit-for-bit Mercurial's and `parse(generate(cs))` returns the same files.
+#[mononoke::test]
+fn generate_writes_non_utf8_path_bytes_verbatim() {
+    let path = NonRootMPath::new(b"caf\xe9").unwrap();
+    let cs = changeset_with_files(vec![path.clone()]);
+
+    let mut text = Vec::new();
+    cs.generate(&mut text).expect("generate");
+
+    let hg_text: &[u8] = b"0000000000000000000000000000000000000000\nuser\n0 0\ncaf\xe9\n\nmsg";
+    let lossy_text: &[u8] =
+        b"0000000000000000000000000000000000000000\nuser\n0 0\ncaf\xef\xbf\xbd\n\nmsg";
+    // FIXME: BUG! The text holds U+FFFD where Mercurial writes the byte 0xe9.
+    assert_eq!(text, lossy_text);
+    assert_ne!(text, hg_text);
+
+    // FIXME: BUG! The changeset id is the sha1 of the altered text.
+    let lossy_id = HgBlobNode::new(Bytes::from_static(lossy_text), None, None).nodeid();
+    assert_eq!(cs.get_node().unwrap().nodeid(), lossy_id);
+
+    // FIXME: BUG! parse(generate(cs)) does not give back the original file name.
+    let parsed = RevlogChangeset::parse(HgBlob::new(Bytes::from(text)), None, None).expect("parse");
+    assert_eq!(
+        parsed.files(),
+        &[NonRootMPath::new(b"caf\xef\xbf\xbd").unwrap()][..]
+    );
+
+    // FIXME: BUG! HgChangesetContent, used by hg changeset derivation, hashes the same
+    // altered text.
+    let content = changeset_content_with_files(vec![path]);
+    assert_eq!(content.compute_hash().unwrap().into_nodehash(), lossy_id);
 }
