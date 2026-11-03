@@ -853,16 +853,7 @@ async fn mint_parentless_leaf(
     .upload_with_path(ctx.clone(), blobstore.clone(), path.clone())
     .await?;
 
-    Ok(HgAugmentedFileLeafNode {
-        file_type: src.file_type,
-        filenode: filenode_id.into_nodehash(),
-        content_blake3: src.content_blake3,
-        content_sha1: src.content_sha1,
-        total_size: src.total_size,
-        // Fresh parentless filenode with no copy metadata — no header bytes,
-        // matching what `resolve_conflict` produces on the reference path.
-        file_header_metadata: None,
-    })
+    build_augmented_file_leaf(ctx, blobstore, &HashMap::new(), src.file_type, filenode_id).await
 }
 
 /// Compute the Mercurial node id for an augmented-manifest directory by

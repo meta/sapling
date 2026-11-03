@@ -2640,19 +2640,11 @@ async fn assert_step_parent_only_file_parity(
     let filenode = HgFileNodeId::new(leaf.filenode)
         .load(&ctx, repo.repo_blobstore())
         .await?;
-    let leaf_header = leaf.file_header_metadata.as_deref().unwrap_or_default();
-    if content.starts_with("\x01\n") {
-        // BUG: the minted filenode carries the four-byte escape header, but the
-        // augmented leaf that points at it drops it.
-        assert_eq!(filenode.metadata().as_ref(), b"\x01\n\x01\n");
-        assert_eq!(leaf_header, b"");
-    } else {
-        assert_eq!(
-            leaf_header,
-            filenode.metadata().as_ref(),
-            "augmented metadata must preserve the minted filenode's header"
-        );
-    }
+    assert_eq!(
+        leaf.file_header_metadata.as_deref().unwrap_or_default(),
+        filenode.metadata().as_ref(),
+        "augmented metadata must preserve the minted filenode's header"
+    );
     assert_dual_derive_agree(
         &ctx,
         &repo,
