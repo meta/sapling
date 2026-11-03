@@ -284,12 +284,18 @@ struct MountHealthIssueLogContext {
   MountHealthIssueLogContext(
       std::weak_ptr<EdenFsEventsLogger> edenFsEventsLogger,
       std::shared_ptr<EmittedMountHealthIssues> emittedMountHealthIssues,
+      EdenStatsPtr stats,
       std::string mountPath,
       std::string repoSource)
       : edenFsEventsLogger_{std::move(edenFsEventsLogger)},
         emittedMountHealthIssues{std::move(emittedMountHealthIssues)},
+        stats{std::move(stats)},
         mountPath{std::move(mountPath)},
         repoSource{std::move(repoSource)} {}
+
+  void count(StatsGroupBase::Counter MountHealthCheckStats::* counter) const {
+    stats->increment(counter);
+  }
 
   void log(std::string reason, std::string error) const {
     if (!shouldLogMountHealthIssue(
@@ -315,6 +321,7 @@ struct MountHealthIssueLogContext {
 
   std::weak_ptr<EdenFsEventsLogger> edenFsEventsLogger_;
   std::shared_ptr<EmittedMountHealthIssues> emittedMountHealthIssues;
+  EdenStatsPtr stats;
   std::string mountPath;
   std::string repoSource;
 };
@@ -366,6 +373,7 @@ void scheduleMountHealthCheckStartTimeout(
             if (completed->exchange(true)) {
               return;
             }
+            logContext->count(&MountHealthCheckStats::notStarted);
             logMountHealthCheckTimeout(
                 *logContext,
                 "EdenFS mount health check did not start within timeout; "
@@ -383,6 +391,7 @@ void scheduleMountHealthCheckRuntimeTimeout(
             if (completed->exchange(true)) {
               return;
             }
+            logContext->count(&MountHealthCheckStats::timedOut);
             logMountHealthCheckTimeout(
                 *logContext, "EdenFS mount health check timed out");
           }));
@@ -4572,8 +4581,10 @@ void EdenServer::scheduleRunningMountHealthCheck(
   auto logContext = make_shared<const MountHealthIssueLogContext>(
       serverState_->getEdenFsEventsLogger(),
       emittedMountHealthIssues,
+      serverState_->getStats().copy(),
       std::move(mountPathString),
       std::move(repoSource));
+  logContext->count(&MountHealthCheckStats::probes);
 
   scheduleMountHealthCheckStartTimeout(started, completed, logContext);
 
@@ -4613,10 +4624,12 @@ void EdenServer::scheduleRunningMountHealthCheck(
             }
             const auto& issue = result.value();
             if (!issue.has_value()) {
+              logContext->count(&MountHealthCheckStats::healthy);
               clearMountHealthIssues(
                   emittedMountHealthIssues, logContext->mountPath);
               return;
             }
+            logContext->count(&MountHealthCheckStats::issue);
             logContext->log(
                 std::string{edenMountHealthIssueReasonString(issue->reason)},
                 issue->error);

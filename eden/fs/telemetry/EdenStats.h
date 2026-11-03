@@ -46,6 +46,7 @@ struct CheckoutStats;
 struct TreeInodeStats;
 struct CgroupFileCacheStats;
 struct CheckoutRecoveryStats;
+struct MountHealthCheckStats;
 struct FakeStats;
 
 class EdenStats : public RefCounted {
@@ -107,6 +108,7 @@ class EdenStats : public RefCounted {
   ThreadLocal<TreeInodeStats> treeInodeStats_;
   ThreadLocal<CgroupFileCacheStats> cgroupFileCacheStats_;
   ThreadLocal<CheckoutRecoveryStats> checkoutRecoveryStats_;
+  ThreadLocal<MountHealthCheckStats> mountHealthCheckStats_;
   ThreadLocal<FakeStats> fakeStats_;
 };
 
@@ -216,6 +218,12 @@ template <>
 inline CheckoutRecoveryStats&
 EdenStats::getStatsForCurrentThread<CheckoutRecoveryStats>() {
   return *checkoutRecoveryStats_.get();
+}
+
+template <>
+inline MountHealthCheckStats&
+EdenStats::getStatsForCurrentThread<MountHealthCheckStats>() {
+  return *mountHealthCheckStats_.get();
 }
 
 template <>
@@ -870,6 +878,18 @@ struct CheckoutRecoveryStats : StatsGroup<CheckoutRecoveryStats> {
   // In flight, gave up, or flapping.
   Counter channelStopSkippedThrottled{
       "checkout_recovery.channel_stop_skipped.throttled"};
+};
+
+/**
+ * Probes of the checkouts the daemon is serving
+ * (`mount:mount-health-check-interval`).
+ */
+struct MountHealthCheckStats : StatsGroup<MountHealthCheckStats> {
+  Counter probes{"mount_health_check.probes"};
+  Counter healthy{"mount_health_check.healthy"};
+  Counter issue{"mount_health_check.issue"};
+  Counter timedOut{"mount_health_check.timed_out"};
+  Counter notStarted{"mount_health_check.not_started"};
 };
 
 /*
