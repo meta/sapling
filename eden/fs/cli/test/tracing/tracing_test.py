@@ -63,7 +63,12 @@ AMBIENT = (
     "ARTILLERY_KILLSWITCH_PATH",
     "THRIFT_TLS_CL_CERT_PATH",
 )
-CARRIERS = ("CONTEXTPROP_BAGGAGE", "ARTILLERY_CONTEXT", "TRACEPARENT")
+CARRIERS = (
+    "CONTEXTPROP_BAGGAGE",
+    "ARTILLERY_CONTEXT",
+    "TRACEPARENT",
+    "ART_CLI_LITE_EXEC_PID",
+)
 DUMP = """import json, os, sys
 json.dump(dict(os.environ), open(sys.argv[1], "w"))
 print("helper stdout")
