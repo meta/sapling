@@ -101,13 +101,6 @@ wezterm-color-types = { git = "https://github.com/wezterm/wezterm.git", rev = "0
 wezterm-dynamic = { git = "https://github.com/wezterm/wezterm.git", rev = "05343b387085842b434d267f91b6b0ec157e4331" }
 wezterm-input-types = { git = "https://github.com/wezterm/wezterm.git", rev = "05343b387085842b434d267f91b6b0ec157e4331" }
 x509-certificate = { git = "https://github.com/indygreg/cryptography-rs", rev = "43a652c233e9dfe3edfe10c9826602655acc1fd1" }
-zbus = { git = "https://github.com/z-galaxy/zbus", rev = "40d8995fa012652c1b1e1e9bd96e54327024be09" }
-zbus_macros = { git = "https://github.com/z-galaxy/zbus", rev = "40d8995fa012652c1b1e1e9bd96e54327024be09" }
-zbus_names = { git = "https://github.com/z-galaxy/zbus", rev = "40d8995fa012652c1b1e1e9bd96e54327024be09" }
-zbus_xml = { git = "https://github.com/z-galaxy/zbus", rev = "40d8995fa012652c1b1e1e9bd96e54327024be09" }
-zvariant = { git = "https://github.com/z-galaxy/zbus", rev = "40d8995fa012652c1b1e1e9bd96e54327024be09" }
-zvariant_derive = { git = "https://github.com/z-galaxy/zbus", rev = "40d8995fa012652c1b1e1e9bd96e54327024be09" }
-zvariant_utils = { git = "https://github.com/z-galaxy/zbus", rev = "40d8995fa012652c1b1e1e9bd96e54327024be09" }
 
 [patch."https://github.com/lance-format/lance.git"]
 fsst = { git = "https://github.com/fbsource/lance", rev = "e5a3553b1699a7062ff7afe4ee268d596bbf2e0d" }
