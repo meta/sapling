@@ -1277,6 +1277,36 @@ fn test_sorted_walk_ratio() {
 }
 
 #[test]
+fn test_sorted_walk_ratio_after_expiry() {
+    let mut detector = Detector::new();
+    detector.set_walk_threshold(TEST_WALK_THRESHOLD);
+    detector.set_walk_ratio(0.1);
+    detector.set_walk_ratio_sorted_factor(0.4);
+    detector.set_gc_timeout(Duration::from_secs(1));
+    detector.set_gc_interval(Duration::from_secs(100));
+
+    detector.dir_metadata(p(""), 0, 1000);
+
+    // "big" is large enough that its node outlives expiry to keep its size metadata.
+    detector.dir_metadata(p("big"), 0, 100);
+    detector.dir_loaded(p("big/b"), 0, 0, 0);
+    detector.dir_loaded(p("big/a"), 0, 0, 0);
+
+    MockClock::advance(Duration::from_secs(2));
+    detector.inner.write().node.gc(&detector.config);
+    assert!(detector.dir_walks().is_empty());
+
+    // The out-of-order loads expired with the node, so a fresh in-order listing is detected at
+    // the sorted ratio: 4 of 100.
+    for name in ["c", "d", "e"] {
+        detector.dir_loaded(p(format!("big/{name}")), 0, 0, 0);
+    }
+    assert!(detector.dir_walks().is_empty());
+    detector.dir_loaded(p("big/f"), 0, 0, 0);
+    assert_eq!(detector.dir_walks(), vec![(p("big"), 0)]);
+}
+
+#[test]
 fn test_sorted_sibling_walks_merge_sooner() {
     let walk_siblings = |order: [&str; 3]| {
         let mut detector = Detector::new();

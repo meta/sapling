@@ -897,6 +897,7 @@ impl WalkNode {
         self.walked_file_children.clear();
         self.walked_dir_children.clear();
         self.seen_files.clear();
+        self.seen_dirs.clear();
 
         // No harm in retaining self.total_dirs and self.total_files, or the important tallies in
         // total_dirs_at_depth and total_files_at_depth.
