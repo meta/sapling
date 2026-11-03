@@ -35,3 +35,6 @@ in_memory_commit_graph_storage = { version = "0.1.0", path = "../commit_graph/in
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
 mononoke_types-mocks = { version = "0.1.0", path = "../../mononoke_types/mocks" }
 repo_identity = { version = "0.1.0", path = "../repo_identity" }
+
+[lints]
+workspace = true

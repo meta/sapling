@@ -26,3 +26,6 @@ mononoke_app = { version = "0.1.0", path = "../../cmdlib/mononoke_app" }
 rand = "0.10.3"
 repo_factory = { version = "0.1.0", path = "../../repo_factory" }
 tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
+
+[lints]
+workspace = true

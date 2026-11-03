@@ -11,3 +11,6 @@ license = "GPLv2+"
 anyhow = "1.0.104"
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 scuba = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
+
+[lints]
+workspace = true

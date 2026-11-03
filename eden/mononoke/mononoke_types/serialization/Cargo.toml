@@ -33,3 +33,6 @@ thrift_compiler = { version = "0.1.0", git = "https://github.com/facebookexperim
 [features]
 default = ["thrift_library_unittests_disabled"]
 thrift_library_unittests_disabled = []
+
+[lints]
+workspace = true

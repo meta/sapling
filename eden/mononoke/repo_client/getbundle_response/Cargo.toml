@@ -35,3 +35,6 @@ repo_derived_data = { version = "0.1.0", path = "../../repo_attributes/repo_deri
 scuba_ext = { version = "0.1.0", path = "../../common/scuba_ext" }
 sha1 = "0.10.7"
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
+
+[lints]
+workspace = true

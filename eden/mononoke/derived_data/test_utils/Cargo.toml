@@ -21,3 +21,6 @@ manifest = { version = "0.1.0", path = "../../manifest" }
 mercurial_types = { version = "0.1.0", path = "../../mercurial/types" }
 mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
 repo_blobstore = { version = "0.1.0", path = "../../repo_attributes/repo_blobstore" }
+
+[lints]
+workspace = true

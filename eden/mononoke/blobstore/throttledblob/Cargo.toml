@@ -15,3 +15,6 @@ context = { version = "0.1.0", path = "../../servers/slapi/slapi_server/context"
 governor = "0.10.4"
 mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
 nonzero_ext = "0.2"
+
+[lints]
+workspace = true

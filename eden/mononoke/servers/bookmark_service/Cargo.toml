@@ -59,3 +59,6 @@ repo_derived_data = { version = "0.1.0", path = "../../repo_attributes/repo_deri
 repo_event_publisher = { version = "0.1.0", path = "../../repo_attributes/repo_event_publisher" }
 tests_utils = { version = "0.1.0", path = "../../tests/utils" }
 warm_bookmarks_cache = { version = "0.1.0", path = "../../repo_attributes/bookmarks/warm_bookmarks_cache" }
+
+[lints]
+workspace = true

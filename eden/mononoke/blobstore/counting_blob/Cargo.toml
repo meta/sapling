@@ -12,3 +12,6 @@ anyhow = "1.0.104"
 async-trait = "0.1.92"
 blobstore = { version = "0.1.0", path = ".." }
 context = { version = "0.1.0", path = "../../servers/slapi/slapi_server/context" }
+
+[lints]
+workspace = true

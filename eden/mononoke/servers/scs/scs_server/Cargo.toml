@@ -35,3 +35,6 @@ sql_construct = { version = "0.1.0", path = "../../../common/sql_construct" }
 tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tokio-stream = { version = "0.1.19", features = ["fs", "io-util", "net", "signal", "sync", "time"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
+
+[lints]
+workspace = true

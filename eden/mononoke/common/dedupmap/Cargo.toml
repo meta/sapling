@@ -9,3 +9,6 @@ license = "GPLv2+"
 
 [dev-dependencies]
 mononoke_macros = { version = "0.1.0", path = "../mononoke_macros" }
+
+[lints]
+workspace = true

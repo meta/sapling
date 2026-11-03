@@ -28,3 +28,6 @@ maplit = "1.0"
 mercurial_types-mocks = { version = "0.1.0", path = "../../mercurial/types/mocks" }
 mononoke_macros = { version = "0.1.0", path = "../mononoke_macros" }
 quickcheck = "1.1"
+
+[lints]
+workspace = true

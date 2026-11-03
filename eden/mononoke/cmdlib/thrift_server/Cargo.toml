@@ -24,3 +24,6 @@ fb303_core_clients = { version = "0.0.0", git = "https://github.com/facebook/fb3
 fb303_core_services = { version = "0.0.0", git = "https://github.com/facebook/fb303.git", branch = "main" }
 fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
+
+[lints]
+workspace = true

@@ -20,3 +20,6 @@ tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 [dev-dependencies]
 fb303_core = { version = "0.0.0", git = "https://github.com/facebook/fb303.git", branch = "main" }
 fb303_core_services = { version = "0.0.0", git = "https://github.com/facebook/fb303.git", branch = "main" }
+
+[lints]
+workspace = true

@@ -56,3 +56,6 @@ tokio-util = { version = "0.7.20", features = ["full"] }
 tower-service = "0.3.3"
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 yield_stream = { version = "0.1.0", path = "../yield_stream" }
+
+[lints]
+workspace = true

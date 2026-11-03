@@ -14,3 +14,6 @@ clap = { version = "4.6.2", features = ["derive", "env", "string", "unicode", "w
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 mononoke_configs = { version = "0.1.0", path = "../../common/mononoke_configs" }
 tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
+
+[lints]
+workspace = true

@@ -51,3 +51,6 @@ repo_blobstore = { version = "0.1.0", path = "../../repo_attributes/repo_blobsto
 repo_derived_data = { version = "0.1.0", path = "../../repo_attributes/repo_derived_data" }
 repo_identity = { version = "0.1.0", path = "../../repo_attributes/repo_identity" }
 tests_utils = { version = "0.1.0", path = "../../tests/utils" }
+
+[lints]
+workspace = true

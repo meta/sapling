@@ -75,3 +75,6 @@ mononoke_types-mocks = { version = "0.1.0", path = "../../../mononoke_types/mock
 pretty_assertions = { version = "1.4.1", features = ["alloc"], default-features = false }
 readonlyblob = { version = "0.1.0", path = "../../../blobstore/readonlyblob" }
 test_repo_factory = { version = "0.1.0", path = "../../../repo_factory/test_repo_factory" }
+
+[lints]
+workspace = true

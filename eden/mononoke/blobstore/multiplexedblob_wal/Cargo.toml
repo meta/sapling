@@ -36,3 +36,6 @@ fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperiment
 lock_ext = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 nonzero_ext = "0.2"
 sql_construct = { version = "0.1.0", path = "../../common/sql_construct" }
+
+[lints]
+workspace = true

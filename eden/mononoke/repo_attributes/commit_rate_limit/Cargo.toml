@@ -17,3 +17,6 @@ serde = { version = "1.0.229", features = ["derive", "rc"] }
 
 [dev-dependencies]
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
+
+[lints]
+workspace = true

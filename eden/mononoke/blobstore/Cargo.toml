@@ -41,3 +41,6 @@ mononoke_macros = { version = "0.1.0", path = "../common/mononoke_macros" }
 mononoke_types = { version = "0.1.0", path = "../mononoke_types" }
 sqlblob = { version = "0.1.0", path = "sqlblob" }
 tempfile = "3.27.0"
+
+[lints]
+workspace = true

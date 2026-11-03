@@ -67,3 +67,6 @@ skeleton_manifest_v2 = { version = "0.1.0", path = "../../derived_data/skeleton_
 test_repo_factory = { version = "0.1.0", path = "../../repo_factory/test_repo_factory" }
 tests_utils = { version = "0.1.0", path = "../../tests/utils" }
 unodes = { version = "0.1.0", path = "../../derived_data/unodes" }
+
+[lints]
+workspace = true

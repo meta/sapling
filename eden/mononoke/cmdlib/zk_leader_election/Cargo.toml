@@ -11,3 +11,6 @@ license = "GPLv2+"
 anyhow = "1.0.104"
 async-trait = "0.1.92"
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
+
+[lints]
+workspace = true

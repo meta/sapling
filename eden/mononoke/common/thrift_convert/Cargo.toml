@@ -21,3 +21,6 @@ thrift_convert_proc_macros = { version = "0.1.0", path = "proc_macros" }
 [dev-dependencies]
 mononoke_macros = { version = "0.1.0", path = "../mononoke_macros" }
 thrift_convert_test = { version = "0.1.0", path = "tests/if" }
+
+[lints]
+workspace = true

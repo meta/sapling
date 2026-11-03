@@ -12,3 +12,6 @@ sapling-xdiff = { version = "0.1.0", path = "../../../scm/lib/xdiff" }
 
 [dev-dependencies]
 mononoke_macros = { version = "0.1.0", path = "../mononoke_macros" }
+
+[lints]
+workspace = true

@@ -14,3 +14,6 @@ context = { version = "0.1.0", path = "../../servers/slapi/slapi_server/context"
 metaconfig_types = { version = "0.1.0", path = "../../metaconfig/types" }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
+
+[lints]
+workspace = true

@@ -11,3 +11,6 @@ license = "GPLv2+"
 anyhow = "1.0.104"
 gotham = "0.8.1"
 gotham_ext = { version = "0.1.0", path = "../../common/gotham_ext" }
+
+[lints]
+workspace = true

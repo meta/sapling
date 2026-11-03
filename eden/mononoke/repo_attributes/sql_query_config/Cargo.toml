@@ -11,3 +11,6 @@ license = "GPLv2+"
 caching_ext = { version = "0.1.0", path = "../../common/rust/caching_ext" }
 facet = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main", features = ["impl_never_type"] }
 memcache = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
+
+[lints]
+workspace = true

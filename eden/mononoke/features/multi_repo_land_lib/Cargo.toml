@@ -50,3 +50,6 @@ justknobs_ext = { version = "0.1.0", path = "../../common/rust/justknobs_ext" }
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
 test_repo_factory = { version = "0.1.0", path = "../../repo_factory/test_repo_factory" }
 tests_utils = { version = "0.1.0", path = "../../tests/utils" }
+
+[lints]
+workspace = true

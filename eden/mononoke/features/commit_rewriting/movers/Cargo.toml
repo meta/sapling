@@ -17,3 +17,6 @@ thiserror = "2.0.21"
 [dev-dependencies]
 maplit = "1.0"
 mononoke_macros = { version = "0.1.0", path = "../../../common/mononoke_macros" }
+
+[lints]
+workspace = true

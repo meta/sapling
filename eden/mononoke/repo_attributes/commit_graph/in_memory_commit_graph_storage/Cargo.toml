@@ -16,3 +16,6 @@ mononoke_types = { version = "0.1.0", path = "../../../mononoke_types" }
 parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard"] }
 repo_identity = { version = "0.1.0", path = "../../repo_identity" }
 vec1 = { version = "1.12.1", features = ["serde"] }
+
+[lints]
+workspace = true

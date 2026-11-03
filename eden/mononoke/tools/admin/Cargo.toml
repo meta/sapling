@@ -173,3 +173,6 @@ request_context_ext = { version = "0.1.0", path = "../../common/rust/request_con
 test_repo_factory = { version = "0.1.0", path = "../../repo_factory/test_repo_factory" }
 tests_utils = { version = "0.1.0", path = "../../tests/utils" }
 tracing-subscriber = { version = "0.3.23", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
+
+[lints]
+workspace = true

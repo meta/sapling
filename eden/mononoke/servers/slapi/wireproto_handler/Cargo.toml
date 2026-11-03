@@ -14,3 +14,6 @@ metaconfig_types = { version = "0.1.0", path = "../../../metaconfig/types" }
 mutable_counters = { version = "0.1.0", path = "../../../repo_attributes/mutable_counters" }
 scuba_ext = { version = "0.1.0", path = "../../../common/scuba_ext" }
 synced_commit_mapping = { version = "0.1.0", path = "../../../features/commit_rewriting/synced_commit_mapping" }
+
+[lints]
+workspace = true

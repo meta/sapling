@@ -14,3 +14,6 @@ facet = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust
 live_commit_sync_config = { version = "0.1.0", path = "../../features/commit_rewriting/live_commit_sync_config" }
 mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
 synced_commit_mapping = { version = "0.1.0", path = "../../features/commit_rewriting/synced_commit_mapping" }
+
+[lints]
+workspace = true

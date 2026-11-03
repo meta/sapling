@@ -50,3 +50,6 @@ cached_config = { version = "0.1.0", git = "https://github.com/facebookexperimen
 justknobs_ext = { version = "0.1.0", path = "../../common/rust/justknobs_ext" }
 percent-encoding = "2.1"
 permission_checker = { version = "0.1.0", path = "../../common/permission_checker" }
+
+[lints]
+workspace = true

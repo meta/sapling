@@ -21,3 +21,6 @@ lock_ext = { version = "0.1.0", git = "https://github.com/facebookexperimental/r
 metaconfig_types = { version = "0.1.0", path = "../../metaconfig/types" }
 mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
 tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
+
+[lints]
+workspace = true

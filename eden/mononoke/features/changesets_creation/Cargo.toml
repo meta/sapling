@@ -20,3 +20,6 @@ repo_blobstore = { version = "0.1.0", path = "../../repo_attributes/repo_blobsto
 repo_identity = { version = "0.1.0", path = "../../repo_attributes/repo_identity" }
 topo_sort = { version = "0.1.0", path = "../../common/topo_sort" }
 vec1 = { version = "1.12.1", features = ["serde"] }
+
+[lints]
+workspace = true

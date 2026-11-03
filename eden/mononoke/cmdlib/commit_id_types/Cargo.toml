@@ -14,3 +14,6 @@ path = "src/commit_id_types.rs"
 anyhow = "1.0.104"
 clap = { version = "4.6.2", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 faster-hex = "0.6.1"
+
+[lints]
+workspace = true

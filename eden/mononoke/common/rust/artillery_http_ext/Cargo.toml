@@ -9,3 +9,6 @@ license = "GPLv2+"
 
 [dependencies]
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
+
+[lints]
+workspace = true

@@ -31,3 +31,6 @@ repo_lock = { version = "0.1.0", path = "../../../repo_attributes/repo_lock/repo
 sql_ext = { version = "0.1.0", path = "../../../common/rust/sql_ext" }
 synced_commit_mapping_pushrebase_hook = { version = "0.1.0", path = "../../commit_rewriting/synced_commit_mapping/features/commit_rewriting/pushrebase_hook" }
 thiserror = "2.0.21"
+
+[lints]
+workspace = true

@@ -66,3 +66,6 @@ warm_bookmarks_cache = { version = "0.1.0", path = "../../repo_attributes/bookma
 [dev-dependencies]
 fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 test_utils = { version = "0.1.0", path = "test_utils" }
+
+[lints]
+workspace = true

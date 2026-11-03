@@ -26,3 +26,6 @@ mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
 repo_blobstore = { version = "0.1.0", path = "../repo_blobstore" }
 restricted_paths_common = { version = "0.1.0", path = "../restricted_paths_common" }
 scuba_ext = { version = "0.1.0", path = "../../common/scuba_ext" }
+
+[lints]
+workspace = true

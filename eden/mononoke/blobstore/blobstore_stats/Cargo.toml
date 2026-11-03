@@ -17,3 +17,6 @@ metaconfig_types = { version = "0.1.0", path = "../../metaconfig/types" }
 scuba_ext = { version = "0.1.0", path = "../../common/scuba_ext" }
 strum = { version = "0.28.0", features = ["derive"] }
 time_ext = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
+
+[lints]
+workspace = true

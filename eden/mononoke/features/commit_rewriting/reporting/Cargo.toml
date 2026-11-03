@@ -16,3 +16,6 @@ context = { version = "0.1.0", path = "../../../servers/slapi/slapi_server/conte
 mononoke_types = { version = "0.1.0", path = "../../../mononoke_types" }
 scuba_ext = { version = "0.1.0", path = "../../../common/scuba_ext" }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
+
+[lints]
+workspace = true

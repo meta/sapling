@@ -99,3 +99,6 @@ tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 virtually_sharded_blobstore = { version = "0.1.0", path = "../blobstore/virtually_sharded_blobstore" }
 warm_bookmarks_cache = { version = "0.1.0", path = "../repo_attributes/bookmarks/warm_bookmarks_cache" }
 wireproto_handler = { version = "0.1.0", path = "../servers/slapi/wireproto_handler" }
+
+[lints]
+workspace = true

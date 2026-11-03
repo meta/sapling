@@ -20,3 +20,6 @@ assert_matches = "1.5"
 maplit = "1.0"
 mononoke_macros = { version = "0.1.0", path = "../mononoke_macros" }
 serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
+
+[lints]
+workspace = true

@@ -70,3 +70,6 @@ sql_ext = { version = "0.1.0", path = "../../../common/rust/sql_ext" }
 tempfile = "3.27.0"
 test_repo_factory = { version = "0.1.0", path = "../../../repo_factory/test_repo_factory" }
 tests_utils = { version = "0.1.0", path = "../../../tests/utils" }
+
+[lints]
+workspace = true

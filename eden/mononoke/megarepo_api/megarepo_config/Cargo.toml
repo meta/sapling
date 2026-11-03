@@ -32,3 +32,6 @@ tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 maplit = "1.0"
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
+
+[lints]
+workspace = true

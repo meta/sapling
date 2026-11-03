@@ -20,3 +20,6 @@ serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_derive = "1.0.229"
 sql = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 thiserror = "2.0.21"
+
+[lints]
+workspace = true

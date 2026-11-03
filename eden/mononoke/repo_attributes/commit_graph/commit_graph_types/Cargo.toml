@@ -26,3 +26,6 @@ vec1 = { version = "1.12.1", features = ["serde"] }
 
 [dev-dependencies]
 mononoke_macros = { version = "0.1.0", path = "../../../common/mononoke_macros" }
+
+[lints]
+workspace = true

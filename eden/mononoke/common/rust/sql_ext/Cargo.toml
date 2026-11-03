@@ -58,3 +58,6 @@ mononoke_macros = { version = "0.1.0", path = "../../mononoke_macros" }
 pretty_assertions = { version = "1.4.1", features = ["alloc"], default-features = false }
 sql_tests_lib = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 tempfile = "3.27.0"
+
+[lints]
+workspace = true

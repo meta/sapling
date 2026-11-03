@@ -42,3 +42,6 @@ repo_derived_data = { version = "0.1.0", path = "../../../repo_attributes/repo_d
 repo_identity = { version = "0.1.0", path = "../../../repo_attributes/repo_identity" }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 warm_bookmarks_cache = { version = "0.1.0", path = "../../../repo_attributes/bookmarks/warm_bookmarks_cache" }
+
+[lints]
+workspace = true

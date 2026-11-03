@@ -31,3 +31,6 @@ mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
 oss_thrift_transport = { version = "0.1.0", path = "../../common/oss/thrift_transport" }
 sapling-clientinfo = { version = "0.1.0", path = "../../../scm/lib/clientinfo" }
 source_control = { version = "0.1.0", path = "../../scs/if" }
+
+[lints]
+workspace = true

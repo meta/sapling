@@ -18,3 +18,6 @@ mockall = "0.13.1"
 permission_checker = { version = "0.1.0", path = "../../common/permission_checker" }
 tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
+
+[lints]
+workspace = true

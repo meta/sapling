@@ -66,3 +66,6 @@ samplingblob = { version = "0.1.0", path = "../../blobstore/samplingblob" }
 sql_ext = { version = "0.1.0", path = "../../common/rust/sql_ext" }
 test_repo_factory = { version = "0.1.0", path = "../../repo_factory/test_repo_factory" }
 tests_utils = { version = "0.1.0", path = "../../tests/utils" }
+
+[lints]
+workspace = true

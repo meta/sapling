@@ -30,3 +30,6 @@ memblob = { version = "0.1.0", path = "../memblob" }
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
 rand = "0.10.3"
 rand_xorshift = "0.5"
+
+[lints]
+workspace = true

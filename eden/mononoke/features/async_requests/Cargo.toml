@@ -39,3 +39,6 @@ mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
 repo_identity = { version = "0.1.0", path = "../../repo_attributes/repo_identity" }
 serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 test_repo_factory = { version = "0.1.0", path = "../../repo_factory/test_repo_factory" }
+
+[lints]
+workspace = true

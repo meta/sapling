@@ -11,3 +11,6 @@ license = "GPLv2+"
 anyhow = "1.0.104"
 metaconfig_types = { version = "0.1.0", path = "../../metaconfig/types" }
 permission_checker = { version = "0.1.0", path = "../permission_checker" }
+
+[lints]
+workspace = true

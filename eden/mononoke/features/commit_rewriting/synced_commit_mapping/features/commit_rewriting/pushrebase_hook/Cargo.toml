@@ -21,3 +21,6 @@ mononoke_types = { version = "0.1.0", path = "../../../../../../mononoke_types" 
 pushrebase_hook = { version = "0.1.0", path = "../../../../../pushrebase/pushrebase_hook" }
 sql_ext = { version = "0.1.0", path = "../../../../../../common/rust/sql_ext" }
 synced_commit_mapping = { version = "0.1.0", path = "../../.." }
+
+[lints]
+workspace = true

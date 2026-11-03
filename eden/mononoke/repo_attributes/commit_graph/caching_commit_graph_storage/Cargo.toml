@@ -33,3 +33,6 @@ mononoke_macros = { version = "0.1.0", path = "../../../common/mononoke_macros" 
 rendezvous = { version = "0.1.0", path = "../../../common/rendezvous" }
 sql_commit_graph_storage = { version = "0.1.0", path = "../sql_commit_graph_storage" }
 sql_construct = { version = "0.1.0", path = "../../../common/sql_construct" }
+
+[lints]
+workspace = true

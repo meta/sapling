@@ -14,3 +14,6 @@ facet = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 mononoke_app = { version = "0.1.0", path = "../../cmdlib/mononoke_app" }
 repo_identity = { version = "0.1.0", path = "../../repo_attributes/repo_identity" }
+
+[lints]
+workspace = true

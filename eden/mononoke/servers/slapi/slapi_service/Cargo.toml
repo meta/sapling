@@ -86,3 +86,6 @@ vec1 = { version = "1.12.1", features = ["serde"] }
 fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 fbthrift = { version = "0.0.1", git = "https://github.com/facebook/fbthrift.git", branch = "main" }
 test_repo_factory = { version = "0.1.0", path = "../../../repo_factory/test_repo_factory" }
+
+[lints]
+workspace = true

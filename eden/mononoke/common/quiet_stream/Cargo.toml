@@ -11,3 +11,6 @@ license = "GPLv2+"
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
 pin-project = "1.1.13"
 tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
+
+[lints]
+workspace = true

@@ -20,3 +20,6 @@ lfs_import_lib = { version = "0.1.0", path = "../../lfs_import_lib" }
 mercurial_types = { version = "0.1.0", path = "../../mercurial/types" }
 mononoke_app = { version = "0.1.0", path = "../../cmdlib/mononoke_app" }
 repo_blobstore = { version = "0.1.0", path = "../../repo_attributes/repo_blobstore" }
+
+[lints]
+workspace = true

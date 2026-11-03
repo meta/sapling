@@ -34,3 +34,6 @@ mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
 oss_thrift_transport = { version = "0.1.0", path = "../../common/oss/thrift_transport" }
 prettytable-rs = "0.10"
 sapling-clientinfo = { version = "0.1.0", path = "../../../scm/lib/clientinfo" }
+
+[lints]
+workspace = true

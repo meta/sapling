@@ -41,3 +41,6 @@ skeleton_manifest_v2 = { version = "0.1.0", path = "../skeleton_manifest_v2" }
 test_manifest = { version = "0.1.0", path = "../test_manifest" }
 test_sharded_manifest = { version = "0.1.0", path = "../test_sharded_manifest" }
 unodes = { version = "0.1.0", path = "../unodes" }
+
+[lints]
+workspace = true

@@ -18,3 +18,6 @@ mononoke_types = { version = "0.1.0", path = "../../../mononoke_types" }
 requests_table = { version = "0.1.0", path = "../requests_table" }
 sql_construct = { version = "0.1.0", path = "../../../common/sql_construct" }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
+
+[lints]
+workspace = true

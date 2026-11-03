@@ -36,3 +36,6 @@ gix-object = "0.64.1"
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
 quickcheck = "1.1"
 tempfile = "3.27.0"
+
+[lints]
+workspace = true

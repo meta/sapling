@@ -83,3 +83,6 @@ strum = { version = "0.28.0", features = ["derive"] }
 synced_commit_mapping = { version = "0.1.0", path = "../../features/commit_rewriting/synced_commit_mapping" }
 warm_bookmarks_cache = { version = "0.1.0", path = "../../repo_attributes/bookmarks/warm_bookmarks_cache" }
 wireproto_handler = { version = "0.1.0", path = "../../servers/slapi/wireproto_handler" }
+
+[lints]
+workspace = true

@@ -144,3 +144,6 @@ shared_error = { version = "0.1.0", git = "https://github.com/facebookexperiment
 sql_construct = { version = "0.1.0", path = "../common/sql_construct" }
 test_repo_factory = { version = "0.1.0", path = "../repo_factory/test_repo_factory" }
 tests_utils = { version = "0.1.0", path = "../tests/utils" }
+
+[lints]
+workspace = true

@@ -37,3 +37,6 @@ serde_derive = "1.0.229"
 tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 toml = { version = "1.1.8", features = ["preserve_order"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
+
+[lints]
+workspace = true

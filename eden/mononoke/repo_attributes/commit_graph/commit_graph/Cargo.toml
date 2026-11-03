@@ -30,3 +30,6 @@ smallvec = { version = "1.16.4", features = ["const_generics", "impl_bincode", "
 tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 vec1 = { version = "1.12.1", features = ["serde"] }
+
+[lints]
+workspace = true

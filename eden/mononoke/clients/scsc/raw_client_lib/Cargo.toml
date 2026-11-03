@@ -18,3 +18,6 @@ source_control_clients = { version = "0.1.0", path = "../../../scs/if/clients" }
 
 [dev-dependencies]
 mononoke_macros = { version = "0.1.0", path = "../../../common/mononoke_macros" }
+
+[lints]
+workspace = true

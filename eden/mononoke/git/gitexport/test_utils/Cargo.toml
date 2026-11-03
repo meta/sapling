@@ -19,3 +19,6 @@ mononoke_api = { version = "0.1.0", path = "../../../mononoke_api" }
 mononoke_types = { version = "0.1.0", path = "../../../mononoke_types" }
 test_repo_factory = { version = "0.1.0", path = "../../../repo_factory/test_repo_factory" }
 tests_utils = { version = "0.1.0", path = "../../../tests/utils" }
+
+[lints]
+workspace = true

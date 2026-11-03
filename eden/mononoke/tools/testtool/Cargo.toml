@@ -44,3 +44,6 @@ topo_sort = { version = "0.1.0", path = "../../common/topo_sort" }
 [dev-dependencies]
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
 tempfile = "3.27.0"
+
+[lints]
+workspace = true

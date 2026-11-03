@@ -26,3 +26,6 @@ tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 mononoke_macros = { version = "0.1.0", path = "../mononoke_macros" }
 mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
 serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
+
+[lints]
+workspace = true

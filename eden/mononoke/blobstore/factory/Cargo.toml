@@ -46,3 +46,6 @@ context = { version = "0.1.0", path = "../../servers/slapi/slapi_server/context"
 fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
 tempfile = "3.27.0"
+
+[lints]
+workspace = true

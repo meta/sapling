@@ -38,3 +38,6 @@ mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
 repo_blobstore = { version = "0.1.0", path = "../repo_blobstore" }
 repo_derived_data = { version = "0.1.0", path = "../repo_derived_data" }
 repo_identity = { version = "0.1.0", path = "../repo_identity" }
+
+[lints]
+workspace = true

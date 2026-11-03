@@ -16,3 +16,6 @@ parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard"] }
 
 [dev-dependencies]
 tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
+
+[lints]
+workspace = true

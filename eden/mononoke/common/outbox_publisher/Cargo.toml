@@ -17,3 +17,6 @@ async-trait = "0.1.92"
 
 [dev-dependencies]
 tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
+
+[lints]
+workspace = true

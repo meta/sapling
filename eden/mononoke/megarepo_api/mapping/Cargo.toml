@@ -31,3 +31,6 @@ fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperiment
 maplit = "1.0"
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
 mononoke_types-mocks = { version = "0.1.0", path = "../../mononoke_types/mocks" }
+
+[lints]
+workspace = true

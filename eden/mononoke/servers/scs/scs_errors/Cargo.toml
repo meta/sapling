@@ -16,3 +16,6 @@ mononoke_api = { version = "0.1.0", path = "../../../mononoke_api" }
 restricted_paths = { version = "0.1.0", path = "../../../repo_attributes/restricted_paths" }
 source_control = { version = "0.1.0", path = "../../../scs/if" }
 source_control_services = { version = "0.1.0", path = "../../../scs/if/services" }
+
+[lints]
+workspace = true

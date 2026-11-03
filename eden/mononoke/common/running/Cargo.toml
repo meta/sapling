@@ -14,3 +14,6 @@ libc = "0.2.186"
 mononoke_macros = { version = "0.1.0", path = "../mononoke_macros" }
 tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
+
+[lints]
+workspace = true

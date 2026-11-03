@@ -32,3 +32,6 @@ futures = { version = "0.3.34", features = ["async-await", "compat"] }
 maplit = "1.0"
 mononoke_macros = { version = "0.1.0", path = "../common/mononoke_macros" }
 test_repo_factory = { version = "0.1.0", path = "../repo_factory/test_repo_factory" }
+
+[lints]
+workspace = true

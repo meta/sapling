@@ -10,3 +10,6 @@ license = "GPLv2+"
 [dependencies]
 metaconfig_types = { version = "0.1.0", path = "../../metaconfig/types" }
 mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
+
+[lints]
+workspace = true

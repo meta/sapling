@@ -17,3 +17,6 @@ mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
 prefixblob = { version = "0.1.0", path = "../../blobstore/prefixblob" }
 redactedblobstore = { version = "0.1.0", path = "../../blobstore/redactedblobstore" }
 scuba_ext = { version = "0.1.0", path = "../../common/scuba_ext" }
+
+[lints]
+workspace = true

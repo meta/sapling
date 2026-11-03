@@ -19,3 +19,6 @@ zstd-safe = { version = "7.4.0", features = ["std"] }
 
 [dev-dependencies]
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
+
+[lints]
+workspace = true

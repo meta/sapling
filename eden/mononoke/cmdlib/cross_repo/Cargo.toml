@@ -15,3 +15,6 @@ facet = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust
 mononoke_app = { version = "0.1.0", path = "../mononoke_app" }
 repo_factory = { version = "0.1.0", path = "../../repo_factory" }
 sql_query_config = { version = "0.1.0", path = "../../repo_attributes/sql_query_config" }
+
+[lints]
+workspace = true

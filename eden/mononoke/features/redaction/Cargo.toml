@@ -13,3 +13,6 @@ blobstore = { version = "0.1.0", path = "../../blobstore" }
 context = { version = "0.1.0", path = "../../servers/slapi/slapi_server/context" }
 mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
 redactedblobstore = { version = "0.1.0", path = "../../blobstore/redactedblobstore" }
+
+[lints]
+workspace = true

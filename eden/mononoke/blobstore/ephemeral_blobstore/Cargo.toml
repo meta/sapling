@@ -52,3 +52,6 @@ mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
 mononoke_types-mocks = { version = "0.1.0", path = "../../mononoke_types/mocks" }
 packblob = { version = "0.1.0", path = "../packblob" }
 scuba_ext = { version = "0.1.0", path = "../../common/scuba_ext" }
+
+[lints]
+workspace = true

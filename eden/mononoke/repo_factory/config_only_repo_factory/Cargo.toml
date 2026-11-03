@@ -12,3 +12,6 @@ blobstore_factory = { version = "0.1.0", path = "../../blobstore/factory" }
 facet = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main", features = ["impl_never_type"] }
 metaconfig_types = { version = "0.1.0", path = "../../metaconfig/types" }
 repo_identity = { version = "0.1.0", path = "../../repo_attributes/repo_identity" }
+
+[lints]
+workspace = true

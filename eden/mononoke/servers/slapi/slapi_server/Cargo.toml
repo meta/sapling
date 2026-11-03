@@ -32,3 +32,6 @@ secure_utils = { version = "0.1.0", git = "https://github.com/facebookexperiment
 sharding_ext = { version = "0.1.0", path = "../../../cmdlib/sharding_ext" }
 tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
+
+[lints]
+workspace = true

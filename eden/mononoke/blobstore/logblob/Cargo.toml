@@ -16,3 +16,6 @@ context = { version = "0.1.0", path = "../../servers/slapi/slapi_server/context"
 futures_stats = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
 scuba_ext = { version = "0.1.0", path = "../../common/scuba_ext" }
+
+[lints]
+workspace = true

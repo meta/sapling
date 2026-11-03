@@ -14,3 +14,6 @@ context = { version = "0.1.0", path = "../../servers/slapi/slapi_server/context"
 facet = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main", features = ["impl_never_type"] }
 metaconfig_types = { version = "0.1.0", path = "../../metaconfig/types" }
 permission_checker = { version = "0.1.0", path = "../../common/permission_checker" }
+
+[lints]
+workspace = true

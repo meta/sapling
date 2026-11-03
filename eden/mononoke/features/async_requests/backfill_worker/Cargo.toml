@@ -23,3 +23,6 @@ mononoke_app = { version = "0.1.0", path = "../../../cmdlib/mononoke_app" }
 requests_table = { version = "0.1.0", path = "../requests_table" }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 worker_lib = { version = "0.1.0", path = "../worker_lib" }
+
+[lints]
+workspace = true

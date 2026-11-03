@@ -10,3 +10,6 @@ license = "GPLv2+"
 [dependencies]
 facet = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main", features = ["impl_never_type"] }
 mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
+
+[lints]
+workspace = true

@@ -13,3 +13,6 @@ blobstore_factory = { version = "0.1.0", path = "../../blobstore/factory" }
 clap = { version = "4.6.2", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 environment = { version = "0.1.0", path = "../environment" }
 mononoke_app = { version = "0.1.0", path = "../mononoke_app" }
+
+[lints]
+workspace = true

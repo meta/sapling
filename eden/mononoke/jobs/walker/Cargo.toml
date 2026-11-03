@@ -86,3 +86,6 @@ zstd = { version = "0.14.3", features = ["experimental", "zstdmt"] }
 [dev-dependencies]
 fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 test_repo_factory = { version = "0.1.0", path = "../../repo_factory/test_repo_factory" }
+
+[lints]
+workspace = true

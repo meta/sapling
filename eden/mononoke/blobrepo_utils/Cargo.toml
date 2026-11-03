@@ -44,3 +44,6 @@ fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperiment
 filestore = { version = "0.1.0", path = "../repo_attributes/filestore" }
 fixtures = { version = "0.1.0", path = "../tests/fixtures" }
 repo_identity = { version = "0.1.0", path = "../repo_attributes/repo_identity" }
+
+[lints]
+workspace = true

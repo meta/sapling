@@ -40,3 +40,6 @@ memblob = { version = "0.1.0", path = "../../blobstore/memblob" }
 mononoke_types-mocks = { version = "0.1.0", path = "../../mononoke_types/mocks" }
 quickcheck = "1.1"
 rand = "0.10.3"
+
+[lints]
+workspace = true

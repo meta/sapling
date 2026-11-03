@@ -20,3 +20,6 @@ mutable_blobstore = { version = "0.1.0", path = "../../repo_attributes/mutable_b
 sql_construct = { version = "0.1.0", path = "../../common/sql_construct" }
 sql_ext = { version = "0.1.0", path = "../../common/rust/sql_ext" }
 thiserror = "2.0.21"
+
+[lints]
+workspace = true

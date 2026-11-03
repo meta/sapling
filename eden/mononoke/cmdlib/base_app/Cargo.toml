@@ -12,3 +12,6 @@ anyhow = "1.0.104"
 clap = { version = "4.6.2", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 heck = "0.3.1"
 static_assertions = "1.1.0"
+
+[lints]
+workspace = true

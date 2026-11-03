@@ -24,3 +24,6 @@ mononoke_types = { version = "0.1.0", path = "../../../mononoke_types" }
 repo_blobstore = { version = "0.1.0", path = "../../../repo_attributes/repo_blobstore" }
 sapling-dag = { version = "0.2.0", path = "../../../../scm/lib/dag" }
 sapling-dag-types = { version = "0.2.0", path = "../../../../scm/lib/dag/dag-types", features = ["for-tests"] }
+
+[lints]
+workspace = true

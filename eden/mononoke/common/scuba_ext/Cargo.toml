@@ -24,3 +24,6 @@ time_ext = { version = "0.1.0", git = "https://github.com/facebookexperimental/r
 
 [dev-dependencies]
 mononoke_macros = { version = "0.1.0", path = "../mononoke_macros" }
+
+[lints]
+workspace = true

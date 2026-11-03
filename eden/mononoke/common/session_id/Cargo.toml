@@ -9,3 +9,6 @@ license = "GPLv2+"
 
 [dependencies]
 rand = "0.10.3"
+
+[lints]
+workspace = true

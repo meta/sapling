@@ -22,3 +22,6 @@ mononoke_app = { version = "0.1.0", path = "../../cmdlib/mononoke_app" }
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
 sqlblob = { version = "0.1.0", path = "../../blobstore/sqlblob" }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
+
+[lints]
+workspace = true

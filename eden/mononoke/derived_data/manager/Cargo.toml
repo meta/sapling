@@ -45,3 +45,6 @@ shared_error = { version = "0.1.0", git = "https://github.com/facebookexperiment
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
+
+[lints]
+workspace = true

@@ -13,3 +13,6 @@ gotham_ext = { version = "0.1.0", path = "../gotham_ext" }
 http = "1.5.0"
 jemalloc_pprof = { version = "0.9.0", features = ["flamegraph"], optional = true }
 permission_checker = { version = "0.1.0", path = "../permission_checker" }
+
+[lints]
+workspace = true

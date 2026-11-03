@@ -19,3 +19,6 @@ repo_blobstore = { version = "0.1.0", path = "../repo_attributes/repo_blobstore"
 tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tokio-util = { version = "0.7.20", features = ["full"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
+
+[lints]
+workspace = true

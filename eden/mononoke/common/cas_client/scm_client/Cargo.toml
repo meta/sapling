@@ -22,3 +22,6 @@ mercurial_types = { version = "0.1.0", path = "../../../mercurial/types" }
 mononoke_types = { version = "0.1.0", path = "../../../mononoke_types" }
 redactedblobstore = { version = "0.1.0", path = "../../../blobstore/redactedblobstore" }
 stats = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
+
+[lints]
+workspace = true

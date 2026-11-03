@@ -24,3 +24,6 @@ memblob = { version = "0.1.0", path = "../../blobstore/memblob" }
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
 redactedblobstore = { version = "0.1.0", path = "../../blobstore/redactedblobstore" }
 scuba_ext = { version = "0.1.0", path = "../../common/scuba_ext" }
+
+[lints]
+workspace = true

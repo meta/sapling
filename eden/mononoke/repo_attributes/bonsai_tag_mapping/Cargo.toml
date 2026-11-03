@@ -36,3 +36,6 @@ fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperiment
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
 maplit = "1.0"
 mononoke_types-mocks = { version = "0.1.0", path = "../../mononoke_types/mocks" }
+
+[lints]
+workspace = true

@@ -9,3 +9,6 @@ license = "GPLv2+"
 
 [lib]
 path = "lib.rs"
+
+[lints]
+workspace = true

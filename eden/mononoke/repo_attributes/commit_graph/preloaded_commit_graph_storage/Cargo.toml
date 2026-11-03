@@ -34,3 +34,6 @@ fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperiment
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
 in_memory_commit_graph_storage = { version = "0.1.0", path = "../in_memory_commit_graph_storage" }
 maplit = "1.0"
+
+[lints]
+workspace = true

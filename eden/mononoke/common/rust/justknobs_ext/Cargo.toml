@@ -13,3 +13,6 @@ name = "justknobs"
 [dependencies]
 anyhow = "1.0.104"
 justknobs_stub = { package = "justknobs", version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
+
+[lints]
+workspace = true

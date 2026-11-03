@@ -15,3 +15,6 @@ mononoke_macros = { version = "0.1.0", path = "../mononoke_macros" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 procfs = "0.18.0"
+
+[lints]
+workspace = true

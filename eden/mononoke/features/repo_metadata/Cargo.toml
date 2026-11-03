@@ -30,3 +30,6 @@ repo_derived_data = { version = "0.1.0", path = "../../repo_attributes/repo_deri
 repo_identity = { version = "0.1.0", path = "../../repo_attributes/repo_identity" }
 repo_metadata_checkpoint = { version = "0.1.0", path = "../../repo_attributes/repo_metadata_checkpoint" }
 unodes = { version = "0.1.0", path = "../../derived_data/unodes" }
+
+[lints]
+workspace = true

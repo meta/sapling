@@ -14,3 +14,6 @@ fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rus
 fbthrift = { version = "0.0.1", git = "https://github.com/facebook/fbthrift.git", branch = "main" }
 qps_config = { version = "0.1.0", path = "../../../../../../configerator/structs/scm/mononoke/qps" }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
+
+[lints]
+workspace = true

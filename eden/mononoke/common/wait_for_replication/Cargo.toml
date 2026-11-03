@@ -17,3 +17,6 @@ replication_lag_config = { version = "0.1.0", path = "../../../../configerator/s
 sql_ext = { version = "0.1.0", path = "../rust/sql_ext" }
 tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
+
+[lints]
+workspace = true

@@ -26,3 +26,6 @@ tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 
 [dev-dependencies]
 justknobs_ext = { version = "0.1.0", path = "../rust/justknobs_ext" }
+
+[lints]
+workspace = true

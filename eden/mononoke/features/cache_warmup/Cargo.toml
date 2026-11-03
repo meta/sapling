@@ -45,3 +45,6 @@ maplit = "1.0"
 memblob = { version = "0.1.0", path = "../../blobstore/memblob" }
 test_repo_factory = { version = "0.1.0", path = "../../repo_factory/test_repo_factory" }
 tests_utils = { version = "0.1.0", path = "../../tests/utils" }
+
+[lints]
+workspace = true

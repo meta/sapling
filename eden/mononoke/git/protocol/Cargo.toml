@@ -63,3 +63,6 @@ fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperiment
 mononoke_types-mocks = { version = "0.1.0", path = "../../mononoke_types/mocks" }
 sql_ext = { version = "0.1.0", path = "../../common/rust/sql_ext" }
 test_repo_factory = { version = "0.1.0", path = "../../repo_factory/test_repo_factory" }
+
+[lints]
+workspace = true

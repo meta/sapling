@@ -11,3 +11,6 @@ license = "GPLv2+"
 bincode = { version = "2", features = ["serde"] }
 mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
 sql = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
+
+[lints]
+workspace = true
