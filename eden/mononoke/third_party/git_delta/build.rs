@@ -11,16 +11,9 @@
             "ffi/bridge.c",
             "original_sources/diff-delta.c",
         ])
-        .includes(&[
-            "original_sources/git-compat-util.h",
-            "original_sources/banned.h",
-            "original_sources/compat/bswap.h",
-            "original_sources/delta.h",
-            "original_sources/sane-ctype.h",
-            "original_sources/wrapper.h",
-        ])
         .std("c99")
         .flag("-DCARGO_BUILD=1")
         .flag("-DNO_OPENSSL=1")
+        .flag_if_supported("-Wno-sign-compare")
         .compile("git_delta_bridge");
 }
