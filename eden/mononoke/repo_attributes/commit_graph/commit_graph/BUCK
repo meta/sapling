@@ -5,6 +5,17 @@ oncall("scm_server_infra")
 rust_library(
     name = "commit_graph",
     srcs = glob(["src/**/*.rs"]),
+    test_deps = [
+        "fbsource//third-party/rust:maplit",
+        "//common/rust/shed/fbinit:fbinit",
+        "//common/rust/shed/fbinit:fbinit-tokio",
+        "//eden/mononoke/common/rendezvous:rendezvous",
+        "//eden/mononoke/common/rust/caching_ext:caching_ext",
+        "//eden/mononoke/common/sql_construct:sql_construct",
+        "//eden/mononoke/repo_attributes/commit_graph/caching_commit_graph_storage:caching_commit_graph_storage",
+        "//eden/mononoke/repo_attributes/commit_graph/commit_graph_testlib:commit_graph_testlib",
+        "//eden/mononoke/repo_attributes/commit_graph/sql_commit_graph_storage:sql_commit_graph_storage",
+    ],
     deps = [
         "fbsource//third-party/rust:anyhow",
         "fbsource//third-party/rust:async-trait",

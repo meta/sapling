@@ -78,6 +78,9 @@ mod linear;
 mod segments;
 mod writer;
 
+#[cfg(test)]
+mod tests;
+
 /// Commit Graph.
 ///
 /// This contains the graph of all commits known to Mononoke for a particular

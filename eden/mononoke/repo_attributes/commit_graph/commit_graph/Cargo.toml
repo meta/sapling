@@ -31,5 +31,16 @@ tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 vec1 = { version = "1.12.1", features = ["serde"] }
 
+[dev-dependencies]
+caching_commit_graph_storage = { version = "0.1.0", path = "../caching_commit_graph_storage" }
+caching_ext = { version = "0.1.0", path = "../../../common/rust/caching_ext" }
+commit_graph_testlib = { version = "0.1.0", path = "../commit_graph_testlib" }
+fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
+fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
+maplit = "1.0"
+rendezvous = { version = "0.1.0", path = "../../../common/rendezvous" }
+sql_commit_graph_storage = { version = "0.1.0", path = "../sql_commit_graph_storage" }
+sql_construct = { version = "0.1.0", path = "../../../common/sql_construct" }
+
 [lints]
 workspace = true
