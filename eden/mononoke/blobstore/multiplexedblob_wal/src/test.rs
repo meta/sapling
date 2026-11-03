@@ -1334,12 +1334,8 @@ async fn scrubbed(fb: FacebookInit) {
         .unwrap();
 }
 
-/// FIXME: BUG! This did report a multiplexed `unlink` as successful while the blob was still
-/// present in the write-only blobstore, but it should have removed the key from every
-/// underlying blobstore: `unlink_impl` only unlinks from `self.blobstores`, although write-only
-/// blobstores take part in every `put`, and the WAL healer and the scrub blobstore copy whatever
-/// they hold back into the main blobstores. This test pins the current behaviour; the next diff
-/// fixes it.
+/// A multiplexed `unlink` must remove the key from the write-only blobstores as well as from the
+/// main ones: any copy left behind can be healed back into the other blobstores.
 #[mononoke::fbinit_test]
 async fn test_unlink_removes_from_write_only_blobstores(fb: FacebookInit) -> Result<()> {
     let ctx = CoreContext::test_mock(fb);
@@ -1391,17 +1387,17 @@ async fn test_unlink_removes_from_write_only_blobstores(fb: FacebookInit) -> Res
         "write-only store received the blob"
     );
 
-    // unlink through the multiplex: only the two main stores are asked.
+    // unlink through the multiplex: the main stores and the write-only store are all asked.
     let mut unlink_fut = multiplex.unlink(&ctx, k).boxed();
     assert_pending(&mut unlink_fut).await;
     tickable_main[0].1.tick(None);
     tickable_main[1].1.tick(None);
+    assert_pending(&mut unlink_fut).await;
+    write_only_tickable.tick(None);
     assert!(unlink_fut.await.is_ok());
 
     assert_eq!(tickable_main[0].1.get_bytes(k), None);
     assert_eq!(tickable_main[1].1.get_bytes(k), None);
-    // FIXME: BUG! The multiplexed unlink succeeded without ever reaching the write-only
-    // blobstore, so the blob survives there and can be healed back.
-    assert_eq!(write_only_tickable.get_bytes(k), Some(v));
+    assert_eq!(write_only_tickable.get_bytes(k), None);
     Ok(())
 }

@@ -9,11 +9,6 @@
 # `put` (after the write quorum is reached), and the WAL healer and the scrub
 # blobstore copy whatever a component still holds back into the others, so a
 # copy left in a write-only component resurrects an unlinked blob.
-#
-# FIXME: BUG! `WalMultiplexedBlobstore::unlink` only unlinks from the main
-# components: after `blobstore-unlink` reports success the blob file is still
-# present in the write-only component. This test pins the buggy behaviour; the
-# next diff fixes it.
 
   $ . "${TEST_FIXTURES}/library.sh"
 
@@ -45,9 +40,8 @@ Unlink the key through the multiplex. The unlink reports success:
   $ mononoke_admin blobstore -R repo fetch -q somekey -o "$TESTTMP/fetched_value_unlinked"
   No blob exists for somekey
 
-FIXME: BUG! The key is gone from the main components but still present in the
-write-only component, from where the healer or scrub can copy it back:
+The key is gone from the main components and from the write-only component:
   $ for i in 0 1 2; do echo "component $i: $(ls "$TESTTMP/blobstore/$i/blobs" | grep -c '^blob-repo0000.somekey$')"; done
   component 0: 0
   component 1: 0
-  component 2: 1
+  component 2: 0

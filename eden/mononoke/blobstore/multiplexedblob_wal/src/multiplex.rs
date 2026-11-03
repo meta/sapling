@@ -396,9 +396,17 @@ impl WalMultiplexedBlobstore {
         ctx.perf_counters()
             .increment_counter(PerfCounterType::BlobUnlinks);
 
+        let blobstores: Arc<[(TimedStore, String)]> = self
+            .blobstores
+            .iter()
+            .chain(self.write_only_blobstores.iter())
+            .cloned()
+            .collect();
+        let num_blobstores = blobstores.len();
+
         let mut unlink_futs = inner_multi_unlink(
             ctx,
-            self.blobstores.clone(),
+            blobstores,
             key,
             scuba,
             self.inflight_ops_counter.clone(),
@@ -435,11 +443,11 @@ impl WalMultiplexedBlobstore {
 
         result.map_err(|unlink_errors| {
             let errors = Arc::new(unlink_errors);
-            let result_err = if errors.len() == self.blobstores.len() {
-                // all main unlink failed
+            let result_err = if errors.len() == num_blobstores {
+                // all unlinks failed
                 MultiplexedWalError::AllFailed(errors)
             } else {
-                // some main unlinks failed
+                // some unlinks failed
                 MultiplexedWalError::SomeUnlinksFailed(errors)
             };
             result_err.into()
