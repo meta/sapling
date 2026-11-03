@@ -10,6 +10,8 @@
 use std::collections::HashMap;
 use std::pin::pin;
 use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -35,6 +37,7 @@ use futures::FutureExt;
 use futures::Stream;
 use futures::TryStreamExt;
 use futures::stream;
+use futures_stats::TimedTryFutureExt;
 use import_common::BackfillDerivation;
 use import_common::save_and_derive_batch;
 use manifest::Entry;
@@ -216,6 +219,22 @@ pub struct BuiltChangeset {
     pub dropped_copy_sources: usize,
     /// Several sources, so none is used.
     pub ambiguous_copy_sources: usize,
+    pub timings: ChangelistTimings,
+}
+
+/// How long each stage of building one changelist's changeset took.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChangelistTimings {
+    pub describe: Duration,
+    /// Printing and storing the content of `uploaded_files` files.
+    pub upload: Duration,
+    pub uploaded_files: usize,
+    /// `filelog` of each branch and move/add.
+    pub integrations: Duration,
+    /// Whether each copy source is a file in the parent.
+    pub copy_source_checks: Duration,
+    /// The changeset itself, from what the stages before fetched.
+    pub build: Duration,
 }
 
 /// What importing one changelist did.
@@ -228,6 +247,18 @@ pub struct ImportedChangelist {
     pub shadowed_deletions: usize,
     pub dropped_copy_sources: usize,
     pub ambiguous_copy_sources: usize,
+    pub timings: ChangelistTimings,
+}
+
+/// What importing a batch of changelists did, and how long its batch-wide stages took.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ImportedBatch {
+    pub changelists: Vec<ImportedChangelist>,
+    /// Building every changeset, so all of the changelists' stages.
+    pub build: Duration,
+    pub save_and_derive: Duration,
+    /// Moving the bookmark and writing the mapping.
+    pub commit: Duration,
 }
 
 /// The root content manifest of `base`, if any of `paths` isn't answered by `built` and
@@ -314,22 +345,32 @@ async fn build_changeset(
     built: &[BuiltChangeset],
     change: u64,
 ) -> Result<BuiltChangeset> {
-    let changelist = source.describe(change).await?;
-    let contents = upload_changelist_contents(ctx, repo, source, depot_root, &changelist).await?;
-    let (mut copy_sources, ambiguous_copy_sources) =
-        copy_sources(source, depot_root, &changelist).await?;
+    let (describe, changelist) = source.describe(change).try_timed().await?;
+    let (upload, contents) = upload_changelist_contents(ctx, repo, source, depot_root, &changelist)
+        .try_timed()
+        .await?;
+    let (integrations, (mut copy_sources, ambiguous_copy_sources)) =
+        copy_sources(source, depot_root, &changelist)
+            .try_timed()
+            .await?;
     // Mononoke doesn't check that copy_from exists in the parent, but derived data and
     // blame would follow it anyway.
-    let base_root = base_root_for(ctx, repo, base, built, copy_sources.values()).await?;
-    let mut missing = Vec::new();
-    for (target, copy_source) in &copy_sources {
-        if file_in_parent(ctx, repo, base_root, built, copy_source)
-            .await?
-            .is_none()
-        {
-            missing.push(target.clone());
+    let (copy_source_checks, missing) = async {
+        let base_root = base_root_for(ctx, repo, base, built, copy_sources.values()).await?;
+        let mut missing = Vec::new();
+        for (target, copy_source) in &copy_sources {
+            if file_in_parent(ctx, repo, base_root, built, copy_source)
+                .await?
+                .is_none()
+            {
+                missing.push(target.clone());
+            }
         }
+        anyhow::Ok(missing)
     }
+    .try_timed()
+    .await?;
+    let build_started = Instant::now();
     for target in &missing {
         copy_sources.remove(target);
     }
@@ -353,6 +394,14 @@ async fn build_changeset(
         changeset,
         dropped_copy_sources: missing.len(),
         ambiguous_copy_sources,
+        timings: ChangelistTimings {
+            describe: describe.completion_time,
+            upload: upload.completion_time,
+            uploaded_files: contents.len(),
+            integrations: integrations.completion_time,
+            copy_source_checks: copy_source_checks.completion_time,
+            build: build_started.elapsed(),
+        },
     })
 }
 
@@ -431,7 +480,8 @@ pub async fn resume_point(
 
 /// Imports `changes`, in order, onto `bookmark` (created by the first import), deriving
 /// the types in `derive` that the repo has enabled, and returns their changesets. The
-/// batch must start after the `resume_point`, so nothing is imported twice.
+/// batch must start after the `resume_point`, so nothing is imported twice. Logs a row per
+/// changelist to the context's Scuba table.
 ///
 /// A changelist has no parent field, unlike a git commit: its parent is whatever the
 /// bookmark points at, so the bookmark is the only record of where the import is. That is
@@ -457,9 +507,9 @@ pub async fn import_changelists(
     bookmark: &BookmarkKey,
     changes: &[u64],
     derive: &[DerivableType],
-) -> Result<Vec<ImportedChangelist>> {
+) -> Result<ImportedBatch> {
     let Some(&last) = changes.last() else {
-        return Ok(Vec::new());
+        return Ok(ImportedBatch::default());
     };
     ensure!(
         changes.is_sorted_by(|a, b| a < b),
@@ -474,7 +524,9 @@ pub async fn import_changelists(
         );
     }
     let old = head.map(|(cs_id, _)| cs_id);
-    let built = build_changesets(ctx, repo, source, depot_root, old, changes).await?;
+    let (build, built) = build_changesets(ctx, repo, source, depot_root, old, changes)
+        .try_timed()
+        .await?;
     let (imported, changesets): (Vec<_>, Vec<_>) = built
         .into_iter()
         .map(|built| {
@@ -486,29 +538,67 @@ pub async fn import_changelists(
                 shadowed_deletions: built.shadowed_deletions,
                 dropped_copy_sources: built.dropped_copy_sources,
                 ambiguous_copy_sources: built.ambiguous_copy_sources,
+                timings: built.timings,
             };
             (imported, built.changeset)
         })
         .unzip();
     let derive = BackfillDerivation::OnlySpecificTypes(derive.to_vec())
         .types(&repo.repo_derived_data().active_config().types);
-    save_and_derive_batch(ctx, repo, changesets, &derive).await?;
+    let (save_and_derive, _) = save_and_derive_batch(ctx, repo, changesets, &derive)
+        .try_timed()
+        .await?;
 
     let new = imported.last().context("built no changesets")?.cs_id;
-    let mut txn = repo.bookmarks().create_transaction(ctx.clone());
-    match old {
-        None => txn.create(bookmark, new, BookmarkUpdateReason::Blobimport)?,
-        Some(old) => txn.update(bookmark, new, old, BookmarkUpdateReason::Blobimport)?,
+    let (commit, ()) = async {
+        let mut txn = repo.bookmarks().create_transaction(ctx.clone());
+        match old {
+            None => txn.create(bookmark, new, BookmarkUpdateReason::Blobimport)?,
+            Some(old) => txn.update(bookmark, new, old, BookmarkUpdateReason::Blobimport)?,
+        }
+        let mapping = mapping_txn_hook(repo.bonsai_p4_mapping_arc(), &imported);
+        // Hooks run before the bookmark's compare-and-swap, so a concurrent import of the same
+        // changelists fails as a mapping `Conflict` rather than here. Both roll back everything.
+        ensure!(
+            txn.commit_with_hooks(vec![mapping]).await?.is_some(),
+            "{bookmark} moved while importing changelists {}..={last}",
+            changes[0]
+        );
+        anyhow::Ok(())
     }
-    let mapping = mapping_txn_hook(repo.bonsai_p4_mapping_arc(), &imported);
-    // Hooks run before the bookmark's compare-and-swap, so a concurrent import of the same
-    // changelists fails as a mapping `Conflict` rather than here. Both roll back everything.
-    ensure!(
-        txn.commit_with_hooks(vec![mapping]).await?.is_some(),
-        "{bookmark} moved while importing changelists {}..={last}",
-        changes[0]
-    );
-    Ok(imported)
+    .try_timed()
+    .await?;
+    let batch = ImportedBatch {
+        changelists: imported,
+        build: build.completion_time,
+        save_and_derive: save_and_derive.completion_time,
+        commit: commit.completion_time,
+    };
+    log_imported(ctx, &batch);
+    Ok(batch)
+}
+
+fn log_imported(ctx: &CoreContext, batch: &ImportedBatch) {
+    let micros = |duration: Duration| duration.as_micros() as u64;
+    for imported in &batch.changelists {
+        let timings = &imported.timings;
+        let mut scuba = ctx.scuba().clone();
+        scuba
+            .add("p4_change", imported.change)
+            .add("changeset_id", imported.cs_id.to_string())
+            .add("file_changes", imported.file_changes)
+            .add("uploaded_files", timings.uploaded_files)
+            .add("describe_us", micros(timings.describe))
+            .add("upload_us", micros(timings.upload))
+            .add("integrations_us", micros(timings.integrations))
+            .add("copy_source_checks_us", micros(timings.copy_source_checks))
+            .add("build_us", micros(timings.build))
+            .add("batch_changelists", batch.changelists.len())
+            .add("batch_build_us", micros(batch.build))
+            .add("batch_save_and_derive_us", micros(batch.save_and_derive))
+            .add("batch_commit_us", micros(batch.commit));
+        scuba.log_with_msg("P4 changelist imported", None);
+    }
 }
 
 /// Imports the first `limit` changelists of the depot after the bookmark's `resume_point`,
@@ -532,7 +622,7 @@ pub async fn import_next(
     bookmark: &BookmarkKey,
     limit: usize,
     derive: &[DerivableType],
-) -> Result<Vec<ImportedChangelist>> {
+) -> Result<ImportedBatch> {
     let after = resume_point(ctx, repo, bookmark).await?;
     let changes = next_changes(source, depot_root, after, limit, CHANGES_WINDOW).await?;
     import_changelists(ctx, repo, source, depot_root, bookmark, &changes, derive).await

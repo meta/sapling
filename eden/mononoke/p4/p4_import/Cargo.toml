@@ -18,6 +18,7 @@ content_manifest_derivation = { version = "0.1.0", path = "../../derived_data/co
 context = { version = "0.1.0", path = "../../servers/slapi/slapi_server/context" }
 filestore = { version = "0.1.0", path = "../../repo_attributes/filestore" }
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
+futures_stats = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 import_common = { version = "0.1.0", path = "../../features/import_common" }
 manifest = { version = "0.1.0", path = "../../manifest" }
 mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
