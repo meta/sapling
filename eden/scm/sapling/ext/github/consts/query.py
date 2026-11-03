@@ -81,6 +81,22 @@ mutation ($pullRequestId: ID!, $title: String!, $body: String!, $base: String!) 
 }
 """
 
+# Like GRAPHQL_UPDATE_PULL_REQUEST, but does not touch the base branch.
+# GitHub rejects updatePullRequest mutations that include baseRefName for
+# pull requests that are part of a native stack (the stack manages base
+# branches itself), so this variant is used to update only the title/body.
+GRAPHQL_UPDATE_PULL_REQUEST_NO_BASE = """
+mutation ($pullRequestId: ID!, $title: String!, $body: String!) {
+  updatePullRequest(
+    input: {pullRequestId: $pullRequestId, title: $title, body: $body}
+  ) {
+    pullRequest {
+      id
+    }
+  }
+}
+"""
+
 GRAPHQL_CREATE_BRANCH = """
 mutation ($repositoryId: ID!, $name: String!, $oid: GitObjectID!) {
   createRef(input: {repositoryId: $repositoryId, name: $name, oid: $oid}) {
