@@ -31,12 +31,10 @@ pub async fn recent_bookmarks(
     want: usize,
     mut window: u64,
     max_scan: u64,
+    freshness: Freshness,
 ) -> Result<Vec<(String, ChangesetId)>> {
     let log = repo.bookmark_update_log();
-    let Some(newest) = log
-        .get_largest_log_id(ctx.clone(), Freshness::MostRecent)
-        .await?
-    else {
+    let Some(newest) = log.get_largest_log_id(ctx.clone(), freshness).await? else {
         return Ok(Vec::new());
     };
 
@@ -49,7 +47,7 @@ pub async fn recent_bookmarks(
             ctx.clone(),
             from.into(),
             window.saturating_mul(2),
-            Freshness::MostRecent,
+            freshness,
         );
         while let Some(entry) = entries.try_next().await? {
             let id: u64 = entry.id.into();
@@ -85,6 +83,7 @@ mod test {
     use bookmarks::Bookmarks;
     use commit_graph::CommitGraph;
     use commit_graph::CommitGraphWriter;
+    use context::PerfCounterType;
     use fbinit::FacebookInit;
     use filestore::FilestoreConfig;
     use mononoke_macros::mononoke;
@@ -141,7 +140,7 @@ mod test {
         bookmark(&ctx, &repo, "y").set_to(a).await?;
         bookmark(&ctx, &repo, "x").set_to(b).await?;
 
-        let found = recent_bookmarks(&ctx, &repo, 10, 4096, 262144).await?;
+        let found = recent_bookmarks(&ctx, &repo, 10, 4096, 262144, Freshness::MostRecent).await?;
         assert_eq!(found, vec![("x".to_string(), b), ("y".to_string(), a)]);
         Ok(())
     }
@@ -153,7 +152,7 @@ mod test {
         bookmark(&ctx, &repo, "y").set_to(a).await?;
         bookmark(&ctx, &repo, "x").delete().await?;
 
-        let found = recent_bookmarks(&ctx, &repo, 10, 4096, 262144).await?;
+        let found = recent_bookmarks(&ctx, &repo, 10, 4096, 262144, Freshness::MostRecent).await?;
         assert_eq!(names(&found), vec!["y"]);
         Ok(())
     }
@@ -166,7 +165,7 @@ mod test {
             bookmark(&ctx, &repo, "x").set_to(cs).await?;
         }
 
-        let found = recent_bookmarks(&ctx, &repo, 2, 1, 262144).await?;
+        let found = recent_bookmarks(&ctx, &repo, 2, 1, 262144, Freshness::MostRecent).await?;
         assert_eq!(names(&found), vec!["x", "y"]);
         Ok(())
     }
@@ -179,7 +178,7 @@ mod test {
             bookmark(&ctx, &repo, "x").set_to(cs).await?;
         }
 
-        let found = recent_bookmarks(&ctx, &repo, 2, 1, 2).await?;
+        let found = recent_bookmarks(&ctx, &repo, 2, 1, 2, Freshness::MostRecent).await?;
         assert_eq!(names(&found), vec!["x"]);
         Ok(())
     }
@@ -187,8 +186,44 @@ mod test {
     #[mononoke::fbinit_test]
     async fn test_repo_without_moves_is_empty(fb: FacebookInit) -> Result<()> {
         let (ctx, repo, _, _) = setup(fb).await?;
-        let found = recent_bookmarks(&ctx, &repo, 10, 4096, 262144).await?;
+        let found = recent_bookmarks(&ctx, &repo, 10, 4096, 262144, Freshness::MostRecent).await?;
         assert!(found.is_empty());
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn test_maybe_stale_reads_only_the_replica(fb: FacebookInit) -> Result<()> {
+        let (ctx, repo, a, b) = setup(fb).await?;
+        bookmark(&ctx, &repo, "y").set_to(a).await?;
+        for cs in [a, b, a, b, a] {
+            bookmark(&ctx, &repo, "x").set_to(cs).await?;
+        }
+
+        // Fresh contexts so the counters only see the scan, not the setup writes.
+        let stale_ctx = CoreContext::test_mock(fb);
+        let found =
+            recent_bookmarks(&stale_ctx, &repo, 10, 1, 262144, Freshness::MaybeStale).await?;
+        assert_eq!(names(&found), vec!["x", "y"]);
+        let stale_counters = stale_ctx.perf_counters();
+        assert_eq!(
+            stale_counters.get_counter(PerfCounterType::SqlReadsMaster),
+            0,
+            "a MaybeStale scan should not read from the primary"
+        );
+        assert!(
+            stale_counters.get_counter(PerfCounterType::SqlReadsReplica) > 0,
+            "a MaybeStale scan should read from the replica"
+        );
+
+        let fresh_ctx = CoreContext::test_mock(fb);
+        recent_bookmarks(&fresh_ctx, &repo, 10, 1, 262144, Freshness::MostRecent).await?;
+        assert!(
+            fresh_ctx
+                .perf_counters()
+                .get_counter(PerfCounterType::SqlReadsMaster)
+                > 0,
+            "a MostRecent scan should read from the primary, so the counters are being recorded"
+        );
         Ok(())
     }
 }
