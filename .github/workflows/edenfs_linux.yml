@@ -70,6 +70,9 @@ jobs:
     # itself, so build the wheel from the fbthrift that eden pins and install
     # it with the modules that the CLI and eden's configure check for (psutil
     # and parameterized for the integration tests, which the Test step skips).
+    # fbthrift's build fetches folly and its other dependencies at fbthrift's
+    # own pins, which can trail fbthrift's code by a day, so eden's pins replace
+    # them and the wheel builds against the same folly as eden.
     - name: Find the fbthrift that eden pins
       id: fbthrift
       run: >
@@ -86,6 +89,7 @@ jobs:
         toml filelock psutil parameterized
     - name: Build thrift-python
       run: |
+        cp -R build/deps/github_hashes/. _fbthrift/build/deps/github_hashes/
         cmake -S _fbthrift -B _fbthrift/_build -G Ninja \
           -DCMAKE_BUILD_TYPE=RelWithDebInfo \
           -DTHRIFT_PYTHON=ON \
