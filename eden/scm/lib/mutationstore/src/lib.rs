@@ -69,6 +69,10 @@ bitflags! {
 
         /// Include predecessors.
         const PREDECESSORS = 0b10;
+
+        /// Link every part of a split to the split commit, not only the
+        /// last part, whose entry records the split.
+        const SPLITS = 0b100;
     }
 }
 
@@ -402,15 +406,28 @@ impl MutationStore {
             if !connected.insert(node.clone()) {
                 continue;
             }
+            let splits = flags.contains(DagFlags::SPLITS);
             if flags.contains(DagFlags::SUCCESSORS) {
                 for entry in self.log.lookup(INDEX_PRED, node)? {
                     let entry = MutationEntry::deserialize(&mut Cursor::new(entry?))?;
-                    add_parent(&node, &entry.succ);
-                    to_visit.push(entry.succ);
+                    let parts: &[Node] = if splits { &entry.split } else { &[] };
+                    for succ in parts.iter().chain(std::iter::once(&entry.succ)) {
+                        add_parent(&node, succ);
+                        to_visit.push(*succ);
+                    }
                 }
             }
             if flags.contains(DagFlags::PREDECESSORS) {
-                for entry in self.log.lookup(INDEX_SUCC, node)? {
+                let split_entries = if splits {
+                    Some(self.log.lookup(INDEX_SPLIT, node)?)
+                } else {
+                    None
+                };
+                for entry in self
+                    .log
+                    .lookup(INDEX_SUCC, node)?
+                    .chain(split_entries.into_iter().flatten())
+                {
                     let entry = MutationEntry::deserialize(&mut Cursor::new(entry?))?;
                     for pred in entry.preds {
                         add_parent(&pred, &node);
@@ -760,6 +777,60 @@ mod tests {
             tz: -7200,
             extra: vec![],
         })
+    }
+
+    #[test]
+    fn test_dag_splits() -> Result<()> {
+        let dir = TempDir::with_prefix("mutationstore.")?;
+        let mut ms = MutationStore::open(dir.path())?;
+        // A is split into B and C; C is amended into D.
+        ms.add(&MutationEntry {
+            succ: n("C"),
+            preds: vec![n("A")],
+            split: vec![n("B")],
+            op: "split".into(),
+            user: "test".into(),
+            time: 123456789,
+            tz: -7200,
+            extra: vec![],
+        })?;
+        add(&mut ms, "C", "D")?;
+        r(ms.flush())?;
+
+        let render_flags = |s: &str, flags: DagFlags| -> Result<String> {
+            let dag = r(ms.get_dag_advanced(vec![n(s)], flags))?;
+            dag::render::render_dag(&dag, |v| Some(format!("({})", v.as_ref()[0] as char)))
+        };
+        let both = DagFlags::SUCCESSORS | DagFlags::PREDECESSORS;
+
+        // Without SPLITS, B is not connected.
+        assert_eq!(
+            render_flags("A", both)?,
+            r#"
+            o  4444444444444444444444444444444444444444 (D)
+            │
+            o  4343434343434343434343434343434343434343 (C)
+            │
+            o  4141414141414141414141414141414141414141 (A)"#
+        );
+        assert_eq!(
+            render_flags("B", both)?,
+            r#"
+            o  4242424242424242424242424242424242424242 (B)"#
+        );
+
+        // With SPLITS, both parts are successors of A, from either side.
+        let expected = r#"
+            o  4444444444444444444444444444444444444444 (D)
+            │
+            o  4343434343434343434343434343434343434343 (C)
+            │
+            │ o  4242424242424242424242424242424242424242 (B)
+            ├─╯
+            o  4141414141414141414141414141414141414141 (A)"#;
+        assert_eq!(render_flags("A", both | DagFlags::SPLITS)?, expected);
+        assert_eq!(render_flags("B", both | DagFlags::SPLITS)?, expected);
+        Ok(())
     }
 
     /// Render the mutation store for the given nodes.

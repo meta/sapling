@@ -268,7 +268,7 @@ py_class!(class mutationstore |py| {
         Ok(entries)
     }
 
-    /// get_dag(nodes, successors=True, predecessors=True)
+    /// get_dag(nodes, successors=True, predecessors=True, splits=False)
     ///
     /// Figure out connected components related to specified nodes.
     /// The returned graph supports DAG related calculations like
@@ -276,8 +276,9 @@ py_class!(class mutationstore |py| {
     ///
     /// If successors is True, follow successors.
     /// If predecessors is True, follow predecessors.
-    /// like split, fold are ignored.
-    def getdag(&self, nodes: Vec<PyBytes>, successors: bool = true, predecessors: bool = true) -> PyResult<dagalgo> {
+    /// Folds are included. If splits is True, every part of a split is a
+    /// successor of the split commit; otherwise only the last part is.
+    def getdag(&self, nodes: Vec<PyBytes>, successors: bool = true, predecessors: bool = true, splits: bool = false) -> PyResult<dagalgo> {
         let nodes = nodes
             .into_iter()
             .map(|n| Node::from_slice(n.data(py))).collect::<Result<Vec<_>, _>>().map_pyerr(py)?;
@@ -287,6 +288,9 @@ py_class!(class mutationstore |py| {
         }
         if predecessors {
             flags |= DagFlags::PREDECESSORS;
+        }
+        if splits {
+            flags |= DagFlags::SPLITS;
         }
         let dag = block_on(self.mut_store(py).borrow().get_dag_advanced(nodes, flags)).map_pyerr(py)?;
         dagalgo::from_dag(py, dag)

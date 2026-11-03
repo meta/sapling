@@ -171,19 +171,27 @@ def recordentries(repo, entries, skipexisting: bool = True, raw: bool = False) -
     return count
 
 
-def getdag(repo, *nodes, predecessors: bool = True, successors: bool = True):
-    """Get 1:1 mutation subgraph for selected nodes
+def getdag(
+    repo,
+    *nodes,
+    predecessors: bool = True,
+    successors: bool = True,
+    splits: bool = False,
+):
+    """Get the mutation subgraph for selected nodes
 
     If successors is True, follow successors.
     If predecessors is True, follow predecessors.
-    Non 1:1 mutations like split, fold are ignored.
+    A fold's commit has every folded commit as a parent. If splits is True,
+    every part of a split has the split commit as a parent; otherwise only
+    the last part does.
 
     Performance note: predecessors might be too many if a commit
     is changed many times. In some cases it's possible to only
     use successors and that might be faster.
     """
     return repo._mutationstore.getdag(
-        nodes, predecessors=predecessors, successors=successors
+        nodes, predecessors=predecessors, successors=successors, splits=splits
     )
 
 
