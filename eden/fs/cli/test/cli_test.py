@@ -311,6 +311,45 @@ class RestartTest(unittest.TestCase):
 
         self.assertEqual(1, len(telemetry_logger.samples))
 
+    def test_graceful_restart_logs_the_old_daemon_error(self) -> None:
+        restart_cmd = self.make_restart_cmd()
+        telemetry_logger = self.make_telemetry_logger()
+        instance = MagicMock()
+        instance.state_dir = Path("/home/test/.eden")
+        instance.get_telemetry_logger.return_value = telemetry_logger
+        instance.check_health.return_value = MagicMock(pid=1234)
+        # This refusal does not carry the refusal marker, so the restart is
+        # reported as failed with the old daemon resumed.
+        daemon_error = (
+            "Installed SIGBUS retry handler with a process-wide budget of 5\n"
+            "Requesting existing edenfs process to gracefully transfer its "
+            "mount points...\n"
+            "error starting EdenFS: std::runtime_error: std::runtime_error: "
+            "can only perform graceful restart when all mount points are "
+            "initialized"
+        )
+
+        with (
+            patch.object(config_mod, "get_transport_mismatches", return_value=[]),
+            patch.object(main_mod, "remove_legacyephemeral_checkouts"),
+            patch.object(
+                main_mod.daemon, "gracefully_restart_edenfs_service", return_value=1
+            ),
+            patch.object(main_mod.daemon, "_last_daemon_error", daemon_error),
+            patch.object(main_mod, "wait_for_instance_healthy"),
+        ):
+            self.assertEqual(1, restart_cmd._graceful_restart(instance))
+
+        self.assertEqual(1, len(telemetry_logger.samples))
+        telemetry_sample = telemetry_logger.samples[0]
+        self.assertEqual(
+            "Graceful restart failed, and old EdenFS process resumed",
+            telemetry_sample.strings["error"],
+        )
+        # FIXME: The sample should carry the old daemon's refusal, with
+        # strings["daemon_error"] equal to daemon_error.
+        self.assertNotIn("daemon_error", telemetry_sample.strings)
+
     def test_graceful_restart_falls_back_on_nfs_transport_mismatch(self) -> None:
         restart_cmd = self.make_restart_cmd()
         telemetry_logger = self.make_telemetry_logger()
