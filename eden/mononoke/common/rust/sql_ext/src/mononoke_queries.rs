@@ -1297,6 +1297,7 @@ where
         .exponential_backoff(1.2)
         .jitter(Duration::from_secs(5))
         .max_attempts(RETRY_ATTEMPTS)
+        .retry_if(|_attempt, e| should_retry_mysql_query(e))
         .inspect_err(|attempt, e| {
             log_query_error(
                 sql_query_tel,
@@ -1306,7 +1307,7 @@ where
                 query_name,
                 shard_name,
                 attempt,
-                attempt < RETRY_ATTEMPTS,
+                attempt < RETRY_ATTEMPTS && should_retry_mysql_query(e),
             )
         })
         .await?;

@@ -1010,10 +1010,6 @@ mod facebook {
         executions.into_inner()
     }
 
-    /// FIXME: BUG! This did execute a query whose first attempt failed with a non-retryable
-    /// error a second time (after a 10-15 s backoff) but should have returned the error after
-    /// the first execution: only the retryable MySQL errors selected by
-    /// `should_retry_mysql_query` are meant to be retried.
     #[mononoke::fbinit_test]
     async fn test_query_with_retry_no_cache_does_not_retry_non_retryable_errors(
         fb: FacebookInit,
@@ -1026,8 +1022,7 @@ mod facebook {
             anyhow!("Duplicate entry '1' for key 'PRIMARY'")
         })
         .await;
-        // FIXME: BUG! The permanent error is executed twice instead of once.
-        assert_eq!(executions, 2);
+        assert_eq!(executions, 1);
         Ok(())
     }
 
