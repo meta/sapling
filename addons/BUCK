@@ -4,6 +4,18 @@ load("@fbsource//xplat/third-party/yarn:yarn_offline_mirror_helper.bzl", "yarn_o
 
 oncall("scm_client_infra")
 
+buck_genrule(
+    name = "isl-sources",
+    srcs = glob(
+        ["isl/**", "isl-server/**", "shared/**", "components/**"],
+        exclude = ["**/node_modules/**", "isl/build/**", "isl-server/dist/**"],
+    )
+    + ["LICENSE", "package.json", "prettier.config.cjs"],
+    out = "isl-sources",
+    cmd = 'mkdir -p "$OUT" && cp -RL "$SRCDIR/." "$OUT/"',
+    visibility = ["PUBLIC"],
+)
+
 python_binary(
     name = "build-tar-script",
     main_function = ".build-tar.main",
