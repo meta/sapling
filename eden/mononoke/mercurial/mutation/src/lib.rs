@@ -21,7 +21,6 @@ use context::CoreContext;
 use mercurial_types::HgChangesetId;
 use mononoke_types::RepositoryId;
 
-mod aligned_hg_changeset_id;
 mod builder;
 mod caching;
 mod entry;

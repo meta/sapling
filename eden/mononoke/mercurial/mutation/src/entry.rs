@@ -7,7 +7,6 @@
 
 use std::io::Read;
 
-use abomonable_string::AbomonableString;
 use anyhow::Error;
 use anyhow::Result;
 use anyhow::anyhow;
@@ -21,35 +20,32 @@ use quickcheck_arbitrary_derive::Arbitrary;
 use types::HgId;
 use types::mutation::MutationEntry;
 
-use crate::aligned_hg_changeset_id::AlignedHgChangesetId;
-
 /// Record of a Mercurial mutation operation (e.g. amend or rebase).
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 #[derive(bincode::Encode, bincode::Decode)]
 #[cfg_attr(test, derive(Arbitrary))]
-#[repr(align(8))]
 pub struct HgMutationEntry {
     /// The commit that resulted from the mutation operation.
     successor: HgChangesetId,
     /// The commits that were mutated to create the successor.
     ///
     /// There may be multiple predecessors, e.g. if the commits were folded.
-    predecessors: Vec<AlignedHgChangesetId>,
+    predecessors: Vec<HgChangesetId>,
     /// Other commits that were created by the mutation operation splitting the predecessors.
     ///
     /// Where a commit is split into two or more commits, the successor will be the final commit,
     /// and this list will contain the other commits.
-    split: Vec<AlignedHgChangesetId>,
+    split: Vec<HgChangesetId>,
     /// The name of the operation.
-    op: AbomonableString<8>,
+    op: String,
     /// The user who performed the mutation operation.  This may differ from the commit author.
-    user: AbomonableString<8>,
+    user: String,
     /// The timestamp of the mutation operation.  This may differ from the commit time.
     timestamp: i64,
     /// The timezone offset of the mutation operation.  This may differ from the commit time.
     timezone: i32,
     /// Extra information about this mutation operation.
-    extra: Vec<(AbomonableString<8>, AbomonableString<8>)>,
+    extra: Vec<(String, String)>,
 }
 
 impl HgMutationEntry {
@@ -63,17 +59,6 @@ impl HgMutationEntry {
         timezone: i32,
         extra: Vec<(String, String)>,
     ) -> Self {
-        let predecessors = predecessors
-            .into_iter()
-            .map(AlignedHgChangesetId::from)
-            .collect();
-        let split = split.into_iter().map(AlignedHgChangesetId::from).collect();
-        let op = op.into();
-        let user = user.into();
-        let extra = extra
-            .into_iter()
-            .map(|(k, v)| (k.into(), v.into()))
-            .collect();
         Self {
             successor,
             predecessors,
@@ -98,14 +83,14 @@ impl HgMutationEntry {
         &self,
     ) -> impl ExactSizeIterator<Item = &HgChangesetId> + DoubleEndedIterator<Item = &HgChangesetId>
     {
-        self.predecessors.iter().map(AlignedHgChangesetId::as_ref)
+        self.predecessors.iter()
     }
 
     pub fn split(
         &self,
     ) -> impl ExactSizeIterator<Item = &HgChangesetId> + DoubleEndedIterator<Item = &HgChangesetId>
     {
-        self.split.iter().map(AlignedHgChangesetId::as_ref)
+        self.split.iter()
     }
 
     pub fn op(&self) -> &str {
@@ -125,7 +110,7 @@ impl HgMutationEntry {
     }
 
     pub fn extra(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.extra.iter().map(|(k, v)| (k.as_ref(), v.as_ref()))
+        self.extra.iter().map(|(k, v)| (k.as_str(), v.as_str()))
     }
 
     /// Returns `extra` encoded with JSON.
@@ -152,7 +137,7 @@ impl HgMutationEntry {
             ));
         }
         if index == expected_index {
-            self.predecessors.push(pred.into());
+            self.predecessors.push(pred);
         }
         Ok(())
     }
@@ -175,7 +160,7 @@ impl HgMutationEntry {
             ));
         }
         if index == expected_index {
-            self.split.push(split.into());
+            self.split.push(split);
         }
         Ok(())
     }
@@ -214,26 +199,21 @@ impl HgMutationEntry {
             predecessors: self
                 .predecessors
                 .into_iter()
-                .map(AlignedHgChangesetId::into_inner)
                 .map(HgChangesetId::into_thrift)
                 .collect(),
             split: self
                 .split
                 .into_iter()
-                .map(AlignedHgChangesetId::into_inner)
                 .map(HgChangesetId::into_thrift)
                 .collect(),
-            op: self.op.into_inner(),
-            user: self.user.into_inner(),
+            op: self.op,
+            user: self.user,
             timestamp: self.timestamp,
             timezone: self.timezone,
             extra: self
                 .extra
                 .into_iter()
-                .map(|(key, value)| thrift::ExtraProperty {
-                    key: key.into_inner(),
-                    value: value.into_inner(),
-                })
+                .map(|(key, value)| thrift::ExtraProperty { key, value })
                 .collect(),
         }
     }
@@ -251,30 +231,26 @@ impl TryFrom<MutationEntry> for HgMutationEntry {
                 .into_iter()
                 .map(HgNodeHash::from)
                 .map(HgChangesetId::new)
-                .map(AlignedHgChangesetId::from)
                 .collect(),
             split: entry
                 .split
                 .into_iter()
                 .map(HgNodeHash::from)
                 .map(HgChangesetId::new)
-                .map(AlignedHgChangesetId::from)
                 .collect(),
-            op: entry.op.into(),
-            user: entry.user.into(),
+            op: entry.op,
+            user: entry.user,
             timestamp: entry.time,
             timezone: entry.tz,
             extra: entry
                 .extra
                 .into_iter()
-                .map(
-                    |(key, value)| -> Result<(AbomonableString<8>, AbomonableString<8>), Error> {
-                        Ok((
-                            String::from_utf8(key.into())?.into(),
-                            String::from_utf8(value.into())?.into(),
-                        ))
-                    },
-                )
+                .map(|(key, value)| -> Result<(String, String), Error> {
+                    Ok((
+                        String::from_utf8(key.into())?,
+                        String::from_utf8(value.into())?,
+                    ))
+                })
                 .collect::<Result<_>>()?,
         };
         Ok(entry)
@@ -288,19 +264,17 @@ impl From<HgMutationEntry> for MutationEntry {
             preds: m
                 .predecessors
                 .into_iter()
-                .map(AlignedHgChangesetId::into_inner)
                 .map(HgChangesetId::into_nodehash)
                 .map(HgId::from)
                 .collect(),
             split: m
                 .split
                 .into_iter()
-                .map(AlignedHgChangesetId::into_inner)
                 .map(HgChangesetId::into_nodehash)
                 .map(HgId::from)
                 .collect(),
-            op: m.op.into_inner(),
-            user: m.user.into_inner(),
+            op: m.op,
+            user: m.user,
             time: m.timestamp,
             tz: m.timezone,
             extra: m
@@ -308,8 +282,8 @@ impl From<HgMutationEntry> for MutationEntry {
                 .into_iter()
                 .map(|(key, value)| {
                     (
-                        key.into_inner().into_bytes().into_boxed_slice(),
-                        value.into_inner().into_bytes().into_boxed_slice(),
+                        key.into_bytes().into_boxed_slice(),
+                        value.into_bytes().into_boxed_slice(),
                     )
                 })
                 .collect(),
@@ -366,25 +340,23 @@ impl From<HgMutationEntry> for HgMutationEntryContent {
         let predecessors = mutation
             .predecessors
             .into_iter()
-            .map(AlignedHgChangesetId::into_inner)
             .map(Into::into)
             .collect::<Vec<_>>();
         let split = mutation
             .split
             .into_iter()
-            .map(AlignedHgChangesetId::into_inner)
             .map(Into::into)
             .collect::<Vec<_>>();
-        let op = mutation.op.into_inner();
-        let user = mutation.user.into_inner().into_bytes();
+        let op = mutation.op;
+        let user = mutation.user.into_bytes();
         let time = mutation.timestamp;
         let tz = mutation.timezone;
         let extras = mutation
             .extra
             .into_iter()
             .map(|(key, value)| Extra {
-                key: key.into_inner().into_bytes(),
-                value: value.into_inner().into_bytes(),
+                key: key.into_bytes(),
+                value: value.into_bytes(),
             })
             .collect();
 

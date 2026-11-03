@@ -44,7 +44,6 @@ use crate::HgMutationStore;
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 #[derive(bincode::Encode, bincode::Decode)]
 #[cfg_attr(test, derive(Arbitrary))]
-#[repr(align(8))]
 pub struct HgMutationCacheEntry {
     /// The mutation entries that are part of the cache record
     pub mutation_entries: Vec<HgMutationEntry>,

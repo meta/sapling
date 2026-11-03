@@ -12,7 +12,6 @@ name = "mercurial_mutation_test"
 path = "test/main.rs"
 
 [dependencies]
-abomonable_string = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 anyhow = "1.0.104"
 async-trait = "0.1.92"
 bincode = { version = "2", features = ["serde"] }
