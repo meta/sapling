@@ -26,6 +26,8 @@ from . import dagop, mutation, smartset
 from .node import nullid
 
 CHANGESET = "C"
+# A commit that is not available locally; its data is its node.
+MISSINGCHANGESET = "MC"
 PARENT = "P"
 GRANDPARENT = "G"
 XREPOPARENT = "X"
@@ -112,23 +114,32 @@ def dagwalker(repo, revs, template, idfunc=None, dag=None):
         yield (idfunc(ctx.rev()), CHANGESET, ctx, parents)
 
 
-def mutationdagwalker(repo, revs, template):
-    """mutation DAG generator yielding (node, CHANGESET, ctx, [parentinfo])
+def mutationdagwalker(repo, revs, template, showmissing=False):
+    """mutation DAG generator yielding (node, type, data, [parentinfo])
 
     Like ``dagwalker``, but a commit's parents are the commits it replaced
     (the predecessor of an amend or rebase, every commit of a fold, the
     commit a split part came from), and nodes and parent ids are commit
-    hashes. ``revs`` are yielded in the order of ``mutationsort``.
+    hashes. ``revs`` are yielded as ``CHANGESET``s with their ctx, in the
+    order of ``mutationsort``.
 
     A predecessor that is shown is a ``PARENT``. One that is not is skipped:
     the nearest shown commits it was created from are ``GRANDPARENT``s, or
-    if there are none it is a ``MISSINGPARENT``.
+    if there are none it is a ``MISSINGPARENT``. With ``showmissing``, the
+    commits ``revs`` were created from that are not available locally are
+    shown too, as ``MISSINGCHANGESET``s whose data is the node.
     """
-    order, parents = _mutationgraph(repo, revs)
+    order, parents, missing = _mutationgraph(repo, revs, showmissing)
     cl = repo.changelog
-    ordered = smartset.baseset([cl.rev(n) for n in order], repo=repo)
-    for ctx in ordered.prefetchbytemplate(repo, template).iterctx():
-        yield (ctx.node(), CHANGESET, ctx, parents[ctx.node()])
+    local = smartset.baseset([cl.rev(n) for n in order if n not in missing], repo=repo)
+    ctxs = {
+        ctx.node(): ctx for ctx in local.prefetchbytemplate(repo, template).iterctx()
+    }
+    for node in order:
+        if node in missing:
+            yield (node, MISSINGCHANGESET, node, parents[node])
+        else:
+            yield (node, CHANGESET, ctxs[node], parents[node])
 
 
 def mutationsort(repo, revs):
@@ -136,20 +147,29 @@ def mutationsort(repo, revs):
 
     A chain of mutations is kept together; otherwise newer revs come first.
     """
-    order, _parents = _mutationgraph(repo, revs)
+    order, _parents, _missing = _mutationgraph(repo, revs)
     cl = repo.changelog
     return [cl.rev(n) for n in order]
 
 
-def _mutationgraph(repo, revs):
-    """Return (nodes, parents) for showing ``revs`` as a mutation graph.
+def _mutationgraph(repo, revs, showmissing=False):
+    """Return (nodes, parents, missing) for showing ``revs`` as a mutation
+    graph.
 
-    ``nodes`` are ``revs`` sorted as ``mutationsort`` describes, and
-    ``parents`` maps each to its parentinfo list for ``mutationdagwalker``.
+    ``nodes`` are the commits to show, sorted as ``mutationsort`` describes:
+    ``revs`` and, with ``showmissing``, the commits they were created from
+    that are not available locally, which are also returned as ``missing``.
+    ``parents`` maps each node to its parentinfo list.
     """
     cl = repo.changelog
     nodes = list(cl.tonodes(revs))
     dag = mutation.getdag(repo, *nodes, splits=True)
+    missing = set()
+    if showmissing and nodes:
+        predecessors = list(dag.ancestors(nodes))
+        local = set(cl.filternodes(predecessors, local=True))
+        missing = {n for n in predecessors if n not in local}
+        nodes += sorted(missing)
     shownset = dag.sort(nodes)
     shown = set(nodes)
 
@@ -172,13 +192,17 @@ def _mutationgraph(repo, revs):
         parents[node] = edges
 
     # Topological sort, successors first. Picking the most recently readied
-    # commit keeps a chain of mutations together.
+    # commit keeps a chain of mutations together; otherwise the newer rev
+    # (commits not available locally have no rev, and count as oldest).
     children = {node: 0 for node in nodes}
     for edges in parents.values():
         for kind, pred in edges:
             if kind != MISSINGPARENT:
                 children[pred] += 1
-    revof = cl.rev
+
+    def revof(node):
+        return -1 if node in missing else cl.rev(node)
+
     ready = sorted((n for n in nodes if children[n] == 0), key=revof)
     order = []
     while ready:
@@ -191,4 +215,4 @@ def _mutationgraph(repo, revs):
                 if children[pred] == 0:
                     newlyready.append(pred)
         ready.extend(sorted(newlyready, key=revof))
-    return order, parents
+    return order, parents, missing

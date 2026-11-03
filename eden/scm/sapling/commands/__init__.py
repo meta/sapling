@@ -3921,6 +3921,12 @@ def locate(ui, repo, *pats, **opts):
             False,
             _("use mutation history for DAG and diffs (EXPERIMENTAL)"),
         ),
+        (
+            "",
+            "show-missing",
+            False,
+            _("with --mutation, show commits not available locally"),
+        ),
     ]
     + walkopts,
     _("[OPTION]... [FILE]"),
@@ -3942,7 +3948,9 @@ def log(ui, repo, *pats, **opts):
     and shows patches and ``--stat`` against the commit each one was created
     from. Its default revision range is the mutation history of the current
     commit (``mutationhistory(.)``); use ``-r 'mutationhistory(REV)'`` for
-    another commit's.
+    another commit's. Commits that are not shown are skipped, with a dashed
+    line over them; ``--show-missing`` also shows the commits not available
+    locally.
 
     File history is shown without following the rename or copy
     history of files. To follow file history across renames and
@@ -4076,6 +4084,9 @@ def log(ui, repo, *pats, **opts):
     if opts.get("follow") and opts.get("rev"):
         opts["rev"] = [revsetlang.formatspec("reverse(::%lr)", opts.get("rev"))]
         del opts["follow"]
+
+    if opts.get("show_missing") and not (opts.get("mutation") and opts.get("graph")):
+        raise error.Abort(_("--show-missing requires --mutation and --graph"))
 
     scmutil.maybe_show_path_typo_hint(ui, repo, pats, rev=opts.get("rev"))
 

@@ -276,3 +276,61 @@ are shown with --hidden:
   │ o  B2
   ├─╯
   x  B
+
+Commits that are not available locally are shown with --show-missing:
+
+  $ sl debugstrip -q --hidden 'desc(B3)'
+  $ sl log -G --mutation -T '{desc}\n'
+  @  B4
+  ╷
+  x  B
+  $ sl log -G --mutation -T '{desc}\n' --show-missing
+  @  B4
+  │
+  ?  40f2b507616e  (not available locally)
+  │
+  x  B
+  $ sl debugstrip -q --hidden 'desc(B) - desc(B2) - desc(B4)'
+  $ sl log -G --mutation -T '{desc}\n'
+  @  B4
+  │
+  ~
+  $ sl log -G --mutation -T '{desc}\n' --show-missing
+  @  B4
+  │
+  ?  40f2b507616e  (not available locally)
+  │
+  ?  6c81ed0049f8  (not available locally)
+  $ sl log -G --mutation -T '{desc}\n' --show-missing --hidden
+  @  B4
+  │
+  ?  40f2b507616e  (not available locally)
+  │
+  │ o  B2
+  ├─╯
+  ?  6c81ed0049f8  (not available locally)
+
+`{grandparents}` lists the commits a dashed line leads to, if they are available
+locally:
+
+  $ newclientrepo
+  $ echo a > a
+  $ sl commit -qAm A0
+  $ sl amend -q -m A1
+  $ sl amend -q -m A2
+  $ sl log -G --mutation -r 'desc(A2) + desc(A0)' -T '{desc} [{grandparents % "{node|short}"}]\n'
+  @  A2 [3bd0155f0241]
+  ╷
+  x  A0 []
+  $ sl debugstrip -q --hidden 'desc(A0)'
+  $ sl log -G --mutation --show-missing -r . -T '{desc} [{grandparents}]\n'
+  @  A2 []
+  ╷
+  ?  3bd0155f0241  (not available locally)
+
+  $ sl log --mutation --show-missing
+  abort: --show-missing requires --mutation and --graph
+  [255]
+  $ sl log -G --show-missing
+  abort: --show-missing requires --mutation and --graph
+  [255]

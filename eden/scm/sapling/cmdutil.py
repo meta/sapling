@@ -3497,6 +3497,8 @@ def displaygraph(
     repogetrenamed = repogetrenamed or {}
     repofilematcher = repofilematcher or {}
     props = props or {}
+    if out is None:
+        out = ui.write
     formatnode = _graphnodeformatter(ui, displayer)
     prevfn = None
     if mutation:
@@ -3541,6 +3543,11 @@ def displaygraph(
 
     show_abbreviated_ancestors = ShowAbbreviatedAncestorsWhen.load_from_config(repo.ui)
     for graphnodeid, _type, ctx, parents in dag:
+        if _type == graphmod.MISSINGCHANGESET:
+            # "ctx" is the node of a commit that is not available locally.
+            msg = _("%s  (not available locally)\n") % hex(ctx)[:12]
+            out(renderer.nextrow(graphnodeid, parents, "?", msg))
+            continue
         curr_repo = ctx.repo()
         if curr_repo.root != prev_repo.root:
             getrenamed = repogetrenamed.get(curr_repo.root)
@@ -3575,6 +3582,9 @@ def displaygraph(
             gpnodes = gprevs
         else:
             gpnodes = curr_repo.changelog.tonodes(gprevs)
+        if mutation and gpnodes:
+            # {grandparents} can only refer to commits available locally.
+            gpnodes = curr_repo.changelog.filternodes(gpnodes, local=True)
         revcache = {"copies": copies, "gpnodes": gpnodes}
         if xreponame:
             revcache["xreponame"] = xreponame
@@ -3593,10 +3603,7 @@ def displaygraph(
             for s in displayer.hunk.pop(ctx.rev())
         )
         nextrow = renderer.nextrow(graphnodeid, parents, char, msg)
-        if out is not None:
-            out(nextrow)
-        else:
-            ui.write(nextrow)
+        out(nextrow)
         if on_output is not None:
             on_output(
                 ctx,
@@ -3698,7 +3705,9 @@ def _logdagwalker(repo, pats, opts, repogetrenamed, repofilematcher, repoids, mu
     revs, expr, filematcher = getgraphlogrevs(repo, pats, opts)
     template = opts.get("template") or ""
     if mutation:
-        revdag = graphmod.mutationdagwalker(repo, revs, template)
+        revdag = graphmod.mutationdagwalker(
+            repo, revs, template, showmissing=opts.get("show_missing")
+        )
     else:
         if repo.root not in repoids:
             repoids[repo.root] = len(repoids)
