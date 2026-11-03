@@ -18,6 +18,14 @@ TEST(DeadConfigKeysTest, matchesExactSectionAndKey) {
       isDeadConfigKey("thrift", "leak-outstanding-requests-when-server-stops"));
 }
 
+TEST(DeadConfigKeysTest, ignoresLegacyLoggerSelectors) {
+  EXPECT_TRUE(isDeadConfigKey("telemetry", "enable-xplatlogger-fileaccess"));
+  EXPECT_TRUE(isDeadConfigKey("telemetry", "enable-xplatlogger-events"));
+  EXPECT_TRUE(isDeadConfigKey("telemetry", "enable-xplatlogger-errors"));
+  EXPECT_TRUE(isDeadConfigKey("telemetry", "enable-xplatlogger-cli-usage"));
+  EXPECT_TRUE(isDeadConfigKey("telemetry", "enable-xplatlogger-rollouts"));
+}
+
 TEST(DeadConfigKeysTest, doesNotMatchPartialOrShiftedKeys) {
   EXPECT_FALSE(isDeadConfigKey("experimental", "prefetch-optimizations"));
   EXPECT_FALSE(isDeadConfigKey("coroutines", "enable-phase"));

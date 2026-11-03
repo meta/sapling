@@ -67,6 +67,7 @@ inline constexpr std::string_view kDeadConfigKeys[] = {
     "telemetry:enable-xplatlogger-cli-usage",
     "telemetry:enable-xplatlogger-errors",
     "telemetry:enable-xplatlogger-events",
+    "telemetry:enable-xplatlogger-fileaccess",
     "telemetry:error-scribe-category",
     "telemetry:file-access-scribe-category",
     "telemetry:enable-xplatlogger-rollouts",
