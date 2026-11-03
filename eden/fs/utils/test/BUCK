@@ -210,6 +210,7 @@ cpp_unittest(
     supports_static_listing = False,
     deps = [
         "fbsource//xplat/folly/portability:gtest",
+        "fbsource//xplat/folly/system:thread_id",
         "//eden/fs/utils:mount_health_check",
     ],
 )

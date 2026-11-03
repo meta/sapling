@@ -255,6 +255,9 @@ eden_add_library(eden_fs_utils_mount_health_check
     Folly::folly_portability_sys_stat
     Folly::folly_portability_unistd
     Folly::folly_string
+    Folly::folly_system_thread_id
     eden_fs_utils_mount_info_table
     edencommon::edencommon_utils
+  EXPORTED_DEPS
+    Folly::folly_synchronized
 )

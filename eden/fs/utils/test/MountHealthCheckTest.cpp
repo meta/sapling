@@ -8,20 +8,35 @@
 #include "eden/fs/utils/MountHealthCheck.h"
 
 #include <folly/portability/GTest.h>
+#include <folly/system/ThreadId.h>
 
 namespace facebook::eden {
 namespace {
 
 #ifdef __linux__
 TEST(MountHealthCheckTest, reportsMissingKernelMountForNonEdenMount) {
-  auto issue = checkRunningEdenMountHealth("/");
+  MountHealthProbeProgress progress{std::chrono::steady_clock::now()};
+  progress.start();
+  auto issue = checkRunningEdenMountHealth("/", &progress);
 
   ASSERT_TRUE(issue.has_value());
   EXPECT_EQ(
       EdenMountHealthIssueReason::DaemonRunningKernelMountMissing,
       issue->reason);
+  EXPECT_EQ(MountHealthProbeStep::MountTable, progress.step());
 }
 #endif
+
+TEST(MountHealthCheckTest, startedProbeRecordsItsThread) {
+  MountHealthProbeProgress progress{std::chrono::steady_clock::now()};
+  EXPECT_FALSE(progress.started().has_value());
+  EXPECT_EQ(0, progress.threadId());
+
+  progress.start();
+  EXPECT_TRUE(progress.started().has_value());
+  EXPECT_EQ(folly::getOSThreadID(), progress.threadId());
+  EXPECT_EQ(MountHealthProbeStep::Starting, progress.step());
+}
 
 TEST(MountHealthCheckTest, reasonStringsMatchTelemetryContract) {
   EXPECT_EQ(
@@ -52,6 +67,22 @@ TEST(MountHealthCheckTest, reasonStringsMatchTelemetryContract) {
       "daemon_running_checkout_flapping",
       edenMountHealthIssueReasonString(
           EdenMountHealthIssueReason::DaemonRunningCheckoutFlapping));
+}
+
+TEST(MountHealthCheckTest, probeStepNamesMatchTelemetryContract) {
+  EXPECT_EQ("queued", mountHealthProbeStepName(MountHealthProbeStep::Queued));
+  EXPECT_EQ(
+      "starting", mountHealthProbeStepName(MountHealthProbeStep::Starting));
+  EXPECT_EQ(
+      "mount_table",
+      mountHealthProbeStepName(MountHealthProbeStep::MountTable));
+  EXPECT_EQ(
+      "stat_dot_eden",
+      mountHealthProbeStepName(MountHealthProbeStep::StatDotEden));
+  EXPECT_EQ(
+      "lookup_child",
+      mountHealthProbeStepName(MountHealthProbeStep::LookupChild));
+  EXPECT_EQ("done", mountHealthProbeStepName(MountHealthProbeStep::Done));
 }
 
 } // namespace

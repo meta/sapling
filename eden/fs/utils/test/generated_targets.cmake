@@ -158,6 +158,7 @@ eden_add_test(eden_fs_utils_test_mount_health_check_test
     MountHealthCheckTest.cpp
   DEPS
     Folly::folly_portability_gtest
+    Folly::folly_system_thread_id
     eden_fs_utils_mount_health_check
 )
 

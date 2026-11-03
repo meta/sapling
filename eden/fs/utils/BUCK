@@ -381,7 +381,9 @@ cpp_library(
         "fbsource//xplat/folly/logging:logging",
         "fbsource//xplat/folly/portability:sys_stat",
         "fbsource//xplat/folly/portability:unistd",
+        "fbsource//xplat/folly/system:thread_id",
         ":mount_info_table",
         "//eden/common/utils:fsdetect",
     ],
+    exported_deps = ["fbsource//xplat/folly:synchronized"],
 )

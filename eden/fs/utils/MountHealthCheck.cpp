@@ -16,6 +16,7 @@
 #include <folly/logging/xlog.h>
 #include <folly/portability/SysStat.h>
 #include <folly/portability/Unistd.h>
+#include <folly/system/ThreadId.h>
 
 #ifdef __linux__
 #include "eden/common/utils/FSDetect.h"
@@ -120,8 +121,60 @@ std::string_view edenMountHealthIssueReasonString(
   return "unknown";
 }
 
+std::string_view mountHealthProbeStepName(MountHealthProbeStep step) {
+  switch (step) {
+    case MountHealthProbeStep::Queued:
+      return "queued";
+    case MountHealthProbeStep::Starting:
+      return "starting";
+    case MountHealthProbeStep::MountTable:
+      return "mount_table";
+    case MountHealthProbeStep::StatDotEden:
+      return "stat_dot_eden";
+    case MountHealthProbeStep::LookupChild:
+      return "lookup_child";
+    case MountHealthProbeStep::Done:
+      return "done";
+  }
+  return "unknown";
+}
+
+MountHealthProbeProgress::MountHealthProbeProgress(Clock::time_point queued)
+    : queued_{queued},
+      step_{CurrentStep{MountHealthProbeStep::Queued, queued}} {}
+
+void MountHealthProbeProgress::start(Clock::time_point now) {
+  threadId_.store(folly::getOSThreadID(), std::memory_order_release);
+  startedTicks_.store(
+      now.time_since_epoch().count(), std::memory_order_release);
+  enter(MountHealthProbeStep::Starting, now);
+}
+
+void MountHealthProbeProgress::enter(
+    MountHealthProbeStep step,
+    Clock::time_point now) {
+  *step_.lock() = CurrentStep{step, now};
+}
+
+std::optional<MountHealthProbeProgress::Clock::time_point>
+MountHealthProbeProgress::started() const {
+  auto ticks = startedTicks_.load(std::memory_order_acquire);
+  if (ticks == 0) {
+    return std::nullopt;
+  }
+  return Clock::time_point{Clock::duration{ticks}};
+}
+
 std::optional<EdenMountHealthCheckIssue> checkRunningEdenMountHealth(
-    const std::string& mountPath) {
+    const std::string& mountPath,
+    MountHealthProbeProgress* progress) {
+  auto enter = [progress](MountHealthProbeStep step) {
+    if (progress) {
+      progress->enter(step);
+    }
+  };
+
+  enter(MountHealthProbeStep::MountTable);
   auto hasKernelMount = hasEdenMountInKernelMountTable(mountPath);
   if (hasKernelMount.has_value() && !hasKernelMount.value()) {
     return EdenMountHealthCheckIssue{
@@ -131,6 +184,7 @@ std::optional<EdenMountHealthCheckIssue> checkRunningEdenMountHealth(
   // If the mount table lookup failed, keep going. The path probes below can
   // still identify a disconnected, missing, or hanging Eden mount.
 
+  enter(MountHealthProbeStep::StatDotEden);
   auto dotEdenPath = mountPath + "/.eden";
   auto dotEdenError = lstatError(dotEdenPath);
   if (dotEdenError.has_value()) {
@@ -146,6 +200,7 @@ std::optional<EdenMountHealthCheckIssue> checkRunningEdenMountHealth(
   // Since .eden was readable, probe a child path that should not exist. A
   // healthy mount should answer ENOENT; disconnected or hanging mounts can
   // surface as ENOTCONN/ENXIO/ETIMEDOUT.
+  enter(MountHealthProbeStep::LookupChild);
   auto expectedMissingPath = makeExpectedMissingPath(mountPath);
   auto expectedMissingError = lstatError(expectedMissingPath);
   if (!expectedMissingError.has_value()) {

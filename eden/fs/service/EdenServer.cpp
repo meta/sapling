@@ -286,12 +286,14 @@ struct MountHealthIssueLogContext {
       std::shared_ptr<EmittedMountHealthIssues> emittedMountHealthIssues,
       EdenStatsPtr stats,
       std::string mountPath,
-      std::string repoSource)
+      std::string repoSource,
+      std::shared_ptr<MountHealthProbeProgress> progress)
       : edenFsEventsLogger_{std::move(edenFsEventsLogger)},
         emittedMountHealthIssues{std::move(emittedMountHealthIssues)},
         stats{std::move(stats)},
         mountPath{std::move(mountPath)},
-        repoSource{std::move(repoSource)} {}
+        repoSource{std::move(repoSource)},
+        progress{std::move(progress)} {}
 
   void count(StatsGroupBase::Counter MountHealthCheckStats::* counter) const {
     stats->increment(counter);
@@ -324,6 +326,7 @@ struct MountHealthIssueLogContext {
   EdenStatsPtr stats;
   std::string mountPath;
   std::string repoSource;
+  std::shared_ptr<MountHealthProbeProgress> progress;
 };
 
 folly::CPUThreadPoolExecutor* getMountHealthCheckThreadPool() {
@@ -4583,7 +4586,9 @@ void EdenServer::scheduleRunningMountHealthCheck(
       emittedMountHealthIssues,
       serverState_->getStats().copy(),
       std::move(mountPathString),
-      std::move(repoSource));
+      std::move(repoSource),
+      std::make_shared<MountHealthProbeProgress>(
+          /*queued=*/std::chrono::steady_clock::now()));
   logContext->count(&MountHealthCheckStats::probes);
 
   scheduleMountHealthCheckStartTimeout(started, completed, logContext);
@@ -4607,12 +4612,17 @@ void EdenServer::scheduleRunningMountHealthCheck(
         if (completed->load(std::memory_order_acquire)) {
           return std::optional<EdenMountHealthCheckIssue>{};
         }
+        auto& progress = *logContext->progress;
+        progress.start();
         scheduleMountHealthCheckRuntimeTimeout(completed, logContext);
         if (auto state = serverState.lock()) {
           state->getFaultInjector().check(
               "mountHealthCheck", logContext->mountPath);
         }
-        return checkRunningEdenMountHealth(logContext->mountPath);
+        auto issue =
+            checkRunningEdenMountHealth(logContext->mountPath, &progress);
+        progress.enter(MountHealthProbeStep::Done);
+        return issue;
       })
       .thenTry(
           [completed,
