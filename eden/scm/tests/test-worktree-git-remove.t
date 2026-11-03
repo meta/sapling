@@ -106,6 +106,18 @@ The invoking checkout is removed last.
   $ grep -o '^failed to remove [^:]*' $TESTTMP/remove-error
   failed to remove $TESTTMP/force-locked
 
+Shelved changes in a Git-created worktree require --force.
+
+  $ git worktree add -q $TESTTMP/shelved --detach
+  $ echo modified > $TESTTMP/shelved/file
+  $ sl --cwd $TESTTMP/shelved shelve -q --config extensions.shelve=
+  $ sl --cwd $TESTTMP/shelved status
+  $ sl worktree remove $TESTTMP/shelved -y
+  abort: $TESTTMP/shelved has shelved changes, use --force to remove it
+  [255]
+  $ sl worktree remove $TESTTMP/shelved -y --force
+  removed $TESTTMP/shelved
+
 Removal works from a Git-created worktree before Sapling has run in the main checkout.
 
   $ cd $TESTTMP

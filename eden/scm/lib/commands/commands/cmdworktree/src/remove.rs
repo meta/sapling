@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use anyhow::Context;
 use clidispatch::ReqCtx;
 use clidispatch::abort;
+use cmdutil::ConfigExt;
 use cmdutil::Result;
 use repo::repo::Repo;
 use worktree::Worktrees;
@@ -106,6 +107,7 @@ pub(crate) fn run(ctx: &ReqCtx<WorktreeOpts>, repo: &Repo, worktrees: &Worktrees
             .and_then(|()| {
                 if !ctx.opts.force {
                     ensure_clean(ctx, &checkouts, target)?;
+                    ensure_no_shelves(repo, &checkouts, target)?;
                 }
                 pre_hooks.run_hooks(
                     Some(repo),
@@ -173,9 +175,34 @@ fn ensure_clean(ctx: &ReqCtx<WorktreeOpts>, checkouts: &Checkouts, target: &Path
     Ok(())
 }
 
+/// Refuse to remove a checkout with shelved changes, which do not count as
+/// modified or untracked files.
+fn ensure_no_shelves(repo: &Repo, checkouts: &Checkouts, target: &Path) -> Result<()> {
+    if !target.exists()
+        || !repo
+            .config()
+            .get_or("worktree", "check-shelves-on-remove", || true)?
+    {
+        return Ok(());
+    }
+    let has_shelves = checkouts.has_shelves(target).with_context(|| {
+        format!(
+            "cannot check {} for shelved changes, use --force to remove it anyway",
+            target.display()
+        )
+    })?;
+    if has_shelves {
+        anyhow::bail!(
+            "{} has shelved changes, use --force to remove it",
+            target.display()
+        );
+    }
+    Ok(())
+}
+
 fn confirm_remove(ctx: &ReqCtx<WorktreeOpts>, paths: &[&Path]) -> Result<()> {
-    // Don't prompt without a terminal. The check for modified or untracked files
-    // still applies.
+    // Don't prompt without a terminal. The checks for modified or untracked files
+    // and shelved changes still apply.
     if ctx.global_opts().noninteractive
         || ctx.opts.force
         || !ctx.io().with_input(|input| input.is_tty())

@@ -51,6 +51,12 @@ impl<'a> GitCheckouts<'a> {
     pub(super) fn has_changes(&self, path: &Path) -> Result<bool> {
         Ok(self.git.worktree_has_changes(path)?)
     }
+
+    /// Sapling keeps a Git checkout's shelves in `$GIT_DIR/sl`, which removal
+    /// deletes with the checkout.
+    pub(super) fn has_shelves(&self, path: &Path) -> Result<bool> {
+        super::has_shelves(self.repo, path)
+    }
 }
 
 impl PreparedAdd<'_> {

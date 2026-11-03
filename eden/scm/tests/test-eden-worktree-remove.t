@@ -418,3 +418,51 @@ test worktree remove - modified or untracked files require --force
   Unmounting checkout...
   Deleting EdenFS checkout state...
   removed $TESTTMP/dirty_untracked
+
+#if no-windows
+test worktree remove - shelved changes require --force
+
+  $ newclientrepo shelve_repo
+  $ echo base > file.txt
+  $ sl commit -Aqm base
+  $ sl worktree add $TESTTMP/shelved
+  created linked worktree at $TESTTMP/shelved
+  $ echo modified > $TESTTMP/shelved/file.txt
+  $ sl --cwd $TESTTMP/shelved shelve -q --config extensions.shelve=
+  $ sl --cwd $TESTTMP/shelved status
+  $ sl worktree remove $TESTTMP/shelved -y
+  abort: $TESTTMP/shelved has shelved changes, use --force to remove it
+  [255]
+  $ sl worktree remove $TESTTMP/shelved --force
+  Unmounting checkout...
+  Deleting EdenFS checkout state...
+  removed $TESTTMP/shelved
+
+The check can be turned off.
+
+  $ sl worktree add $TESTTMP/shelved
+  created linked worktree at $TESTTMP/shelved
+  $ echo modified > $TESTTMP/shelved/file.txt
+  $ sl --cwd $TESTTMP/shelved shelve -q --config extensions.shelve=
+  $ sl worktree remove $TESTTMP/shelved -y --config worktree.check-shelves-on-remove=false
+  Unmounting checkout...
+  Deleting EdenFS checkout state...
+  removed $TESTTMP/shelved
+
+A linked checkout whose dot dir flavour differs from the main checkout's is checked too.
+
+  $ SL_REPO_IDENTITY=hg sl worktree add $TESTTMP/shelved_hg
+  failed to write worktree-name marker for $TESTTMP/shelved_hg: failed to write worktree-name marker at $TESTTMP/shelved_hg/.sl/worktreename: failed to create file `$TESTTMP/shelved_hg/.sl/worktreename`: $ENOENT$
+  created linked worktree at $TESTTMP/shelved_hg
+  $ test -d $TESTTMP/shelved_hg/.hg && echo linked-is-hg
+  linked-is-hg
+  $ echo modified > $TESTTMP/shelved_hg/file.txt
+  $ sl --cwd $TESTTMP/shelved_hg shelve -q --config extensions.shelve=
+  $ sl worktree remove $TESTTMP/shelved_hg -y
+  abort: $TESTTMP/shelved_hg has shelved changes, use --force to remove it
+  [255]
+  $ sl worktree remove $TESTTMP/shelved_hg --force
+  Unmounting checkout...
+  Deleting EdenFS checkout state...
+  removed $TESTTMP/shelved_hg
+#endif

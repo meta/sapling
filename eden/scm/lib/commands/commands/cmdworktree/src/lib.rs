@@ -39,7 +39,7 @@ define_flags! {
         /// remove all linked worktrees (for 'remove')
         all: bool,
 
-        /// remove worktrees even if they have modified or untracked files, without prompting (for 'remove')
+        /// remove worktrees even if they have modified or untracked files or shelved changes, without prompting (for 'remove')
         force: bool,
 
         /// remove the label instead of setting it (for 'label')
@@ -111,6 +111,7 @@ pub fn doc() -> &'static str {
       worktree.snapshot-direct-copy=true       Use direct copy for --snapshot
       worktree.git-enabled=true                Enable worktree commands in native Git repositories
       worktree.direct-eden-removal=false       Remove EdenFS checkouts via edenfsctl instead of in-process (default: true)
+      worktree.check-shelves-on-remove=false   Let remove delete a checkout with shelved changes without --force (default: true)
 
     In native Git repositories, `add` creates a detached checkout and `remove`
     refuses locked worktrees, as Git does, even with `--force`. Worktrees

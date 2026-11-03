@@ -102,6 +102,15 @@ impl<'a> Checkouts<'a> {
         }
     }
 
+    /// Whether the checkout at `path` has shelved changes.
+    pub(crate) fn has_shelves(&self, path: &Path) -> Result<bool> {
+        match self {
+            #[cfg(feature = "eden")]
+            Self::Eden(eden) => eden.has_shelves(path),
+            Self::Git(git) => git.has_shelves(path),
+        }
+    }
+
     pub(crate) fn add_source(&self) -> Result<AddSource<'a>> {
         match self {
             #[cfg(feature = "eden")]
@@ -131,6 +140,26 @@ impl PreparedAdd<'_> {
             Self::Git(prepared) => prepared.create(dest),
         }
     }
+}
+
+/// Shelves are listed from `<name>.patch` files in the checkout's own dot dir,
+/// so removing the checkout drops them from `shelve --list` and `unshelve`.
+/// The dot dir is sniffed from the checkout because its flavour can differ from
+/// the invoking repo's.
+fn has_shelves(repo: &Repo, path: &Path) -> Result<bool> {
+    let ident = identity::sniff_dir(path)?.unwrap_or_else(|| repo.ident());
+    let shelved = ident.resolve_full_dot_dir(path).join("shelved");
+    let entries = match fs_err::read_dir(shelved) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(err.into()),
+    };
+    for entry in entries {
+        if entry?.file_name().to_string_lossy().ends_with(".patch") {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn resolve_target(repo: &Repo, requested_target: Option<HgId>) -> Result<Option<HgId>> {

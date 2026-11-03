@@ -75,6 +75,10 @@ impl<'a> EdenCheckouts<'a> {
         Ok(true)
     }
 
+    pub(super) fn has_shelves(&self, path: &Path) -> Result<bool> {
+        super::has_shelves(self.repo, path)
+    }
+
     pub(super) fn has_changes(&self, ctx: &ReqCtx<WorktreeOpts>, path: &Path) -> Result<bool> {
         let repo = Repo::load(path, &[])?;
         let wc = repo.working_copy()?;
