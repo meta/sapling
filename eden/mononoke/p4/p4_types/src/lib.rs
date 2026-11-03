@@ -376,6 +376,23 @@ pub enum DepotType {
     Other(String),
 }
 
+/// As `p4 depots` spells it.
+impl fmt::Display for DepotType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            DepotType::Local => "local",
+            DepotType::Stream => "stream",
+            DepotType::Remote => "remote",
+            DepotType::Spec => "spec",
+            DepotType::Archive => "archive",
+            DepotType::Unload => "unload",
+            DepotType::Tangent => "tangent",
+            DepotType::Graph => "graph",
+            DepotType::Other(name) => name,
+        })
+    }
+}
+
 /// Where the importer reads Perforce from. Only the implementation knows how: the importer
 /// sees nothing but these domain types. The importer makes several calls at once, so an
 /// implementation must not rely on them coming one at a time.
@@ -383,6 +400,9 @@ pub enum DepotType {
 pub trait ChangeSource: Send + Sync {
     /// The newest submitted changelist on the server.
     async fn latest_change(&self) -> Result<u64>;
+
+    /// The server's depots, without its hidden ones. A depot it cannot read is left out.
+    async fn depots(&self) -> Result<Vec<Depot>>;
 
     /// The submitted changelists with files in the depot at `depot_root` (like `//test1/`)
     /// in `(after, upto]`, oldest first.

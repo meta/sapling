@@ -58,10 +58,13 @@ use mononoke_types::P4ChangelistId;
 use p4_transform::CopySource;
 use p4_types::ChangeSource;
 use p4_types::Changelist;
+use p4_types::Depot;
+use p4_types::DepotType;
 use p4_types::FileRevision;
 use repo_blobstore::RepoBlobstoreRef;
 use repo_derived_data::RepoDerivedDataRef;
 use repo_identity::RepoIdentityRef;
+use thiserror::Error;
 
 /// Stores a file revision's content in the repo's filestore. `size` is the size
 /// Perforce reports for the revision: content of any other length is rejected.
@@ -560,6 +563,55 @@ pub async fn next_changes(
     Ok(changes)
 }
 
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum UnknownDepotRoot {
+    #[error("the server has no depot {given}")]
+    NotListed { given: String },
+    #[error("the server has no depot {given}; did you mean {server_spelling}?")]
+    WrongCase {
+        given: String,
+        server_spelling: String,
+    },
+    #[error("{given} is a {depot_type} depot; only local and stream depots can be imported")]
+    UnsupportedType {
+        given: String,
+        depot_type: DepotType,
+    },
+}
+
+/// Rejects a depot root that isn't exactly, case included, one of the server's depots, or
+/// is a depot other than local or stream. A misspelt root would list no changelists, or on
+/// a case-insensitive server list them but match none of their files and import each as an
+/// empty commit. Another type of depot would fail somewhere less obvious.
+/// Design: designs/import_flow.md.
+pub async fn check_depot_root(source: &impl ChangeSource, depot_root: &str) -> Result<()> {
+    let depots = source.depots().await?;
+    let root = |depot: &Depot| format!("//{}/", depot.name);
+    let given = depot_root.to_owned();
+    let error = if let Some(depot) = depots.iter().find(|depot| root(depot) == depot_root) {
+        match depot.depot_type {
+            DepotType::Local | DepotType::Stream => return Ok(()),
+            _ => UnknownDepotRoot::UnsupportedType {
+                given,
+                depot_type: depot.depot_type.clone(),
+            },
+        }
+    } else {
+        match depots
+            .iter()
+            .map(root)
+            .find(|root| root.eq_ignore_ascii_case(depot_root))
+        {
+            Some(server_spelling) => UnknownDepotRoot::WrongCase {
+                given,
+                server_spelling,
+            },
+            None => UnknownDepotRoot::NotListed { given },
+        }
+    };
+    Err(error.into())
+}
+
 /// The bookmark's changeset and the changelist it was imported from, or `None` before
 /// the first import.
 async fn head(
@@ -590,8 +642,8 @@ pub async fn resume_point(
 
 /// Imports `changes`, in order, onto `bookmark` (created by the first import) as
 /// `options` say, and returns their changesets. The batch must start after the
-/// `resume_point`, so nothing is imported twice. Logs a row per changelist to the context's
-/// Scuba table.
+/// `resume_point`, so nothing is imported twice. `depot_root` must pass `check_depot_root`,
+/// as `import_next` makes sure. Logs a row per changelist to the context's Scuba table.
 ///
 /// A changelist has no parent field, unlike a git commit: its parent is whatever the
 /// bookmark points at, so the bookmark is the only record of where the import is. That is
@@ -712,7 +764,8 @@ fn log_imported(ctx: &CoreContext, batch: &ImportedBatch) {
 }
 
 /// Imports the first `limit` changelists of the depot after the bookmark's `resume_point`,
-/// as `import_changelists` does.
+/// as `import_changelists` does. Nothing is read before `check_depot_root` accepts
+/// `depot_root`.
 pub async fn import_next(
     ctx: &CoreContext,
     repo: &(
@@ -733,6 +786,7 @@ pub async fn import_next(
     limit: usize,
     options: &ImportOptions,
 ) -> Result<ImportedBatch> {
+    check_depot_root(source, depot_root).await?;
     let after = resume_point(ctx, repo, bookmark).await?;
     let changes = next_changes(source, depot_root, after, limit, options.changes_window).await?;
     import_changelists(ctx, repo, source, depot_root, bookmark, &changes, options).await

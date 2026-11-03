@@ -30,6 +30,8 @@ use mononoke_types::P4ChangelistId;
 use mononoke_types_mocks::changesetid::ONES_CSID;
 use mononoke_types_mocks::contentid::ONES_CTID;
 use p4_types::Action;
+use p4_types::Depot;
+use p4_types::DepotType;
 use p4_types::FileRevision;
 use p4_types::Integration;
 use p4_types::IntegrationHow;
@@ -311,6 +313,8 @@ struct FakeSource {
     integrations: HashMap<String, Vec<Integration>>,
     /// The server's latest changelist, if not its newest one here.
     latest: Option<u64>,
+    /// Each call's method, in order.
+    calls: Mutex<Vec<&'static str>>,
     /// Each `(after, upto]` listed.
     listed: Mutex<Vec<(u64, u64)>>,
     describes: InFlight,
@@ -355,8 +359,30 @@ fn key(file: &FileRevision) -> String {
 #[async_trait]
 impl ChangeSource for FakeSource {
     async fn latest_change(&self) -> Result<u64> {
+        self.record("latest_change");
         let newest = self.changelists.keys().max().copied().unwrap_or(0);
         Ok(self.latest.unwrap_or(newest))
+    }
+
+    async fn depots(&self) -> Result<Vec<Depot>> {
+        self.record("depots");
+        let depots = [
+            ("test1", DepotType::Local),
+            ("other", DepotType::Local),
+            ("streams", DepotType::Stream),
+            ("spec", DepotType::Spec),
+            ("graph", DepotType::Graph),
+            ("remote", DepotType::Remote),
+        ];
+        Ok(depots
+            .into_iter()
+            .map(|(name, depot_type)| Depot {
+                name: name.to_owned(),
+                depot_type,
+                map: format!("{name}/..."),
+                stream_depth: None,
+            })
+            .collect())
     }
 
     /// Every changelist it has in the range, whatever its depot.
@@ -366,6 +392,7 @@ impl ChangeSource for FakeSource {
         after: u64,
         upto: u64,
     ) -> Result<Vec<u64>> {
+        self.record("submitted_changes");
         self.listed.lock().unwrap().push((after, upto));
         let mut changes: Vec<_> = self
             .changelists
@@ -378,6 +405,7 @@ impl ChangeSource for FakeSource {
     }
 
     async fn describe(&self, change: u64) -> Result<Changelist> {
+        self.record("describe");
         self.describes.call().await;
         self.changelists
             .get(&change)
@@ -386,6 +414,7 @@ impl ChangeSource for FakeSource {
     }
 
     async fn print(&self, file: &FileRevision) -> Result<BoxStream<'static, Result<Bytes>>> {
+        self.record("print");
         self.prints.call().await;
         let content = self
             .contents
@@ -398,6 +427,7 @@ impl ChangeSource for FakeSource {
         &self,
         files: &[&FileRevision],
     ) -> Result<HashMap<String, Vec<Integration>>> {
+        self.record("integrations");
         self.filelogs.call().await;
         files
             .iter()
@@ -414,6 +444,10 @@ impl ChangeSource for FakeSource {
 type FileSpec = (&'static str, u32, Action, Option<&'static [u8]>);
 
 impl FakeSource {
+    fn record(&self, call: &'static str) {
+        self.calls.lock().unwrap().push(call);
+    }
+
     fn with_changelist(mut self, number: u64, files: &[FileSpec]) -> Self {
         let files = files
             .iter()
@@ -1314,6 +1348,90 @@ async fn test_import_next_lists_in_the_configured_window(fb: FacebookInit) -> Re
 
     assert_eq!(2, batch.changelists.len());
     assert_eq!(vec![(0, 4), (4, 8), (8, 9)], *source.listed.lock().unwrap());
+    Ok(())
+}
+
+async fn import_next_from(
+    fb: FacebookInit,
+    source: &FakeSource,
+    depot_root: &str,
+) -> Result<ImportedBatch> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+    let master = BookmarkKey::new("master")?;
+    import_next(
+        &ctx,
+        &repo,
+        source,
+        depot_root,
+        &master,
+        5,
+        &ImportOptions::default(),
+    )
+    .await
+}
+
+#[mononoke::fbinit_test]
+async fn test_rule_depot_root_must_match_the_server_exactly(fb: FacebookInit) -> Result<()> {
+    let exact = two_changelists();
+    let batch = import_next_from(fb, &exact, DEPOT).await?;
+    assert_eq!(2, batch.changelists.len());
+    assert_eq!(
+        ["depots", "latest_change"],
+        exact.calls.lock().unwrap()[..2]
+    );
+
+    for (depot_root, expected) in [
+        (
+            "//tset1/",
+            UnknownDepotRoot::NotListed {
+                given: "//tset1/".to_owned(),
+            },
+        ),
+        (
+            "//Test1/",
+            UnknownDepotRoot::WrongCase {
+                given: "//Test1/".to_owned(),
+                server_spelling: "//test1/".to_owned(),
+            },
+        ),
+    ] {
+        let source = two_changelists();
+        let error = import_next_from(fb, &source, depot_root).await.unwrap_err();
+        assert_eq!(Some(&expected), error.downcast_ref(), "{error:?}");
+        assert_eq!(vec!["depots"], *source.calls.lock().unwrap());
+    }
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_rule_depot_must_be_local_or_stream(fb: FacebookInit) -> Result<()> {
+    check_depot_root(&two_changelists(), "//streams/").await?;
+
+    for (name, depot_type) in [
+        ("spec", DepotType::Spec),
+        ("graph", DepotType::Graph),
+        ("remote", DepotType::Remote),
+    ] {
+        let source = two_changelists();
+        let depot_root = format!("//{name}/");
+        let error = import_next_from(fb, &source, &depot_root)
+            .await
+            .unwrap_err();
+        let expected = UnknownDepotRoot::UnsupportedType {
+            given: depot_root,
+            depot_type,
+        };
+        assert_eq!(Some(&expected), error.downcast_ref(), "{error:?}");
+        assert_eq!(vec!["depots"], *source.calls.lock().unwrap());
+    }
+    let error = check_depot_root(&two_changelists(), "//spec/")
+        .await
+        .unwrap_err();
+    assert_eq!(
+        "//spec/ is a spec depot; only local and stream depots can be imported",
+        error.to_string()
+    );
     Ok(())
 }
 
