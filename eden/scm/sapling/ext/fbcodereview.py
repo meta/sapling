@@ -586,6 +586,7 @@ def extsetup(ui) -> None:
 
     smartset.prefetchtemplatekw.update(
         {
+            "diffversion": ["phabstatus"],
             "phabsignalstatus": ["phabstatus"],
             "phabstatus": ["phabstatus"],
             "phabbadgestatus": ["phabstatus"],

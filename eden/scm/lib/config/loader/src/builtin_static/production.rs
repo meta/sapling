@@ -413,7 +413,8 @@ sl_shelved = "{if(shelveenabled, ifcontains(rev, revset('shelved()'), label('sl.
 ssl_unsync = "{label('ssl.unsync', ifeq(syncstatus, 'unsync', '(local changes)'))}"
 ssl_diffversion = if(diffversion,ifcontains("+",diffversion,label("ssl.unsync","{diffversion}"),ifcontains(".",diffversion,label("ssl.syncdraft","{diffversion}"),label("ssl.sync","{diffversion}"))))
 ssl_unsync_or_diffversion = ifeq(ssl_show_diffversion,"true",ssl_diffversion,ssl_unsync)
-ssl_show_diffversion = ifeq(verbosity, "verbose", "true")
+# Whether `ssl` shows the diff version each commit was submitted as: with -v, and in the mutation history (`sl ssl -t`).
+ssl_show_diffversion = ifeq(verbosity, "verbose", "true", sl_show_mutatedfrom)
 sl_stablecommit = "{label('sl.stablecommit', smallcommitmeta('arcpull_stable'))}"
 
 sl_node_info = "{separate(' ', sl_node, sl_mutations, sl_backup, sl_shelved)}"
