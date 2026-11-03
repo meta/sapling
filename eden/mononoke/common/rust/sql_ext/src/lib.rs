@@ -5,7 +5,7 @@
  * GNU General Public License version 2.
  */
 
-#![feature(once_cell_try)]
+#![cfg_attr(fbcode_build, feature(once_cell_try))]
 
 mod hasher;
 mod mononoke_queries;
