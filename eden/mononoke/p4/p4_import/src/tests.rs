@@ -313,6 +313,7 @@ struct FakeSource {
     latest: Option<u64>,
     /// Each `(after, upto]` listed.
     listed: Mutex<Vec<(u64, u64)>>,
+    describes: InFlight,
     prints: InFlight,
     filelogs: InFlight,
 }
@@ -377,6 +378,7 @@ impl ChangeSource for FakeSource {
     }
 
     async fn describe(&self, change: u64) -> Result<Changelist> {
+        self.describes.call().await;
         self.changelists
             .get(&change)
             .cloned()
@@ -1333,8 +1335,10 @@ async fn test_files_are_fetched_at_most_file_concurrency_at_once(fb: FacebookIni
     let ctx = CoreContext::test_mock(fb);
     let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
     let build = async |source: &FakeSource, file_concurrency| -> Result<Vec<_>> {
+        // One changelist at a time: the bound is per changelist.
         let options = ImportOptions {
             file_concurrency,
+            changelist_lookahead: 1,
             ..Default::default()
         };
         let built =
@@ -1373,5 +1377,37 @@ async fn test_zero_file_concurrency_still_builds(fb: FacebookInit) -> Result<()>
         .map(|b| b.changeset.file_changes().count())
         .collect();
     assert_eq!(vec![0, 1], changed);
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_changelists_are_fetched_ahead_at_most_changelist_lookahead_at_once(
+    fb: FacebookInit,
+) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+    let build = async |source: &FakeSource, changelist_lookahead| -> Result<Vec<_>> {
+        let options = ImportOptions {
+            changelist_lookahead,
+            ..Default::default()
+        };
+        let built =
+            build_changesets(&ctx, &repo, source, DEPOT, None, &[7, 9, 11], &options).await?;
+        Ok(built.iter().map(|b| b.changeset.clone()).collect())
+    };
+    let (sequential, ahead) = (branches_of_a(4), branches_of_a(4));
+
+    let one_at_a_time = build(&sequential, 1).await?;
+    let two_at_a_time = build(&ahead, 2).await?;
+
+    assert_eq!(1, sequential.describes.max());
+    assert_eq!(2, ahead.describes.max());
+    assert_eq!(one_at_a_time, two_at_a_time);
+    let parents: Vec<_> = two_at_a_time
+        .iter()
+        .map(|c| c.parents().collect::<Vec<_>>())
+        .collect();
+    let ids: Vec<_> = two_at_a_time.iter().map(|c| c.get_changeset_id()).collect();
+    assert_eq!(vec![vec![], vec![ids[0]], vec![ids[1]]], parents);
     Ok(())
 }

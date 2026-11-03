@@ -34,9 +34,12 @@ use context::CoreContext;
 use filestore::FilestoreConfigRef;
 use filestore::StoreRequest;
 use futures::FutureExt;
+use futures::SinkExt;
 use futures::Stream;
 use futures::StreamExt;
 use futures::TryStreamExt;
+use futures::channel::mpsc;
+use futures::future;
 use futures::stream;
 use futures_stats::TimedTryFutureExt;
 use import_common::BackfillDerivation;
@@ -149,6 +152,8 @@ pub struct ImportOptions {
     /// Per changelist, the files printed and stored and the copy sources checked at once.
     /// At least 1.
     pub file_concurrency: usize,
+    /// Changelists fetched at once, while an earlier one is built. At least 1.
+    pub changelist_lookahead: usize,
 }
 
 impl Default for ImportOptions {
@@ -157,6 +162,7 @@ impl Default for ImportOptions {
             derive: vec![DerivableType::ContentManifests],
             changes_window: CHANGES_WINDOW,
             file_concurrency: 16,
+            changelist_lookahead: 2,
         }
     }
 }
@@ -477,7 +483,8 @@ async fn build_changeset(
 }
 
 /// The changesets for `changes`, in order, each on top of the one before and the first on
-/// top of `base`. Their contents are stored; the changesets themselves are not.
+/// top of `base`. Their contents are stored; the changesets themselves are not. Changelists
+/// are fetched ahead while earlier ones are built, but built one at a time, in order.
 pub async fn build_changesets(
     ctx: &CoreContext,
     repo: &(impl RepoBlobstoreRef + RepoDerivedDataRef + FilestoreConfigRef),
@@ -488,18 +495,41 @@ pub async fn build_changesets(
     options: &ImportOptions,
 ) -> Result<Vec<BuiltChangeset>> {
     let concurrency = options.file_concurrency.max(1);
-    let mut built = Vec::with_capacity(changes.len());
-    for &change in changes {
-        let changeset = async {
-            let fetched =
-                fetch_changelist(ctx, repo, source, depot_root, change, concurrency).await?;
-            build_changeset(ctx, repo, depot_root, base, &built, fetched, concurrency).await
+    let context = |change| format!("building changelist {change}");
+    // Room for one fetched changelist waiting for the build, besides those in flight.
+    let (mut sender, mut receiver) = mpsc::channel(0);
+    let fetch = async move {
+        let mut fetched = pin!(
+            stream::iter(changes)
+                .map(|&change| async move {
+                    fetch_changelist(ctx, repo, source, depot_root, change, concurrency)
+                        .await
+                        .with_context(|| context(change))
+                })
+                .buffered(options.changelist_lookahead.max(1))
+        );
+        while let Some(fetched) = fetched.next().await {
+            // Fails only once the build has stopped on an error.
+            if sender.send(fetched).await.is_err() {
+                break;
+            }
         }
-        .await
-        .with_context(|| format!("building changelist {change}"))?;
-        built.push(changeset);
-    }
-    Ok(built)
+    };
+    let build = async move {
+        let mut built = Vec::with_capacity(changes.len());
+        while let Some(fetched) = receiver.next().await {
+            let fetched: FetchedChangelist = fetched?;
+            let change = fetched.changelist.number;
+            let changeset =
+                build_changeset(ctx, repo, depot_root, base, &built, fetched, concurrency)
+                    .await
+                    .with_context(|| context(change))?;
+            built.push(changeset);
+        }
+        anyhow::Ok(built)
+    };
+    let ((), built) = future::join(fetch, build).await;
+    built
 }
 
 /// How many changelist numbers one `ChangeSource::submitted_changes` call covers.
