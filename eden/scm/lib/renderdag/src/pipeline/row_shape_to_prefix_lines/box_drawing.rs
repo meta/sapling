@@ -66,6 +66,8 @@ const DEC_GLYPHS: [&str; glyph::COUNT] = [
 /// Glyph table used by box-drawing prefix line renderers.
 pub trait BoxDrawingGlyphSet {
     /// The glyph table for this box-drawing style.
+    /// Each entry contains a column glyph followed by a space or horizontal
+    /// glyph, optionally wrapped in DEC special graphics escape sequences.
     /// The last entry draws vertical ancestor lines for `DashStyle::Once`.
     const GLYPHS: &'static [&'static str; glyph::COUNT];
 }
@@ -93,6 +95,8 @@ impl BoxDrawingGlyphSet for DecGraphics {
 
 /// Converts abstract row shapes into box-drawing graph prefix lines.
 pub struct BoxDrawingPrefixLineRenderer<G = Curved> {
+    column_spacing: usize,
+    spaced_glyphs: Option<Box<[String; glyph::COUNT]>>,
     _glyphs: PhantomData<G>,
 }
 
@@ -103,8 +107,40 @@ where
     /// Create a renderer that uses the glyph set from `G`.
     pub fn new() -> Self {
         Self {
+            column_spacing: 1,
+            spaced_glyphs: None,
             _glyphs: PhantomData,
         }
+    }
+
+    fn set_column_spacing(&mut self, column_spacing: usize) {
+        if self.column_spacing == column_spacing {
+            return;
+        }
+        self.column_spacing = column_spacing;
+        self.spaced_glyphs = (column_spacing != 1).then(|| {
+            Box::new(G::GLYPHS.map(|glyph| {
+                let (prefix, glyph, suffix) = match glyph
+                    .strip_prefix("\x1B(0")
+                    .and_then(|glyph| glyph.strip_suffix("\x1B(B"))
+                {
+                    Some(glyph) => ("\x1B(0", glyph, "\x1B(B"),
+                    None => ("", glyph, ""),
+                };
+                let split = glyph.char_indices().nth(1).unwrap().0;
+                let (column, spacing) = glyph.split_at(split);
+                let mut out = String::with_capacity(
+                    prefix.len() + column.len() + spacing.len() * column_spacing + suffix.len(),
+                );
+                out.push_str(prefix);
+                out.push_str(column);
+                for _ in 0..column_spacing {
+                    out.push_str(spacing);
+                }
+                out.push_str(suffix);
+                out
+            }))
+        });
     }
 
     /// Use square box-drawing glyphs.
@@ -121,7 +157,12 @@ where
 impl<G: BoxDrawingGlyphSet, N> PrefixLineRenderer<N> for BoxDrawingPrefixLineRenderer<G> {
     /// Convert the next graph row shape into prefix lines.
     fn next_prefix_lines(&mut self, line: &GraphRowShape<N>) -> Vec<PrefixLine> {
-        let glyphs = G::GLYPHS;
+        self.set_column_spacing(line.style.column_spacing);
+        let spaced_glyphs = self
+            .spaced_glyphs
+            .as_deref()
+            .map(|glyphs| glyphs.each_ref().map(String::as_str));
+        let glyphs = spaced_glyphs.as_ref().unwrap_or(G::GLYPHS);
         let ancestor = match line.style.dash_style {
             DashStyle::Persistent => glyph::ANCESTOR,
             DashStyle::Once => glyph::ANCESTOR_ONCE,
@@ -146,7 +187,7 @@ impl<G: BoxDrawingGlyphSet, N> PrefixLineRenderer<N> for BoxDrawingPrefixLineRen
                     node_line.parts.push(PrefixLinePart::NodeGlyph);
                     node_line
                         .parts
-                        .push(PrefixLinePart::Text(String::from(" ")));
+                        .push(PrefixLinePart::Text(" ".repeat(line.style.column_spacing)));
                 }
                 NodeLine::Parent => push_text(&mut node_line, glyphs[glyph::PARENT]),
                 NodeLine::Ancestor => push_text(&mut node_line, glyphs[ancestor]),

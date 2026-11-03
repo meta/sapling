@@ -22,6 +22,11 @@ pub struct GraphRowShapeStyle {
 
     /// Where link-related padding lines are placed around the node line.
     pub link_line_placement: LinkLinePlacement,
+
+    /// Requested number of character columns between adjacent vertical lines.
+    /// Box drawing uses this value directly, including zero for no gap.
+    /// ASCII renderers currently use their fixed spacing.
+    pub column_spacing: usize,
 }
 
 impl Default for GraphRowShapeStyle {
@@ -29,6 +34,7 @@ impl Default for GraphRowShapeStyle {
         Self {
             dash_style: DashStyle::Persistent,
             link_line_placement: LinkLinePlacement::Top,
+            column_spacing: 1,
         }
     }
 }

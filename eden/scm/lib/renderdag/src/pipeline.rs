@@ -76,6 +76,73 @@ mod tests {
     }
 
     #[test]
+    fn test_box_drawing_column_spacing() {
+        use crate::render::Ancestor;
+
+        let render = |spacing| {
+            let mut renderer = GraphTextRenderer::<&str>::default().configure(|options| {
+                options.graph_row_shape_style.column_spacing = spacing;
+            });
+            renderer.reserve("A");
+            renderer.reserve("B");
+            indent(&renderer.next_text(
+                "F",
+                vec![
+                    Ancestor::Parent("A"),
+                    Ancestor::Ancestor("B"),
+                    Ancestor::Anonymous,
+                ],
+                "o",
+                "F\nmessage 1\nmessage 2\nmessage 3\nmessage 4\nmessage 5",
+            ))
+        };
+        assert_eq!(
+            render(3),
+            r#"
+                    o    F
+            ╭───┬───┤    message 1
+            │   ╷   │    message 2
+            │   ╷   ~    message 3
+            │   ╷        message 4
+            │   ╷        message 5"#,
+        );
+        assert_eq!(
+            render(0),
+            r#"
+              o F
+            ╭┬┤ message 1
+            │╷│ message 2
+            │╷~ message 3
+            │╷  message 4
+            │╷  message 5"#,
+        );
+    }
+
+    #[test]
+    fn test_box_drawing_column_spacing_glyph_sets() {
+        use row_shape_to_prefix_lines::box_drawing::DecGraphics;
+        use row_shape_to_prefix_lines::box_drawing::Square;
+
+        use crate::render::Ancestor;
+
+        let square = BoxDrawing::<Square>::new();
+        let mut renderer = GraphTextRenderer::with_prefix_lines(Box::new(square)).configure(|o| {
+            o.graph_row_shape_style.column_spacing = 3;
+        });
+        renderer.reserve("A");
+        let out = renderer.next_text("B", vec![Ancestor::Parent("A")], "o", "B\nlink");
+        assert_eq!(out, "    o    B\n┌───┘    link\n");
+
+        let dec = BoxDrawing::<DecGraphics>::new();
+        let mut renderer = GraphTextRenderer::with_prefix_lines(Box::new(dec)).configure(|o| {
+            o.graph_row_shape_style.column_spacing = 3;
+        });
+        renderer.reserve("A");
+        let out = renderer.next_text("B", vec![Ancestor::Parent("A")], "o", "B\nlink");
+        assert_eq!(out, "    o    B\n\x1B(0lqqq\x1B(B\x1B(0j   \x1B(B link\n");
+    }
+
+    #[test]
     fn test_row_shape_derived_padding_lines() {
         use crate::pipeline::types::GraphRowShape;
         use crate::render::NodeLine;
@@ -412,6 +479,7 @@ mod tests {
                 options.graph_row_shape_style = GraphRowShapeStyle {
                     dash_style: DashStyle::Once,
                     link_line_placement: LinkLinePlacement::Bottom,
+                    ..Default::default()
                 };
             });
             let mut out = renderer.next_text("A", vec![Ancestor::Ancestor("B")], "o", message);

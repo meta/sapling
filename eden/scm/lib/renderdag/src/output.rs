@@ -91,6 +91,9 @@ impl OutputRendererState {
     }
 }
 
+/// Legacy text-renderer builder.
+/// New options since renderdag 0.2 might be ignored.
+/// Use [`crate::pipeline::GraphTextRenderer::configure`] for all options.
 pub struct OutputRendererBuilder<N, R>
 where
     R: Renderer<N, Output = GraphRow<N>> + Sized,
