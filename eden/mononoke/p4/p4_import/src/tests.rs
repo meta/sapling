@@ -6,6 +6,8 @@
  */
 
 use std::sync::Mutex;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::task::Poll;
 
 use anyhow::anyhow;
@@ -311,6 +313,38 @@ struct FakeSource {
     latest: Option<u64>,
     /// Each `(after, upto]` listed.
     listed: Mutex<Vec<(u64, u64)>>,
+    prints: InFlight,
+    filelogs: InFlight,
+}
+
+/// Counts the calls in flight at once.
+#[derive(Default)]
+struct InFlight {
+    now: AtomicUsize,
+    max: AtomicUsize,
+}
+
+impl InFlight {
+    /// Lets other calls start before this one returns.
+    async fn call(&self) {
+        let now = self.now.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max.fetch_max(now, Ordering::SeqCst);
+        let mut yielded = false;
+        futures::future::poll_fn(|cx| {
+            if yielded {
+                return Poll::Ready(());
+            }
+            yielded = true;
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        })
+        .await;
+        self.now.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    fn max(&self) -> usize {
+        self.max.load(Ordering::SeqCst)
+    }
 }
 
 fn key(file: &FileRevision) -> String {
@@ -350,6 +384,7 @@ impl ChangeSource for FakeSource {
     }
 
     async fn print(&self, file: &FileRevision) -> Result<BoxStream<'static, Result<Bytes>>> {
+        self.prints.call().await;
         let content = self
             .contents
             .get(&key(file))
@@ -361,6 +396,7 @@ impl ChangeSource for FakeSource {
         &self,
         files: &[&FileRevision],
     ) -> Result<HashMap<String, Vec<Integration>>> {
+        self.filelogs.call().await;
         files
             .iter()
             .map(|file| {
@@ -454,8 +490,15 @@ async fn test_changelist_contents_are_stored_by_depot_path(fb: FacebookInit) -> 
         ],
     };
 
-    let contents =
-        upload_changelist_contents(&ctx, &repo, &source, "//test1/", &changelist).await?;
+    let contents = upload_changelist_contents(
+        &ctx,
+        &repo,
+        &source,
+        "//test1/",
+        &changelist,
+        ImportOptions::default().file_concurrency,
+    )
+    .await?;
 
     let mut stored = Vec::new();
     for (path, metadata) in &contents {
@@ -522,8 +565,16 @@ async fn test_changelists_build_a_linear_history(fb: FacebookInit) -> Result<()>
     let ctx = CoreContext::test_mock(fb);
     let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
 
-    let built =
-        build_changesets(&ctx, &repo, &two_changelists(), "//test1/", None, &[7, 9]).await?;
+    let built = build_changesets(
+        &ctx,
+        &repo,
+        &two_changelists(),
+        "//test1/",
+        None,
+        &[7, 9],
+        &ImportOptions::default(),
+    )
+    .await?;
 
     let [first, second] = &built[..] else {
         panic!("two changesets expected: {built:?}");
@@ -567,9 +618,17 @@ async fn test_failure_names_the_changelist(fb: FacebookInit) -> Result<()> {
     let ctx = CoreContext::test_mock(fb);
     let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
 
-    let error = build_changesets(&ctx, &repo, &two_changelists(), "//test1/", None, &[7, 8])
-        .await
-        .unwrap_err();
+    let error = build_changesets(
+        &ctx,
+        &repo,
+        &two_changelists(),
+        "//test1/",
+        None,
+        &[7, 8],
+        &ImportOptions::default(),
+    )
+    .await
+    .unwrap_err();
 
     assert!(
         format!("{error:#}").contains("building changelist 8: unexpected describe of 8"),
@@ -662,7 +721,16 @@ async fn copy_from_of_c(
     source: &str,
 ) -> Result<(Option<(NonRootMPath, ChangesetId)>, usize)> {
     let source = branch_after_two_changelists(source);
-    let built = build_changesets(ctx, repo, &source, "//test1/", base, changes).await?;
+    let built = build_changesets(
+        ctx,
+        repo,
+        &source,
+        "//test1/",
+        base,
+        changes,
+        &ImportOptions::default(),
+    )
+    .await?;
     let last = built.last().unwrap();
     let copy_from = files(ctx, repo, &last.changeset).await?[0].2.clone();
     Ok((copy_from, last.dropped_copy_sources))
@@ -729,7 +797,16 @@ async fn test_copy_with_several_sources_is_counted_as_ambiguous(fb: FacebookInit
         vec![branch_from("//test1/a.txt"), branch_from("//test1/b.txt")],
     );
 
-    let built = build_changesets(&ctx, &repo, &source, DEPOT, None, &[7, 9, 11]).await?;
+    let built = build_changesets(
+        &ctx,
+        &repo,
+        &source,
+        DEPOT,
+        None,
+        &[7, 9, 11],
+        &ImportOptions::default(),
+    )
+    .await?;
 
     let last = built.last().unwrap();
     assert_eq!(None, files(&ctx, &repo, &last.changeset).await?[0].2);
@@ -781,7 +858,16 @@ async fn test_import_moves_the_bookmark_and_maps_each_changelist(fb: FacebookIni
     .await?
     .changelists;
 
-    let built = build_changesets(&ctx, &repo, &two_changelists(), DEPOT, None, &[7, 9]).await?;
+    let built = build_changesets(
+        &ctx,
+        &repo,
+        &two_changelists(),
+        DEPOT,
+        None,
+        &[7, 9],
+        &ImportOptions::default(),
+    )
+    .await?;
     let expected: Vec<_> = built
         .iter()
         .map(|built| (built.change, built.changeset.get_changeset_id()))
@@ -1224,5 +1310,68 @@ async fn test_import_next_lists_in_the_configured_window(fb: FacebookInit) -> Re
 
     assert_eq!(2, batch.changelists.len());
     assert_eq!(vec![(0, 4), (4, 8), (8, 9)], *source.listed.lock().unwrap());
+    Ok(())
+}
+
+/// `two_changelists`, then 11 branching `count` files from `a.txt`.
+fn branches_of_a(count: usize) -> FakeSource {
+    let targets: Vec<&'static str> = (0..count)
+        .map(|i| &*format!("//test1/copy{i}.txt").leak())
+        .collect();
+    let files: Vec<FileSpec> = targets
+        .iter()
+        .map(|&target| (target, 1, Action::Branch, Some(&b"one\n"[..])))
+        .collect();
+    targets.iter().fold(
+        two_changelists().with_changelist(11, &files),
+        |source, target| source.with_branch(target, "//test1/a.txt"),
+    )
+}
+
+#[mononoke::fbinit_test]
+async fn test_files_are_fetched_at_most_file_concurrency_at_once(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+    let build = async |source: &FakeSource, file_concurrency| -> Result<Vec<_>> {
+        let options = ImportOptions {
+            file_concurrency,
+            ..Default::default()
+        };
+        let built =
+            build_changesets(&ctx, &repo, source, DEPOT, None, &[7, 9, 11], &options).await?;
+        Ok(built.iter().map(|b| b.changeset.clone()).collect())
+    };
+    let (sequential, concurrent) = (branches_of_a(10), branches_of_a(10));
+
+    let one_at_a_time = build(&sequential, 1).await?;
+    let three_at_a_time = build(&concurrent, 3).await?;
+
+    assert_eq!((1, 1), (sequential.prints.max(), sequential.filelogs.max()));
+    // One batched `integrations` call per changelist.
+    assert_eq!((3, 1), (concurrent.prints.max(), concurrent.filelogs.max()));
+    assert_eq!(one_at_a_time, three_at_a_time);
+    assert_eq!(10, three_at_a_time[2].file_changes().count());
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_zero_file_concurrency_still_builds(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+    let source = FakeSource::default()
+        .with_changelist(3, &[])
+        .with_changelist(5, &[("//test1/a.txt", 1, Action::Add, Some(b"one\n"))]);
+    let options = ImportOptions {
+        file_concurrency: 0,
+        ..Default::default()
+    };
+
+    let built = build_changesets(&ctx, &repo, &source, DEPOT, None, &[3, 5], &options).await?;
+
+    let changed: Vec<_> = built
+        .iter()
+        .map(|b| b.changeset.file_changes().count())
+        .collect();
+    assert_eq!(vec![0, 1], changed);
     Ok(())
 }

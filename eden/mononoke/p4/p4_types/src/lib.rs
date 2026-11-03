@@ -377,7 +377,8 @@ pub enum DepotType {
 }
 
 /// Where the importer reads Perforce from. Only the implementation knows how: the importer
-/// sees nothing but these domain types.
+/// sees nothing but these domain types. The importer makes several calls at once, so an
+/// implementation must not rely on them coming one at a time.
 #[async_trait]
 pub trait ChangeSource: Send + Sync {
     /// The newest submitted changelist on the server.

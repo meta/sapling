@@ -35,6 +35,7 @@ use filestore::FilestoreConfigRef;
 use filestore::StoreRequest;
 use futures::FutureExt;
 use futures::Stream;
+use futures::StreamExt;
 use futures::TryStreamExt;
 use futures::stream;
 use futures_stats::TimedTryFutureExt;
@@ -54,6 +55,7 @@ use mononoke_types::P4ChangelistId;
 use p4_transform::CopySource;
 use p4_types::ChangeSource;
 use p4_types::Changelist;
+use p4_types::FileRevision;
 use repo_blobstore::RepoBlobstoreRef;
 use repo_derived_data::RepoDerivedDataRef;
 use repo_identity::RepoIdentityRef;
@@ -135,7 +137,7 @@ fn symlink_target(size: u64, mut printed: Vec<u8>) -> Result<Bytes> {
     Ok(Bytes::from(printed))
 }
 
-/// How to import.
+/// How to import: what to derive, and how much runs at once.
 #[derive(Clone, Debug)]
 pub struct ImportOptions {
     /// Derived for every imported changeset before the bookmark moves, if the repo
@@ -144,6 +146,9 @@ pub struct ImportOptions {
     pub derive: Vec<DerivableType>,
     /// How many changelist numbers each listing of the depot covers.
     pub changes_window: u64,
+    /// Per changelist, the files printed and stored and the copy sources checked at once.
+    /// At least 1.
+    pub file_concurrency: usize,
 }
 
 impl Default for ImportOptions {
@@ -151,39 +156,56 @@ impl Default for ImportOptions {
         Self {
             derive: vec![DerivableType::ContentManifests],
             changes_window: CHANGES_WINDOW,
+            file_concurrency: 16,
         }
     }
 }
 
+/// The revisions of `changelist` in the depot at `depot_root` that `keep` selects.
+fn in_depot<'a>(
+    depot_root: &str,
+    changelist: &'a Changelist,
+    keep: impl Fn(&FileRevision) -> bool,
+) -> Result<Vec<&'a FileRevision>> {
+    let mut revisions = Vec::new();
+    for revision in &changelist.files {
+        if keep(revision) && p4_transform::repo_path(depot_root, &revision.depot_path)?.is_some() {
+            revisions.push(revision);
+        }
+    }
+    Ok(revisions)
+}
+
 /// Stores the content of every revision in `changelist` that leaves content in the depot
-/// at `depot_root`, keyed by depot path as `p4_transform::changeset` takes it.
+/// at `depot_root`, `concurrency` at a time, keyed by depot path as
+/// `p4_transform::changeset` takes it.
 pub async fn upload_changelist_contents(
     ctx: &CoreContext,
     repo: &(impl RepoBlobstoreRef + FilestoreConfigRef),
     source: &impl ChangeSource,
     depot_root: &str,
     changelist: &Changelist,
+    concurrency: usize,
 ) -> Result<HashMap<String, ContentMetadataV2>> {
-    let mut contents = HashMap::new();
-    // One file at a time for now.
-    for revision in &changelist.files {
-        if !revision.action.has_content()
-            || p4_transform::repo_path(depot_root, &revision.depot_path)?.is_none()
-        {
-            continue;
-        }
-        let name = || format!("{}#{}", revision.depot_path, revision.revision);
-        let size = revision
-            .size
-            .with_context(|| format!("describe gave no size for {}", name()))?;
-        let content = source.print(revision).await?;
-        let file_type = p4_transform::file_type(&revision.file_type);
-        let metadata = upload_file_content(ctx, repo, file_type, size, content)
-            .await
-            .with_context(|| format!("storing {}", name()))?;
-        contents.insert(revision.depot_path.clone(), metadata);
-    }
-    Ok(contents)
+    let revisions = in_depot(depot_root, changelist, |revision| {
+        revision.action.has_content()
+    })?;
+    stream::iter(revisions)
+        .map(|revision| async move {
+            let name = || format!("{}#{}", revision.depot_path, revision.revision);
+            let size = revision
+                .size
+                .with_context(|| format!("describe gave no size for {}", name()))?;
+            let content = source.print(revision).await?;
+            let file_type = p4_transform::file_type(&revision.file_type);
+            let metadata = upload_file_content(ctx, repo, file_type, size, content)
+                .await
+                .with_context(|| format!("storing {}", name()))?;
+            anyhow::Ok((revision.depot_path.clone(), metadata))
+        })
+        .buffer_unordered(concurrency)
+        .try_collect()
+        .await
 }
 
 /// The source paths of the revisions in `changelist` that were copied into the depot at
@@ -195,15 +217,9 @@ async fn copy_sources(
     depot_root: &str,
     changelist: &Changelist,
 ) -> Result<(HashMap<String, NonRootMPath>, usize)> {
-    let mut revisions = Vec::new();
-    for revision in &changelist.files {
-        if !p4_transform::can_have_copy_source(revision.action)
-            || p4_transform::repo_path(depot_root, &revision.depot_path)?.is_none()
-        {
-            continue;
-        }
-        revisions.push(revision);
-    }
+    let revisions = in_depot(depot_root, changelist, |revision| {
+        p4_transform::can_have_copy_source(revision.action)
+    })?;
     let integrations = if revisions.is_empty() {
         HashMap::new()
     } else {
@@ -372,11 +388,13 @@ async fn fetch_changelist(
     source: &impl ChangeSource,
     depot_root: &str,
     change: u64,
+    concurrency: usize,
 ) -> Result<FetchedChangelist> {
     let (describe, changelist) = source.describe(change).try_timed().await?;
-    let (upload, contents) = upload_changelist_contents(ctx, repo, source, depot_root, &changelist)
-        .try_timed()
-        .await?;
+    let (upload, contents) =
+        upload_changelist_contents(ctx, repo, source, depot_root, &changelist, concurrency)
+            .try_timed()
+            .await?;
     let (integrations, (copy_sources, ambiguous_copy_sources)) =
         copy_sources(source, depot_root, &changelist)
             .try_timed()
@@ -403,6 +421,7 @@ async fn build_changeset(
     base: Option<ChangesetId>,
     built: &[BuiltChangeset],
     fetched: FetchedChangelist,
+    concurrency: usize,
 ) -> Result<BuiltChangeset> {
     let FetchedChangelist {
         changelist,
@@ -415,16 +434,15 @@ async fn build_changeset(
     // blame would follow it anyway.
     let (copy_source_checks, missing) = async {
         let base_root = base_root_for(ctx, repo, base, built, copy_sources.values()).await?;
-        let mut missing = Vec::new();
-        for (target, copy_source) in &copy_sources {
-            if file_in_parent(ctx, repo, base_root, built, copy_source)
-                .await?
-                .is_none()
-            {
-                missing.push(target.clone());
-            }
-        }
-        anyhow::Ok(missing)
+        stream::iter(&copy_sources)
+            .map(|(target, copy_source)| async move {
+                let parent_file = file_in_parent(ctx, repo, base_root, built, copy_source).await?;
+                anyhow::Ok(parent_file.is_none().then(|| target.clone()))
+            })
+            .buffer_unordered(concurrency)
+            .try_filter_map(|missing| async move { Ok(missing) })
+            .try_collect::<Vec<_>>()
+            .await
     }
     .try_timed()
     .await?;
@@ -467,12 +485,15 @@ pub async fn build_changesets(
     depot_root: &str,
     base: Option<ChangesetId>,
     changes: &[u64],
+    options: &ImportOptions,
 ) -> Result<Vec<BuiltChangeset>> {
+    let concurrency = options.file_concurrency.max(1);
     let mut built = Vec::with_capacity(changes.len());
     for &change in changes {
         let changeset = async {
-            let fetched = fetch_changelist(ctx, repo, source, depot_root, change).await?;
-            build_changeset(ctx, repo, depot_root, base, &built, fetched).await
+            let fetched =
+                fetch_changelist(ctx, repo, source, depot_root, change, concurrency).await?;
+            build_changeset(ctx, repo, depot_root, base, &built, fetched, concurrency).await
         }
         .await
         .with_context(|| format!("building changelist {change}"))?;
@@ -580,7 +601,7 @@ pub async fn import_changelists(
         );
     }
     let old = head.map(|(cs_id, _)| cs_id);
-    let (build, built) = build_changesets(ctx, repo, source, depot_root, old, changes)
+    let (build, built) = build_changesets(ctx, repo, source, depot_root, old, changes, options)
         .try_timed()
         .await?;
     let (imported, changesets): (Vec<_>, Vec<_>) = built
