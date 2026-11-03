@@ -244,7 +244,7 @@ are shown with --hidden:
   │
   │ o  B2
   ├─╯
-  x  B
+  v  B
   $ sl log -G --mutation -T '{desc}\n' -r 'desc(B2)'
   o  B2
   │
@@ -254,7 +254,7 @@ are shown with --hidden:
   │
   │ o  B2
   ├─╯
-  x  B
+  v  B
   $ sl log -T '{desc}\n' -r 'mutationhistory(desc(B2))'
   B
   B2
@@ -275,7 +275,7 @@ are shown with --hidden:
   │
   │ o  B2
   ├─╯
-  x  B
+  v  B
 
 Commits that are not available locally are shown with --show-missing:
 
@@ -334,3 +334,110 @@ locally:
   $ sl log -G --show-missing
   abort: --show-missing requires --mutation and --graph
   [255]
+
+A split part that diverged is drawn as v, while the commit that was split,
+replaced by one mutation, stays x. A mutation whose successors are all hidden
+does not count:
+
+  $ newclientrepo
+  $ setconfig experimental.evolution.allowdivergence=true
+  $ echo a > a
+  $ sl commit -qAm A
+  $ echo b > b
+  $ echo c > c
+  $ sl commit -qAm B
+  $ rm $TESTTMP/partone.done
+  $ HGEDITOR="\"$PYTHON\" \"$TESTTMP/partone.py\"" sl split -q --config ui.interactive=true > /dev/null << EOF
+  > y
+  > y
+  > n
+  > y
+  > EOF
+  $ echo c2 > c
+  $ sl amend -q -m B2
+  $ sl goto -q --hidden 'children(desc("B part 1")) - .'
+  $ echo c3 > c
+  $ sl amend -q -m B3
+  $ sl log -G --mutation -T '{desc}\n'
+  @  B3
+  │
+  │ o  B2
+  ├─╯
+  v  B
+  │
+  │ o  B part 1
+  ├─╯
+  x  B
+  $ sl hide -q 'desc(B2)'
+  $ sl log -G --mutation -T '{desc}\n'
+  @  B3
+  │
+  x  B
+  │
+  │ o  B part 1
+  ├─╯
+  x  B
+
+An obsolete commit replaced by more than one visible version is drawn as v.
+A split is not divergence, and earlier versions of the diverged commit are not
+diverged themselves:
+
+  $ newclientrepo
+  $ setconfig experimental.evolution.allowdivergence=true
+  $ echo a > a
+  $ sl commit -qAm A
+  $ echo b > b
+  $ echo c > c
+  $ sl commit -qAm B0
+  $ sl amend -q -m B
+  $ rm $TESTTMP/partone.done
+  $ HGEDITOR="\"$PYTHON\" \"$TESTTMP/partone.py\"" sl split -q --config ui.interactive=true << EOF
+  > y
+  > y
+  > n
+  > y
+  > EOF
+  diff --git a/b b/b
+  new file mode 100644
+  examine changes to 'b'? [Ynesfdaq?] y
+  
+  @@ -0,0 +1,1 @@
+  +b
+  record change 1/2 to 'b'? [Ynesfdaq?] y
+  
+  diff --git a/c b/c
+  new file mode 100644
+  examine changes to 'c'? [Ynesfdaq?] n
+  
+  Done splitting? [yN] y
+  $ sl log -G --mutation -T '{desc}\n'
+  @  B
+  │
+  │ o  B part 1
+  ├─╯
+  x  B
+  │
+  x  B0
+  $ sl goto -q --hidden 'first(predecessors(.) & desc(B) - desc(B0) - .)'
+  $ echo b2 > b
+  $ sl amend -q -m B2
+  $ sl log -G --mutation -T '{desc}\n'
+  @  B2
+  │
+  │ o  B
+  ├─╯
+  │ o  B part 1
+  ├─╯
+  v  B
+  │
+  x  B0
+  $ sl log -G --mutation -T '{desc}\n' --config experimental.graph.divergent-node=false
+  @  B2
+  │
+  │ o  B
+  ├─╯
+  │ o  B part 1
+  ├─╯
+  x  B
+  │
+  x  B0

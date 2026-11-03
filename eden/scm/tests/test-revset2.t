@@ -1622,7 +1622,7 @@ Test mutation related revsets
   ├─╯ │
   │ o │  Z
   │   │
-  │   x  B
+  │   v  B
   ├───╯
   x  A
   

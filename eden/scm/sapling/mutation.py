@@ -302,6 +302,35 @@ class obsoletecache:
         # filter level, and is stored in ``self.obsolete``.
         self.complete = defaultdict(bool)
 
+        # Whether a commit is visible or leads to a visible commit through its
+        # successors, for the mutation histories ``isdivergent`` has looked at.
+        self.live = {}
+
+    def isdivergent(self, repo, node):
+        """Returns true if more than one of the mutations that replaced the
+        node lead to visible commits."""
+        succsets = lookupsuccessors(repo, node)
+        if len(succsets) < 2:
+            return False
+        live = sum(any(self._islive(repo, s) for s in ss) for ss in succsets)
+        return live > 1
+
+    def _islive(self, repo, node):
+        """Returns true if the node is visible or leads to a visible commit
+        through its successors.
+
+        The answer is worked out for the node's whole mutation history at
+        once: in its mutation graph, those commits are the ancestors of the
+        visible ones.
+        """
+        if node not in self.live:
+            dag = getdag(repo, node, splits=True)
+            isvisible = getisvisiblefunc(repo)
+            nodes = list(dag.all())
+            live = set(dag.ancestors([n for n in nodes if isvisible(n)]))
+            self.live.update((n, n in live) for n in nodes)
+        return self.live[node]
+
     def isobsolete(self, repo, node):
         """Returns true if the node is obsolete in the repository."""
         if node is None:
@@ -398,6 +427,14 @@ def isobsolete(repo, node):
     if not hasattr(repo, "_mutationobsolete"):
         repo._mutationobsolete = obsoletecache()
     return repo._mutationobsolete.isobsolete(repo, node)
+
+
+def isdivergent(repo, node):
+    """Returns true if more than one of the mutations that replaced the node
+    lead to visible commits. A split is one mutation."""
+    if not hasattr(repo, "_mutationobsolete"):
+        repo._mutationobsolete = obsoletecache()
+    return repo._mutationobsolete.isdivergent(repo, node)
 
 
 def obsoletenodes(repo):

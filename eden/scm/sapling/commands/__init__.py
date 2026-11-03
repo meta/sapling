@@ -3966,11 +3966,10 @@ def log(ui, repo, *pats, **opts):
     With the ``--graph`` option, revisions are shown as an ASCII art
     graph with the most recent commit at the top. The graph nodes
     are depicted as follows: **o** is a commit, **@** is a working
-    directory parent, **x** is obsolete, and **+** represents a fork
-    where the commit from the lines below is a parent of the **o**
-    merge on the same line. Paths in the graph are represented with
-    **|**, **/** and so forth. **:** in place of a **|** indicates
-    one or more revisions in a path are omitted.
+    directory parent, **x** is obsolete, and **v** is obsolete and diverged
+    (it was replaced by more than one visible version). Paths in the graph
+    are represented with **|**, **/** and so forth. **:** in place of a
+    **|** indicates one or more revisions in a path are omitted.
 
 
     .. container:: verbose

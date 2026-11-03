@@ -1191,7 +1191,7 @@ Metaedit with descendant amended commits
   ├─╯
   │ o  D
   │ │
-  │ x  C (Rewritten using amend-copy into C4) (Rewritten using amend-copy into C2)
+  │ v  C (Rewritten using amend-copy into C4) (Rewritten using amend-copy into C2)
   ├─╯
   o  B
   │

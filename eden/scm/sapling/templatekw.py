@@ -612,13 +612,19 @@ def showfilestat(**args) -> _hybrid:
 @templatekeyword("graphnode")
 def showgraphnode(repo, ctx, **args) -> str:
     """String. The character representing the changeset node in an ASCII
-    revision graph."""
+    revision graph: ``@`` for a working directory parent, ``v`` for an
+    obsolete commit that diverged (it was replaced by more than one visible
+    version), ``x`` for another obsolete commit, and ``o`` otherwise."""
     wpnodes = repo.dirstate.parents()
     if wpnodes[1] == nullid:
         wpnodes = wpnodes[:1]
     if ctx.node() in wpnodes:
         return "@"
     elif ctx.obsolete():
+        if repo.ui.configbool(
+            "experimental", "graph.divergent-node", True
+        ) and mutation.isdivergent(repo, ctx.node()):
+            return "v"
         return "x"
     else:
         return "o"

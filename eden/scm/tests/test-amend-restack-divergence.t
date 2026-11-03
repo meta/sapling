@@ -91,7 +91,7 @@ since the successor is obsolete.
   ├─╯
   │ o  4538525df7e2 add c
   │ │
-  │ x  7c3bad9141dc add b
+  │ v  7c3bad9141dc add b
   ├─╯
   o  1f0dee641bb7 add a
   $ sl unamend

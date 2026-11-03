@@ -211,7 +211,7 @@ It should also have mutations made on both sides visible.
   │ ├─╯
   │ o  c70a9bd6bfd1 'E'
   ├─╯
-  │ x  6ba5de8abe43 'D'  (Rewritten using rebase into 6caded0e9807) (Rewritten using rebase into d8fc5ae9b7ef)
+  │ v  6ba5de8abe43 'D'  (Rewritten using rebase into 6caded0e9807) (Rewritten using rebase into d8fc5ae9b7ef)
   │ │
   │ x  2d0f0af04f18 'C'  (Rewritten using amend into c70a9bd6bfd1)
   ├─╯

@@ -32,7 +32,7 @@ obsmarker graphs.  Create a fake one to check behaviour.
   $ tglogm --hidden
   @  21c93100b04c 'commit5'
   │
-  │ x  672a4910c364 'commit4'  (Rewritten using amend into 21c93100b04c) (Rewritten using loop into 932f02c9fad3)
+  │ v  672a4910c364 'commit4'  (Rewritten using amend into 21c93100b04c) (Rewritten using loop into 932f02c9fad3)
   ├─╯
   │ x  d3c8fd338cf4 'commit3'  (Rewritten using amend into 672a4910c364)
   ├─╯
