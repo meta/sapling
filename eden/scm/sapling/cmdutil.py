@@ -3290,7 +3290,10 @@ def _logrevs(repo, opts):
     elif follow:
         revs = repo.revs("reverse(:.)")
     elif opts.get("mutation"):
-        revs = repo.revs("reverse(predecessors(.))")
+        if repo.dirstate.p1() == nullid:
+            revs = smartset.baseset(repo=repo)
+        else:
+            revs = repo.revs("mutationhistory(.)")
     else:
         revs = repo.revs("all()")
         revs.reverse()

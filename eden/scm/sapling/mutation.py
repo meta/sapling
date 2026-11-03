@@ -195,6 +195,22 @@ def getdag(
     )
 
 
+def historynodes(repo, nodes):
+    """The commits available locally in the mutation history of ``nodes``.
+
+    That is ``nodes``, the visible commits connected to them by mutations in
+    either direction (including other folded commits and other parts of a
+    split), and every commit those were created from. A hidden commit that
+    only leads to hidden commits is left out, unless ``--hidden`` makes every
+    commit visible.
+    """
+    cl = repo.changelog
+    dag = getdag(repo, *nodes, splits=True)
+    isvisible = getisvisiblefunc(repo)
+    visible = [n for n in cl.filternodes(list(dag.all()), local=True) if isvisible(n)]
+    return cl.filternodes(list(dag.ancestors(visible + list(nodes))), local=True)
+
+
 def lookup(repo, node):
     """Look up mutation information for the given node"""
     return repo._mutationstore.get(node)

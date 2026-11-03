@@ -221,3 +221,58 @@ higher rev, as when it is pulled after its successor:
   $ sl log --mutation -T '{desc}\n' -r 'desc(E)'
   E2
   E
+
+The default revisions are mutationhistory(.), the mutation history of the
+current commit. It includes the visible commits created from the same commits,
+here a divergent amend of an older version. -r selects exactly the given
+revisions; mutationhistory() selects another commit's history. Hidden commits
+are shown with --hidden:
+
+  $ newclientrepo
+  $ setconfig experimental.evolution.allowdivergence=true
+  $ echo a > a
+  $ sl commit -qAm A
+  $ echo b > b
+  $ sl commit -qAm B
+  $ echo b2 > b
+  $ sl amend -q -m B2
+  $ sl goto -q --hidden 'predecessors(.) - .'
+  $ echo b3 > b
+  $ sl amend -q -m B3
+  $ sl log -G --mutation -T '{desc}\n'
+  @  B3
+  │
+  │ o  B2
+  ├─╯
+  x  B
+  $ sl log -G --mutation -T '{desc}\n' -r 'desc(B2)'
+  o  B2
+  │
+  ~
+  $ sl log -G --mutation -T '{desc}\n' -r 'mutationhistory(desc(B2))'
+  @  B3
+  │
+  │ o  B2
+  ├─╯
+  x  B
+  $ sl log -T '{desc}\n' -r 'mutationhistory(desc(B2))'
+  B
+  B2
+  B3
+  $ echo b4 > b
+  $ sl amend -q -m B4
+  $ sl hide -q 'desc(B2)'
+  $ sl log -G --mutation -T '{desc}\n'
+  @  B4
+  │
+  x  B3
+  │
+  x  B
+  $ sl log -G --mutation -T '{desc}\n' --hidden
+  @  B4
+  │
+  x  B3
+  │
+  │ o  B2
+  ├─╯
+  x  B

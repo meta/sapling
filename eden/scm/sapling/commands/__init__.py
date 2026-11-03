@@ -3935,9 +3935,14 @@ def log(ui, repo, *pats, **opts):
     project.
 
     If no revision range is specified, the default revision range is the
-    current commit and all of its ancestors (``::.``). The experimental
-    ``--mutation`` option changes this default to the current commit and its
-    mutation predecessors (``predecessors(.)``).
+    current commit and all of its ancestors (``::.``).
+
+    The experimental ``--mutation`` option links the revisions by mutation
+    (amend, rebase, fold, split and other rewrites) rather than by parent,
+    and shows patches and ``--stat`` against the commit each one was created
+    from. Its default revision range is the mutation history of the current
+    commit (``mutationhistory(.)``); use ``-r 'mutationhistory(REV)'`` for
+    another commit's.
 
     File history is shown without following the rename or copy
     history of files. To follow file history across renames and
