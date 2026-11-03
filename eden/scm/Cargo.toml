@@ -1,5 +1,4 @@
 [patch.crates-io]
-abomonation = { git = "https://github.com/markbt/abomonation", rev = "0f43346d2afa2aedc64d61f3f4273e8d1e454642" }
 darwin-libproc = { git = "https://github.com/fbsource/darwin-libproc", rev = "f73ddb1002d51ae74c1b41670fae56bd5896b7a3" }
 
 [workspace]
