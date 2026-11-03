@@ -303,12 +303,13 @@ included, so a reset reaches the other machines too, or null when the value was 
 the other machines would refuse. Values longer than 1024 characters of JSON are neither read nor
 posted.
 
-The frame URL is not a secret, so the page reads and posts settings only for a host origin it
-trusts, only when the host passed `portableSettings` and a nonce, and only when the page that framed
-it, where the browser tells it (`location.ancestorOrigins`, else the referrer), is at that origin;
-otherwise nothing changes. The host builds the frame's URL when it frames the page, so a change made
-on another machine reaches an open page when the host frames it again. A host should accept messages
-only from the frame's own window at the frame's origin.
+The frame URL is not a secret, so the page reads and posts settings, and hands file and link opening
+to the host, only for a host origin it trusts, and only when the browser reports the page that
+framed it (`location.ancestorOrigins`, else the referrer) at that origin; settings also need
+`portableSettings` and a nonce. Otherwise nothing changes. The host builds the frame's URL when it
+frames the page, so a change made on another machine reaches an open page when the host frames it
+again. A host should accept messages only from the frame's own window at the frame's origin, and
+must not strip the referrer from the frame's request (`referrerpolicy="no-referrer"`).
 
 ## Syncing repository state
 
