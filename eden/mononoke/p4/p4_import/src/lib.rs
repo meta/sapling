@@ -82,9 +82,11 @@ pub async fn upload_content(
 }
 
 // Only bounds memory: Perforce's default filesys.maxsymlink is 1K, OS limits are 4-8K.
+// Design: designs/content_and_validation.md.
 const MAX_SYMLINK_SIZE: u64 = 64 * 1024;
 
 /// Like `upload_content`, but stores a symlink as its bare target.
+/// Design: designs/content_and_validation.md.
 pub async fn upload_file_content(
     ctx: &CoreContext,
     repo: &(impl RepoBlobstoreRef + FilestoreConfigRef),
@@ -305,6 +307,7 @@ pub struct ImportedBatch {
 
 /// The root content manifest of `base`, if any of `paths` isn't answered by `built` and
 /// has to be looked up there. Derived once for all of a changelist's copy sources.
+/// Design: designs/file_revisions_and_copy_from.md.
 async fn base_root_for<'a>(
     ctx: &CoreContext,
     repo: &impl RepoDerivedDataRef,

@@ -167,7 +167,7 @@ async fn test_same_content_gets_the_same_content_id(fb: FacebookInit) -> Result<
 }
 
 #[mononoke::fbinit_test]
-async fn test_symlink_is_stored_without_the_trailing_newline(fb: FacebookInit) -> Result<()> {
+async fn test_rule_symlink_target_loses_one_trailing_newline(fb: FacebookInit) -> Result<()> {
     let ctx = CoreContext::test_mock(fb);
     let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
 
@@ -257,7 +257,7 @@ async fn test_symlink_longer_than_size_is_rejected(fb: FacebookInit) -> Result<(
 }
 
 #[mononoke::fbinit_test]
-async fn test_symlink_over_64_kib_is_rejected_before_reading(fb: FacebookInit) -> Result<()> {
+async fn test_rule_symlink_over_64_kib_is_rejected(fb: FacebookInit) -> Result<()> {
     let ctx = CoreContext::test_mock(fb);
     let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
     let unreadable =
@@ -739,7 +739,9 @@ async fn copy_from_of_c(
 }
 
 #[mononoke::fbinit_test]
-async fn test_copy_source_must_be_a_file_in_the_unsaved_parent(fb: FacebookInit) -> Result<()> {
+async fn test_rule_copy_source_must_be_a_file_in_the_unsaved_parent(
+    fb: FacebookInit,
+) -> Result<()> {
     let ctx = CoreContext::test_mock(fb);
     let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
 
@@ -755,7 +757,7 @@ async fn test_copy_source_must_be_a_file_in_the_unsaved_parent(fb: FacebookInit)
 }
 
 #[mononoke::fbinit_test]
-async fn test_copy_source_must_be_a_file_in_the_saved_parent(fb: FacebookInit) -> Result<()> {
+async fn test_rule_copy_source_must_be_a_file_in_the_saved_parent(fb: FacebookInit) -> Result<()> {
     let ctx = CoreContext::test_mock(fb);
     let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
     let master = BookmarkKey::new("master")?;
@@ -1026,7 +1028,7 @@ async fn test_failed_mapping_write_leaves_the_bookmark(fb: FacebookInit) -> Resu
 }
 
 #[mononoke::fbinit_test]
-async fn test_changelist_without_files_is_an_empty_commit(fb: FacebookInit) -> Result<()> {
+async fn test_rule_empty_changelist_is_an_empty_commit(fb: FacebookInit) -> Result<()> {
     let ctx = CoreContext::test_mock(fb);
     let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
     let master = BookmarkKey::new("master")?;
@@ -1409,5 +1411,36 @@ async fn test_changelists_are_fetched_ahead_at_most_changelist_lookahead_at_once
         .collect();
     let ids: Vec<_> = two_at_a_time.iter().map(|c| c.get_changeset_id()).collect();
     assert_eq!(vec![vec![], vec![ids[0]], vec![ids[1]]], parents);
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_rule_unchanged_revision_keeps_its_file_change(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+    let source = FakeSource::default()
+        .with_changelist(7, &[("//test1/a.txt", 1, Action::Add, Some(b"same\n"))])
+        .with_changelist(9, &[("//test1/a.txt", 2, Action::Edit, Some(b"same\n"))]);
+
+    let built = build_changesets(
+        &ctx,
+        &repo,
+        &source,
+        DEPOT,
+        None,
+        &[7, 9],
+        &ImportOptions::default(),
+    )
+    .await?;
+
+    let unchanged = files(&ctx, &repo, &built[1].changeset).await?;
+    assert_eq!(
+        vec![(
+            "a.txt".to_owned(),
+            Some(Bytes::from_static(b"same\n")),
+            None
+        )],
+        unchanged
+    );
     Ok(())
 }

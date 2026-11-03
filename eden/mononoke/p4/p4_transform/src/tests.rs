@@ -113,8 +113,9 @@ fn test_content_action_without_content_is_an_error() {
 }
 
 #[mononoke::test]
-fn test_paths_lose_the_depot_root_and_keep_their_case() {
+fn test_rule_paths_are_case_preserving() {
     assert_eq!("Dir/README.md", path_of("//test1/Dir/README.md"));
+    assert_eq!("dir/readme.md", path_of("//test1/dir/readme.md"));
 }
 
 #[mononoke::test]
@@ -153,7 +154,7 @@ fn test_path_mononoke_rejects_is_an_error() {
 }
 
 #[mononoke::test]
-fn test_paths_are_unescaped() {
+fn test_rule_paths_are_unescaped() {
     for (depot_path, path) in [
         ("//test1/foo%402x.png", "foo@2x.png"),
         ("//test1/issue%2312.txt", "issue#12.txt"),
@@ -252,7 +253,7 @@ fn copied_from(path: &str) -> CopySource {
 }
 
 #[mononoke::test]
-fn test_new_paths_from_one_source_are_copies() {
+fn test_rule_copy_from_for_branch_and_move_add() {
     for (action, how) in [
         (Action::Branch, IntegrationHow::BranchFrom),
         (Action::Branch, IntegrationHow::CopyFrom),
@@ -301,7 +302,7 @@ fn test_records_that_do_not_start_a_file_are_not_sources() {
 }
 
 #[mononoke::test]
-fn test_several_sources_are_ambiguous() {
+fn test_rule_copy_from_needs_a_single_source() {
     let source = source_of(
         Action::Branch,
         &[
@@ -310,6 +311,15 @@ fn test_several_sources_are_ambiguous() {
         ],
     );
     assert_eq!(CopySource::Ambiguous, source);
+}
+
+#[mononoke::test]
+fn test_rule_add_after_integrate_is_not_a_copy() {
+    let source = source_of(
+        Action::Add,
+        &[integration(IntegrationHow::AddFrom, "//test1/old.txt")],
+    );
+    assert_eq!(CopySource::NotACopy, source);
 }
 
 #[mononoke::test]
@@ -330,7 +340,7 @@ fn test_one_source_among_other_records_is_a_copy() {
 }
 
 #[mononoke::test]
-fn test_sources_in_other_depots_are_not_copies() {
+fn test_rule_copy_from_same_depot_only() {
     for file in ["//other/old.txt", "//test10/old.txt"] {
         let source = source_of(
             Action::Branch,
@@ -466,7 +476,7 @@ fn test_copies_are_from_the_parent() {
 }
 
 #[mononoke::test]
-fn test_file_replacing_a_directory_drops_the_directory_deletions() {
+fn test_rule_shadowed_child_deletions_are_dropped() {
     let changelist = changelist(vec![
         revision("//test1/a", Action::Add),
         revision("//test1/a/b", Action::Delete),
@@ -558,7 +568,7 @@ fn extra<'a>(bcs: &'a BonsaiChangeset, key: &str) -> Option<&'a [u8]> {
 }
 
 #[mononoke::test]
-fn test_file_revs_list_every_file_change_by_repo_path() {
+fn test_rule_p4_file_revs_format() {
     let numbered = |depot_path, action, rev| FileRevision {
         revision: rev,
         ..revision(depot_path, action)

@@ -58,6 +58,7 @@ pub enum TransformError {
 /// `<rev>\t<repo path>\n` line each, in `file_changes`' path order. Deletions are revisions
 /// too, including those Bonsai drops because a file replaced their directory. `p4-` keeps
 /// the transform's extras apart from the `convert_*` changelist id ones.
+/// Design: designs/file_revisions_and_copy_from.md.
 pub const FILE_REVS_EXTRA: &str = "p4-file-revs";
 
 /// For a description that isn't UTF-8, its original bytes; the message is their
@@ -68,6 +69,8 @@ pub const DESCRIPTION_BYTES_EXTRA: &str = "p4-description-bytes";
 /// parent `parent`, and a file change for each of its files under `depot_root`
 /// (files in other depots are skipped). `contents` and `copy_sources` are looked up
 /// by full Perforce path, e.g. `//non-stream-depot/docs/readme.txt`.
+/// Every revision keeps its file change, even an unchanged one; a changelist without
+/// files is an empty changeset. Design: designs/data_model.md.
 pub fn changeset(
     depot_root: &str,
     changelist: &Changelist,
@@ -147,6 +150,7 @@ fn file_revs(mut revisions: Vec<(NonRootMPath, u32)>) -> Result<Vec<u8>, Transfo
 
 /// When a file replaces a directory, Perforce also lists the directory's files as
 /// deleted. Adding the file already removes them, and `freeze` rejects the pair.
+/// Design: designs/data_model.md.
 fn without_shadowed_deletions(
     changes: Vec<(NonRootMPath, FileChange)>,
 ) -> impl Iterator<Item = (NonRootMPath, FileChange)> {
@@ -211,7 +215,8 @@ pub enum CopySource {
 }
 
 /// The source of a revision of a file that starts life at a new path, given that
-/// revision's filelog `integrations`.
+/// revision's filelog `integrations`. Whether the source is a file in the parent needs the
+/// repo, so the importer checks that. Design: designs/file_revisions_and_copy_from.md.
 pub fn copy_source(
     depot_root: &str,
     revision: &FileRevision,
@@ -246,7 +251,7 @@ pub fn can_have_copy_source(action: Action) -> bool {
 }
 
 /// `depot_path` in the repo for the depot at `depot_root`, or `None` if it is in another
-/// depot.
+/// depot. Unescaped, in the case it was submitted in. Design: designs/paths_and_text.md.
 pub fn repo_path(
     depot_root: &str,
     depot_path: &str,
@@ -296,6 +301,7 @@ const ESCAPES: [(char, &str); 4] = [('%', "25"), ('@', "40"), ('#', "23"), ('*',
 
 /// The real filename for a depot path as Perforce reports it, as `p4 sync` writes it to
 /// disk: `foo%402x.png` is `foo@2x.png`. Repo paths are unescaped.
+/// Design: designs/paths_and_text.md.
 pub fn unescape_path(depot_path: &str) -> String {
     let mut segments = depot_path.split('%');
     let first = segments.next().unwrap_or_default().to_owned();
