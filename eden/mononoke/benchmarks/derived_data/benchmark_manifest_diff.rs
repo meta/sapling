@@ -17,9 +17,11 @@
 //! perform their own trie descents.
 //!
 //! Run with optional positional args:
+//! ```text
 //!   <total_files> <modify_count> <wide_dirs> <wide_files> <limit>
 //!   buck2 run //eden/mononoke/benchmarks/derived_data:benchmark_manifest_diff
 //!   buck2 run //eden/mononoke/benchmarks/derived_data:benchmark_manifest_diff -- 200000 5
+//! ```
 
 use std::collections::HashMap;
 use std::fmt;

@@ -20,7 +20,7 @@ use mononoke_types::hash::RichGitSha1;
 use mononoke_types::hash::Sha256;
 use regex::Regex;
 
-/// In line with https://github.com/git-lfs/git-lfs/blob/main/docs/spec.md
+/// In line with <https://github.com/git-lfs/git-lfs/blob/main/docs/spec.md>
 pub fn format_lfs_pointer(sha256: Sha256, size: u64) -> String {
     format!("version https://git-lfs.github.com/spec/v1\noid sha256:{sha256}\nsize {size}\n")
 }
@@ -83,12 +83,14 @@ const V1_ALIASES: [&str; 3] = [
 ];
 
 /// Parses Git LFS pointer file into datastructure
-/// see https://github.com/git-lfs/git-lfs/blob/main/docs/spec.md for format specification
+/// see <https://github.com/git-lfs/git-lfs/blob/main/docs/spec.md> for format specification
 ///
 /// Layout of the pointer:
-/// | version https://git-lfs.github.com/spec/v1
-/// | oid sha256:73e2200459562bb068f08e33210ed106014b877f878932b2147991e17a7c089b
-/// | size 8423391
+/// ```text
+/// version https://git-lfs.github.com/spec/v1
+/// oid sha256:73e2200459562bb068f08e33210ed106014b877f878932b2147991e17a7c089b
+/// size 8423391
+/// ```
 pub fn parse_lfs_pointer(gitblob: &[u8], gitid: ObjectId) -> Option<LfsPointerData> {
     if gitblob.len() > MAX_METADATA_LENGTH {
         return None;

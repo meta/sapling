@@ -67,7 +67,7 @@ pub struct ThriftServerShutdownHandle {
 }
 
 impl ThriftServerShutdownHandle {
-    /// Stop accepting connections and wait up to [`SHUTDOWN_TIMEOUT`] for
+    /// Stop accepting connections and wait up to `SHUTDOWN_TIMEOUT` for
     /// each open connection to finish the request it is serving, then abort
     /// any that have not. A streaming reply counts as one request.
     ///

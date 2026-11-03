@@ -9,11 +9,10 @@
 //! and registering for config-update notifications.
 //!
 //! Internal organization:
-//! - [`ConfigUpdateReceiver`][receiver::ConfigUpdateReceiver] trait is in
-//!   [`receiver`]
+//! - [`ConfigUpdateReceiver`] trait is in `receiver`
 //! - The unified watcher task (single tokio task that owns the config source —
 //!   the tier manifest — plus the per-repo control channel and
-//!   per-repo wait fan-in) is in [`watcher`]
+//!   per-repo wait fan-in) is in `watcher`
 //!
 //! `MononokeConfigs` itself owns the `ArcSwap` state and the task handles.
 

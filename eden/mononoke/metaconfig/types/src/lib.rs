@@ -1864,7 +1864,7 @@ pub struct SmallRepoGitSubmoduleConfig {
     /// as file changes from the submodule dependencies might need to be copied.
     pub submodule_dependencies: HashMap<NonRootMPath, RepositoryId>,
     /// Each submodule expansion in the large repo will have a metadata file
-    /// named "<PREFIX><SUBMODULE_PATH>", e.g. ".x-repo-submodule-voip".
+    /// named `"<PREFIX><SUBMODULE_PATH>"`, e.g. `".x-repo-submodule-voip"`.
     /// This file will store the git commit that the expansion corresponds to.
     pub submodule_metadata_file_prefix: String,
 

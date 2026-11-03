@@ -216,19 +216,19 @@ impl BlobstoreBytes {
         self.0.is_empty()
     }
 
-    /// This should only be used by blobstore and From/Into<BlobstoreBytes> implementations.
+    /// This should only be used by blobstore and `From`/`Into<BlobstoreBytes>` implementations.
     #[inline]
     pub fn from_bytes<B: Into<Bytes>>(bytes: B) -> Self {
         BlobstoreBytes(bytes.into())
     }
 
-    /// This should only be used by blobstore and From/Into<BlobstoreBytes> implementations.
+    /// This should only be used by blobstore and `From`/`Into<BlobstoreBytes>` implementations.
     #[inline]
     pub fn into_bytes(self) -> Bytes {
         self.0
     }
 
-    /// This should only be used by blobstore and From/Into<BlobstoreBytes> implementations.
+    /// This should only be used by blobstore and `From`/`Into<BlobstoreBytes>` implementations.
     #[inline]
     pub fn as_bytes(&self) -> &Bytes {
         &self.0

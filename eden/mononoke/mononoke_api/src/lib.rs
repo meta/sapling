@@ -138,7 +138,7 @@ impl<R> Mononoke<R> {
     /// so the tier list could be derived on demand. We deliberately keep the
     /// pre-computed ArcSwap: deriving from configs would iterate ~thousands of
     /// repos per `list_repos` call and would require plumbing `MononokeConfigs`
-    /// through to here, which Mononoke<R> intentionally does not depend on.
+    /// through to here, which `Mononoke<R>` intentionally does not depend on.
     pub fn new(
         repos: Arc<MononokeRepos<R>>,
         repo_names_in_tier: Arc<ArcSwap<HashMap<String, CommitIdentityScheme>>>,

@@ -572,7 +572,7 @@ pub enum ShallowVariant {
     FromClientWithDepth(u32),
     /// Requests that the shallow clone/fetch should be cut at a specific time,
     /// instead of depth. The timestamp provided should be in the same format
-    /// as is expected for git rev-list --max-age <timestamp>
+    /// as is expected for `git rev-list --max-age <timestamp>`
     FromServerWithTime(usize),
     /// Requests that the shallow clone/fetch should be cut at a specific revision
     /// instead of a depth, i.e. the specified oid becomes the boundary at which the

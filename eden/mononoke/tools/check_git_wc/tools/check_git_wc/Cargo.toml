@@ -10,6 +10,7 @@ license = "GPLv2+"
 [[bin]]
 name = "check_git_wc"
 path = "../../src/main.rs"
+doc = false
 
 [dependencies]
 anyhow = "1.0.104"

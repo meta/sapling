@@ -19,11 +19,15 @@
 //! - Blobstore operation counting to track GETs and PUTs
 //!
 //! Usage:
+//! ```text
 //!   buck2 run @mode/opt //eden/mononoke/benchmarks/derived_data:benchmark_hg_manifest
+//! ```
 //!
 //! Options:
+//! ```text
 //!   --files <count>              Number of files to create (default: 10000)
 //!   --no-delay                   Disable I/O latency simulation
+//! ```
 
 use std::collections::BTreeSet;
 use std::sync::Arc;

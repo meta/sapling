@@ -26,7 +26,7 @@ use mononoke_types::NonRootMPath;
 /// compared to the provided p1 and p2 parents.
 /// A files is considered new when it was not present in neither of parent manifests or it was
 /// present, but with a different content.
-/// It sorts the returned Vec<NonRootMPath> in the order expected by Mercurial.
+/// It sorts the returned `Vec<NonRootMPath>` in the order expected by Mercurial.
 pub async fn compute_changed_files(
     ctx: CoreContext,
     blobstore: Arc<dyn KeyedBlobstore>,

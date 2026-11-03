@@ -290,7 +290,7 @@ async fn push_merge_commit(
 /// Normally this function should be called after a list of deletion has been created
 /// (see pre_merge_delete functions). Each of these deletion commits decreases the
 /// size of the working copy, and so each of the merge adds just part of the working copy.
-/// See https://fburl.com/ujc6sv7x for more details.
+/// See <https://fburl.com/ujc6sv7x> for more details.
 ///
 ///
 ///   M_B

@@ -1383,7 +1383,7 @@ where
     }
 }
 
-/// Use the HLC from Read Your Own Writes feature (https://fburl.com/wiki/bvaobxgp)
+/// Use the HLC from Read Your Own Writes feature (<https://fburl.com/wiki/bvaobxgp>)
 /// to determine if the replica was up to date when it served the query.
 pub async fn query_with_consistency_no_cache<T, Fut>(
     do_query: impl Fn(usize) -> Fut + Send + Sync,

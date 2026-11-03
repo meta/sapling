@@ -397,7 +397,7 @@ impl From<BookmarkKind> for Value {
 /// A tag, a branch or a note can have the same name as they are namespaced in Git.
 /// BookmarkCategory allows to differentiate between e.g. a tag called foo and a branch called
 /// foo.
-/// See https://docs.rs/git-ref/0.23.1/git_ref/enum.Category.html for an exhaustive
+/// See <https://docs.rs/git-ref/0.23.1/git_ref/enum.Category.html> for an exhaustive
 /// list of what git supports.
 /// Here, we explicitly don't support worktrees or the distinction between remote and local
 /// branches as these concepts don't fit in the mononoke data model. We also don't support pseudo

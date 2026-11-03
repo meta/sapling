@@ -240,7 +240,7 @@ pub enum PushrebaseError {
 }
 
 /// Why `rebase_stack_onto_with_baseline` could not place a stack on the
-/// branch. Displays as the clause after "baseline <id>"; the wording is
+/// branch. Displays as the clause after `"baseline <id>"`; the wording is
 /// client-visible through Multi-Repo Land's conflict descriptions, where the
 /// stack head is called "the target".
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

@@ -157,7 +157,7 @@ impl FromStr for StoreRequired {
 ///  - the changelog: .hg/store/00changelog.\[di\]
 ///  - the manifest: .hg/store/00manifest.\[di\]
 ///  - the tree manifests: .hg/store/00manifesttree.\[di\] and .hg/store/meta/.../00manifest.i
-///  - per-file histories: .hg/store/data/.../<file>.\[di\]
+///  - per-file histories: `.hg/store/data/.../<file>.[di]`
 #[derive(Debug, Clone)]
 pub struct RevlogRepo {
     basepath: PathBuf,                          // path to .hg directory

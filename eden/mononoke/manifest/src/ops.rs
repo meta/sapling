@@ -340,7 +340,7 @@ where
 
     /// Do a diff, but with knobs to filter_map output and prune some subtrees.
     /// `output_filter` lets us configure what will be returned from filtered_diff. it accepts
-    /// every diff entry and returns Option<Out>, so it acts similar to filter_map() function
+    /// every diff entry and returns `Option<Out>`, so it acts similar to `filter_map()` function
     /// recurse_pruner is a function that allows us to skip iterating over some subtrees
     ///
     /// Identical sub-shards are pruned by their content-addressed IDs without

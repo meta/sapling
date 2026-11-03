@@ -22,8 +22,10 @@
 //!
 //! The types of the values are implied by the command rather than explicitly encoded.
 //!
+//! ```text
 //! pair := <hash> '-' <hash>
 //! list := (<hash> ' ')* <item>
+//! ```
 //!
 //! Responses to commands are almost always:
 //! ```text

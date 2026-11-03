@@ -11,7 +11,7 @@ use chrono::FixedOffset;
 use chrono::TimeZone;
 use mononoke_types::DateTime;
 
-/// Return a `DateTime` corresponding to <year>-01-01 00:00:00 UTC.
+/// Return a `DateTime` corresponding to `<year>-01-01 00:00:00` UTC.
 pub fn day_1_utc(year: i32) -> DateTime {
     DateTime::new(
         FixedOffset::west_opt(0)
@@ -21,7 +21,7 @@ pub fn day_1_utc(year: i32) -> DateTime {
     )
 }
 
-/// Return a `DateTime` corresponding to <year>-01-01 00:00:00 UTC,
+/// Return a `DateTime` corresponding to `<year>-01-01 00:00:00` UTC,
 /// with the specified offset applied.
 pub fn day_1_tz(year: i32, offset: i32) -> DateTime {
     DateTime::new(

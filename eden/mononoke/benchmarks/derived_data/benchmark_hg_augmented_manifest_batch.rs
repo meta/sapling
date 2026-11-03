@@ -42,13 +42,17 @@
 //! - Blobstore operation counting
 //!
 //! Usage:
+//! ```text
 //!   buck2 run @mode/opt //eden/mononoke/benchmarks/derived_data:benchmark_hg_augmented_manifest_batch
+//! ```
 //!
 //! Options:
+//! ```text
 //!   --mode <MODE>        Benchmark mode: 'shared' or 'isolated' (default: shared)
 //!   --stack-size <N>     Number of commits in the stack (default: 10)
 //!   --files <N>          Files per commit (default: 500)
 //!   --no-delay           Disable I/O latency simulation
+//! ```
 
 use std::collections::BTreeSet;
 use std::sync::Arc;

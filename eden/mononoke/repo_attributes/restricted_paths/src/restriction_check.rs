@@ -730,7 +730,7 @@ pub(crate) async fn has_read_access_to_repo_region(
 /// Check if the caller has maintainer access to every repo region ACL in `acls`
 /// (conjunctive evaluation), or is a member of `admin_bypass_group`.
 ///
-/// Mirrors [`has_read_access_to_repo_region`] but checks the `maintainers`
+/// Mirrors `has_read_access_to_repo_region` but checks the `maintainers`
 /// action instead of `read`. Used to gate `.slacl` ACL-file modifications while
 /// letting admins in `admin_bypass_group` through even when they do not maintain
 /// the affected ACL.

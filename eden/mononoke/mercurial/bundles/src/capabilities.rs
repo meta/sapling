@@ -32,11 +32,13 @@ impl Capabilities {
 /// This is a tokio_io Decoder for capabilities used f.e. in "replycaps" part of bundle2
 ///
 /// The format is as follows:
+/// ```text
 /// <capabilities> := '' EOF | <line> ['\n' <line>]* EOF
 /// <line> := <key> | <key> '=' <values>
 /// <values> := '' | <value> [',' <value>]*
 /// <key> := `url encoded key`
 /// <value> := `url encoded value`
+/// ```
 ///
 /// Notice that this decoder needs to reach EOF and it decodes everything as a single item
 pub struct CapabilitiesUnpacker;

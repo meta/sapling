@@ -510,8 +510,8 @@ impl From<EdenapiBlake3> for Blake3 {
     }
 }
 
-/// Git-style content blob hashes. Same as SHA-1 but with "<type> NNNN\0" appended to the front,
-/// where <type> is the object type (blob, tree, etc), and NNNN is the blob size as a decimal
+/// Git-style content blob hashes. Same as SHA-1 but with `"<type> NNNN\0"` appended to the front,
+/// where `<type>` is the object type (blob, tree, etc), and NNNN is the blob size as a decimal
 /// string. Given that we know what the prefix is, we never explicitly store it so the objects
 /// can be shared with non-Git uses.
 #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]

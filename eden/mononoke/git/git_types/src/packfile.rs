@@ -28,7 +28,7 @@ use crate::thrift;
 
 /// The type of items that can be present in a Git packfile. Does not include RefDelta currently
 /// since we do not use it
-/// See: https://fburl.com/1yaui1um
+/// See: <https://fburl.com/1yaui1um>
 #[derive(Debug)]
 pub enum PackfileItem {
     /// The base object representing a raw git type (e.g. commit, tree, tag or blob)

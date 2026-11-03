@@ -170,7 +170,7 @@ impl IdentityScheme {
 
 /// Parse a general commit ID from a string
 ///
-/// The string can either be of the form <scheme>=<id>, or just
+/// The string can either be of the form `<scheme>=<id>`, or just
 /// a bare id, in which case the scheme will be inferred.
 ///
 /// For inferred schemes, globalrevs should be prefixed by 'm', svnrevs by 's'

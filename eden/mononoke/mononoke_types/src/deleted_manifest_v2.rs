@@ -39,7 +39,7 @@ pub use crate::typed_hash::ShardedMapNodeDMv2Id;
 /// across deletions possible.
 ///
 /// Both directories and files are represented by the same data structure, which consists of:
-/// * optional<linknode>: if set, a changeset where this path was deleted
+/// * `optional<linknode>`: if set, a changeset where this path was deleted
 /// * subentries: a map from base name to the deleted manifest for this path
 ///
 /// Even though the manifest tracks only deleted paths, it will still have entries for the

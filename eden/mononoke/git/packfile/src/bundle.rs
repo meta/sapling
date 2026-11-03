@@ -45,7 +45,7 @@ impl Display for BundleVersion {
     }
 }
 
-/// Struct responsible for writing a Git bundle with format https://git-scm.com/docs/bundle-format
+/// Struct responsible for writing a Git bundle with format <https://git-scm.com/docs/bundle-format>
 /// to the underlying writer.
 pub struct BundleWriter<T>
 where

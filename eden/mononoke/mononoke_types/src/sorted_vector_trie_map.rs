@@ -21,7 +21,7 @@ pub struct SortedVectorTrieMap<V> {
     pub prefix: usize,
     /// The start of the subrange in entries.
     pub start: usize,
-    /// The end of the subrange in entries.  This is exclusive, so entries[end] is not included.
+    /// The end of the subrange in entries.  This is exclusive, so `entries[end]` is not included.
     pub end: usize,
 }
 

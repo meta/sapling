@@ -1800,7 +1800,7 @@ async fn rebuilt_tree_acl_overlay_map(
 /// on the paths `derive_manifest` will rebuild (`target_dirs`). `acl_root_path`
 /// is the absolute path represented by `root_acl_id`.
 ///
-/// Unlike [`pre_walk_acl_tree`], this descends only the branches that lead to a
+/// Unlike `pre_walk_acl_tree`, this descends only the branches that lead to a
 /// rebuilt directory, so its cost is O(changed paths) rather than O(total ACL
 /// tree size). For each visited (rebuilt) directory it records the directory's
 /// own pointer and every immediate child's pointer — the directory itself is
