@@ -355,6 +355,33 @@ prefetching-enable = true
         with self.assertRaises(config_mod.CheckoutConfigCorruptedError):
             config_mod.EdenInstance._combine_mount_info([], [checkout])
 
+    def test_retry_removes_client_dir_after_failed_remove(self) -> None:
+        client_dir = self._state_dir / "clients" / "half-removed"
+        (client_dir / "local").mkdir(parents=True)
+        (client_dir / "config.toml").write_text("")
+        (client_dir / "SNAPSHOT").write_text("")
+
+        with patch("shutil.rmtree", side_effect=OSError("interrupted")):
+            with self.assertRaises(OSError):
+                config_mod._remove_client_dir(client_dir)
+
+        self.assertFalse((client_dir / "SNAPSHOT").exists())
+        self.assertTrue((client_dir / "config.toml").exists())
+
+        config_mod._remove_client_dir(client_dir)
+        self.assertFalse(client_dir.exists())
+
+    def test_remove_client_dir_removes_all_entries(self) -> None:
+        client_dir = self._state_dir / "clients" / "removed"
+        (client_dir / "local").mkdir(parents=True)
+        (client_dir / "local" / "file").write_text("")
+        (client_dir / "config.toml").write_text("")
+        (client_dir / "SNAPSHOT").write_text("")
+
+        config_mod._remove_client_dir(client_dir)
+
+        self.assertFalse(client_dir.exists())
+
     def test_checkout_without_protocol_defaults_to_nfs_on_macos(self) -> None:
         client_dir = self._state_dir / "clients" / "legacy-client"
         client_dir.mkdir(parents=True)

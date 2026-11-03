@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::fs;
 #[cfg(unix)]
 use std::fs::Permissions;
 use std::future::Future;
@@ -24,6 +25,7 @@ use anyhow::anyhow;
 use edenfs_core::checkout::EdenFsCheckout;
 use edenfs_core::checkout::find_checkout;
 use edenfs_core::checkout::get_mounts;
+use edenfs_core::fsutil;
 use edenfs_core::fsutil::forcefully_remove_dir_all;
 use edenfs_core::instance::EdenFsInstance;
 use edenfs_core::redirect::Redirection;
@@ -841,7 +843,7 @@ fn remove_client_config_dir(
     client_name: &str,
 ) -> Result<()> {
     let client_dir = instance.config_directory(client_name);
-    match forcefully_remove_dir_all(&client_dir) {
+    match remove_client_dir(&client_dir) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
         Err(error) => Err(anyhow!(
@@ -849,6 +851,25 @@ fn remove_client_config_dir(
             path.display()
         )),
     }
+}
+
+fn remove_client_dir(client_dir: &Path) -> std::io::Result<()> {
+    // EdenFS does not mount a client directory that has no SNAPSHOT.
+    // edenfsctl reads config.toml to remove a partly deleted checkout.
+    fsutil::remove_file(&client_dir.join("SNAPSHOT"))?;
+    for entry in fs::read_dir(client_dir)? {
+        let entry = entry?;
+        if entry.file_name() == "config.toml" {
+            continue;
+        }
+        if entry.file_type()?.is_dir() {
+            forcefully_remove_dir_all(&entry.path())?;
+        } else {
+            fs::remove_file(entry.path())?;
+        }
+    }
+    fsutil::remove_file(&client_dir.join("config.toml"))?;
+    fs::remove_dir(client_dir)
 }
 
 /// Remove a directory using the same permission and retry handling as checkout removal.
@@ -1358,6 +1379,62 @@ mod tests {
             instance.get_configured_mounts_map().expect("directory map"),
             BTreeMap::from([(other_checkout, "other-client".to_owned())])
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retry_removes_client_dir_after_failed_removal() {
+        let temp_dir = tempdir().expect("temporary directory");
+        let config_dir = temp_dir.path().join("eden");
+        let client_dir = config_dir.join("clients/test");
+        let locked_dir = client_dir.join("locked");
+        fs::create_dir_all(&locked_dir).expect("locked directory");
+        fs::write(client_dir.join("config.toml"), b"").expect("client config");
+        fs::write(client_dir.join("SNAPSHOT"), b"").expect("snapshot");
+        fs::write(locked_dir.join("file"), b"").expect("locked file");
+        fs::set_permissions(&locked_dir, Permissions::from_mode(0o500)).expect("lock directory");
+        let instance = EdenFsInstance::with_daemon(
+            config_dir.clone(),
+            config_dir,
+            None,
+            Arc::new(DisconnectedDaemon),
+        );
+
+        let result = remove_client_config_dir(&instance, temp_dir.path(), "test");
+
+        fs::set_permissions(&locked_dir, Permissions::from_mode(0o700)).expect("unlock directory");
+        assert!(result.is_err());
+        assert!(
+            !client_dir.join("SNAPSHOT").exists(),
+            "SNAPSHOT is deleted first"
+        );
+        assert!(
+            client_dir.join("config.toml").exists(),
+            "config.toml is deleted last"
+        );
+
+        remove_client_config_dir(&instance, temp_dir.path(), "test")
+            .expect("a retry removes the rest of the client directory");
+        assert!(!client_dir.exists());
+    }
+
+    #[test]
+    fn client_dir_without_client_config_is_removed() {
+        let temp_dir = tempdir().expect("temporary directory");
+        let config_dir = temp_dir.path().join("eden");
+        let client_dir = config_dir.join("clients/test");
+        fs::create_dir_all(client_dir.join("local")).expect("client directory");
+        let instance = EdenFsInstance::with_daemon(
+            config_dir.clone(),
+            config_dir,
+            None,
+            Arc::new(DisconnectedDaemon),
+        );
+
+        remove_client_config_dir(&instance, temp_dir.path(), "test")
+            .expect("a missing config.toml must not stop the removal");
+
+        assert!(!client_dir.exists());
     }
 
     #[tokio::test]

@@ -295,6 +295,21 @@ class AbstractEdenInstance:
     def get_mounts(self) -> Dict[Path, ListMountInfo]: ...
 
 
+def _remove_client_dir(client_dir: Path) -> None:
+    # EdenFS does not mount a client directory that has no SNAPSHOT.
+    # edenfsctl reads config.toml to remove a partly deleted checkout.
+    (client_dir / SNAPSHOT).unlink(missing_ok=True)
+    for entry in client_dir.iterdir():
+        if entry.name == MOUNT_CONFIG:
+            continue
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry)
+        else:
+            entry.unlink()
+    (client_dir / MOUNT_CONFIG).unlink(missing_ok=True)
+    client_dir.rmdir()
+
+
 class EdenInstance(AbstractEdenInstance):
     """This class contains information about a particular edenfs instance.
 
@@ -1107,7 +1122,7 @@ Do you want to run `eden mount %s` instead?"""
             )
 
             path = Path(path)
-            shutil.rmtree(self._get_client_dir_for_mount_point(path))
+            _remove_client_dir(self._get_client_dir_for_mount_point(path))
             self._remove_path_from_directory_map(path)
 
         # Restore the original rmtree
