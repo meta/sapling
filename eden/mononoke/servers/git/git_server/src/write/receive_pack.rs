@@ -377,6 +377,10 @@ async fn refs_update(
     // Share the entries across the concurrent per-ref set_ref calls.
     let tag_mapping_entries = tag_mapping_entries.map(Arc::new);
 
+    #[cfg_attr(
+        not(fbcode_build),
+        expect(unused_variables, reason = "Only internal builds divert pushes")
+    )]
     let diversion_mode = PushDiversionMode::resolve(&request_context, &acl_provider).await?;
 
     // Diversion: one synchronous submit_manifest_land to Multi-Repo Land.

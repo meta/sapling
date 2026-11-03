@@ -96,8 +96,9 @@ fn format_restricted_paths_authz(e: &thrift::RestrictedPathsAuthorizationError) 
 
 // Return a friendly "repo does not exist" error if `self` is a ServiceRouter
 // selection error for a nonexistent domain. Shared by both impl macros below.
-// Only used on Linux (macOS/Windows impls don't check selection errors).
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+// Only used by internal builds on Linux (other builds don't check selection
+// errors).
+#[cfg(all(fbcode_build, not(any(target_os = "macos", target_os = "windows"))))]
 macro_rules! return_if_selection_error {
     ($self:ident, $type:ident, $repo:ident) => {
         if let $type::ThriftError(ref err) = $self {

@@ -10,6 +10,7 @@ use std::sync::atomic::Ordering;
 
 use fbinit::FacebookInit;
 use http::HeaderMap;
+#[cfg(fbcode_build)]
 use http::HeaderValue;
 use metaconfig_types::Identity;
 use permission_checker::MononokeIdentitySet;

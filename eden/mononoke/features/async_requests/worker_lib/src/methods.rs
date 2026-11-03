@@ -25,22 +25,30 @@ use async_requests::types::IntoConfigFormat;
 use async_requests::types::RowId;
 use async_requests::types::ThriftAsynchronousRequestResult;
 use context::CoreContext;
+#[cfg(fbcode_build)]
 use ephemeral_blobstore::BubbleId;
+#[cfg(fbcode_build)]
 use ephemeral_blobstore::RepoEphemeralStore;
+#[cfg(fbcode_build)]
 use futures::Future;
+#[cfg(fbcode_build)]
 use futures::FutureExt;
+#[cfg(fbcode_build)]
 use futures::future::BoxFuture;
+#[cfg(fbcode_build)]
 use futures::try_join;
 use futures_watchdog::WatchdogExt;
 use megarepo_api::MegarepoApi;
 use megarepo_error::MegarepoError;
 use mononoke_api::ChangesetContext;
+#[cfg(fbcode_build)]
 use mononoke_api::ChangesetSpecifier;
 use mononoke_api::Mononoke;
 use mononoke_api::MononokeRepo;
 use mononoke_api::Repo;
 use mononoke_api::RepoContext;
 use mononoke_types::ChangesetId;
+#[cfg(fbcode_build)]
 use repo_authorization::AuthorizationContext;
 #[cfg(fbcode_build)]
 use scs_errors::ServiceErrorResultExt;
@@ -53,6 +61,7 @@ use scs_methods::from_request::FromRequest;
 #[cfg(fbcode_build)]
 use scs_methods::specifiers::SpecifierExt;
 use source_control as thrift;
+#[cfg(fbcode_build)]
 use source_control::CommitSpecifier;
 
 const METHOD_MAX_POLL_TIME_MS: u64 = 100;

@@ -17,10 +17,18 @@ pub enum PushDiversionMode {
     NoDiversion,
     /// Diverted repo, normal flow — one synchronous `submit_manifest_land`
     /// to the Multi-Repo Land Service.
+    #[cfg_attr(
+        not(fbcode_build),
+        expect(dead_code, reason = "Only internal builds divert pushes")
+    )]
     RlLandServiceDiversion,
     /// Diverted repo, emergency push — process directly through the normal
     /// git server path. Stale manifest pins are repaired by the reconciler
     /// within its interval.
+    #[cfg_attr(
+        not(fbcode_build),
+        expect(dead_code, reason = "Only internal builds divert pushes")
+    )]
     EmergencyPush,
 }
 

@@ -18,7 +18,6 @@ rust_library(
         "//common/rust/shed/cloned:cloned",
         "//common/rust/shed/facet:facet",
         "//common/rust/shed/stats:stats",
-        "//eden/mononoke/common/mononoke_macros:mononoke_macros",
         "//eden/mononoke/common/permission_checker:permission_checker",
         "//eden/mononoke/common/rust/justknobs_ext:justknobs",
         "//eden/mononoke/common/rust/sql_ext:sql_ext",
@@ -41,6 +40,7 @@ rust_library(
         if rust_oss.is_oss_build()
         else [
             "//common/rust/shed/futures_stats:futures_stats",
+            "//eden/mononoke/common/mononoke_macros:mononoke_macros",
         ]
     ),
 )

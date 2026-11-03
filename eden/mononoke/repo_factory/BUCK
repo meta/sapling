@@ -135,7 +135,6 @@ rust_library(
         "//eden/mononoke/blobstore:memblob",
         "//eden/mononoke/blobstore:redactedblobstore",
         "//eden/mononoke/common/acl_regions:acl_regions",
-        "//eden/mononoke/common/mononoke_configs:mononoke_configs",
         "//eden/mononoke/common/permission_checker:permission_checker",
         "//eden/mononoke/common/rendezvous:rendezvous",
         "//eden/mononoke/common/rust/sql_ext:sql_ext",
@@ -150,7 +149,6 @@ rust_library(
         "//eden/mononoke/megarepo_api:megarepo_mapping",
         "//eden/mononoke/megarepo_api:pushredirect",
         "//eden/mononoke/mercurial:mercurial_mutation",
-        "//eden/mononoke/metaconfig:metaconfig_parser",
         "//eden/mononoke/metaconfig:metaconfig_types",
         "//eden/mononoke/mononoke_types:mononoke_types",
         "//eden/mononoke/repo_attributes/bonsai_git_mapping:bonsai_git_mapping",
@@ -198,7 +196,15 @@ rust_library(
         "//eden/mononoke/repo_client:streaming_clone",
         "//eden/mononoke/servers/slapi/slapi_server/context:context",
         "//eden/mononoke/servers/slapi/wireproto_handler:wireproto_handler",
-    ],
+    ]
+    + (
+        []
+        if rust_oss.is_oss_build()
+        else [
+            "//eden/mononoke/common/mononoke_configs:mononoke_configs",
+            "//eden/mononoke/metaconfig:metaconfig_parser",
+        ]
+    ),
 )
 
 rust_library(

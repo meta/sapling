@@ -569,6 +569,13 @@ fn report_bookmark_missing_from_cache(repo: &impl RepoIdentityRef, bookmark: &Bo
     });
 }
 
+#[cfg_attr(
+    not(fbcode_build),
+    expect(
+        unused_variables,
+        reason = "Only internal builds report to the API stats instrument"
+    )
+)]
 fn report_bookmark_missing_from_repo(repo: &impl RepoIdentityRef, bookmark: &BookmarkKey) {
     error!(
         "Monitored bookmark does not exist in the repo: {}",

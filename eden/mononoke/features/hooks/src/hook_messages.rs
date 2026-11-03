@@ -125,6 +125,13 @@ pub(crate) struct ClashingCaptureGroup {
 impl<M: HookMessages> MessagesBuilder<M> {
     /// Replaces a message's declared default, for an implementation that
     /// shares its code with another but shows different text.
+    #[cfg_attr(
+        all(not(fbcode_build), not(test)),
+        expect(
+            dead_code,
+            reason = "Only internal hook implementations replace a default"
+        )
+    )]
     pub(crate) fn default(mut self, name: &'static str, template: &'static str) -> Self {
         debug_assert!(M::SPECS.iter().any(|spec| spec.name == name));
         self.defaults.push((name, template));

@@ -13,9 +13,11 @@ mod settings;
 use environment::Caching;
 #[cfg(fbcode_build)]
 use environment::LocalCacheConfig;
+#[cfg(fbcode_build)]
 use environment::LocalCacheEncoding;
 use fbinit::FacebookInit;
 
+#[cfg(fbcode_build)]
 use crate::args::CacheEncoding;
 pub use crate::args::CacheMode;
 pub use crate::args::CachelibArgs;

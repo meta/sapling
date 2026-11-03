@@ -10,11 +10,13 @@
 //! Responsible for publishing repo events (e.g. bookmark updates, tag updates, etc.)
 //! and allowing interested parties to subscribe to them.
 
-#![feature(trait_alias)]
+#![cfg_attr(fbcode_build, feature(trait_alias))]
 
 #[cfg(fbcode_build)]
 mod facebook;
+#[cfg(fbcode_build)]
 mod from_scuba_json;
+#[cfg(fbcode_build)]
 mod notification_filter;
 #[cfg(not(fbcode_build))]
 mod oss;
@@ -30,6 +32,7 @@ pub use facebook::scribe_repo_event_publisher::ScribeRepoEventPublisher;
 pub use mononoke_bookmark_event_notification::BookmarkCategory;
 #[cfg(fbcode_build)]
 pub use mononoke_bookmark_event_notification::BookmarkEventNotification;
+#[cfg(fbcode_build)]
 pub use notification_filter::AllBookmarksFilter;
 #[cfg(not(fbcode_build))]
 pub use oss::UnsupportedRepoEventPublisher;

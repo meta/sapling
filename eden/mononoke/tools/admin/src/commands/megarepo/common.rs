@@ -184,6 +184,7 @@ pub(crate) async fn process_stream_and_wait_for_replication<R: cross_repo_sync::
             }
             #[cfg(not(fbcode_build))]
             {
+                let _ = ctx;
                 let _address = address;
                 let _ = anyhow::Ok(()).context("fix compiler warning in OSS mode")?;
                 Arc::new(NoReplicaLagMonitor())

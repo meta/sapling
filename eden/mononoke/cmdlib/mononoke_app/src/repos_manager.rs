@@ -489,6 +489,7 @@ impl<Repo> MononokeReposManager<Repo> {
                 let repo_id = repo_config.repoid.id();
                 let completed = completed.clone();
                 mononoke::spawn_task(async move {
+                    #[cfg(fbcode_build)]
                     let start = Instant::now();
                     info!("Initializing repo: {}", &repo_name);
                     let repo = repo_factory

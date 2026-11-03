@@ -13,6 +13,7 @@
 use std::fs::File;
 use std::io::Write;
 use std::net::ToSocketAddrs;
+#[cfg(fbcode_build)]
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;

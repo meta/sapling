@@ -105,7 +105,13 @@ pub fn build<R: Send + Sync + Clone + 'static>(
         .transpose()?;
 
     #[cfg(not(fbcode_build))]
-    let _ = (rim_backend, rim_regional_resources);
+    let _ = (
+        config_store,
+        is_shadow_tier,
+        tls_ca_path,
+        rim_backend,
+        rim_regional_resources,
+    );
 
     let ctx = ServerContext::new(mononoke, will_exit);
 

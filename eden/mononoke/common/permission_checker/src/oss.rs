@@ -41,12 +41,20 @@ pub struct Attribute {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    non_snake_case,
+    reason = "Field names match the internal identity Thrift structs that shared code builds"
+)]
 pub struct AttributeKey {
     pub attributeName: String,
     pub attributeNamespace: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    non_snake_case,
+    reason = "Field names match the internal identity Thrift structs that shared code builds"
+)]
 pub struct IdentityAttribute {
     pub attributeValue: String,
 }

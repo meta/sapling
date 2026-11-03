@@ -61,6 +61,7 @@ pub(crate) struct ScscApp {
 }
 
 impl ScscApp {
+    #[cfg(fbcode_build)]
     pub(crate) fn scs_host(&self) -> Option<&str> {
         self.connection_args.host()
     }

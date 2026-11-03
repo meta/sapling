@@ -35,7 +35,6 @@ rust_library(
         "//common/rust/shed/futures_stats:futures_stats",
         "//common/rust/shed/hostname:hostname",
         "//common/rust/shed/stats:stats",
-        "//eden/mononoke/blobstore:ephemeral_blobstore",
         "//eden/mononoke/blobstore:throttledblob",
         "//eden/mononoke/cmdlib/mononoke_app:mononoke_app",
         "//eden/mononoke/cmdlib/sharding:executor_lib",
@@ -67,6 +66,7 @@ rust_library(
         []
         if rust_oss.is_oss_build()
         else [
+            "//eden/mononoke/blobstore:ephemeral_blobstore",
             "//eden/mononoke/servers/scs/scs_errors:scs_errors",
             "//eden/mononoke/servers/scs/scs_methods:scs_methods",
         ]

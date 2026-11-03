@@ -16,7 +16,21 @@ const USE_ONLY_OFFSET_DELTA: &str = "x-git-only-offset-delta";
 const PUSH_CONCURRENCY: &str = "x-git-push-concurrency";
 const BYPASS_BOOKMARK_CACHE: &str = "x-git-bypass-bookmark-cache";
 const UNSAMPLED_PERF_LOGGING: &str = "x-git-unsampled-perf-logging";
+#[cfg_attr(
+    not(fbcode_build),
+    expect(
+        dead_code,
+        reason = "Only RL Land Service diversion reads these, in internal builds"
+    )
+)]
 const EMERGENCY_PUSH: &str = "x-git-emergency-push";
+#[cfg_attr(
+    not(fbcode_build),
+    expect(
+        dead_code,
+        reason = "Only RL Land Service diversion reads these, in internal builds"
+    )
+)]
 const ALLOW_NON_FAST_FORWARD: &str = "x-git-allow-non-ffwd-push";
 const ALLOW_DANGLING_LFS_POINTERS: &str = "x-git-allow-dangling-lfs-pointers";
 
@@ -71,6 +85,13 @@ impl Pushvars {
             .is_some_and(|v| **v == *b"1")
     }
 
+    #[cfg_attr(
+        not(fbcode_build),
+        expect(
+            dead_code,
+            reason = "Only RL Land Service diversion reads this, in internal builds"
+        )
+    )]
     pub fn emergency_push(&self) -> bool {
         self.0.get(EMERGENCY_PUSH).is_some_and(|v| **v == *b"1")
     }
@@ -78,6 +99,13 @@ impl Pushvars {
     /// Mirrors `bookmarks_movement::ALLOW_NON_FFWD_PUSHVAR`: presence of the
     /// header is sufficient (value is not inspected), so the diverted MRL
     /// path behaves identically to the local push path.
+    #[cfg_attr(
+        not(fbcode_build),
+        expect(
+            dead_code,
+            reason = "Only RL Land Service diversion reads this, in internal builds"
+        )
+    )]
     pub fn allow_non_fast_forward(&self) -> bool {
         self.0.contains_key(ALLOW_NON_FAST_FORWARD)
     }

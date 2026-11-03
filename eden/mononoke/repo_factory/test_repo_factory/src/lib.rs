@@ -9,6 +9,7 @@
 #![deny(missing_docs)]
 
 use std::collections::BTreeSet;
+#[cfg(fbcode_build)]
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -80,10 +81,13 @@ use megarepo_mapping::MegarepoMapping;
 use memblob::Memblob;
 use mercurial_mutation::ArcHgMutationStore;
 use mercurial_mutation::SqlHgMutationStoreBuilder;
+#[cfg(fbcode_build)]
 use metaconfig_parser::RepoConfigs;
+#[cfg(fbcode_build)]
 use metaconfig_parser::StorageConfigs;
 use metaconfig_types::ArcRepoConfig;
 use metaconfig_types::BlameVersion;
+#[cfg(fbcode_build)]
 use metaconfig_types::CommonConfig;
 use metaconfig_types::ComparableRegex;
 use metaconfig_types::DerivedDataConfig;
@@ -97,6 +101,7 @@ use metaconfig_types::InfinitepushParams;
 use metaconfig_types::RepoConfig;
 use metaconfig_types::SourceControlServiceParams;
 use metaconfig_types::UnodeVersion;
+#[cfg(fbcode_build)]
 use mononoke_configs::MononokeConfigs;
 use mononoke_types::DerivableType;
 use mononoke_types::RepositoryId;

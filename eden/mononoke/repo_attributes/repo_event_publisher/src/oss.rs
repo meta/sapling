@@ -25,14 +25,14 @@ impl RepoEventPublisher for UnsupportedRepoEventPublisher {
 
     fn subscribe_for_tag_updates(
         &self,
-        repo_name: &RepoName,
+        _repo_name: &RepoName,
     ) -> Result<broadcast::Receiver<PlainBookmarkInfo>> {
         anyhow::bail!("Subscription to tag updates is not supported in OSS mode");
     }
 
     fn subscribe_for_content_refs_updates(
         &self,
-        repo_name: &RepoName,
+        _repo_name: &RepoName,
     ) -> Result<broadcast::Receiver<GitContentRefInfo>> {
         anyhow::bail!("Subscription to content refs updates is not supported in OSS mode");
     }

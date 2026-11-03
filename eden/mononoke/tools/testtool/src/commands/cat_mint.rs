@@ -35,12 +35,20 @@ use mononoke_app::MononokeApp;
 #[derive(Parser)]
 pub struct CommandArgs {}
 
+#[cfg_attr(
+    not(fbcode_build),
+    expect(dead_code, reason = "Only the internal build can mint tokens")
+)]
 #[derive(Clone)]
 struct ParsedIdentity {
     id_type: String,
     id_data: String,
 }
 
+#[cfg_attr(
+    not(fbcode_build),
+    expect(dead_code, reason = "Only the internal build can mint tokens")
+)]
 fn parse_identity(s: &str) -> Result<ParsedIdentity> {
     let (id_type, id_data) = s
         .split_once(':')
@@ -56,12 +64,20 @@ fn parse_identity(s: &str) -> Result<ParsedIdentity> {
     })
 }
 
+#[cfg_attr(
+    not(fbcode_build),
+    expect(dead_code, reason = "Only the internal build can mint tokens")
+)]
 struct Row {
     signer: ParsedIdentity,
     verifier: ParsedIdentity,
     token_timeout_seconds: u64,
 }
 
+#[cfg_attr(
+    not(fbcode_build),
+    expect(dead_code, reason = "Only the internal build can mint tokens")
+)]
 fn parse_rows(input: &str) -> Result<Vec<Row>> {
     let rows = input
         .lines()

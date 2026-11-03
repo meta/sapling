@@ -347,6 +347,13 @@ pub trait RepoFactoryOverride<T> = Fn(T) -> T + Send + Sync + 'static;
 #[derive(Clone)]
 pub struct RepoFactory {
     pub env: Arc<MononokeEnvironment>,
+    #[cfg_attr(
+        not(fbcode_build),
+        expect(
+            dead_code,
+            reason = "Only the internal repo event publisher reads the configs"
+        )
+    )]
     configs: Arc<MononokeConfigs>,
     sql_factories: RepoFactoryCache<MetadataDatabaseConfig, Arc<MetadataSqlFactory>>,
     blobstores: RepoFactoryCache<BlobConfig, Arc<dyn Blobstore>>,
@@ -1554,7 +1561,7 @@ impl RepoFactory {
     ) -> Result<ArcRepoDerivationQueues> {
         #[cfg(not(fbcode_build))]
         {
-            let _ = repo_derived_data;
+            let _ = (repo_config, repo_derived_data);
             anyhow::bail!("RepoDerivationQueues is not supported in non-fbcode builds")
         }
         #[cfg(fbcode_build)]

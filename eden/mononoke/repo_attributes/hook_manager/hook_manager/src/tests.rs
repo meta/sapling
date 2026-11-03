@@ -916,6 +916,7 @@ fn bypass_config_with_group() -> HookConfig {
 }
 
 /// A group-gated commit-message bypass that agents in the group may also use.
+#[cfg(fbcode_build)]
 fn bypass_config_with_group_allowing_agents() -> HookConfig {
     HookConfig {
         bypasses: vec![

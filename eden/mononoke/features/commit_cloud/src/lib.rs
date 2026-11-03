@@ -45,6 +45,7 @@ use facet::facet;
 #[cfg(fbcode_build)]
 use futures_stats::futures03::TimedFutureExt;
 use metaconfig_types::CommitCloudConfig;
+#[cfg(fbcode_build)]
 use mononoke_macros::mononoke;
 use mononoke_types::DateTime;
 use mononoke_types::Timestamp;

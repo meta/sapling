@@ -46,10 +46,6 @@ pub(crate) struct ConnectionArgs {
 }
 
 impl ConnectionArgs {
-    pub(crate) fn host(&self) -> Option<&str> {
-        Some(self.host.as_deref().unwrap_or(DEFAULT_SCS_HOST))
-    }
-
     pub async fn get_connection(
         &self,
         _fb: FacebookInit,

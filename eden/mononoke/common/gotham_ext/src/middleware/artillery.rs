@@ -46,9 +46,12 @@ pub(crate) struct ArtilleryTracingEnabled(pub(crate) bool);
 /// Holds the continued-trace guard for the lifetime of the request.
 #[derive(StateData)]
 struct ArtilleryTraceGuardState(
-    #[expect(
-        dead_code,
-        reason = "RAII guard — held for its Drop impl to keep the Artillery trace alive for the request lifetime"
+    #[cfg_attr(
+        fbcode_build,
+        expect(
+            dead_code,
+            reason = "RAII guard — held for its Drop impl to keep the Artillery trace alive for the request lifetime"
+        )
     )]
     ArtilleryTraceGuard,
 );
