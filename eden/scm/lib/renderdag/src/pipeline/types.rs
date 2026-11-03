@@ -25,7 +25,7 @@ pub struct GraphRowShapeStyle {
 
     /// Requested number of character columns between adjacent vertical lines.
     /// Box drawing uses this value directly, including zero for no gap.
-    /// ASCII renderers currently use their fixed spacing.
+    /// ASCII uses at least one; ASCII large uses at least two.
     pub column_spacing: usize,
 }
 

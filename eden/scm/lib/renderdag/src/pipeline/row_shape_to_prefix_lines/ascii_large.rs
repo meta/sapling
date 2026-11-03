@@ -31,6 +31,8 @@ impl<N> PrefixLineRenderer<N> for AsciiLargePrefixLineRenderer {
     /// Convert the next graph row shape into prefix lines.
     fn next_prefix_lines(&mut self, line: &GraphRowShape<N>) -> Vec<PrefixLine> {
         let mut lines = Vec::new();
+        let spacing = line.style.column_spacing.max(2);
+        let leading_gap = " ".repeat(spacing - 1);
         let (ancestor, ancestor_line) = match line.style.dash_style {
             DashStyle::Persistent => ('.', ". "),
             DashStyle::Once => (':', ": "),
@@ -38,6 +40,7 @@ impl<N> PrefixLineRenderer<N> for AsciiLargePrefixLineRenderer {
 
         lines.push(render_pad_line(
             ancestor_line,
+            &leading_gap,
             line.pre_node_line(),
             PrefixLineKind::PreNode,
         ));
@@ -48,32 +51,29 @@ impl<N> PrefixLineRenderer<N> for AsciiLargePrefixLineRenderer {
             kind: PrefixLineKind::Node,
         };
         for (i, entry) in line.node_line.iter().enumerate() {
+            let leading = if i > 0 { leading_gap.as_str() } else { "" };
             match entry {
                 NodeLine::Node => {
                     if i > 0 {
                         node_line
                             .parts
-                            .push(PrefixLinePart::Text(String::from(" ")));
+                            .push(PrefixLinePart::Text(leading_gap.clone()));
                     }
                     node_line.parts.push(PrefixLinePart::NodeGlyph);
                     node_line
                         .parts
                         .push(PrefixLinePart::Text(String::from(" ")));
                 }
-                NodeLine::Parent => push_text(&mut node_line, if i > 0 { " | " } else { "| " }),
-                NodeLine::Ancestor => {
-                    if i > 0 {
-                        push_text(&mut node_line, " ");
-                    }
-                    push_text(&mut node_line, ancestor_line);
-                }
-                NodeLine::Blank => push_text(&mut node_line, if i > 0 { "   " } else { "  " }),
+                NodeLine::Parent => push_text(&mut node_line, leading, "| "),
+                NodeLine::Ancestor => push_text(&mut node_line, leading, ancestor_line),
+                NodeLine::Blank => push_text(&mut node_line, leading, "  "),
             }
         }
         lines.push(node_line);
 
         lines.push(render_pad_line(
             ancestor_line,
+            &leading_gap,
             line.post_node_line(),
             PrefixLineKind::PostNode,
         ));
@@ -83,6 +83,27 @@ impl<N> PrefixLineRenderer<N> for AsciiLargePrefixLineRenderer {
             let mut top_link_line = String::new();
             let mut bot_link_line = String::new();
             for (i, cur) in link_row.iter().enumerate() {
+                if i > 0 {
+                    let prev = link_row[i - 1];
+                    // Horizontal strokes join the two diagonal endpoints.
+                    let middle = if prev
+                        .intersects(LinkLine::RIGHT_MERGE_PARENT | LinkLine::HORIZ_PARENT)
+                        || cur.intersects(LinkLine::LEFT_MERGE_PARENT | LinkLine::HORIZ_PARENT)
+                    {
+                        '_'
+                    } else if prev
+                        .intersects(LinkLine::RIGHT_MERGE_ANCESTOR | LinkLine::HORIZ_ANCESTOR)
+                        || cur.intersects(LinkLine::LEFT_MERGE_ANCESTOR | LinkLine::HORIZ_ANCESTOR)
+                    {
+                        '.'
+                    } else {
+                        ' '
+                    };
+                    for _ in 0..spacing - 2 {
+                        top_link_line.push(middle);
+                        bot_link_line.push(' ');
+                    }
+                }
                 // Top left
                 if i > 0 {
                     if cur.intersects(LinkLine::LEFT_MERGE_PARENT) {
@@ -172,7 +193,7 @@ impl<N> PrefixLineRenderer<N> for AsciiLargePrefixLineRenderer {
                 let mut term_line = String::new();
                 for (i, term) in term_row.iter().enumerate() {
                     if i > 0 {
-                        term_line.push(' ');
+                        term_line.push_str(&leading_gap);
                     }
                     if *term {
                         term_line.push_str(term_str);
@@ -192,7 +213,7 @@ impl<N> PrefixLineRenderer<N> for AsciiLargePrefixLineRenderer {
         }
 
         for (kind, columns) in ancestry_lines(line) {
-            lines.push(render_pad_line(ancestor_line, columns, kind));
+            lines.push(render_pad_line(ancestor_line, &leading_gap, columns, kind));
         }
 
         lines
@@ -201,20 +222,29 @@ impl<N> PrefixLineRenderer<N> for AsciiLargePrefixLineRenderer {
 
 fn render_pad_line(
     ancestor: &str,
+    leading_gap: &str,
     line: impl IntoIterator<Item = PadLine>,
     kind: PrefixLineKind,
 ) -> PrefixLine {
     PrefixLine {
-        parts: vec![PrefixLinePart::Text(render_pad_text(ancestor, line))],
+        parts: vec![PrefixLinePart::Text(render_pad_text(
+            ancestor,
+            leading_gap,
+            line,
+        ))],
         kind,
     }
 }
 
-fn render_pad_text(ancestor: &str, line: impl IntoIterator<Item = PadLine>) -> String {
+fn render_pad_text(
+    ancestor: &str,
+    leading_gap: &str,
+    line: impl IntoIterator<Item = PadLine>,
+) -> String {
     let mut out = String::new();
     for (i, entry) in line.into_iter().enumerate() {
         if i > 0 {
-            out.push(' ');
+            out.push_str(leading_gap);
         }
         out.push_str(match entry {
             PadLine::Parent => "| ",
@@ -225,6 +255,9 @@ fn render_pad_text(ancestor: &str, line: impl IntoIterator<Item = PadLine>) -> S
     out
 }
 
-fn push_text(line: &mut PrefixLine, text: &str) {
-    line.parts.push(PrefixLinePart::Text(text.to_owned()));
+fn push_text(line: &mut PrefixLine, leading_gap: &str, glyph: &str) {
+    let mut text = String::with_capacity(leading_gap.len() + glyph.len());
+    text.push_str(leading_gap);
+    text.push_str(glyph);
+    line.parts.push(PrefixLinePart::Text(text));
 }

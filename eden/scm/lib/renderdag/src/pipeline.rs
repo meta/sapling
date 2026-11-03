@@ -143,6 +143,100 @@ mod tests {
     }
 
     #[test]
+    fn test_ascii_column_spacing() {
+        use crate::render::Ancestor;
+
+        let render = |large, spacing| {
+            let prefixes: Box<dyn PrefixLineRenderer<&str> + Send + Sync> = if large {
+                Box::new(AsciiLarge)
+            } else {
+                Box::new(Ascii)
+            };
+            let mut renderer = GraphTextRenderer::with_prefix_lines(prefixes).configure(|o| {
+                o.min_row_height = 0;
+                o.graph_row_shape_style.column_spacing = spacing;
+            });
+            let mut out = renderer.next_text(
+                "F",
+                vec![Ancestor::Parent("A"), Ancestor::Parent("B")],
+                "o",
+                "F",
+            );
+            out.push_str(&renderer.next_text("B", vec![Ancestor::Parent("A")], "o", "B"));
+            out.push_str(&renderer.next_text("A", vec![], "o", "A"));
+            indent(&out)
+        };
+        assert_eq!(
+            render(false, 3),
+            r#"
+            o        F
+            |\
+            | \
+            |  \
+            |   o    B
+            |  /
+            | /
+            |/
+            o    A"#,
+        );
+        assert_eq!(
+            render(true, 3),
+            r#"
+            o      F
+            |\_
+            |  \
+            |   o  B
+            | _/
+            |/
+            o  A"#,
+        );
+        assert_eq!(render(false, 0), render(false, 1));
+        assert_eq!(render(true, 0), render(true, 2));
+        assert_eq!(render(true, 1), render(true, 2));
+    }
+
+    #[test]
+    fn test_ascii_large_wider_column_connections() {
+        use crate::render::Ancestor;
+
+        let render_links = |spacing, parent| {
+            let mut renderer = GraphTextRenderer::<&str>::new::<AsciiLarge>().configure(|o| {
+                o.min_row_height = 0;
+                o.graph_row_shape_style.column_spacing = spacing;
+            });
+            renderer.reserve("A");
+            renderer.reserve("B");
+            let rendered = renderer.next_text("C", vec![parent], "o", "C");
+            indent(
+                &rendered
+                    .lines()
+                    .skip(1)
+                    .take(2)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+        };
+        assert_eq!(
+            render_links(3, Ancestor::Parent("A")),
+            r#"
+              _____/
+             /"#,
+        );
+        assert_eq!(
+            render_links(4, Ancestor::Parent("A")),
+            r#"
+              _______/
+             /"#,
+        );
+        assert_eq!(
+            render_links(4, Ancestor::Ancestor("A")),
+            r#"
+              ........
+             ."#,
+        );
+    }
+
+    #[test]
     fn test_row_shape_derived_padding_lines() {
         use crate::pipeline::types::GraphRowShape;
         use crate::render::NodeLine;
