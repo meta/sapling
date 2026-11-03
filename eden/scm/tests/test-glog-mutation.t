@@ -441,3 +441,41 @@ diverged themselves:
   x  B
   │
   x  B0
+
+smartlog shows the same graph with --mutation, for the mutation history of the
+current commit or of the given commits, where log -r shows exactly the given
+commits:
+
+  $ enable smartlog
+  $ sl smartlog --mutation -T '{desc}\n'
+  @  B2
+  │
+  │ o  B
+  ├─╯
+  │ o  B part 1
+  ├─╯
+  v  B
+  │
+  x  B0
+  $ sl smartlog --mutation -T '{desc}\n' 'desc("B part 1")'
+  @  B2
+  │
+  │ o  B
+  ├─╯
+  │ o  B part 1
+  ├─╯
+  v  B
+  │
+  x  B0
+  $ sl log -G --mutation -T '{desc}\n' -r 'desc("B part 1")'
+  o  B part 1
+  │
+  ~
+  $ sl smartlog --mutation -T '{desc}\n' -r 'roots(all())'
+  o  A
+  $ sl smartlog --show-missing
+  abort: --show-missing requires --mutation
+  [255]
+  $ sl smartlog --mutation --interactive
+  abort: --mutation cannot be used with --interactive
+  [255]

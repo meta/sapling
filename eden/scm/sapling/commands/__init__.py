@@ -3919,7 +3919,7 @@ def locate(ui, repo, *pats, **opts):
             "t",
             "mutation",
             False,
-            _("use mutation history for DAG and diffs (EXPERIMENTAL)"),
+            _("link the revisions by mutation instead of by parent"),
         ),
         (
             "",
@@ -3943,14 +3943,14 @@ def log(ui, repo, *pats, **opts):
     If no revision range is specified, the default revision range is the
     current commit and all of its ancestors (``::.``).
 
-    The experimental ``--mutation`` option links the revisions by mutation
-    (amend, rebase, fold, split and other rewrites) rather than by parent,
-    and shows patches and ``--stat`` against the commit each one was created
-    from. Its default revision range is the mutation history of the current
-    commit (``mutationhistory(.)``); use ``-r 'mutationhistory(REV)'`` for
-    another commit's. Commits that are not shown are skipped, with a dashed
-    line over them; ``--show-missing`` also shows the commits not available
-    locally.
+    The ``--mutation`` option links the revisions by mutation (amend,
+    rebase, fold, split and other rewrites) rather than by parent, and shows
+    patches and ``--stat`` against the commit each one was created from. Its
+    default revision range is the mutation history of the current commit
+    (``mutationhistory(.)``); use ``-r 'mutationhistory(REV)'`` for another
+    commit's, or :prog:`sl -t REV`. Commits that are not shown are skipped,
+    with a dashed line over them; ``--show-missing`` also shows the commits
+    not available locally.
 
     File history is shown without following the rename or copy
     history of files. To follow file history across renames and
@@ -5710,7 +5710,7 @@ def serve(ui, repo, **opts):
             "t",
             "mutation",
             False,
-            _("use mutation history for diffs (EXPERIMENTAL)"),
+            _("diff against the mutation predecessor"),
         ),
     ]
     + diffwsopts

@@ -58,6 +58,7 @@ sl.folded=brightblack:none
 sl.hiddenlabel=brightblack:none
 sl.hiddennode=brightblack:none
 sl.divergentnode=red
+sl.mutatedfrom=cyan
 sl.desc.divergentnode=red
 sl.histedited=brightblack:none
 sl.highlighted = cyan_background
@@ -449,14 +450,22 @@ sl_revision_separator = "\n"
 # Additional lines to be rendered after the commit summary
 sl_extra = "{sl_file_info}{ifeq(sl_file_count,0,sl_file_change_summary)}"
 
+# How a commit was created, shown before it by `sl sl -t` (smartlog --mutation).
+sl_show_mutatedfrom = 'false'
+sl_mutatedfrom_split = "{if(split, ' {splitpart} of {count(split)}')}"
+sl_mutatedfrom_preds = "{join(predecessors % '{node|short}', ', ')}"
+sl_mutatedfrom_info = "{separate('  ', '{operation}{sl_mutatedfrom_split} from {sl_mutatedfrom_preds}', label('sl.user', user|emailuser), label('sl.date', smartdate(date, sl_date_threshold, age(date), simpledate(date, sl_date_timezone))))}"
+sl_mutatedfrom = "{mutatedfrom % '{sl_mutatedfrom_info}'}"
+sl_mutatedfrom_line = "{ifeq(sl_show_mutatedfrom, 'true', if(mutatedfrom, label('sl.mutatedfrom', '{sl_mutatedfrom}\n')))}"
+
 # Normal smartlog
-sl = "{label(sl_label, if(sl_use_short_header, sl_header_short, separate('\n', sl_header_normal, sl_desc, sl_revision_separator)))}{sl_extra}"
+sl = "{sl_mutatedfrom_line}{label(sl_label, if(sl_use_short_header, sl_header_short, separate('\n', sl_header_normal, sl_desc, sl_revision_separator)))}{sl_extra}"
 
 # Super-smartlog.  Includes phabricator information.
-ssl = "{label(sl_label, if(sl_use_short_header, sl_header_short, separate('\n', sl_header_super, sl_desc, sl_revision_separator)))}{sl_extra}"
+ssl = "{sl_mutatedfrom_line}{label(sl_label, if(sl_use_short_header, sl_header_short, separate('\n', sl_header_super, sl_desc, sl_revision_separator)))}{sl_extra}"
 
 # Like super-smartlog, but only colorizes the diff number.
-csl = "{label(sl_label, if(sl_use_short_header, sl_header_short, separate('\n', sl_header_colors, sl_desc, sl_revision_separator)))}{sl_extra}"
+csl = "{sl_mutatedfrom_line}{label(sl_label, if(sl_use_short_header, sl_header_short, separate('\n', sl_header_colors, sl_desc, sl_revision_separator)))}{sl_extra}"
 
 # Smartlog with debug information.  Used by hg rage.
 sl_debug = "{label(sl_label, separate('\n', sl_header_debug, sl_desc, '\n'))}"

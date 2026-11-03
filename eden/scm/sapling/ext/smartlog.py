@@ -458,6 +458,18 @@ def hintsmartlogdefaultcommand():
             False,
             _("enter command line interactive smartlog (EXPERIMENTAL)"),
         ),
+        (
+            "t",
+            "mutation",
+            False,
+            _("show the mutation history of the revisions instead"),
+        ),
+        (
+            "",
+            "show-missing",
+            False,
+            _("with --mutation, show commits not available locally"),
+        ),
     ]
     + logopts,
     _("[OPTION]... [[-r] REV]"),
@@ -482,11 +494,26 @@ def smartlog(ui, repo, *pats, **opts):
     ``status`` and only works with default templates.
 
     ``--stat` shows ``diff --stat``-like file changes for all drafts.
+
+    ``--mutation`` (``-t``) shows the mutation history of REV (by default, of
+    the current commit) instead, as in :prog:`sl -t`: :prog:`log --graph
+    --mutation` of ``mutationhistory(REV)``, with a line before each commit
+    saying how it was created. Hidden commits that were created from them
+    are shown with ``--hidden``, and commits that are not available locally
+    with ``--show-missing``.
     """
 
     maybe_hint_about_default_command(ui)
 
+    if opts.get("mutation"):
+        if opts.get("interactive"):
+            raise error.Abort(_("--mutation cannot be used with --interactive"))
+    elif opts.get("show_missing"):
+        raise error.Abort(_("--show-missing requires --mutation"))
+
     overrides = {}
+    if opts.get("mutation"):
+        overrides[("templatealias", "sl_show_mutatedfrom")] = "'true'"
     if opts.get("commit_info"):
         if ui.verbose:
             config = "'true'"
@@ -863,6 +890,14 @@ def _smartlog(ui, repo, *pats, **opts):
 
     template = opts.get("template") or ""
     headrevs = opts.get("rev")
+
+    if opts.get("mutation"):
+        revs = list(headrevs or []) + list(pats)
+        if revs:
+            revs = [revsetlang.formatspec("mutationhistory(%lr)", revs)]
+        logopts = dict(opts, rev=revs, graph=True)
+        cmdutil.graphlog(ui, repo, (), logopts)
+        return
 
     if opts.get("interactive"):
         if interactiveui is None:

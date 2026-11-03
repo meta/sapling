@@ -472,6 +472,7 @@ Confirm that --help works (it didn't when we used an alias)
    -g --git                 use git extended diff format
    -U --unified VALUE       number of lines of diff context to show (default: 3)
    -r --rev VALUE [+]       show the specified revision
+   -t --mutation            diff against the mutation predecessor
    -w --ignore-all-space    ignore white space when comparing lines
    -b --ignore-space-change ignore changes in the amount of white space
    -B --ignore-blank-lines  ignore changes whose lines are all blank
@@ -511,7 +512,7 @@ Confirm that --help works (it didn't when we used an alias)
    -g --git                 use git extended diff format
    -U --unified VALUE       number of lines of diff context to show (default: 3)
    -r --rev VALUE [+]       show the specified revision
-   -t --mutation            use mutation history for diffs (EXPERIMENTAL)
+   -t --mutation            diff against the mutation predecessor
    -w --ignore-all-space    ignore white space when comparing lines
    -b --ignore-space-change ignore changes in the amount of white space
    -B --ignore-blank-lines  ignore changes whose lines are all blank
