@@ -208,9 +208,25 @@ async fn copy_sources(
 pub struct BuiltChangeset {
     pub change: u64,
     pub changeset: BonsaiChangeset,
+    /// The changelist's files in another depot, which have no file change.
+    pub other_depot_files: usize,
+    /// Deletions under a file that replaced their directory, which have no file change.
+    pub shadowed_deletions: usize,
     /// The source isn't a file in the parent.
     pub dropped_copy_sources: usize,
     /// Several sources, so none is used.
+    pub ambiguous_copy_sources: usize,
+}
+
+/// What importing one changelist did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportedChangelist {
+    pub change: u64,
+    pub cs_id: ChangesetId,
+    pub file_changes: usize,
+    pub other_depot_files: usize,
+    pub shadowed_deletions: usize,
+    pub dropped_copy_sources: usize,
     pub ambiguous_copy_sources: usize,
 }
 
@@ -323,8 +339,17 @@ async fn build_changeset(
         .or(base);
     let changeset =
         p4_transform::changeset(depot_root, &changelist, parent, &contents, &copy_sources)?;
+    let mut other_depot_files = 0;
+    for revision in &changelist.files {
+        if p4_transform::repo_path(depot_root, &revision.depot_path)?.is_none() {
+            other_depot_files += 1;
+        }
+    }
+    let in_depot_files = changelist.files.len() - other_depot_files;
     Ok(BuiltChangeset {
         change,
+        other_depot_files,
+        shadowed_deletions: in_depot_files.saturating_sub(changeset.file_changes().count()),
         changeset,
         dropped_copy_sources: missing.len(),
         ambiguous_copy_sources,
@@ -432,7 +457,7 @@ pub async fn import_changelists(
     bookmark: &BookmarkKey,
     changes: &[u64],
     derive: &[DerivableType],
-) -> Result<Vec<(u64, ChangesetId)>> {
+) -> Result<Vec<ImportedChangelist>> {
     let Some(&last) = changes.last() else {
         return Ok(Vec::new());
     };
@@ -449,22 +474,27 @@ pub async fn import_changelists(
         );
     }
     let old = head.map(|(cs_id, _)| cs_id);
-    let (imported, changesets): (Vec<_>, Vec<_>) =
-        build_changesets(ctx, repo, source, depot_root, old, changes)
-            .await?
-            .into_iter()
-            .map(|built| {
-                (
-                    (built.change, built.changeset.get_changeset_id()),
-                    built.changeset,
-                )
-            })
-            .unzip();
+    let built = build_changesets(ctx, repo, source, depot_root, old, changes).await?;
+    let (imported, changesets): (Vec<_>, Vec<_>) = built
+        .into_iter()
+        .map(|built| {
+            let imported = ImportedChangelist {
+                change: built.change,
+                cs_id: built.changeset.get_changeset_id(),
+                file_changes: built.changeset.file_changes().count(),
+                other_depot_files: built.other_depot_files,
+                shadowed_deletions: built.shadowed_deletions,
+                dropped_copy_sources: built.dropped_copy_sources,
+                ambiguous_copy_sources: built.ambiguous_copy_sources,
+            };
+            (imported, built.changeset)
+        })
+        .unzip();
     let derive = BackfillDerivation::OnlySpecificTypes(derive.to_vec())
         .types(&repo.repo_derived_data().active_config().types);
     save_and_derive_batch(ctx, repo, changesets, &derive).await?;
 
-    let &(_, new) = imported.last().context("built no changesets")?;
+    let new = imported.last().context("built no changesets")?.cs_id;
     let mut txn = repo.bookmarks().create_transaction(ctx.clone());
     match old {
         None => txn.create(bookmark, new, BookmarkUpdateReason::Blobimport)?,
@@ -481,15 +511,44 @@ pub async fn import_changelists(
     Ok(imported)
 }
 
+/// Imports the first `limit` changelists of the depot after the bookmark's `resume_point`,
+/// as `import_changelists` does.
+pub async fn import_next(
+    ctx: &CoreContext,
+    repo: &(
+         impl BookmarksRef
+         + BonsaiP4MappingArc
+         + CommitGraphRef
+         + CommitGraphWriterRef
+         + FilestoreConfigRef
+         + RepoBlobstoreRef
+         + RepoDerivedDataRef
+         + RepoIdentityRef
+         + Send
+         + Sync
+     ),
+    source: &impl ChangeSource,
+    depot_root: &str,
+    bookmark: &BookmarkKey,
+    limit: usize,
+    derive: &[DerivableType],
+) -> Result<Vec<ImportedChangelist>> {
+    let after = resume_point(ctx, repo, bookmark).await?;
+    let changes = next_changes(source, depot_root, after, limit, CHANGES_WINDOW).await?;
+    import_changelists(ctx, repo, source, depot_root, bookmark, &changes, derive).await
+}
+
 /// Writes the batch's mapping in the bookmark move's transaction, so the bookmark never
 /// points at a changeset whose changelist isn't mapped, nor the reverse.
 fn mapping_txn_hook(
     mapping: Arc<dyn BonsaiP4Mapping>,
-    imported: &[(u64, ChangesetId)],
+    imported: &[ImportedChangelist],
 ) -> BookmarkTransactionHook {
     let entries: Arc<[_]> = imported
         .iter()
-        .map(|&(change, cs_id)| BonsaiP4MappingEntry::new(cs_id, P4ChangelistId::new(change)))
+        .map(|imported| {
+            BonsaiP4MappingEntry::new(imported.cs_id, P4ChangelistId::new(imported.change))
+        })
         .collect();
     Arc::new(move |ctx, txn| {
         let mapping = mapping.clone();
