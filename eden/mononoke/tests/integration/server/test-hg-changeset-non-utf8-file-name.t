@@ -9,11 +9,8 @@
 # is what the hg client gets from the commit-data endpoint and what the hg
 # changeset id hashes, so the file name must come back as the bytes that were
 # committed.
-#
-# FIXME: BUG! Today the hg changeset text is written with the lossy `Display`
-# of `NonRootMPath`, so the file name byte 0xe9 is served (and hashed) as the
-# U+FFFD replacement character instead. This test pins the current behaviour;
-# the next diff fixes it.
+# The file names are written as raw bytes, so the text is bit-for-bit the one
+# Mercurial writes.
 
   $ . "${TEST_FIXTURES}/library.sh"
 
@@ -47,9 +44,8 @@
   $ hg clone -q mono:repo "$HG_REPO" --noupdate
   $ cd "$HG_REPO"
 
-# FIXME: BUG! The changeset text the server serves for that commit should carry
-# the file name as "caf\xe9", the bytes of the path; today it carries the
-# U+FFFD replacement character ("caf\xef\xbf\xbd").
+# The changeset text the server serves for that commit carries the file name as
+# "caf\xe9", the bytes of the path.
   $ hg debugapi -e commitdata -i "['$HGID']"
   [{"hgid": bin("*"), (glob)
-    "revlog_data": b"*\ncaf\xef\xbf\xbd\n\nAdd a latin-1 file name\n"}] (glob)
+    "revlog_data": b"*\ncaf\xe9\n\nAdd a latin-1 file name\n"}] (glob)

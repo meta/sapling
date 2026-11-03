@@ -190,10 +190,6 @@ fn changeset_content_with_files(files: Vec<NonRootMPath>) -> HgChangesetContent 
     )
 }
 
-/// FIXME: BUG! This did write the non-UTF-8 file name `caf\xe9` into the changeset text as
-/// `caf\xef\xbf\xbd` (U+FFFD, through the lossy `Display` of `NonRootMPath`) and hash that
-/// text, but should have written the file name bytes verbatim, as Mercurial does, so that
-/// the text is bit-for-bit Mercurial's and `parse(generate(cs))` returns the same files.
 #[mononoke::test]
 fn generate_writes_non_utf8_path_bytes_verbatim() {
     let path = NonRootMPath::new(b"caf\xe9").unwrap();
@@ -202,26 +198,17 @@ fn generate_writes_non_utf8_path_bytes_verbatim() {
     let mut text = Vec::new();
     cs.generate(&mut text).expect("generate");
 
+    // Mercurial's changelog text: "\n".join([hex(manifest), user, date] + files + ["", desc]),
+    // with file names written as raw bytes.
     let hg_text: &[u8] = b"0000000000000000000000000000000000000000\nuser\n0 0\ncaf\xe9\n\nmsg";
-    let lossy_text: &[u8] =
-        b"0000000000000000000000000000000000000000\nuser\n0 0\ncaf\xef\xbf\xbd\n\nmsg";
-    // FIXME: BUG! The text holds U+FFFD where Mercurial writes the byte 0xe9.
-    assert_eq!(text, lossy_text);
-    assert_ne!(text, hg_text);
+    assert_eq!(text, hg_text);
 
-    // FIXME: BUG! The changeset id is the sha1 of the altered text.
-    let lossy_id = HgBlobNode::new(Bytes::from_static(lossy_text), None, None).nodeid();
-    assert_eq!(cs.get_node().unwrap().nodeid(), lossy_id);
+    let hg_id = HgBlobNode::new(Bytes::from_static(hg_text), None, None).nodeid();
+    assert_eq!(cs.get_node().unwrap().nodeid(), hg_id);
 
-    // FIXME: BUG! parse(generate(cs)) does not give back the original file name.
     let parsed = RevlogChangeset::parse(HgBlob::new(Bytes::from(text)), None, None).expect("parse");
-    assert_eq!(
-        parsed.files(),
-        &[NonRootMPath::new(b"caf\xef\xbf\xbd").unwrap()][..]
-    );
+    assert_eq!(parsed.files(), &[path.clone()][..]);
 
-    // FIXME: BUG! HgChangesetContent, used by hg changeset derivation, hashes the same
-    // altered text.
     let content = changeset_content_with_files(vec![path]);
-    assert_eq!(content.compute_hash().unwrap().into_nodehash(), lossy_id);
+    assert_eq!(content.compute_hash().unwrap().into_nodehash(), hg_id);
 }

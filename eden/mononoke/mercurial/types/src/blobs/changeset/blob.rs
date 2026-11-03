@@ -174,7 +174,8 @@ impl HgChangesetContent {
 
         write!(out, "\n")?;
         for f in &self.files {
-            write!(out, "{f}\n")?;
+            f.generate(out)?;
+            out.write_all(b"\n")?;
         }
         write!(out, "\n")?;
         out.write_all(&self.message)?;

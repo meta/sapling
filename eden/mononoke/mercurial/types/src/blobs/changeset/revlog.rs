@@ -432,7 +432,8 @@ pub fn serialize_cs<W: Write>(cs: &RevlogChangeset, out: &mut W) -> Result<()> {
 
     write!(out, "\n")?;
     for f in cs.files() {
-        write!(out, "{f}\n")?;
+        f.generate(out)?;
+        out.write_all(b"\n")?;
     }
     write!(out, "\n")?;
     out.write_all(cs.message())?;
