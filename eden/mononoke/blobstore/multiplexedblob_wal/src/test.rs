@@ -1333,3 +1333,75 @@ async fn scrubbed(fb: FacebookInit) {
         .await
         .unwrap();
 }
+
+/// FIXME: BUG! This did report a multiplexed `unlink` as successful while the blob was still
+/// present in the write-only blobstore, but it should have removed the key from every
+/// underlying blobstore: `unlink_impl` only unlinks from `self.blobstores`, although write-only
+/// blobstores take part in every `put`, and the WAL healer and the scrub blobstore copy whatever
+/// they hold back into the main blobstores. This test pins the current behaviour; the next diff
+/// fixes it.
+#[mononoke::fbinit_test]
+async fn test_unlink_removes_from_write_only_blobstores(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let (tickable_queue, wal_queue) = setup_queue();
+    let (tickable_main, main_blobstores) = setup_blobstores(2);
+    let write_only_tickable = Arc::new(TickableBytes::new());
+    let write_only: Vec<(BlobstoreId, Arc<dyn Blobstore>)> = vec![(
+        BlobstoreId::new(2),
+        write_only_tickable.clone() as Arc<dyn Blobstore>,
+    )];
+    let scuba = Scuba::new(
+        MononokeScubaSampleBuilder::with_discard(),
+        MononokeScubaSampleBuilder::with_discard(),
+        nonzero!(1u64),
+    )?;
+    let multiplex = WalMultiplexedBlobstore::new(
+        MultiplexId::new(1),
+        wal_queue,
+        main_blobstores,
+        write_only,
+        1,
+        None,
+        scuba,
+    )?;
+
+    let v = make_value("v1");
+    let k = "k1";
+
+    // put: WAL log, then both main stores succeed; the write-only put is spawned after the quorum.
+    let mut put_fut = multiplex.put(&ctx, k.to_owned(), v.clone()).boxed();
+    assert_pending(&mut put_fut).await;
+    tickable_queue.tick(None);
+    assert_pending(&mut put_fut).await;
+    tickable_main[0].1.tick(None);
+    tickable_main[1].1.tick(None);
+    assert!(put_fut.await.is_ok());
+    // Let the spawned write-only put register on its tickable, then complete it.
+    tokio::task::yield_now().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    write_only_tickable.tick(None);
+    tokio::task::yield_now().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    // The WAL-delete optimisation runs once every put succeeded.
+    tickable_queue.tick(None);
+    tokio::task::yield_now().await;
+    assert_eq!(
+        write_only_tickable.get_bytes(k),
+        Some(v.clone()),
+        "write-only store received the blob"
+    );
+
+    // unlink through the multiplex: only the two main stores are asked.
+    let mut unlink_fut = multiplex.unlink(&ctx, k).boxed();
+    assert_pending(&mut unlink_fut).await;
+    tickable_main[0].1.tick(None);
+    tickable_main[1].1.tick(None);
+    assert!(unlink_fut.await.is_ok());
+
+    assert_eq!(tickable_main[0].1.get_bytes(k), None);
+    assert_eq!(tickable_main[1].1.get_bytes(k), None);
+    // FIXME: BUG! The multiplexed unlink succeeded without ever reaching the write-only
+    // blobstore, so the blob survives there and can be healed back.
+    assert_eq!(write_only_tickable.get_bytes(k), Some(v));
+    Ok(())
+}
