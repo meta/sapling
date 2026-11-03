@@ -3320,7 +3320,9 @@ def getgraphlogrevs(repo, pats, opts):
             # always "reverse" in this case. So just do a reverse sort.
             revs = repo.revs(expr) & revs
             revs.sort(reverse=True)
-    if opts.get("rev"):
+    if opts.get("mutation"):
+        revs = smartset.baseset(graphmod.mutationsort(repo, revs), repo=repo)
+    elif opts.get("rev"):
         # User-specified revs might be unsorted, but don't sort before
         # _makelogrevset because it might depend on the order of revs
         if not (revs.isdescending() or revs.istopo()):
@@ -3354,6 +3356,8 @@ def getlogrevs(repo, pats, opts):
             # always "reverse" in this case. So just do a reverse sort.
             revs = repo.revs(expr) & revs
             revs.sort(reverse=True)
+    if opts.get("mutation"):
+        revs = smartset.baseset(graphmod.mutationsort(repo, revs), repo=repo)
     if limit is not None:
         revs = revs.slice(0, limit)
     return revs, expr, filematcher
@@ -3649,7 +3653,8 @@ def graphlog(ui, repo, pats: Tuple[str, ...], opts: Dict[str, Any]):
 
     ui.pager("log")
     displayer = show_changeset(ui, repo, opts, buffered=True)
-    graphnodeid_to_rev = lambda graphnodeid: graphnodeid[1]
+    # The mutation graph's ids are already nodes.
+    graphnodeid_to_rev = None if mutation else lambda graphnodeid: graphnodeid[1]
     displaygraph(
         ui,
         repo,
@@ -3688,21 +3693,15 @@ def mutation_prevfn(ctx):
 
 def _logdagwalker(repo, pats, opts, repogetrenamed, repofilematcher, repoids, mutation):
     revs, expr, filematcher = getgraphlogrevs(repo, pats, opts)
-    dag = None
-    if mutation:
-        nodes = repo.changelog.tonodes(revs)
-        # Mutation dag might contain nodes unknown to the main dag. Filter them out via subdag.
-        # ".subdag" is a trade-off. If we migrate graphmod.dagwalker to not use rev numbers,
-        # then we might drop ".subdag" here. See also test-glob-mutation.t
-        dag = repo._mutationstore.getdag(nodes).subdag(nodes)
     template = opts.get("template") or ""
-    if repo.root not in repoids:
-        repoids[repo.root] = len(repoids)
-    rid = repoids[repo.root]
-    rev_to_graphnodeid = lambda rev: (rid, rev)
-    revdag = graphmod.dagwalker(
-        repo, revs, template, idfunc=rev_to_graphnodeid, dag=dag
-    )
+    if mutation:
+        revdag = graphmod.mutationdagwalker(repo, revs, template)
+    else:
+        if repo.root not in repoids:
+            repoids[repo.root] = len(repoids)
+        rid = repoids[repo.root]
+        rev_to_graphnodeid = lambda rev: (rid, rev)
+        revdag = graphmod.dagwalker(repo, revs, template, idfunc=rev_to_graphnodeid)
 
     getrenamed = None
     if opts.get("copies"):
@@ -3713,6 +3712,8 @@ def _logdagwalker(repo, pats, opts, repogetrenamed, repofilematcher, repoids, mu
 
     repogetrenamed[repo.root] = getrenamed
     repofilematcher[repo.root] = filematcher
+    if mutation:
+        return revdag
     return _dagfollowxrepo(
         repo, pats, opts, revdag, repogetrenamed, repofilematcher, repoids, mutation
     )

@@ -22,7 +22,7 @@ context of the graph returned. Type is a constant specifying the node type.
 Data depends on type.
 """
 
-from . import dagop, smartset
+from . import dagop, mutation, smartset
 from .node import nullid
 
 CHANGESET = "C"
@@ -110,3 +110,85 @@ def dagwalker(repo, revs, template, idfunc=None, dag=None):
                 pset.update(gp)
 
         yield (idfunc(ctx.rev()), CHANGESET, ctx, parents)
+
+
+def mutationdagwalker(repo, revs, template):
+    """mutation DAG generator yielding (node, CHANGESET, ctx, [parentinfo])
+
+    Like ``dagwalker``, but a commit's parents are the commits it replaced
+    (the predecessor of an amend or rebase, every commit of a fold, the
+    commit a split part came from), and nodes and parent ids are commit
+    hashes. ``revs`` are yielded in the order of ``mutationsort``.
+
+    A predecessor that is shown is a ``PARENT``. One that is not is skipped:
+    the nearest shown commits it was created from are ``GRANDPARENT``s, or
+    if there are none it is a ``MISSINGPARENT``.
+    """
+    order, parents = _mutationgraph(repo, revs)
+    cl = repo.changelog
+    ordered = smartset.baseset([cl.rev(n) for n in order], repo=repo)
+    for ctx in ordered.prefetchbytemplate(repo, template).iterctx():
+        yield (ctx.node(), CHANGESET, ctx, parents[ctx.node()])
+
+
+def mutationsort(repo, revs):
+    """``revs`` as a list, each commit before the commits it was created from.
+
+    A chain of mutations is kept together; otherwise newer revs come first.
+    """
+    order, _parents = _mutationgraph(repo, revs)
+    cl = repo.changelog
+    return [cl.rev(n) for n in order]
+
+
+def _mutationgraph(repo, revs):
+    """Return (nodes, parents) for showing ``revs`` as a mutation graph.
+
+    ``nodes`` are ``revs`` sorted as ``mutationsort`` describes, and
+    ``parents`` maps each to its parentinfo list for ``mutationdagwalker``.
+    """
+    cl = repo.changelog
+    nodes = list(cl.tonodes(revs))
+    dag = mutation.getdag(repo, *nodes, splits=True)
+    shownset = dag.sort(nodes)
+    shown = set(nodes)
+
+    parents = {}
+    for node in nodes:
+        edges = []
+        seen = set()
+        for pred in dag.parentnames(node):
+            if pred in shown:
+                candidates = [(PARENT, pred)]
+            else:
+                nearest = dag.headsancestors(dag.ancestors([pred]) & shownset)
+                candidates = [(GRANDPARENT, n) for n in nearest] or [
+                    (MISSINGPARENT, pred)
+                ]
+            for edge in candidates:
+                if edge[1] not in seen:
+                    seen.add(edge[1])
+                    edges.append(edge)
+        parents[node] = edges
+
+    # Topological sort, successors first. Picking the most recently readied
+    # commit keeps a chain of mutations together.
+    children = {node: 0 for node in nodes}
+    for edges in parents.values():
+        for kind, pred in edges:
+            if kind != MISSINGPARENT:
+                children[pred] += 1
+    revof = cl.rev
+    ready = sorted((n for n in nodes if children[n] == 0), key=revof)
+    order = []
+    while ready:
+        node = ready.pop()
+        order.append(node)
+        newlyready = []
+        for kind, pred in parents[node]:
+            if kind != MISSINGPARENT:
+                children[pred] -= 1
+                if children[pred] == 0:
+                    newlyready.append(pred)
+        ready.extend(sorted(newlyready, key=revof))
+    return order, parents
