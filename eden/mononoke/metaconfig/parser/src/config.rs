@@ -1654,7 +1654,7 @@ mod test {
                         BookmarkKey::new("master").unwrap(),
                         BookmarkKey::new("release").unwrap(),
                     ],
-                    sleep_interval_secs: 100,
+                    sleep_interval_secs: Some(100),
                 },
                 x_repo_sync_source_mapping: Some(XRepoSyncSourceConfigMapping {
                     mapping: hashmap! {

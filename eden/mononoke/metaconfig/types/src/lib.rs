@@ -2379,8 +2379,8 @@ pub struct MetadataLoggerConfig {
     /// Bookmarks to log repo metadata for
     pub bookmarks: Vec<BookmarkKey>,
     /// The interval time in secs for which the repo metadata logger sleeps between
-    /// successive iterations of its incremental mode execution
-    pub sleep_interval_secs: u64,
+    /// successive iterations of its incremental mode execution. `None` means no sleep.
+    pub sleep_interval_secs: Option<u64>,
 }
 
 /// Configuration for connecting to Zelos
