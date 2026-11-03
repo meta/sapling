@@ -819,6 +819,52 @@ def showsuccessorssets(repo, ctx, **args) -> Union[_hybrid, str]:
     return _hybrid(gen(data), data, lambda x: {"successorset": x}, util.identity)
 
 
+@templatekeyword("mutatedfrom")
+def showmutatedfrom(repo, ctx, **args) -> _hybrid:
+    """How the commit was created by mutating other commits, or nothing if
+    it was not. As a string, the name of the operation.
+
+    It has the following fields:
+      - 'operation' is the name of the mutation operation, e.g. ``amend``
+      - 'user' is who ran the operation
+      - 'date' is when the operation ran
+      - 'predecessors' is the list of commits it replaced
+      - 'split' is the list of all the commits a split created, in order,
+        or empty if the operation was not a split
+      - 'splitpart' is the position of this commit in 'split', counting
+        from 1, or 0 if the operation was not a split
+
+    In 'predecessors' and 'split', only ``{node}`` refers to a commit that is
+    not available locally; other keywords refer to the commit being shown.
+    """
+    entry = mutation.lookupsplit(repo, ctx.node()) if mutation.enabled(repo) else None
+    if entry is None:
+        return _hybrid(None, [], lambda x: x, lambda x: "")
+    islocal = mutation.getislocal(repo)
+
+    def nodelist(nodes):
+        local = {hex(n) for n in nodes if islocal(n)}
+        return _hybrid(
+            None,
+            [hex(n) for n in nodes],
+            lambda x: {"ctx": repo[x], "revcache": {}} if x in local else {"node": x},
+            lambda x: x[:12],
+        )
+
+    split = list(entry.split() or [])
+    if split:
+        split.append(entry.succ())
+    data = {
+        "operation": entry.op(),
+        "user": entry.user(),
+        "date": (entry.time(), entry.tz()),
+        "predecessors": nodelist(util.removeduplicates(entry.preds())),
+        "split": nodelist(split),
+        "splitpart": split.index(ctx.node()) + 1 if split else 0,
+    }
+    return _hybrid(None, [data], lambda x: x, lambda x: x["operation"])
+
+
 @templatekeyword("mutations")
 def mutations(repo, ctx, **args) -> _hybrid:
     """Returns a list of the results of mutating the commit.
