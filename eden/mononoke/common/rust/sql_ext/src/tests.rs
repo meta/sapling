@@ -980,6 +980,76 @@ mod facebook {
         Ok(())
     }
 
+    /// Runs a query that always fails with `make_err()` through the retry wrapper and returns
+    /// how many times it was executed.
+    async fn count_executions_of_failing_query(
+        fb: FacebookInit,
+        make_err: impl Fn() -> anyhow::Error + Send + Sync,
+    ) -> usize {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+
+        use crate::_macro_internal::query_with_retry_no_cache;
+
+        let sql_query_tel = SqlQueryTelemetry::new(fb, Metadata::default(), None);
+        let executions = AtomicUsize::new(0);
+        let res: Result<((), usize)> = query_with_retry_no_cache(
+            |_attempt| {
+                executions.fetch_add(1, Ordering::SeqCst);
+                let err = make_err();
+                async move { Err::<(), _>(err) }
+            },
+            "test_shard",
+            "TestRetryPolicy",
+            &sql_query_tel,
+            TelemetryGranularity::Query,
+            &[],
+        )
+        .await;
+        assert!(res.is_err());
+        executions.into_inner()
+    }
+
+    /// FIXME: BUG! This did execute a query whose first attempt failed with a non-retryable
+    /// error a second time (after a 10-15 s backoff) but should have returned the error after
+    /// the first execution: only the retryable MySQL errors selected by
+    /// `should_retry_mysql_query` are meant to be retried.
+    #[mononoke::fbinit_test]
+    async fn test_query_with_retry_no_cache_does_not_retry_non_retryable_errors(
+        fb: FacebookInit,
+    ) -> Result<()> {
+        // Let the retry backoff elapse instantly.
+        tokio::time::pause();
+
+        // Not a MysqlError at all, so `should_retry_mysql_query` is false for it.
+        let executions = count_executions_of_failing_query(fb, || {
+            anyhow!("Duplicate entry '1' for key 'PRIMARY'")
+        })
+        .await;
+        // FIXME: BUG! The permanent error is executed twice instead of once.
+        assert_eq!(executions, 2);
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn test_query_with_retry_no_cache_retries_deadlocks(fb: FacebookInit) -> Result<()> {
+        // Let the retry backoff elapse instantly.
+        tokio::time::pause();
+
+        // Errno 1213 (deadlock) is one of the errors `should_retry_mysql_query` retries.
+        let executions = count_executions_of_failing_query(fb, || {
+            mysql_client::MysqlError::QueryResultError {
+                err_type: mysql_client::OperationResult::Failed,
+                detail: "Deadlock found when trying to get lock".to_owned(),
+                mysql_errno: 1213,
+            }
+            .into()
+        })
+        .await;
+        assert_eq!(executions, 2);
+        Ok(())
+    }
+
     async fn setup_scuba_logging_test(fb: FacebookInit) -> Result<TelemetryTestData> {
         // Create mock transport
         let mock_transport = MockLoggerScubaTransport::new(false);
