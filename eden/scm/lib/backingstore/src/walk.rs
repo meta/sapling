@@ -64,6 +64,7 @@ pub(crate) struct WalkConfig {
     pub(crate) mode: WalkMode,
     threshold: Option<usize>,
     ratio: Option<f64>,
+    ratio_sorted_factor: Option<f64>,
     gc_interval: Option<Duration>,
     gc_timeout: Option<Duration>,
     /// Prefetch settings and the store-wide fetch limits, in prefetch mode.
@@ -131,6 +132,7 @@ impl WalkConfig {
             mode,
             threshold: config.get_opt("backingstore", "walk-threshold")?,
             ratio: config.get_opt("backingstore", "walk-ratio")?,
+            ratio_sorted_factor: config.get_opt("backingstore", "walk-ratio-sorted-factor")?,
             gc_interval: config.get_opt("backingstore", "walk-gc-interval")?,
             gc_timeout: config.get_opt("backingstore", "walk-gc-timeout")?,
             prefetch,
@@ -147,6 +149,9 @@ impl WalkConfig {
         }
         if let Some(ratio) = self.ratio {
             detector.set_walk_ratio(ratio);
+        }
+        if let Some(factor) = self.ratio_sorted_factor {
+            detector.set_walk_ratio_sorted_factor(factor);
         }
         if let Some(interval) = self.gc_interval {
             detector.set_gc_interval(interval);

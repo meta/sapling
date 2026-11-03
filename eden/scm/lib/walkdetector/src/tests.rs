@@ -16,6 +16,7 @@ use crate::Config;
 use crate::Detector;
 use crate::Walk;
 use crate::WalkType;
+use crate::walk_node::SeenNames;
 use crate::walk_node::WalkNode;
 
 fn p(p: impl AsRef<str>) -> RepoPathBuf {
@@ -397,6 +398,8 @@ fn test_retain_interesting_metadata_when_covered_by_walk() {
     let mut detector = Detector::new();
     detector.set_walk_threshold(TEST_WALK_THRESHOLD);
     detector.set_walk_ratio(0.1);
+    // The accesses below are in order; this test is about the plain ratio.
+    detector.set_walk_ratio_sorted_factor(1.0);
 
     // Start off with a directory walk at root/ triggered by un-interesting directories.
     detector.dir_loaded(p("root/dir1"), 0, 0, 0);
@@ -801,6 +804,8 @@ fn test_huge_directory() {
     let mut detector = Detector::new();
     detector.set_walk_threshold(TEST_WALK_THRESHOLD);
     detector.set_walk_ratio(0.1);
+    // The accesses below are in order; this test is about the plain ratio.
+    detector.set_walk_ratio_sorted_factor(1.0);
 
     // Huge directory.
     detector.dir_loaded(p("dir1"), 100, 100, 0);
@@ -1077,6 +1082,8 @@ fn test_advance_depth_across_wide_dir() {
     let mut detector = Detector::new();
     detector.set_walk_threshold(TEST_WALK_THRESHOLD);
     detector.set_walk_ratio(0.1);
+    // The accesses below are in order; this test is about the plain ratio.
+    detector.set_walk_ratio_sorted_factor(1.0);
 
     // Big dir with 100 sub-directories.
     detector.dir_loaded(p("really/big/dir"), 0, 100, 0);
@@ -1211,4 +1218,85 @@ fn test_might_have_walk() {
     assert!(might_have_walk("foo"));
     assert!(!might_have_walk("foo/bar"));
     assert!(!might_have_walk("foo/baz"));
+}
+
+#[test]
+fn test_seen_names_order() {
+    let name = |s: &str| p(s).last_component().unwrap().to_owned();
+    let mut seen = SeenNames::default();
+
+    seen.insert(name("a"));
+    seen.insert(name("c"));
+    // A repeat carries no order information.
+    seen.insert(name("a"));
+    assert_eq!((seen.len(), seen.is_sorted()), (2, true));
+
+    seen.insert(name("b"));
+    assert_eq!((seen.len(), seen.is_sorted()), (3, false));
+    // Ascending again does not undo it.
+    seen.insert(name("d"));
+    assert!(!seen.is_sorted());
+
+    // After a reset the arrival order of the seeds is unknown, so a later name is in order only
+    // if it sorts after all of them.
+    seen.reset_to([name("c"), name("a")]);
+    seen.insert(name("b"));
+    assert_eq!((seen.len(), seen.is_sorted()), (3, false));
+    seen.reset_to([name("c"), name("a")]);
+    seen.insert(name("d"));
+    assert_eq!((seen.len(), seen.is_sorted()), (3, true));
+}
+
+#[test]
+fn test_sorted_walk_ratio() {
+    let mut detector = Detector::new();
+    detector.set_walk_threshold(TEST_WALK_THRESHOLD);
+    detector.set_walk_ratio(0.1);
+    detector.set_walk_ratio_sorted_factor(0.4);
+
+    // Keep the root from merging the two directory walks below.
+    detector.dir_metadata(p(""), 0, 1000);
+
+    // "big" has 100 subdirectories: a walk takes 10 of them, or 4 loaded in sorted order.
+    detector.dir_metadata(p("big"), 0, 100);
+    for name in ["a", "b", "c"] {
+        detector.dir_loaded(p(format!("big/{name}")), 0, 0, 0);
+    }
+    assert!(detector.dir_walks().is_empty());
+    detector.dir_loaded(p("big/d"), 0, 0, 0);
+    assert_eq!(detector.dir_walks(), vec![(p("big"), 0)]);
+
+    // One load out of order and the full ratio applies, even though later loads ascend.
+    detector.dir_metadata(p("other"), 0, 100);
+    for name in ["b", "a", "c", "d", "e", "f", "g", "h", "i"] {
+        detector.dir_loaded(p(format!("other/{name}")), 0, 0, 0);
+    }
+    assert_eq!(detector.dir_walks(), vec![(p("big"), 0)]);
+    detector.dir_loaded(p("other/j"), 0, 0, 0);
+    assert_eq!(detector.dir_walks(), vec![(p("big"), 0), (p("other"), 0)]);
+}
+
+#[test]
+fn test_sorted_sibling_walks_merge_sooner() {
+    let walk_siblings = |order: [&str; 3]| {
+        let mut detector = Detector::new();
+        detector.set_walk_threshold(TEST_WALK_THRESHOLD);
+        detector.set_walk_ratio(0.1);
+        detector.set_walk_ratio_sorted_factor(0.3);
+
+        // The root has 100 subdirectories: merging child walks into it takes 10 of them, or 3
+        // walked in sorted order.
+        detector.dir_metadata(p(""), 0, 100);
+        for dir in order {
+            detector.file_loaded(p(format!("{dir}/x")), 0);
+            detector.file_loaded(p(format!("{dir}/y")), 0);
+        }
+        detector.file_walks()
+    };
+
+    assert_eq!(walk_siblings(["a", "b", "c"]), vec![(p(""), 1)]);
+    assert_eq!(
+        walk_siblings(["b", "a", "c"]),
+        vec![(p("a"), 0), (p("b"), 0), (p("c"), 0)]
+    );
 }

@@ -5,8 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::collections::BTreeSet;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::time::Duration;
 
 #[cfg(test)]
@@ -32,6 +32,51 @@ pub(crate) struct GcResult {
     pub(crate) deleted_walks: usize,
 }
 
+/// Child names recorded for one kind of activity, and whether they have arrived in ascending
+/// order so far. Tools that list a directory (`ls`, `find`, serial `grep`) visit its entries in
+/// order while random access does not, so an in-order run is stronger evidence of a walk than
+/// the count alone and the detector holds it to a fraction of the walk ratio. The set stays
+/// small: it is cleared once the walk forms.
+#[derive(Default)]
+pub(crate) struct SeenNames {
+    names: BTreeSet<PathComponentBuf>,
+    // Set once a new name sorted before one already recorded; only `clear` resets it.
+    out_of_order: bool,
+}
+
+impl SeenNames {
+    /// Record `name`. A name recorded before carries no new order information.
+    pub(crate) fn insert(&mut self, name: PathComponentBuf) {
+        if self.names.contains(&name) {
+            return;
+        }
+        if self.names.last().is_some_and(|last| name < *last) {
+            self.out_of_order = true;
+        }
+        self.names.insert(name);
+    }
+
+    /// Start over from `names`, whose arrival order is unknown: later names count as in order
+    /// only if they sort after all of them.
+    pub(crate) fn reset_to(&mut self, names: impl IntoIterator<Item = PathComponentBuf>) {
+        self.clear();
+        self.names.extend(names);
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.names.len()
+    }
+
+    /// Whether every name recorded so far arrived in ascending order.
+    pub(crate) fn is_sorted(&self) -> bool {
+        !self.out_of_order
+    }
+
+    pub(crate) fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
 /// Tree structure to track active walks. This makes it efficient to find a file's
 /// "containing" walk, and to efficiently discover a walk's siblings, cousins, etc. in
 /// order to merge walks.
@@ -54,13 +99,13 @@ pub(crate) struct WalkNode {
 
     // Child directories that have had a walk rooted at them while we had no walk
     // covering them (only used before transitioning to walk).
-    pub(crate) walked_file_children: HashSet<PathComponentBuf>,
-    pub(crate) walked_dir_children: HashSet<PathComponentBuf>,
+    pub(crate) walked_file_children: SeenNames,
+    pub(crate) walked_dir_children: SeenNames,
 
     // File names seen so far (only used before transitioning to walk).
-    pub(crate) seen_files: HashSet<PathComponentBuf>,
+    pub(crate) seen_files: SeenNames,
     // Dir names seen so far (only used before transitioning to walk).
-    pub(crate) seen_dirs: HashSet<PathComponentBuf>,
+    pub(crate) seen_dirs: SeenNames,
 
     // Count of children directories.
     total_dirs: Option<usize>,
@@ -436,7 +481,7 @@ impl WalkNode {
         }
     }
 
-    fn walked_children_mut(&mut self, walk_type: WalkType) -> &mut HashSet<PathComponentBuf> {
+    fn walked_children_mut(&mut self, walk_type: WalkType) -> &mut SeenNames {
         match walk_type {
             WalkType::File => &mut self.walked_file_children,
             WalkType::Directory => &mut self.walked_dir_children,
@@ -445,12 +490,13 @@ impl WalkNode {
 
     /// Record that direct child `name` has a walk of `walk_type`, and count this as activity on
     /// self. Once self has gone `gc_timeout` without activity, the record starts over from the
-    /// children whose walks are still live. Returns the number of recorded children.
+    /// children whose walks are still live. Returns the number of recorded children and whether
+    /// they were recorded in sorted order.
     pub(crate) fn insert_walked_child(
         &mut self,
         walk_type: WalkType,
         name: PathComponentBuf,
-    ) -> usize {
+    ) -> (usize, bool) {
         let expired = self.expired();
         let children = &self.children;
         let walked = match walk_type {
@@ -459,8 +505,7 @@ impl WalkNode {
         };
 
         if expired {
-            walked.clear();
-            walked.extend(
+            walked.reset_to(
                 children
                     .iter()
                     .filter(|(_, child)| child.get_walk_for_type(walk_type).is_some())
@@ -469,11 +514,11 @@ impl WalkNode {
         }
 
         walked.insert(name);
-        let count = walked.len();
+        let recorded = (walked.len(), walked.is_sorted());
 
         self.last_access.bump();
 
-        count
+        recorded
     }
 
     /// Recursively remove all walks contained within a walk of depth `depth`.

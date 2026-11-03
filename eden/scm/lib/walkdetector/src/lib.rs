@@ -85,6 +85,15 @@ impl Detector {
         self.config.walk_ratio = threshold;
     }
 
+    /// Set the fraction of the walk ratio that applies to in-order accesses. `1.0` turns the
+    /// sorted detection off; values outside (0, 1] are ignored.
+    pub fn set_walk_ratio_sorted_factor(&mut self, factor: f64) {
+        if factor <= 0.0 || factor > 1.0 {
+            return;
+        }
+        self.config.walk_ratio_sorted_factor = factor;
+    }
+
     pub fn set_gc_interval(&mut self, interval: Duration) {
         self.config.gc_interval = interval;
     }
@@ -218,7 +227,14 @@ impl Detector {
             my_dir.seen_files.insert(base_name.to_owned());
 
             let seen_count = my_dir.seen_files.len();
-            if my_dir.is_walked(WalkType::File, seen_count, 0, walk_threshold, walk_ratio, 0) {
+            if my_dir.is_walked(
+                WalkType::File,
+                seen_count,
+                0,
+                walk_threshold,
+                self.config.walk_ratio_for(my_dir.seen_files.is_sorted()),
+                0,
+            ) {
                 my_dir.seen_files.clear();
                 inner.insert_walk(
                     &self.config,
@@ -300,7 +316,6 @@ impl Detector {
         let mut inner = self.inner.write();
 
         let walk_threshold = self.config.walk_threshold;
-        let walk_ratio = self.config.walk_ratio;
 
         let (owner, suffix) =
             inner
@@ -327,7 +342,7 @@ impl Detector {
                 seen_count,
                 0,
                 walk_threshold,
-                walk_ratio,
+                self.config.walk_ratio_for(my_dir.seen_dirs.is_sorted()),
                 0,
             ) {
                 let walk = Walk::for_type(WalkType::Directory, 0, seen_count as u64, pid);
@@ -592,11 +607,11 @@ impl Inner {
             return None;
         }
 
-        let kin_count = parent_node.insert_walked_child(walk_type, name.to_owned());
+        let (kin_count, sorted) = parent_node.insert_walked_child(walk_type, name.to_owned());
 
         let walk = should_merge_into_ancestor(
             config.walk_threshold,
-            config.walk_ratio,
+            config.walk_ratio_for(sorted),
             walk_type,
             dir,
             kin_count,
@@ -916,6 +931,11 @@ const DEFAULT_WALK_THRESHOLD: usize = 3;
 // This avoids detecting walks for enormous directories too quickly.
 const DEFAULT_WALK_RATIO: f64 = 0.03;
 
+// The fraction of the walk ratio that applies while a directory's children have all been
+// accessed in sorted order. In-order access is how a lister visits a directory, so a quarter of
+// the usual share of a huge directory is enough evidence.
+const DEFAULT_WALK_RATIO_SORTED_FACTOR: f64 = 0.25;
+
 // How often we garbage collect stale nodes.
 // We do not rely on running a full GC to expire old walks, only to clean up memory.
 const DEFAULT_GC_INTERVAL: Duration = Duration::from_secs(10);
@@ -931,6 +951,9 @@ struct Config {
     // A minimum walk threshold as ratio of total directory size. This only applies when we know the
     // size of the directory. This slows down walk detection in humongous directories.
     walk_ratio: f64,
+    // Fraction of `walk_ratio` that applies while the accesses counted for a directory have all
+    // come in sorted order; 1.0 means in-order access gets no credit.
+    walk_ratio_sorted_factor: f64,
     // How often we run a full GC to clean up memory. We do not rely on a full GC to functionally
     // expire inactive walks.
     gc_interval: Duration,
@@ -943,8 +966,21 @@ impl Default for Config {
         Self {
             walk_threshold: DEFAULT_WALK_THRESHOLD,
             walk_ratio: DEFAULT_WALK_RATIO,
+            walk_ratio_sorted_factor: DEFAULT_WALK_RATIO_SORTED_FACTOR,
             gc_interval: DEFAULT_GC_INTERVAL,
             gc_timeout: DEFAULT_GC_TIMEOUT,
+        }
+    }
+}
+
+impl Config {
+    /// The walk ratio to hold a directory to, given whether its counted accesses have all come in
+    /// sorted order.
+    fn walk_ratio_for(&self, sorted: bool) -> f64 {
+        if sorted {
+            self.walk_ratio * self.walk_ratio_sorted_factor
+        } else {
+            self.walk_ratio
         }
     }
 }
