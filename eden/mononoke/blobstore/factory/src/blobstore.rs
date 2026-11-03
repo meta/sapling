@@ -645,6 +645,7 @@ async fn make_multiplexed_wal<'a>(
         fb,
         inner_config,
         mysql_options,
+        readonly_storage,
         blobstore_options,
         config_store,
         scrub_handler,
@@ -702,15 +703,20 @@ async fn setup_inner_blobstores<'a>(
     fb: FacebookInit,
     inner_config: Vec<(BlobstoreId, MultiplexedStoreType, BlobConfig)>,
     mysql_options: &'a MysqlOptions,
+    readonly_storage: ReadOnlyStorage,
     blobstore_options: &'a BlobstoreOptions,
     config_store: &'a ConfigStore,
     scrub_handler: &'a Arc<dyn ScrubHandler>,
     component_sampler: Option<&'a Arc<dyn ComponentSamplingHandler>>,
 ) -> Result<(Vec<InnerBlobstore>, Vec<InnerBlobstore>), Error> {
+    // Without scrub options the components honour `readonly_storage`. Scrub mode keeps its
+    // own rule: `Repair` leaves the components writable so repairs can be written (the walker
+    // runs with read-only storage by default and relies on this), any other scrub action
+    // makes them read-only.
     let component_readonly = blobstore_options
         .scrub_options
         .as_ref()
-        .map_or(ReadOnlyStorage(false), |v| {
+        .map_or(readonly_storage, |v| {
             ReadOnlyStorage(v.scrub_action != ScrubAction::Repair)
         });
 
@@ -826,11 +832,6 @@ mod tests {
         .await
     }
 
-    /// FIXME: BUG! `make_blobstore(.., ReadOnlyStorage(true), ..)` on a MultiplexedWal config did
-    /// not make the multiplex read-only for `unlink`: the inner components were built writable and
-    /// no ReadOnlyBlobstore wrapped the multiplex, so `unlink` deleted the blob while `put` was
-    /// refused. `with_readonly_storage` promises to error on any write. This test pins the current
-    /// behaviour; the next diff fixes it.
     #[mononoke::fbinit_test]
     async fn readonly_storage_multiplex_unlink(fb: FacebookInit) -> Result<(), Error> {
         let ctx = CoreContext::test_mock(fb);
@@ -844,16 +845,15 @@ mod tests {
 
         // Read-only instance over the same storage.
         let ro = make(fb, dir.path(), true).await?;
-        // `put` is refused (the WAL queue connection is read-only) ...
+        // `put` is refused ...
         assert!(
             ro.put(&ctx, "key2".to_string(), BlobstoreBytes::from_bytes("v"))
                 .await
                 .is_err()
         );
-        // FIXME: BUG! ... but `unlink` is not: with_readonly_storage promises to "Error on any
-        // attempts to write to storage", yet the blob is deleted from the inner Files store.
-        ro.unlink(&ctx, "key").await?;
-        assert!(rw.get(&ctx, "key").await?.is_none());
+        // ... and so is `unlink`: read-only storage blocks every write, so the blob survives.
+        assert!(ro.unlink(&ctx, "key").await.is_err());
+        assert!(rw.get(&ctx, "key").await?.is_some());
         Ok(())
     }
 }
