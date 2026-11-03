@@ -86,3 +86,16 @@ struct FieldUseUnmangledName {}
 //We set an annotation named UseIntrinsicDefault here to offer an option to use a default value when the null is received.
 @scope.Enum
 struct UseIntrinsicDefault {}
+
+/** Generates an open Java enum, which keeps values it does not define. */
+@scope.Enum
+struct OpenEnum {}
+
+/**
+ * Makes generated Java throw when it reads malformed UTF-8 in this field's
+ * `string` values, including container elements. Without this annotation,
+ * malformed bytes are replaced. `binary` and `@java.BinaryString` values are
+ * never validated.
+ */
+@scope.Field
+struct Utf8 {}
