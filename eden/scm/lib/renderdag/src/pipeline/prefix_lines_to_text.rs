@@ -16,10 +16,20 @@ use crate::pipeline::types::PrefixLinePart;
 ///
 /// It fills node glyph slots, attaches message lines, and writes complete text
 /// lines for one rendered graph row at a time.
-#[derive(Default)]
 pub struct PrefixLinesToText {
     state: OutputRendererState,
     link_line_placement: LinkLinePlacement,
+    text_gap: usize,
+}
+
+impl Default for PrefixLinesToText {
+    fn default() -> Self {
+        Self {
+            state: OutputRendererState::default(),
+            link_line_placement: LinkLinePlacement::default(),
+            text_gap: 1,
+        }
+    }
 }
 
 impl PrefixLinesToText {
@@ -31,6 +41,13 @@ impl PrefixLinesToText {
     /// Choose where link-line padding is placed. Defaults to `Top`.
     pub fn with_link_line_placement(mut self, placement: LinkLinePlacement) -> Self {
         self.link_line_placement = placement;
+        self
+    }
+
+    /// Set additional spaces between graph prefixes and messages.
+    /// Defaults to one; zero retains only the prefix's column padding.
+    pub fn with_text_gap(mut self, text_gap: usize) -> Self {
+        self.text_gap = text_gap;
         self
     }
 
@@ -97,6 +114,7 @@ impl PrefixLinesToText {
                         out,
                         &base_line,
                         message_lines.by_ref().take(extra_message_lines),
+                        self.text_gap,
                     );
                 }
                 continue;
@@ -108,12 +126,16 @@ impl PrefixLinesToText {
             has_term_row |= prefix_line.kind == PrefixLineKind::Term;
             let text = render_prefix_line(&prefix_line, glyph);
             self.state
-                .push_line_with_message(out, text, message_lines.next());
+                .push_line_with_message(out, text, message_lines.next(), self.text_gap);
         }
 
         if let Some(repeatable_line) = repeatable_line {
             let base_line = render_prefix_line(&repeatable_line, glyph);
-            if !self.state.push_pad_lines(out, &base_line, message_lines) && has_term_row {
+            if !self
+                .state
+                .push_pad_lines(out, &base_line, message_lines, self.text_gap)
+                && has_term_row
+            {
                 self.state.queue_pad_line(base_line);
             }
         }

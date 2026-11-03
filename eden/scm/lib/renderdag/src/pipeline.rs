@@ -499,6 +499,96 @@ mod tests {
     }
 
     #[test]
+    fn test_text_gap_with_cached_prefixes() {
+        use crate::render::Ancestor;
+
+        let mut renderer = GraphTextRenderer::<&str>::default();
+        renderer.reserve("A");
+        renderer.reserve("B");
+        let prefixes = renderer.next_prefix_lines(
+            "F",
+            vec![
+                Ancestor::Parent("A"),
+                Ancestor::Ancestor("B"),
+                Ancestor::Anonymous,
+            ],
+        );
+        let render = |placement, gap| {
+            let mut text = PrefixLinesToText::new()
+                .with_link_line_placement(placement)
+                .with_text_gap(gap);
+            indent(&text.next_text(
+                prefixes.clone(),
+                false,
+                "o",
+                "F\nmessage 1\nmessage 2\nmessage 3\nmessage 4\nmessage 5\nmessage 6",
+                0,
+            ))
+        };
+        assert_eq!(
+            render(LinkLinePlacement::Top, 0),
+            r#"
+                o F
+            ╭─┬─┤ message 1
+            │ ╷ │ message 2
+            │ ╷ ~ message 3
+            │ ╷   message 4
+            │ ╷   message 5
+            │ ╷   message 6"#,
+        );
+        assert_eq!(
+            render(LinkLinePlacement::Bottom, 0),
+            r#"
+                o F
+                │ message 1
+                │ message 2
+            ╭─┬─┤ message 3
+            │ ╷ │ message 4
+            │ ╷ ~ message 5
+            │ ╷   message 6"#,
+        );
+        assert_eq!(
+            render(LinkLinePlacement::Bottom, 3),
+            r#"
+                o    F
+                │    message 1
+                │    message 2
+            ╭─┬─┤    message 3
+            │ ╷ │    message 4
+            │ ╷ ~    message 5
+            │ ╷      message 6"#,
+        );
+    }
+
+    #[test]
+    fn test_text_gap_configure() {
+        use row_shape_to_prefix_lines::box_drawing::Curved;
+
+        use crate::render::Ancestor;
+
+        let renderers: [(char, Box<dyn PrefixLineRenderer<&str> + Send + Sync>); 3] = [
+            ('│', Box::new(BoxDrawing::<Curved>::new())),
+            ('|', Box::new(Ascii)),
+            ('|', Box::new(AsciiLarge)),
+        ];
+        for (parent, prefixes) in renderers {
+            let mut renderer = GraphTextRenderer::with_prefix_lines(prefixes).configure(|o| {
+                o.graph_row_shape_style.text_gap = 0;
+            });
+            let out = renderer.next_text("A", vec![Ancestor::Parent("B")], "o", "A\ncontinued");
+            assert_eq!(out, format!("o A\n{parent} continued\n"));
+        }
+        let mut renderer = GraphTextRenderer::<&str>::default().configure(|o| {
+            o.graph_row_shape_style.column_spacing = 0;
+            o.graph_row_shape_style.text_gap = 0;
+        });
+        assert_eq!(
+            renderer.next_text("A", vec![Ancestor::Parent("B")], "o", "A\ncontinued"),
+            "oA\n│continued\n",
+        );
+    }
+
+    #[test]
     fn test_bottom_terminations() {
         use crate::render::Ancestor;
 

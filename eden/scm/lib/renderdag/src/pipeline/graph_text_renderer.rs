@@ -56,12 +56,15 @@ where
     /// Configure options.
     pub fn configure(mut self, func: impl FnOnce(&mut GraphRowShapeOptions)) -> Self {
         func(self.row_shaper.options_mut());
-        self.text = self.text.with_link_line_placement(
-            self.row_shaper
-                .options()
-                .graph_row_shape_style
-                .link_line_placement,
-        );
+        self.text = self
+            .text
+            .with_text_gap(self.row_shaper.options().graph_row_shape_style.text_gap)
+            .with_link_line_placement(
+                self.row_shaper
+                    .options()
+                    .graph_row_shape_style
+                    .link_line_placement,
+            );
         self
     }
 

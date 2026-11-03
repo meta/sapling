@@ -48,9 +48,10 @@ impl OutputRendererState {
         out: &mut String,
         mut line: String,
         message: Option<&str>,
+        text_gap: usize,
     ) {
         if let Some(message) = message {
-            line.push(' ');
+            line.extend(std::iter::repeat_n(' ', text_gap));
             line.push_str(message);
         }
         self.push_line(out, &line);
@@ -61,12 +62,14 @@ impl OutputRendererState {
         out: &mut String,
         base_pad_line: &str,
         message_lines: impl Iterator<Item = &'a str>,
+        text_gap: usize,
     ) -> bool {
         let mut emitted = false;
         for message in message_lines {
-            let mut pad_line = String::with_capacity(base_pad_line.len() + message.len() + 1);
+            let mut pad_line =
+                String::with_capacity(base_pad_line.len() + message.len() + text_gap);
             pad_line.push_str(base_pad_line);
-            pad_line.push(' ');
+            pad_line.extend(std::iter::repeat_n(' ', text_gap));
             pad_line.push_str(message);
             self.push_line(out, &pad_line);
             emitted = true;

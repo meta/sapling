@@ -13,7 +13,7 @@ pub use crate::render::LinkLine;
 pub use crate::render::NodeLine;
 pub use crate::render::PadLine;
 
-/// Style choices that affect graph row shapes and prefix-line placement.
+/// Style choices that affect graph row shapes and text placement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serialize", derive(Serialize))]
 pub struct GraphRowShapeStyle {
@@ -27,6 +27,10 @@ pub struct GraphRowShapeStyle {
     /// Box drawing uses this value directly, including zero for no gap.
     /// ASCII uses at least one; ASCII large uses at least two.
     pub column_spacing: usize,
+
+    /// Additional spaces between the graph prefix and message text.
+    /// The prefix may already contain trailing column padding.
+    pub text_gap: usize,
 }
 
 impl Default for GraphRowShapeStyle {
@@ -35,6 +39,7 @@ impl Default for GraphRowShapeStyle {
             dash_style: DashStyle::Persistent,
             link_line_placement: LinkLinePlacement::Top,
             column_spacing: 1,
+            text_gap: 1,
         }
     }
 }
