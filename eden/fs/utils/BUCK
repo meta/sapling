@@ -377,6 +377,8 @@ cpp_library(
     srcs = ["MountHealthCheck.cpp"],
     headers = ["MountHealthCheck.h"],
     deps = [
+        "fbsource//xplat/folly:conv",
+        "fbsource//xplat/folly:file_util",
         "fbsource//xplat/folly:string",
         "fbsource//xplat/folly/logging:logging",
         "fbsource//xplat/folly/portability:sys_stat",

@@ -87,9 +87,12 @@ class MountHealthProbeProgress {
   uint64_t threadId() const {
     return threadId_.load(std::memory_order_acquire);
   }
+  /** The probe thread's total CPU wait when the probe started, if known. */
+  std::optional<std::chrono::nanoseconds> startRunQueueWait() const;
 
  private:
   const Clock::time_point queued_;
+  std::atomic<int64_t> startRunQueueWaitNs_{-1};
   std::atomic<Clock::rep> startedTicks_{0};
   std::atomic<uint64_t> threadId_{0};
   folly::Synchronized<CurrentStep, std::mutex> step_;
@@ -102,6 +105,35 @@ class MountHealthProbeProgress {
 folly::dynamic describeProbeProgress(
     const MountHealthProbeProgress& progress,
     MountHealthProbeProgress::Clock::time_point now);
+
+/**
+ * The kernel's view of a thread of this process: its run state, the kernel
+ * function it sleeps in ("0" while running), and its total time waiting for a
+ * CPU, if known. Linux only.
+ */
+struct ThreadKernelState {
+  char state{'?'};
+  std::string wchan;
+  std::optional<std::chrono::nanoseconds> runQueueWait;
+};
+
+std::optional<ThreadKernelState> readThreadKernelState(uint64_t threadId);
+
+/**
+ * Where a running probe's thread waits, as JSON fields. Empty when the probe
+ * is not running or the platform has no /proc.
+ */
+folly::dynamic describeProbeThread(const MountHealthProbeProgress& progress);
+
+namespace detail {
+
+/** The run state from /proc/<pid>/task/<tid>/stat. */
+std::optional<char> parseTaskStatState(std::string_view stat);
+/** The CPU wait from /proc/<pid>/task/<tid>/schedstat. */
+std::optional<std::chrono::nanoseconds> parseSchedstatRunQueueWait(
+    std::string_view schedstat);
+
+} // namespace detail
 
 // Checks a daemon-reported RUNNING mount against the kernel mount table and
 // lightweight .eden path probes. Returns an issue only when the mount is

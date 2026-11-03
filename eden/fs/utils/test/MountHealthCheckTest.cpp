@@ -50,6 +50,27 @@ TEST(MountHealthCheckTest, describesAProbeThatNeverStarted) {
   EXPECT_EQ(expected, describeProbeProgress(progress, queued + 5s));
 }
 
+TEST(MountHealthCheckTest, parsesTaskStatState) {
+  EXPECT_EQ('D', detail::parseTaskStatState("42 (a) b) D 1 42 42 0 -1"));
+  EXPECT_EQ(std::nullopt, detail::parseTaskStatState("42 (truncated"));
+}
+
+TEST(MountHealthCheckTest, parsesSchedstatRunQueueWait) {
+  EXPECT_EQ(
+      std::chrono::nanoseconds{2500000},
+      detail::parseSchedstatRunQueueWait("9100 2500000 7\n"));
+  EXPECT_EQ(std::nullopt, detail::parseSchedstatRunQueueWait("9100"));
+}
+
+#ifdef __linux__
+TEST(MountHealthCheckTest, readsTheStateOfARunningThread) {
+  auto state = readThreadKernelState(folly::getOSThreadID());
+
+  ASSERT_TRUE(state.has_value());
+  EXPECT_EQ('R', state->state);
+}
+#endif
+
 TEST(MountHealthCheckTest, startedProbeRecordsItsThread) {
   MountHealthProbeProgress progress{std::chrono::steady_clock::now()};
   EXPECT_FALSE(progress.started().has_value());

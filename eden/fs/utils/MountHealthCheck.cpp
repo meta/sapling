@@ -12,6 +12,8 @@
 #include <optional>
 #include <string>
 
+#include <folly/Conv.h>
+#include <folly/FileUtil.h>
 #include <folly/String.h>
 #include <folly/logging/xlog.h>
 #include <folly/portability/SysStat.h>
@@ -90,6 +92,28 @@ std::optional<bool> hasEdenMountInKernelMountTable(
 #endif
 }
 
+std::optional<std::string> readTaskFile(uint64_t threadId, const char* name) {
+#ifdef __linux__
+  auto path = folly::to<std::string>("/proc/self/task/", threadId, "/", name);
+  std::string contents;
+  if (folly::readFile(path.c_str(), contents)) {
+    return contents;
+  }
+#else
+  (void)threadId;
+  (void)name;
+#endif
+  return std::nullopt;
+}
+
+std::optional<std::chrono::nanoseconds> readRunQueueWait(uint64_t threadId) {
+  auto schedstat = readTaskFile(threadId, "schedstat");
+  if (!schedstat) {
+    return std::nullopt;
+  }
+  return detail::parseSchedstatRunQueueWait(*schedstat);
+}
+
 std::string makeExpectedMissingPath(const std::string& mountPath) {
   // Use a fresh negative lookup path each time so kernel/FUSE negative-entry
   // caching does not hide whether EdenFS can answer a lookup now.
@@ -144,7 +168,12 @@ MountHealthProbeProgress::MountHealthProbeProgress(Clock::time_point queued)
       step_{CurrentStep{MountHealthProbeStep::Queued, queued}} {}
 
 void MountHealthProbeProgress::start(Clock::time_point now) {
-  threadId_.store(folly::getOSThreadID(), std::memory_order_release);
+  const auto threadId = folly::getOSThreadID();
+  if (auto runQueueWait = readRunQueueWait(threadId)) {
+    startRunQueueWaitNs_.store(
+        runQueueWait->count(), std::memory_order_release);
+  }
+  threadId_.store(threadId, std::memory_order_release);
   startedTicks_.store(
       now.time_since_epoch().count(), std::memory_order_release);
   enter(MountHealthProbeStep::Starting, now);
@@ -165,6 +194,15 @@ MountHealthProbeProgress::started() const {
   return Clock::time_point{Clock::duration{ticks}};
 }
 
+std::optional<std::chrono::nanoseconds>
+MountHealthProbeProgress::startRunQueueWait() const {
+  auto ns = startRunQueueWaitNs_.load(std::memory_order_acquire);
+  if (ns < 0) {
+    return std::nullopt;
+  }
+  return std::chrono::nanoseconds{ns};
+}
+
 folly::dynamic describeProbeProgress(
     const MountHealthProbeProgress& progress,
     MountHealthProbeProgress::Clock::time_point now) {
@@ -179,6 +217,71 @@ folly::dynamic describeProbeProgress(
   if (auto started = progress.started()) {
     detail["queue_wait_ms"] = toMs(*started - progress.queued());
     detail["running_ms"] = toMs(now - *started);
+  }
+  return detail;
+}
+
+namespace detail {
+
+std::optional<char> parseTaskStatState(std::string_view stat) {
+  // The command name in parentheses may itself contain spaces and ')'.
+  auto commEnd = stat.rfind(')');
+  if (commEnd == std::string_view::npos || commEnd + 2 >= stat.size()) {
+    return std::nullopt;
+  }
+  return stat[commEnd + 2];
+}
+
+std::optional<std::chrono::nanoseconds> parseSchedstatRunQueueWait(
+    std::string_view schedstat) {
+  std::vector<std::string_view> fields;
+  folly::split(' ', folly::trimWhitespace(schedstat), fields);
+  if (fields.size() < 2) {
+    return std::nullopt;
+  }
+  auto ns = folly::tryTo<int64_t>(fields[1]);
+  if (!ns.hasValue()) {
+    return std::nullopt;
+  }
+  return std::chrono::nanoseconds{ns.value()};
+}
+
+} // namespace detail
+
+std::optional<ThreadKernelState> readThreadKernelState(uint64_t threadId) {
+  auto stat = readTaskFile(threadId, "stat");
+  if (!stat) {
+    return std::nullopt;
+  }
+  auto state = detail::parseTaskStatState(*stat);
+  if (!state) {
+    return std::nullopt;
+  }
+  ThreadKernelState result;
+  result.state = *state;
+  result.wchan = readTaskFile(threadId, "wchan").value_or("");
+  result.runQueueWait = readRunQueueWait(threadId);
+  return result;
+}
+
+folly::dynamic describeProbeThread(const MountHealthProbeProgress& progress) {
+  folly::dynamic detail = folly::dynamic::object;
+  const auto threadId = progress.threadId();
+  if (threadId == 0 || progress.step() == MountHealthProbeStep::Done) {
+    return detail;
+  }
+  auto state = readThreadKernelState(threadId);
+  if (!state) {
+    return detail;
+  }
+  detail["thread_state"] = std::string(1, state->state);
+  detail["wchan"] = state->wchan;
+  const auto startRunQueueWait = progress.startRunQueueWait();
+  if (startRunQueueWait && state->runQueueWait) {
+    detail["runq_wait_ms"] =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            *state->runQueueWait - *startRunQueueWait)
+            .count();
   }
   return detail;
 }

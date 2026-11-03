@@ -357,8 +357,9 @@ void logMountHealthCheckTimeout(
     std::string error) {
   try {
     const auto now = std::chrono::steady_clock::now();
-    auto detail =
-        folly::toJson(describeProbeProgress(*logContext.progress, now));
+    auto description = describeProbeProgress(*logContext.progress, now);
+    description.update(describeProbeThread(*logContext.progress));
+    auto detail = folly::toJson(description);
     XLOGF(WARN, "{} for {}: {}", error, logContext.mountPath, detail);
     logContext.log(
         std::string{edenMountHealthIssueReasonString(

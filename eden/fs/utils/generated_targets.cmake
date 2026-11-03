@@ -251,6 +251,8 @@ eden_add_library(eden_fs_utils_mount_health_check
   SRCS
     MountHealthCheck.cpp
   DEPS
+    Folly::folly_conv
+    Folly::folly_file_util
     Folly::folly_logging_logging
     Folly::folly_portability_sys_stat
     Folly::folly_portability_unistd
