@@ -15,7 +15,7 @@ arrow-row = { version = "57", git = "https://github.com/apache/arrow-rs", rev = 
 arrow-schema = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
 arrow-select = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
 arrow-string = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
-audio_streams = { git = "https://github.com/fbsource/crosvm", rev = "bf6f8ebfc5435f5867631425365c07c7f178a79d" }
+audio_streams = { git = "https://github.com/google/crosvm", rev = "41cd4219a0cb2e2ef9cc45f8f64c5c36584e3173" }
 backtrace = { git = "https://github.com/rust-lang/backtrace-rs", rev = "df979dcf80027eb047d7bb9e0874710c15009f31" }
 base64urlsafedata = { git = "https://github.com/kanidm/webauthn-rs.git", rev = "d278c56adfa39a0723c79bdcd461644194bc5138" }
 bf-tree = { git = "https://github.com/fbsource/bf-tree", rev = "da3f2364e8f9fe002a85c19de8a879fc2c05f12c" }
