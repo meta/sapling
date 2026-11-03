@@ -65,6 +65,8 @@ memblob = { version = "0.1.0", path = "../../../blobstore/memblob" }
 rand_distr = "0.6"
 repo_blobstore = { version = "0.1.0", path = "../../repo_blobstore" }
 repo_update_logger = { version = "0.1.0", path = "../../../features/repo_update_logger" }
+serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 sql_ext = { version = "0.1.0", path = "../../../common/rust/sql_ext" }
+tempfile = "3.27.0"
 test_repo_factory = { version = "0.1.0", path = "../../../repo_factory/test_repo_factory" }
 tests_utils = { version = "0.1.0", path = "../../../tests/utils" }
