@@ -9,7 +9,11 @@ rust_library(
     srcs = glob(["factory/src/**/*.rs"]),
     autocargo = {"cargo_toml_dir": "factory"},
     test_deps = [
+        "fbsource//third-party/rust:tempfile",
+        "//common/rust/shed/fbinit:fbinit",
+        "//common/rust/shed/fbinit:fbinit-tokio",
         "//eden/mononoke/common/mononoke_macros:mononoke_macros",
+        "//eden/mononoke/servers/slapi/slapi_server/context:context",
     ],
     deps = [
         "fbsource//third-party/rust:anyhow",

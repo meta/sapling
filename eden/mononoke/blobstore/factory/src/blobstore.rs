@@ -762,3 +762,98 @@ async fn setup_inner_blobstores<'a>(
     }
     Ok((normal_components, write_only_components))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use blobstore::BlobstoreBytes;
+    use context::CoreContext;
+    use fbinit::FacebookInit;
+    use metaconfig_types::LocalDatabaseConfig;
+    use mononoke_macros::mononoke;
+
+    use super::*;
+
+    fn multiplex_config(dir: &Path) -> BlobConfig {
+        BlobConfig::MultiplexedWal {
+            multiplex_id: MultiplexId::new(1),
+            blobstores: vec![(
+                BlobstoreId::new(0),
+                MultiplexedStoreType::Normal,
+                BlobConfig::Files {
+                    path: dir.join("files"),
+                },
+            )],
+            write_quorum: 1,
+            queue_db: ShardedDatabaseConfig::Local(LocalDatabaseConfig {
+                path: dir.join("queue"),
+            }),
+            inner_blobstores_scuba_table: None,
+            multiplex_scuba_table: None,
+            scuba_sample_rate: NonZeroU64::new(1).unwrap(),
+        }
+    }
+
+    async fn make(
+        fb: FacebookInit,
+        dir: &Path,
+        readonly: bool,
+    ) -> Result<Arc<dyn Blobstore>, Error> {
+        let (_source, config_store) = sqlblob::get_test_config_store();
+        let options = BlobstoreOptions::new(
+            ChaosOptions::new(None, None),
+            DelayOptions::default(),
+            ThrottleOptions::default(),
+            #[cfg(fbcode_build)]
+            ManifoldOptions::default(),
+            PackOptions::default(),
+            CachelibBlobstoreOptions::default(),
+            Some(PutBehaviour::Overwrite),
+            MysqlOptions::default(),
+        );
+        make_blobstore(
+            fb,
+            multiplex_config(dir),
+            &MysqlOptions::default(),
+            ReadOnlyStorage(readonly),
+            &options,
+            &config_store,
+            &multiplexedblob::scrub::default_scrub_handler(),
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// FIXME: BUG! `make_blobstore(.., ReadOnlyStorage(true), ..)` on a MultiplexedWal config did
+    /// not make the multiplex read-only for `unlink`: the inner components were built writable and
+    /// no ReadOnlyBlobstore wrapped the multiplex, so `unlink` deleted the blob while `put` was
+    /// refused. `with_readonly_storage` promises to error on any write. This test pins the current
+    /// behaviour; the next diff fixes it.
+    #[mononoke::fbinit_test]
+    async fn readonly_storage_multiplex_unlink(fb: FacebookInit) -> Result<(), Error> {
+        let ctx = CoreContext::test_mock(fb);
+        let dir = tempfile::TempDir::new()?;
+
+        // Writable instance: store a blob.
+        let rw = make(fb, dir.path(), false).await?;
+        rw.put(&ctx, "key".to_string(), BlobstoreBytes::from_bytes("value"))
+            .await?;
+        assert!(rw.get(&ctx, "key").await?.is_some());
+
+        // Read-only instance over the same storage.
+        let ro = make(fb, dir.path(), true).await?;
+        // `put` is refused (the WAL queue connection is read-only) ...
+        assert!(
+            ro.put(&ctx, "key2".to_string(), BlobstoreBytes::from_bytes("v"))
+                .await
+                .is_err()
+        );
+        // FIXME: BUG! ... but `unlink` is not: with_readonly_storage promises to "Error on any
+        // attempts to write to storage", yet the blob is deleted from the inner Files store.
+        ro.unlink(&ctx, "key").await?;
+        assert!(rw.get(&ctx, "key").await?.is_none());
+        Ok(())
+    }
+}
