@@ -15,7 +15,7 @@ metadata = { version = "0.1.0", path = "../../common/metadata" }
 netstring = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 tokio-util = { version = "0.7.20", features = ["full"] }
 zstd = { version = "0.14.3", features = ["experimental", "zstdmt"] }
-zstd-safe = { version = "7.3.0", features = ["std"] }
+zstd-safe = { version = "7.4.0", features = ["std"] }
 
 [dev-dependencies]
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
