@@ -35,6 +35,15 @@ pub enum ClientPathAclCompatibility {
 }
 
 impl ClientPathAclCompatibility {
+    /// Classifies the value of the `scs_path_acl_compatible` request header.
+    pub fn from_header_value(value: Option<&[u8]>) -> Self {
+        match value {
+            None => Self::Absent,
+            Some(b"1") => Self::ReadyV1,
+            Some(_) => Self::Malformed,
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Absent => "absent",
