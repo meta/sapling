@@ -62,10 +62,9 @@ whose radix-trie node prefixes diverge at "case".
   $ hg add existing/case
   $ hg commit -qm addcase
 
-FIXME: BUG! The pre-existing conflict is reported as new (with no previous values) and
-the push is rejected, because `ShardedMapV2Node::difference_stream` drops the parent map's
-value for "caseconflict" while that node still carries the prefix "conflict".
+The pre-existing conflict is not new, so the push lands.
   $ hg push -r . --to other 2>&1 | grep -v "^edenapi:"
   pushing rev * to destination https://localhost:$LOCAL_PORT/edenapi/ bookmark other (glob)
   pushrebasing stack (*, *] (1 commit) to remote bookmark other (glob)
-  abort: Server error: invalid request: Case conflict found in *: existing/CaseConflict conflicts with existing/caseconflict (glob)
+  0 files updated, 0 files merged, 0 files removed, 0 files unresolved
+  updated remote bookmark other to * (glob)
