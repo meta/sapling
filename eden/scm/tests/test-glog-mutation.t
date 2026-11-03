@@ -479,3 +479,31 @@ commits:
   $ sl smartlog --mutation --interactive
   abort: --mutation cannot be used with --interactive
   [255]
+
+With the Meta templates, `sl sl -t` starts each row with how the commit was
+created, and labels an obsolete commit with what it became next:
+
+  $ TEST_PROD_CONFIGS=1 sl sl -t
+  @  amend from 208bc801695e  test  Today at 00:00
+  │  a36872291 (Backup pending)  Today at 00:00  test
+  │  B2
+  │
+  │ o  split 2 of 2 from 208bc801695e  test  Today at 00:00
+  ├─╯  65bba286d (Backup pending)  Today at 00:00  test
+  │    B
+  │
+  │ o  split 1 of 2 from 208bc801695e  test  Today at 00:00
+  ├─╯  4fb693f9a (Backup pending)  Today at 00:00  test
+  │    B part 1
+  │
+  v  amend from d37eb5104304  test  Today at 00:00
+  │  208bc8016 [Split into 4fb693f9a213, 65bba286d5f4] [Amended as a368722919e0]  Today at 00:00  test
+  │  B
+  │
+  x  d37eb5104 [Amended as 208bc801695e]  Today at 00:00  test
+     B0
+
+Elsewhere the label says what the commit became in the end:
+
+  $ TEST_PROD_CONFIGS=1 sl log -r 'desc(B0)' -T '{sl_node_info}\n'
+  d37eb5104 [Split into 4fb693f9a213, 65bba286d5f4] [Rewritten into a368722919e0]

@@ -70,3 +70,27 @@ A predecessor that is not available locally is still listed by its hash.
   $ sl debugstrip -q --hidden 'desc(D) - .'
   $ sl log -r . -T "{mutatedfrom % '{join(predecessors % \"{node|short}\", \" \")}'}\n"
   249525859eb3 50f7e5cdcca1
+
+`{mutatedinto}` lists the mutations that replaced a commit, with the next
+versions it was replaced by:
+
+  $ sl log -r 'all()' --hidden -T "{desc}: {mutatedinto % '[{operation} by {user} at {date|isodate} into {join(successors % \"{desc}\", \", \")}]'}\n"
+  A: 
+  B: [amend by test at 1970-01-01 00:00 +0000 into B]
+  B: [metaedit by test at 1970-01-01 00:00 +0000 into B v2]
+  B v2: [split by test at 1970-01-01 00:00 +0000 into B part 1, B v2]
+  B part 1: 
+  B v2: [fold by test at 1970-01-01 00:00 +0000 into B part 2 and D]
+  B part 2 and D: 
+
+A commit replaced more than once lists each mutation, and a next version that
+is not available locally is still listed by its hash:
+
+  $ setconfig experimental.evolution.allowdivergence=true
+  $ sl goto -q --hidden 'first(desc("B v2"))'
+  $ sl amend -q -m 'B v3'
+  $ sl log -r 'first(desc("B v2"))' --hidden -T "{mutatedinto}: {mutatedinto % '[{join(successors % \"{desc}\", \", \")}]'}\n"
+  split amend: [B part 1, B v2][B v3]
+  $ sl debugstrip -q --hidden 'desc("B v3")'
+  $ sl log -r 'first(desc("B v2"))' --hidden -T "{mutatedinto % '[{join(successors % \"{node|short}\", \" \")}]'}\n"
+  [8903feea5130 249525859eb3][2a69fa457056]

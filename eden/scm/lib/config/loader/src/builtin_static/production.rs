@@ -417,7 +417,7 @@ ssl_unsync_or_diffversion = ifeq(ssl_show_diffversion,"true",ssl_diffversion,ssl
 ssl_show_diffversion = ifeq(verbosity, "verbose", "true", sl_show_mutatedfrom)
 sl_stablecommit = "{label('sl.stablecommit', smallcommitmeta('arcpull_stable'))}"
 
-sl_node_info = "{separate(' ', sl_node, sl_mutations, sl_backup, sl_shelved)}"
+sl_node_info = "{separate(' ', sl_node, ifeq(sl_show_mutatedfrom, 'true', sl_mutatedinto, sl_mutations), sl_backup, sl_shelved)}"
 sl_node_info_debug = "{separate(' ', sl_node_debug, sl_mutations, sl_hidden, sl_backup, sl_shelved, sl_phase_debug)}"
 sl_diff_super = "{ifeq(graphnode, 's', '', if(sl_diff, separate(' ', label(sl_difflabel, separate(' ', sl_difflink, sl_diffstatus)), label(sl_diffsignallabel, sl_diffsignal), ssl_unsync_or_diffversion)))}"
 sl_diff_colors = "{if(sl_diff, label(sl_difflabel, '{phabdiff}'))}"
@@ -458,6 +458,8 @@ sl_mutatedfrom_preds = "{join(predecessors % '{node|short}', ', ')}"
 sl_mutatedfrom_info = "{separate('  ', '{operation}{sl_mutatedfrom_split} from {sl_mutatedfrom_preds}', label('sl.user', user|emailuser), label('sl.date', smartdate(date, sl_date_threshold, age(date), simpledate(date, sl_date_timezone))))}"
 sl_mutatedfrom = "{mutatedfrom % '{sl_mutatedfrom_info}'}"
 sl_mutatedfrom_line = "{ifeq(sl_show_mutatedfrom, 'true', if(mutatedfrom, label('sl.mutatedfrom', '{sl_mutatedfrom}\n')))}"
+# What a commit became next, shown by `sl sl -t` in place of sl_mutations.
+sl_mutatedinto = "{join(mutatedinto % '[{get(sl_mutation_names, operation, \'Rewritten into\')} {join(successors % \'{node|short}\', \', \')}]', ' ')}"
 
 # Normal smartlog
 sl = "{sl_mutatedfrom_line}{label(sl_label, if(sl_use_short_header, sl_header_short, separate('\n', sl_header_normal, sl_desc, sl_revision_separator)))}{sl_extra}"

@@ -190,10 +190,10 @@
   │  A
   │
   x  amend from 87ad26c9aa9d  test  Today at 00:00
-  │  426706ca3 [Rewritten into 5d4db2d99bdb]  Today at 00:00  test  D2 Needs Review V2
+  │  426706ca3 [Amended as 5278ac833b52]  Today at 00:00  test  D2 Needs Review V2
   │  A
   │
-  x  87ad26c9a [Rewritten into 5d4db2d99bdb]  Today at 00:00  test  D2 Needs Review V1
+  x  87ad26c9a [Amended as 426706ca3aa8]  Today at 00:00  test  D2 Needs Review V1
      A
   $ HG_ARC_CONDUIT_MOCK=$TESTTMP/mockduit TEST_PROD_CONFIGS=1 sl ssl
   @  5d4db2d99  Today at 00:00  test  D2 Needs Review (local changes)
