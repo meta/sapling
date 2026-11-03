@@ -299,7 +299,11 @@ struct MountHealthIssueLogContext {
     stats->increment(counter);
   }
 
-  void log(std::string reason, std::string error) const {
+  void log(
+      std::string reason,
+      std::string error,
+      std::string causeDetail = {},
+      std::optional<double> durationS = std::nullopt) const {
     if (!shouldLogMountHealthIssue(
             emittedMountHealthIssues, mountPath, reason)) {
       return;
@@ -308,17 +312,19 @@ struct MountHealthIssueLogContext {
     if (!edenFsEventsLogger) {
       return;
     }
-    edenFsEventsLogger->logEvent(
-        EdenMountHealthIssue{
-            "daemon_periodic",
-            std::move(reason),
-            std::string{mountPath},
-            std::string{mountPath},
-            "configured_checkout",
-            std::string{repoSource},
-            std::move(error),
-            false,
-            false});
+    EdenMountHealthIssue event{
+        "daemon_periodic",
+        std::move(reason),
+        std::string{mountPath},
+        std::string{mountPath},
+        "configured_checkout",
+        std::string{repoSource},
+        std::move(error),
+        false,
+        false};
+    event.cause_detail = std::move(causeDetail);
+    event.duration_s = durationS;
+    edenFsEventsLogger->logEvent(event);
   }
 
   std::weak_ptr<EdenFsEventsLogger> edenFsEventsLogger_;
@@ -350,10 +356,17 @@ void logMountHealthCheckTimeout(
     const MountHealthIssueLogContext& logContext,
     std::string error) {
   try {
+    const auto now = std::chrono::steady_clock::now();
+    auto detail =
+        folly::toJson(describeProbeProgress(*logContext.progress, now));
+    XLOGF(WARN, "{} for {}: {}", error, logContext.mountPath, detail);
     logContext.log(
         std::string{edenMountHealthIssueReasonString(
             EdenMountHealthIssueReason::DaemonRunningMountTimedOut)},
-        std::move(error));
+        std::move(error),
+        std::move(detail),
+        std::chrono::duration<double>{now - logContext.progress->queued()}
+            .count());
   } catch (const std::exception& ex) {
     XLOGF(ERR, "EdenFS mount health timeout logging failed: {}", ex.what());
   } catch (...) {

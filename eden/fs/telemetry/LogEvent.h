@@ -961,6 +961,9 @@ struct EdenMountHealthIssue : public EdenFSEvent {
   std::string error;
   bool attempted_repair = false;
   bool success = false;
+  // JSON details of a probe that ran too long, set after construction.
+  std::string cause_detail;
+  std::optional<double> duration_s;
 
   EdenMountHealthIssue(
       std::string source,
@@ -996,6 +999,12 @@ struct EdenMountHealthIssue : public EdenFSEvent {
     }
     event.addBool("attempted_repair", attempted_repair);
     event.addBool("success", success);
+    if (!cause_detail.empty()) {
+      event.addString(std::string{xplat_keys::kCauseDetail}, cause_detail);
+    }
+    if (duration_s.has_value()) {
+      event.addDouble(std::string{xplat_keys::kDuration}, *duration_s);
+    }
   }
 
   const char* getType() const override {

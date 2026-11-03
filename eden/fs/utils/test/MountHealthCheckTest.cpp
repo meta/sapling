@@ -27,6 +27,29 @@ TEST(MountHealthCheckTest, reportsMissingKernelMountForNonEdenMount) {
 }
 #endif
 
+TEST(MountHealthCheckTest, describesAStuckProbe) {
+  using namespace std::chrono_literals;
+  const auto queued = MountHealthProbeProgress::Clock::now();
+  MountHealthProbeProgress progress{queued};
+  progress.start(queued + 2s);
+  progress.enter(MountHealthProbeStep::LookupChild, queued + 3s);
+
+  const folly::dynamic expected =
+      folly::dynamic::object("step", "lookup_child")("step_ms", 5000)(
+          "queue_wait_ms", 2000)("running_ms", 6000);
+  EXPECT_EQ(expected, describeProbeProgress(progress, queued + 8s));
+}
+
+TEST(MountHealthCheckTest, describesAProbeThatNeverStarted) {
+  using namespace std::chrono_literals;
+  const auto queued = MountHealthProbeProgress::Clock::now();
+  MountHealthProbeProgress progress{queued};
+
+  const folly::dynamic expected =
+      folly::dynamic::object("step", "queued")("step_ms", 5000);
+  EXPECT_EQ(expected, describeProbeProgress(progress, queued + 5s));
+}
+
 TEST(MountHealthCheckTest, startedProbeRecordsItsThread) {
   MountHealthProbeProgress progress{std::chrono::steady_clock::now()};
   EXPECT_FALSE(progress.started().has_value());

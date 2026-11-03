@@ -259,5 +259,6 @@ eden_add_library(eden_fs_utils_mount_health_check
     eden_fs_utils_mount_info_table
     edencommon::edencommon_utils
   EXPORTED_DEPS
+    Folly::folly_dynamic
     Folly::folly_synchronized
 )

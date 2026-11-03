@@ -16,6 +16,7 @@
 #include <string_view>
 
 #include <folly/Synchronized.h>
+#include <folly/dynamic.h>
 
 namespace facebook::eden {
 
@@ -93,6 +94,14 @@ class MountHealthProbeProgress {
   std::atomic<uint64_t> threadId_{0};
   folly::Synchronized<CurrentStep, std::mutex> step_;
 };
+
+/**
+ * The probe's step and timing as JSON fields, for reporting a probe that ran
+ * too long.
+ */
+folly::dynamic describeProbeProgress(
+    const MountHealthProbeProgress& progress,
+    MountHealthProbeProgress::Clock::time_point now);
 
 // Checks a daemon-reported RUNNING mount against the kernel mount table and
 // lightweight .eden path probes. Returns an issue only when the mount is

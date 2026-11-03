@@ -385,5 +385,8 @@ cpp_library(
         ":mount_info_table",
         "//eden/common/utils:fsdetect",
     ],
-    exported_deps = ["fbsource//xplat/folly:synchronized"],
+    exported_deps = [
+        "fbsource//xplat/folly:dynamic",
+        "fbsource//xplat/folly:synchronized",
+    ],
 )

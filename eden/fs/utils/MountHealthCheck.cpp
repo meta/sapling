@@ -165,6 +165,24 @@ MountHealthProbeProgress::started() const {
   return Clock::time_point{Clock::duration{ticks}};
 }
 
+folly::dynamic describeProbeProgress(
+    const MountHealthProbeProgress& progress,
+    MountHealthProbeProgress::Clock::time_point now) {
+  auto toMs = [](MountHealthProbeProgress::Clock::duration duration) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(duration)
+        .count();
+  };
+  const auto current = progress.currentStep();
+  folly::dynamic detail =
+      folly::dynamic::object("step", mountHealthProbeStepName(current.step))(
+          "step_ms", toMs(now - current.entered));
+  if (auto started = progress.started()) {
+    detail["queue_wait_ms"] = toMs(*started - progress.queued());
+    detail["running_ms"] = toMs(now - *started);
+  }
+  return detail;
+}
+
 std::optional<EdenMountHealthCheckIssue> checkRunningEdenMountHealth(
     const std::string& mountPath,
     MountHealthProbeProgress* progress) {
