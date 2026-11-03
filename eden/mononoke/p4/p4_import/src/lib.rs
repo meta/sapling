@@ -356,23 +356,61 @@ fn file_after<'a>(
     })
 }
 
-async fn build_changeset(
+/// What a changelist's changeset is built from: everything that doesn't depend on its
+/// parent.
+struct FetchedChangelist {
+    changelist: Changelist,
+    contents: HashMap<String, ContentMetadataV2>,
+    copy_sources: HashMap<String, NonRootMPath>,
+    ambiguous_copy_sources: usize,
+    timings: ChangelistTimings,
+}
+
+async fn fetch_changelist(
     ctx: &CoreContext,
-    repo: &(impl RepoBlobstoreRef + RepoDerivedDataRef + FilestoreConfigRef),
+    repo: &(impl RepoBlobstoreRef + FilestoreConfigRef),
     source: &impl ChangeSource,
     depot_root: &str,
-    base: Option<ChangesetId>,
-    built: &[BuiltChangeset],
     change: u64,
-) -> Result<BuiltChangeset> {
+) -> Result<FetchedChangelist> {
     let (describe, changelist) = source.describe(change).try_timed().await?;
     let (upload, contents) = upload_changelist_contents(ctx, repo, source, depot_root, &changelist)
         .try_timed()
         .await?;
-    let (integrations, (mut copy_sources, ambiguous_copy_sources)) =
+    let (integrations, (copy_sources, ambiguous_copy_sources)) =
         copy_sources(source, depot_root, &changelist)
             .try_timed()
             .await?;
+    Ok(FetchedChangelist {
+        timings: ChangelistTimings {
+            describe: describe.completion_time,
+            upload: upload.completion_time,
+            uploaded_files: contents.len(),
+            integrations: integrations.completion_time,
+            ..Default::default()
+        },
+        changelist,
+        contents,
+        copy_sources,
+        ambiguous_copy_sources,
+    })
+}
+
+async fn build_changeset(
+    ctx: &CoreContext,
+    repo: &(impl RepoBlobstoreRef + RepoDerivedDataRef),
+    depot_root: &str,
+    base: Option<ChangesetId>,
+    built: &[BuiltChangeset],
+    fetched: FetchedChangelist,
+) -> Result<BuiltChangeset> {
+    let FetchedChangelist {
+        changelist,
+        contents,
+        mut copy_sources,
+        ambiguous_copy_sources,
+        mut timings,
+    } = fetched;
     // Mononoke doesn't check that copy_from exists in the parent, but derived data and
     // blame would follow it anyway.
     let (copy_source_checks, missing) = async {
@@ -390,6 +428,7 @@ async fn build_changeset(
     }
     .try_timed()
     .await?;
+    timings.copy_source_checks = copy_source_checks.completion_time;
     let build_started = Instant::now();
     for target in &missing {
         copy_sources.remove(target);
@@ -407,21 +446,15 @@ async fn build_changeset(
         }
     }
     let in_depot_files = changelist.files.len() - other_depot_files;
+    timings.build = build_started.elapsed();
     Ok(BuiltChangeset {
-        change,
+        change: changelist.number,
         other_depot_files,
         shadowed_deletions: in_depot_files.saturating_sub(changeset.file_changes().count()),
         changeset,
         dropped_copy_sources: missing.len(),
         ambiguous_copy_sources,
-        timings: ChangelistTimings {
-            describe: describe.completion_time,
-            upload: upload.completion_time,
-            uploaded_files: contents.len(),
-            integrations: integrations.completion_time,
-            copy_source_checks: copy_source_checks.completion_time,
-            build: build_started.elapsed(),
-        },
+        timings,
     })
 }
 
@@ -437,9 +470,12 @@ pub async fn build_changesets(
 ) -> Result<Vec<BuiltChangeset>> {
     let mut built = Vec::with_capacity(changes.len());
     for &change in changes {
-        let changeset = build_changeset(ctx, repo, source, depot_root, base, &built, change)
-            .await
-            .with_context(|| format!("building changelist {change}"))?;
+        let changeset = async {
+            let fetched = fetch_changelist(ctx, repo, source, depot_root, change).await?;
+            build_changeset(ctx, repo, depot_root, base, &built, fetched).await
+        }
+        .await
+        .with_context(|| format!("building changelist {change}"))?;
         built.push(changeset);
     }
     Ok(built)
