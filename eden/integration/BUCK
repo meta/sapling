@@ -452,6 +452,7 @@ python_unittest(
     supports_static_listing = False,
     deps = [
         "//eden/fs/cli:lib",
+        "//eden/fs/service:thrift-python-types",
         "//eden/integration/lib:lib",
     ],
 )

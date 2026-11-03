@@ -9,6 +9,7 @@ import unittest
 from typing import Dict, List, Optional
 
 from eden.fs.cli.util import poll_until
+from eden.fs.service.eden.thrift_types import FaultDefinition
 
 from .lib import testcase
 
@@ -17,6 +18,7 @@ from .lib import testcase
 @unittest.skipIf(sys.platform != "linux", "exercised on Linux FUSE mounts")
 class MountHealthCheckTest(testcase.EdenRepoTest):
     git_test_supported = False
+    enable_fault_injection = True
 
     def populate_repo(self) -> None:
         self.repo.write_file("hello", "hola\n")
@@ -35,8 +37,25 @@ class MountHealthCheckTest(testcase.EdenRepoTest):
     def wait_for_counter(self, name: str) -> None:
         poll_until(lambda: True if self.counter(name) > 0 else None, timeout=30)
 
+    def delay_next_probe(self, seconds: float) -> None:
+        with self.eden.get_thrift_client() as client:
+            client.injectFault(
+                FaultDefinition(
+                    keyClass="mountHealthCheck",
+                    keyValueRegex=".*",
+                    delayMilliseconds=int(seconds * 1000),
+                    count=1,
+                )
+            )
+
     def test_healthy_mount_is_counted(self) -> None:
         self.wait_for_counter("healthy")
         self.assertGreater(self.counter("probes"), 0)
         self.assertEqual(0, self.counter("issue"))
         self.assertEqual(0, self.counter("timed_out"))
+
+    def test_slow_probe_is_counted_as_timed_out(self) -> None:
+        self.wait_for_counter("healthy")
+        self.delay_next_probe(7)
+        self.wait_for_counter("timed_out")
+        self.assertEqual(0, self.counter("not_started"))

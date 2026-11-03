@@ -4588,17 +4588,30 @@ void EdenServer::scheduleRunningMountHealthCheck(
 
   scheduleMountHealthCheckStartTimeout(started, completed, logContext);
 
+  // Only tests turn on fault injection. Otherwise this stays empty, so a probe
+  // never holds ServerState and never becomes its last owner.
+  auto faultInjectionState = serverState_->getFaultInjector().isEnabled()
+      ? std::weak_ptr<ServerState>{serverState_}
+      : std::weak_ptr<ServerState>{};
+
   // Run the potentially blocking filesystem probe on a dedicated pool. The
   // runtime timeout is armed after the worker starts so executor queue delay
   // and a hung EdenFS mount can be reported separately.
   folly::via(
       getMountHealthCheckThreadPool(),
-      [started, completed, logContext]() {
+      [started,
+       completed,
+       logContext,
+       serverState = std::move(faultInjectionState)]() {
         started->store(true, std::memory_order_release);
         if (completed->load(std::memory_order_acquire)) {
           return std::optional<EdenMountHealthCheckIssue>{};
         }
         scheduleMountHealthCheckRuntimeTimeout(completed, logContext);
+        if (auto state = serverState.lock()) {
+          state->getFaultInjector().check(
+              "mountHealthCheck", logContext->mountPath);
+        }
         return checkRunningEdenMountHealth(logContext->mountPath);
       })
       .thenTry(
