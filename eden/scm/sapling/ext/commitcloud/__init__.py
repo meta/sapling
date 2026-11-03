@@ -195,8 +195,8 @@ def reposetup(ui, repo):
     repo.__class__ = commitcloudrepo
 
 
-def _smartlog(orig, ui, repo, **opts):
-    res = orig(ui, repo, **opts)
+def _smartlog(orig, ui, repo, *pats, **opts):
+    res = orig(ui, repo, *pats, **opts)
     status.summary(repo)
     return res
 

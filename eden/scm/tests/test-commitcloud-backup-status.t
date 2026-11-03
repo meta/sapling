@@ -284,3 +284,15 @@ show as backed up if '--hidden' is passed.
   note: 4 changesets are not backed up.
   (run 'sl cloud backup' to perform a backup)
   (if this fails, please report to the Source Control Team)
+
+A revision can be given as an argument
+  $ sl sl -T '{desc}\n' . --config infinitepushbackup.enablestatus=no
+  @  Not backed up changeset 3 (amended)
+  │
+  o  Public changeset 2
+  │
+  │ o  Not backed up changeset 2
+  │ │
+  │ o  Backed up changeset
+  ├─╯
+  o  Public changeset
