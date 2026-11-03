@@ -15,6 +15,7 @@ use commit_graph_testlib::utils::test_repo_identity;
 use commit_graph_testlib::*;
 use commit_graph_types::storage::CommitGraphStorage;
 use commit_graph_types::storage::Prefetch;
+use commit_graph_types::storage::PrefetchScope;
 use commit_graph_types::storage::PrefetchTarget;
 use context::CoreContext;
 use fbinit::FacebookInit;
@@ -97,7 +98,7 @@ pub async fn test_prefetch_many_edges_warms_beyond_cached_edges(fb: FacebookInit
         .prefetch_many_edges(
             &ctx,
             &[name_cs_id("H")],
-            PrefetchTarget::LinearAncestors {
+            PrefetchScope::PastCached {
                 generation: FIRST_GENERATION,
                 steps: 10,
             },
@@ -114,11 +115,68 @@ pub async fn test_prefetch_many_edges_warms_beyond_cached_edges(fb: FacebookInit
         .prefetch_many_edges(
             &ctx,
             &[name_cs_id("H")],
-            PrefetchTarget::LinearAncestors {
+            PrefetchScope::PastCached {
                 generation: FIRST_GENERATION,
                 steps: 10,
             },
         )
+        .await?;
+    assert_eq!(cachelib.stats().sets, sets);
+    assert!(!cached("C"));
+
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+pub async fn test_prefetch_many_edges_uncached_only_leaves_cached_edges_alone(
+    fb: FacebookInit,
+) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let storage = Arc::new(CachingCommitGraphStorage::mocked(Arc::new(
+        SqlCommitGraphStorageBuilder::with_sqlite_in_memory()
+            .unwrap()
+            .build(RendezVousOptions::for_test(), test_repo_identity()),
+    )));
+    from_dag(&ctx, r"A-B-C-D-E-F-G-H", storage.clone()).await?;
+    storage.flush();
+
+    let cachelib = storage.cachelib.mock_store().unwrap();
+    let cached = |name: &str| {
+        cachelib
+            .get(&storage.cache_key(&name_cs_id(name)))
+            .is_some()
+    };
+    let uncached_only = PrefetchScope::UncachedOnly(PrefetchTarget::LinearAncestors {
+        generation: FIRST_GENERATION,
+        steps: 10,
+    });
+
+    storage.fetch_edges(&ctx, name_cs_id("H")).await?;
+    assert!(cached("H"));
+    assert!(!cached("G"));
+
+    // H is cached, so nothing is fetched or filled for it, however much of
+    // the chain below it is uncached.
+    let sets = cachelib.stats().sets;
+    storage
+        .prefetch_many_edges(&ctx, &[name_cs_id("H")], uncached_only)
+        .await?;
+    assert_eq!(cachelib.stats().sets, sets);
+    assert!(!cached("G"));
+
+    // G isn't cached, so it is fetched with its prefetch.  The test step
+    // limit is 4, so the fill is exactly G, F, E and D: H is left alone.
+    storage
+        .prefetch_many_edges(&ctx, &[name_cs_id("H"), name_cs_id("G")], uncached_only)
+        .await?;
+    assert_eq!(cachelib.stats().sets, sets + 4);
+    assert!(cached("D"));
+    assert!(!cached("C"));
+
+    // Everything asked for is cached now, so asking again fills nothing.
+    let sets = cachelib.stats().sets;
+    storage
+        .prefetch_many_edges(&ctx, &[name_cs_id("H"), name_cs_id("G")], uncached_only)
         .await?;
     assert_eq!(cachelib.stats().sets, sets);
     assert!(!cached("C"));

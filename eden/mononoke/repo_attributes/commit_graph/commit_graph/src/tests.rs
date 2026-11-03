@@ -138,11 +138,9 @@ async fn test_batch_prefetch_fills_only_what_the_lowering_reads(fb: FacebookInit
             );
             assert_eq!(reads_to_fetch(&ctx, &storage, "U").await?, 0);
             assert_eq!(reads_to_fetch(&ctx, &storage, "T").await?, 1);
-            // FIXME: K is cached and nothing the lowering reads is below I,
-            // yet the batch prefetch walks down from K to the first uncached
-            // changeset and fills H, G, F and E from there.
-            assert_eq!(reads_to_fetch(&ctx, &storage, "E").await?, 0);
-            assert_eq!(reads_to_fetch(&ctx, &storage, "D").await?, 1);
+            // K is cached, so the batch prefetch fills nothing for it: H,
+            // below everything the lowering reads, stays uncached.
+            assert_eq!(reads_to_fetch(&ctx, &storage, "H").await?, 1);
             Ok(())
         }
         .boxed(),

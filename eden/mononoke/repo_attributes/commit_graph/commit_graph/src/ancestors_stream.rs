@@ -15,7 +15,7 @@ use borrowed::borrowed;
 use commit_graph_types::edges::EdgeType;
 use commit_graph_types::frontier::ChangesetFrontier;
 use commit_graph_types::storage::Prefetch;
-use commit_graph_types::storage::PrefetchTarget;
+use commit_graph_types::storage::PrefetchScope;
 use commit_graph_types::storage::p1_linear_prefetch_steps;
 use context::CoreContext;
 use futures::Future;
@@ -209,7 +209,7 @@ impl<E: EdgeType> AncestorsStreamBuilder<E> {
                             .prefetch_many_edges(
                                 ctx,
                                 &chain_start,
-                                PrefetchTarget::LinearAncestors {
+                                PrefetchScope::PastCached {
                                     generation: next.unwrap_or(FIRST_GENERATION),
                                     steps: linear_steps,
                                 },
@@ -294,7 +294,7 @@ impl<E: EdgeType> AncestorsStreamBuilder<E> {
                 self.commit_graph.storage.prefetch_many_edges(
                     &self.ctx,
                     &head_ids,
-                    PrefetchTarget::LinearAncestors {
+                    PrefetchScope::PastCached {
                         generation: FIRST_GENERATION,
                         steps: HEAD_CHAIN_PREFETCH_STEPS,
                     },

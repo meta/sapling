@@ -26,7 +26,7 @@ use commit_graph_types::edges::ParentsAndSubtreeSources;
 use commit_graph_types::storage::CommitGraphStorage;
 use commit_graph_types::storage::FetchedChangesetEdges;
 use commit_graph_types::storage::Prefetch;
-use commit_graph_types::storage::PrefetchTarget;
+use commit_graph_types::storage::PrefetchScope;
 use context::CoreContext;
 use fbthrift::compact_protocol;
 use mononoke_macros::mononoke;
@@ -440,7 +440,7 @@ impl CommitGraphStorage for PreloadedCommitGraphStorage {
         &self,
         ctx: &CoreContext,
         cs_ids: &[ChangesetId],
-        target: PrefetchTarget,
+        scope: PrefetchScope,
     ) -> Result<()> {
         // Reads of preloaded changesets never reach the persistent storage,
         // so prefetching below them there would only fill caches that are
@@ -455,7 +455,7 @@ impl CommitGraphStorage for PreloadedCommitGraphStorage {
             return Ok(());
         }
         self.persistent_storage
-            .prefetch_many_edges(ctx, &cs_ids, target)
+            .prefetch_many_edges(ctx, &cs_ids, scope)
             .await
     }
 

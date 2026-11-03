@@ -14,7 +14,7 @@ use commit_graph_types::edges::ChangesetEdges;
 use commit_graph_types::storage::CommitGraphStorage;
 use commit_graph_types::storage::FetchedChangesetEdges;
 use commit_graph_types::storage::Prefetch;
-use commit_graph_types::storage::PrefetchTarget;
+use commit_graph_types::storage::PrefetchScope;
 use context::CoreContext;
 use mononoke_types::ChangesetId;
 use mononoke_types::ChangesetIdPrefix;
@@ -94,9 +94,9 @@ impl CommitGraphStorage for ShufflingCommitGraphStorage {
         &self,
         ctx: &CoreContext,
         cs_ids: &[ChangesetId],
-        target: PrefetchTarget,
+        scope: PrefetchScope,
     ) -> Result<()> {
-        self.inner.prefetch_many_edges(ctx, cs_ids, target).await
+        self.inner.prefetch_many_edges(ctx, cs_ids, scope).await
     }
 
     async fn find_by_prefix(

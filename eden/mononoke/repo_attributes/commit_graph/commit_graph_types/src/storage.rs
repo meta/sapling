@@ -46,6 +46,41 @@ pub enum PrefetchTarget {
     },
 }
 
+/// What a prefetch warms the caches with.
+#[derive(Copy, Clone, Debug)]
+pub enum PrefetchScope {
+    /// Fetch the changesets that aren't cached yet, with the prefetch a
+    /// normal read towards `target` would do below each of them.  Cached
+    /// changesets cost one cache lookup each and fill nothing, so the cost
+    /// is linear in the changesets passed and this suits the whole set a
+    /// traversal is about to read.
+    UncachedOnly(PrefetchTarget),
+    /// Walk each first-parent chain through the cache to the first uncached
+    /// ancestor and prefetch `steps` changesets from there, going no further
+    /// back than `generation`.  Each step is a cache lookup per changeset,
+    /// so this suits a few changesets known to be cached, to warm the cache
+    /// beyond them.
+    PastCached {
+        /// Prefetch as far back as this generation.
+        generation: Generation,
+
+        /// Prefetch up to this many steps.
+        steps: u64,
+    },
+}
+
+impl PrefetchScope {
+    /// The target the prefetch asks the backing store for.
+    pub fn target(self) -> PrefetchTarget {
+        match self {
+            PrefetchScope::UncachedOnly(target) => target,
+            PrefetchScope::PastCached { generation, steps } => {
+                PrefetchTarget::LinearAncestors { generation, steps }
+            }
+        }
+    }
+}
+
 /// Indication for additional changesets to be fetched for subsequent
 /// traversals.
 ///
@@ -278,21 +313,13 @@ pub trait CommitGraphStorage: Send + Sync {
         prefetch: Prefetch,
     ) -> Result<HashMap<ChangesetId, FetchedChangesetEdges>>;
 
-    /// Warm any caches this storage has with the edges of these changesets
-    /// and the edges that prefetching towards `target` from them fetches.
-    ///
-    /// Unlike a prefetch hint passed to `fetch_many_edges`, this looks past
-    /// the edges of `cs_ids` themselves: a cache hit for them says nothing
-    /// about what is cached beyond them, so whatever is missing beyond them
-    /// is fetched, from a shared cache when another host has fetched it
-    /// already and otherwise from the backing store.  Finding out what is
-    /// missing costs up to one cache lookup per changeset per step, so
-    /// callers should bound `cs_ids`.  Storages without caches do nothing.
+    /// Warm any caches this storage has with edges below `cs_ids`, as far as
+    /// `scope` says.  Storages without caches do nothing.
     async fn prefetch_many_edges(
         &self,
         _ctx: &CoreContext,
         _cs_ids: &[ChangesetId],
-        _target: PrefetchTarget,
+        _scope: PrefetchScope,
     ) -> Result<()> {
         Ok(())
     }

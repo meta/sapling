@@ -15,6 +15,7 @@ use commit_graph_types::edges::EdgeType;
 use commit_graph_types::frontier::ChangesetFrontier;
 use commit_graph_types::frontier::ChangesetFrontierWithinDistance;
 use commit_graph_types::storage::Prefetch;
+use commit_graph_types::storage::PrefetchScope;
 use commit_graph_types::storage::PrefetchTarget;
 use commit_graph_types::storage::p1_linear_prefetch_steps;
 use context::CoreContext;
@@ -277,7 +278,10 @@ impl<E: EdgeType> CommitGraphOps<E> {
             // merge of unrelated histories the frontier holds many changesets
             // at different generations, and lowering them one generation at
             // a time would otherwise miss the cache once for each.  Only the
-            // caches are warmed: the edges themselves are fetched by the
+            // caches are warmed, and only for changesets that aren't cached:
+            // the frontier can hold thousands of changesets at every step,
+            // so looking past the cached ones would fill far more than the
+            // traversal reads.  The edges themselves are fetched by the
             // steps that pop them.
             if batch_prefetch {
                 if above_target > 1 && above_target > above_target_before {
@@ -298,7 +302,11 @@ impl<E: EdgeType> CommitGraphOps<E> {
                     );
                     if !cs_ids.is_empty() {
                         self.storage
-                            .prefetch_many_edges(ctx, &cs_ids, prefetch_target(generation))
+                            .prefetch_many_edges(
+                                ctx,
+                                &cs_ids,
+                                PrefetchScope::UncachedOnly(prefetch_target(generation)),
+                            )
                             .await?;
                     }
                 }

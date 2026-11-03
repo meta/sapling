@@ -33,6 +33,7 @@ use commit_graph_types::edges::Parents;
 use commit_graph_types::storage::CommitGraphStorage;
 use commit_graph_types::storage::FetchedChangesetEdges;
 use commit_graph_types::storage::Prefetch;
+use commit_graph_types::storage::PrefetchScope;
 use commit_graph_types::storage::PrefetchTarget;
 use context::CoreContext;
 use fbthrift::compact_protocol;
@@ -585,25 +586,25 @@ impl CommitGraphStorage for CachingCommitGraphStorage {
         &self,
         ctx: &CoreContext,
         cs_ids: &[ChangesetId],
-        target: PrefetchTarget,
+        scope: PrefetchScope,
     ) -> Result<()> {
-        let request = self.request(ctx, Prefetch::Hint(target));
+        let request = self.request(ctx, Prefetch::Hint(scope.target()));
         if !request.prefetch.is_include() {
             return Ok(());
         }
-        let cs_ids = match target {
-            PrefetchTarget::LinearAncestors { generation, steps } => {
+        let cs_ids = match scope {
+            PrefetchScope::UncachedOnly(_) => cs_ids.to_vec(),
+            PrefetchScope::PastCached { generation, steps } => {
                 // A prefetch fills at most the step limit below each changeset
                 // it fetches, so the walk checks exactly that far.  Checking
-                // further would find the band beyond the last fill uncached
-                // and fetch it again on every call.
+                // further would find the changesets beyond the last fill
+                // uncached and fetch them again on every call.
                 let steps = steps.min(justknobs::get_as::<u64>(
                     "scm/mononoke:commit_graph_prefetch_step_limit",
                     None,
                 ));
                 self.first_uncached_linear_ancestors(cs_ids, generation, steps)?
             }
-            PrefetchTarget::ExactSkipTreeAncestors { .. } => cs_ids.to_vec(),
         };
         // Through the caches rather than straight to the backing store:
         // another host may have fetched these already, and memcache holds

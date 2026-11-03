@@ -23,7 +23,7 @@ use commit_graph_types::edges::Parents;
 use commit_graph_types::storage::CommitGraphStorage;
 use commit_graph_types::storage::FetchedChangesetEdges;
 use commit_graph_types::storage::Prefetch;
-use commit_graph_types::storage::PrefetchTarget;
+use commit_graph_types::storage::PrefetchScope;
 use context::CoreContext;
 use memwrites_commit_graph_storage::MemWritesCommitGraphStorage;
 use mononoke_types::ChangesetId;
@@ -458,10 +458,10 @@ impl CommitGraphStorage for EphemeralCommitGraphStorage {
         &self,
         ctx: &CoreContext,
         cs_ids: &[ChangesetId],
-        target: PrefetchTarget,
+        scope: PrefetchScope,
     ) -> Result<()> {
         self.mem_writes_storage
-            .prefetch_many_edges(ctx, cs_ids, target)
+            .prefetch_many_edges(ctx, cs_ids, scope)
             .await
     }
 

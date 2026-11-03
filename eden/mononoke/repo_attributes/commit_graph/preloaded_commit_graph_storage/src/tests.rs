@@ -21,7 +21,7 @@ use commit_graph_types::edges::ChangesetEdges;
 use commit_graph_types::storage::CommitGraphStorage;
 use commit_graph_types::storage::FetchedChangesetEdges;
 use commit_graph_types::storage::Prefetch;
-use commit_graph_types::storage::PrefetchTarget;
+use commit_graph_types::storage::PrefetchScope;
 use context::CoreContext;
 use context::PerfCounterType;
 use fbinit::FacebookInit;
@@ -74,11 +74,13 @@ impl PreloadedCommitGraphStorage {
     }
 }
 
-/// Records the changesets it is asked to fetch in batches and to prefetch.
+/// Records the changesets it is asked to fetch in batches and to prefetch,
+/// by prefetch scope.
 struct RecordingStorage {
     inner: Arc<dyn CommitGraphStorage>,
     fetched: Mutex<Vec<ChangesetId>>,
-    prefetched: Mutex<Vec<ChangesetId>>,
+    uncached_only_prefetched: Mutex<Vec<ChangesetId>>,
+    past_cached_prefetched: Mutex<Vec<ChangesetId>>,
 }
 
 impl RecordingStorage {
@@ -86,7 +88,8 @@ impl RecordingStorage {
         Self {
             inner,
             fetched: Mutex::new(Vec::new()),
-            prefetched: Mutex::new(Vec::new()),
+            uncached_only_prefetched: Mutex::new(Vec::new()),
+            past_cached_prefetched: Mutex::new(Vec::new()),
         }
     }
 
@@ -94,8 +97,12 @@ impl RecordingStorage {
         self.fetched.lock().unwrap().clone()
     }
 
-    fn prefetched(&self) -> Vec<ChangesetId> {
-        self.prefetched.lock().unwrap().clone()
+    fn uncached_only_prefetched(&self) -> Vec<ChangesetId> {
+        self.uncached_only_prefetched.lock().unwrap().clone()
+    }
+
+    fn past_cached_prefetched(&self) -> Vec<ChangesetId> {
+        self.past_cached_prefetched.lock().unwrap().clone()
     }
 }
 
@@ -150,10 +157,14 @@ impl CommitGraphStorage for RecordingStorage {
         &self,
         ctx: &CoreContext,
         cs_ids: &[ChangesetId],
-        target: PrefetchTarget,
+        scope: PrefetchScope,
     ) -> Result<()> {
-        self.prefetched.lock().unwrap().extend_from_slice(cs_ids);
-        self.inner.prefetch_many_edges(ctx, cs_ids, target).await
+        let recorded = match scope {
+            PrefetchScope::UncachedOnly(_) => &self.uncached_only_prefetched,
+            PrefetchScope::PastCached { .. } => &self.past_cached_prefetched,
+        };
+        recorded.lock().unwrap().extend_from_slice(cs_ids);
+        self.inner.prefetch_many_edges(ctx, cs_ids, scope).await
     }
 
     async fn find_by_prefix(
@@ -318,7 +329,7 @@ async fn test_preloaded_prefetch_forwarding(fb: FacebookInit) -> Result<()> {
         .prefetch_many_edges(
             &ctx,
             &[name_cs_id("D"), name_cs_id("F")],
-            PrefetchTarget::LinearAncestors {
+            PrefetchScope::PastCached {
                 generation: FIRST_GENERATION,
                 steps: 10,
             },
@@ -327,7 +338,10 @@ async fn test_preloaded_prefetch_forwarding(fb: FacebookInit) -> Result<()> {
     // F isn't preloaded, so prefetching below it is up to the underlying
     // storage.  D and everything below it are served from the preloaded
     // edges, so it isn't forwarded.
-    assert_eq!(recording_storage.prefetched(), vec![name_cs_id("F")]);
+    assert_eq!(
+        recording_storage.past_cached_prefetched(),
+        vec![name_cs_id("F")]
+    );
 
     Ok(())
 }
@@ -385,7 +399,8 @@ async fn test_preloaded_batch_prefetch(fb: FacebookInit) -> Result<()> {
             // step at a time and then G, H, I, J and K in one step.  E and
             // K, D and J, C and I, and B and H are batch prefetched as each
             // merge adds its branch to the frontier, which only warms
-            // caches: every one of them is preloaded, so none reaches the
+            // caches for changesets that aren't cached, never past them:
+            // every one of them is preloaded, so none reaches the
             // persistent storage.
             assert_eq!(
                 ctx.perf_counters()
@@ -393,7 +408,7 @@ async fn test_preloaded_batch_prefetch(fb: FacebookInit) -> Result<()> {
                 8
             );
             assert_eq!(preloaded_storage.fetched().len(), 10);
-            let mut prefetched = preloaded_storage.prefetched();
+            let mut prefetched = preloaded_storage.uncached_only_prefetched();
             prefetched.sort();
             let mut expected: Vec<_> = ["B", "C", "D", "E", "H", "I", "J", "K"]
                 .into_iter()
@@ -401,7 +416,9 @@ async fn test_preloaded_batch_prefetch(fb: FacebookInit) -> Result<()> {
                 .collect();
             expected.sort();
             assert_eq!(prefetched, expected);
-            assert_eq!(persistent_storage.prefetched(), vec![]);
+            assert_eq!(preloaded_storage.past_cached_prefetched(), vec![]);
+            assert_eq!(persistent_storage.uncached_only_prefetched(), vec![]);
+            assert_eq!(persistent_storage.past_cached_prefetched(), vec![]);
             Ok(())
         }
         .boxed(),
