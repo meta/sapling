@@ -2544,6 +2544,18 @@ async fn test_two_parent_merge_identical_trees(fb: FacebookInit) -> Result<()> {
 /// otherwise dedup to one entry and never reach the leaf callback.
 #[mononoke::fbinit_test]
 async fn test_octopus_step_parent_only_file_parity(fb: FacebookInit) -> Result<()> {
+    assert_step_parent_only_file_parity(fb, "shared").await
+}
+
+#[mononoke::fbinit_test]
+async fn test_octopus_step_parent_only_escape_header_parity(fb: FacebookInit) -> Result<()> {
+    assert_step_parent_only_file_parity(fb, "\x01\nshared").await
+}
+
+async fn assert_step_parent_only_file_parity(
+    fb: FacebookInit,
+    content: &'static str,
+) -> Result<()> {
     // Given: p1 and p2 do not contain `foo`, while p3 and p4 contain byte-identical `foo` through different filenodes.
     let ctx = CoreContext::test_mock(fb);
     let repo: Repo = test_repo_factory::build_empty(fb).await?;
@@ -2560,7 +2572,7 @@ async fn test_octopus_step_parent_only_file_parity(fb: FacebookInit) -> Result<(
         .commit()
         .await?;
     let p3 = CreateCommitContext::new(&ctx, &repo, vec![a3])
-        .add_file("foo", "shared")
+        .add_file("foo", content)
         .commit()
         .await?;
     let a4 = CreateCommitContext::new_root(&ctx, &repo)
@@ -2568,7 +2580,7 @@ async fn test_octopus_step_parent_only_file_parity(fb: FacebookInit) -> Result<(
         .commit()
         .await?;
     let p4 = CreateCommitContext::new(&ctx, &repo, vec![a4])
-        .add_file("foo", "shared")
+        .add_file("foo", content)
         .commit()
         .await?;
     let manager = repo.repo_derived_data().manager();
@@ -2609,6 +2621,38 @@ async fn test_octopus_step_parent_only_file_parity(fb: FacebookInit) -> Result<(
         .await?;
 
     // Then: both paths agree, which requires minting the same fresh parentless filenode for `foo`.
+    let root = derive_hg_augmented_manifest::derive_augmented_manifest_from_bonsai(
+        &ctx,
+        repo.repo_blobstore(),
+        vec![aug_p1, aug_p2, aug_p3, aug_p4],
+        file_changes_from_bonsai(&ctx, &repo, merge).await?,
+        (Some(p1), Some(p2)),
+        &Default::default(),
+        repo.restricted_paths().config_based(),
+        derive_acl_overlay(&ctx, &repo, merge).await?,
+    )
+    .await?;
+    let leaf = root
+        .find_entry(ctx.clone(), repo.repo_blobstore().clone(), foo)
+        .await?
+        .and_then(Entry::into_leaf)
+        .context("merge must contain foo")?;
+    let filenode = HgFileNodeId::new(leaf.filenode)
+        .load(&ctx, repo.repo_blobstore())
+        .await?;
+    let leaf_header = leaf.file_header_metadata.as_deref().unwrap_or_default();
+    if content.starts_with("\x01\n") {
+        // BUG: the minted filenode carries the four-byte escape header, but the
+        // augmented leaf that points at it drops it.
+        assert_eq!(filenode.metadata().as_ref(), b"\x01\n\x01\n");
+        assert_eq!(leaf_header, b"");
+    } else {
+        assert_eq!(
+            leaf_header,
+            filenode.metadata().as_ref(),
+            "augmented metadata must preserve the minted filenode's header"
+        );
+    }
     assert_dual_derive_agree(
         &ctx,
         &repo,
