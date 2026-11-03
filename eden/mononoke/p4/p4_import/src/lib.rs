@@ -135,6 +135,26 @@ fn symlink_target(size: u64, mut printed: Vec<u8>) -> Result<Bytes> {
     Ok(Bytes::from(printed))
 }
 
+/// How to import.
+#[derive(Clone, Debug)]
+pub struct ImportOptions {
+    /// Derived for every imported changeset before the bookmark moves, if the repo
+    /// enables them. Keep `ContentManifests` in it: the next batch's copy-source check
+    /// reads the base's content manifest, and would otherwise derive it there.
+    pub derive: Vec<DerivableType>,
+    /// How many changelist numbers each listing of the depot covers.
+    pub changes_window: u64,
+}
+
+impl Default for ImportOptions {
+    fn default() -> Self {
+        Self {
+            derive: vec![DerivableType::ContentManifests],
+            changes_window: CHANGES_WINDOW,
+        }
+    }
+}
+
 /// Stores the content of every revision in `changelist` that leaves content in the depot
 /// at `depot_root`, keyed by depot path as `p4_transform::changeset` takes it.
 pub async fn upload_changelist_contents(
@@ -478,10 +498,10 @@ pub async fn resume_point(
     Ok(head(ctx, repo, bookmark).await?.map(|(_, change)| change))
 }
 
-/// Imports `changes`, in order, onto `bookmark` (created by the first import), deriving
-/// the types in `derive` that the repo has enabled, and returns their changesets. The
-/// batch must start after the `resume_point`, so nothing is imported twice. Logs a row per
-/// changelist to the context's Scuba table.
+/// Imports `changes`, in order, onto `bookmark` (created by the first import) as
+/// `options` say, and returns their changesets. The batch must start after the
+/// `resume_point`, so nothing is imported twice. Logs a row per changelist to the context's
+/// Scuba table.
 ///
 /// A changelist has no parent field, unlike a git commit: its parent is whatever the
 /// bookmark points at, so the bookmark is the only record of where the import is. That is
@@ -506,7 +526,7 @@ pub async fn import_changelists(
     depot_root: &str,
     bookmark: &BookmarkKey,
     changes: &[u64],
-    derive: &[DerivableType],
+    options: &ImportOptions,
 ) -> Result<ImportedBatch> {
     let Some(&last) = changes.last() else {
         return Ok(ImportedBatch::default());
@@ -543,7 +563,7 @@ pub async fn import_changelists(
             (imported, built.changeset)
         })
         .unzip();
-    let derive = BackfillDerivation::OnlySpecificTypes(derive.to_vec())
+    let derive = BackfillDerivation::OnlySpecificTypes(options.derive.clone())
         .types(&repo.repo_derived_data().active_config().types);
     let (save_and_derive, _) = save_and_derive_batch(ctx, repo, changesets, &derive)
         .try_timed()
@@ -621,11 +641,11 @@ pub async fn import_next(
     depot_root: &str,
     bookmark: &BookmarkKey,
     limit: usize,
-    derive: &[DerivableType],
+    options: &ImportOptions,
 ) -> Result<ImportedBatch> {
     let after = resume_point(ctx, repo, bookmark).await?;
-    let changes = next_changes(source, depot_root, after, limit, CHANGES_WINDOW).await?;
-    import_changelists(ctx, repo, source, depot_root, bookmark, &changes, derive).await
+    let changes = next_changes(source, depot_root, after, limit, options.changes_window).await?;
+    import_changelists(ctx, repo, source, depot_root, bookmark, &changes, options).await
 }
 
 /// Writes the batch's mapping in the bookmark move's transaction, so the bookmark never

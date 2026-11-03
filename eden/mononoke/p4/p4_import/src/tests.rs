@@ -622,7 +622,7 @@ async fn test_saved_parent_gives_the_file_content_and_type(fb: FacebookInit) -> 
         DEPOT,
         &master,
         &[7, 9],
-        &[],
+        &ImportOptions::default(),
     )
     .await?
     .changelists;
@@ -690,9 +690,17 @@ async fn test_copy_source_must_be_a_file_in_the_saved_parent(fb: FacebookInit) -
     let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
     let master = BookmarkKey::new("master")?;
     let source = two_changelists();
-    let imported = import_changelists(&ctx, &repo, &source, DEPOT, &master, &[7, 9], &[])
-        .await?
-        .changelists;
+    let imported = import_changelists(
+        &ctx,
+        &repo,
+        &source,
+        DEPOT,
+        &master,
+        &[7, 9],
+        &ImportOptions::default(),
+    )
+    .await?
+    .changelists;
     let base = Some(imported[1].cs_id);
 
     let (copy_from, dropped) = copy_from_of_c(&ctx, &repo, base, &[11], "//test1/a.txt").await?;
@@ -756,7 +764,10 @@ async fn test_import_moves_the_bookmark_and_maps_each_changelist(fb: FacebookIni
     let ctx = CoreContext::test_mock(fb);
     let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
     let master = BookmarkKey::new("master")?;
-    let derive = [DerivableType::Fsnodes];
+    let options = ImportOptions {
+        derive: vec![DerivableType::Fsnodes],
+        ..Default::default()
+    };
 
     let imported = import_changelists(
         &ctx,
@@ -765,7 +776,7 @@ async fn test_import_moves_the_bookmark_and_maps_each_changelist(fb: FacebookIni
         DEPOT,
         &master,
         &[7, 9],
-        &derive,
+        &options,
     )
     .await?
     .changelists;
@@ -802,12 +813,28 @@ async fn test_next_batch_continues_from_the_bookmark(fb: FacebookInit) -> Result
     let source = two_changelists();
     assert_eq!(None, resume_point(&ctx, &repo, &master).await?);
 
-    let first = import_changelists(&ctx, &repo, &source, DEPOT, &master, &[7], &[])
-        .await?
-        .changelists;
-    let second = import_changelists(&ctx, &repo, &source, DEPOT, &master, &[9], &[])
-        .await?
-        .changelists;
+    let first = import_changelists(
+        &ctx,
+        &repo,
+        &source,
+        DEPOT,
+        &master,
+        &[7],
+        &ImportOptions::default(),
+    )
+    .await?
+    .changelists;
+    let second = import_changelists(
+        &ctx,
+        &repo,
+        &source,
+        DEPOT,
+        &master,
+        &[9],
+        &ImportOptions::default(),
+    )
+    .await?
+    .changelists;
 
     let head = second[0].cs_id.load(&ctx, repo.repo_blobstore()).await?;
     assert_eq!(vec![first[0].cs_id], head.parents().collect::<Vec<_>>());
@@ -824,21 +851,46 @@ async fn test_batch_not_after_the_checkpoint_is_rejected(fb: FacebookInit) -> Re
     let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
     let master = BookmarkKey::new("master")?;
     let source = two_changelists();
-    import_changelists(&ctx, &repo, &source, DEPOT, &master, &[7, 9], &[]).await?;
+    import_changelists(
+        &ctx,
+        &repo,
+        &source,
+        DEPOT,
+        &master,
+        &[7, 9],
+        &ImportOptions::default(),
+    )
+    .await?;
     let head = bookmark_target(&ctx, &repo, &master).await?;
 
     for batch in [&[9, 11][..], &[8]] {
-        let error = import_changelists(&ctx, &repo, &source, DEPOT, &master, batch, &[])
-            .await
-            .unwrap_err();
+        let error = import_changelists(
+            &ctx,
+            &repo,
+            &source,
+            DEPOT,
+            &master,
+            batch,
+            &ImportOptions::default(),
+        )
+        .await
+        .unwrap_err();
         assert!(
             error.to_string().contains("already at changelist 9"),
             "{error:?}"
         );
     }
-    let error = import_changelists(&ctx, &repo, &source, DEPOT, &master, &[11, 10], &[])
-        .await
-        .unwrap_err();
+    let error = import_changelists(
+        &ctx,
+        &repo,
+        &source,
+        DEPOT,
+        &master,
+        &[11, 10],
+        &ImportOptions::default(),
+    )
+    .await
+    .unwrap_err();
     assert!(
         error.to_string().contains("not in increasing order"),
         "{error:?}"
@@ -865,7 +917,7 @@ async fn test_failed_mapping_write_leaves_the_bookmark(fb: FacebookInit) -> Resu
         DEPOT,
         &master,
         &[7, 9],
-        &[],
+        &ImportOptions::default(),
     )
     .await
     .unwrap_err();
@@ -892,9 +944,17 @@ async fn test_changelist_without_files_is_an_empty_commit(fb: FacebookInit) -> R
     let master = BookmarkKey::new("master")?;
     let source = FakeSource::default().with_changelist(5, &[]);
 
-    let imported = import_changelists(&ctx, &repo, &source, DEPOT, &master, &[5], &[])
-        .await?
-        .changelists;
+    let imported = import_changelists(
+        &ctx,
+        &repo,
+        &source,
+        DEPOT,
+        &master,
+        &[5],
+        &ImportOptions::default(),
+    )
+    .await?
+    .changelists;
 
     let changeset = imported[0].cs_id.load(&ctx, repo.repo_blobstore()).await?;
     assert_eq!(0, changeset.file_changes().count());
@@ -954,9 +1014,36 @@ async fn test_import_next_continues_after_the_bookmark_and_reports_each_changeli
             .collect()
     };
 
-    let first = import_next(&ctx, &repo, &source, DEPOT, &master, 1, &[]).await?;
-    let rest = import_next(&ctx, &repo, &source, DEPOT, &master, 5, &[]).await?;
-    let none = import_next(&ctx, &repo, &source, DEPOT, &master, 5, &[]).await?;
+    let first = import_next(
+        &ctx,
+        &repo,
+        &source,
+        DEPOT,
+        &master,
+        1,
+        &ImportOptions::default(),
+    )
+    .await?;
+    let rest = import_next(
+        &ctx,
+        &repo,
+        &source,
+        DEPOT,
+        &master,
+        5,
+        &ImportOptions::default(),
+    )
+    .await?;
+    let none = import_next(
+        &ctx,
+        &repo,
+        &source,
+        DEPOT,
+        &master,
+        5,
+        &ImportOptions::default(),
+    )
+    .await?;
 
     assert_eq!(vec![(7, 2, 0, 0, 0, 0)], report(&first.changelists));
     assert_eq!(
@@ -984,7 +1071,10 @@ async fn test_types_the_repo_does_not_enable_are_not_derived(fb: FacebookInit) -
         .build()
         .await?;
     let master = BookmarkKey::new("master")?;
-    let derive = [DerivableType::Fsnodes, DerivableType::Unodes];
+    let options = ImportOptions {
+        derive: vec![DerivableType::Fsnodes, DerivableType::Unodes],
+        ..Default::default()
+    };
 
     let imported = import_changelists(
         &ctx,
@@ -993,7 +1083,7 @@ async fn test_types_the_repo_does_not_enable_are_not_derived(fb: FacebookInit) -
         DEPOT,
         &master,
         &[7, 9],
-        &derive,
+        &options,
     )
     .await?;
 
@@ -1004,6 +1094,32 @@ async fn test_types_the_repo_does_not_enable_are_not_derived(fb: FacebookInit) -
         .await?;
     assert!(unodes.is_some());
     assert_eq!(Some(head), bookmark_target(&ctx, &repo, &master).await?);
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_default_options_derive_content_manifests(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+    let master = BookmarkKey::new("master")?;
+
+    let imported = import_changelists(
+        &ctx,
+        &repo,
+        &two_changelists(),
+        DEPOT,
+        &master,
+        &[7, 9],
+        &ImportOptions::default(),
+    )
+    .await?;
+
+    let head = imported.changelists[1].cs_id;
+    let manifest = repo
+        .repo_derived_data()
+        .fetch_derived::<RootContentManifestId>(&ctx, head)
+        .await?;
+    assert!(manifest.is_some());
     Ok(())
 }
 
@@ -1079,7 +1195,7 @@ async fn test_each_changelist_reports_how_many_files_it_uploaded(fb: FacebookIni
         DEPOT,
         &master,
         &[7, 9],
-        &[],
+        &ImportOptions::default(),
     )
     .await?;
 
@@ -1090,5 +1206,23 @@ async fn test_each_changelist_reports_how_many_files_it_uploaded(fb: FacebookIni
         .collect();
     // 9's deletion has no content to upload.
     assert_eq!(vec![(7, 2), (9, 2)], uploaded);
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_import_next_lists_in_the_configured_window(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+    let master = BookmarkKey::new("master")?;
+    let source = two_changelists();
+    let options = ImportOptions {
+        changes_window: 4,
+        ..Default::default()
+    };
+
+    let batch = import_next(&ctx, &repo, &source, DEPOT, &master, 5, &options).await?;
+
+    assert_eq!(2, batch.changelists.len());
+    assert_eq!(vec![(0, 4), (4, 8), (8, 9)], *source.listed.lock().unwrap());
     Ok(())
 }
