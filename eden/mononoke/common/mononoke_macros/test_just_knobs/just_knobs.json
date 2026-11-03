@@ -153,7 +153,8 @@
     "scm/mononoke:tier_repo_names_from_manifest": false,
     "scm/mononoke:incremental_manifest_reload": true,
     "scm/mononoke:fail_closed_on_repo_config_parse_error": false,
-    "scm/mononoke:reject_commit_cloud_writes_on_readonly_repos": true
+    "scm/mononoke:reject_commit_cloud_writes_on_readonly_repos": true,
+    "scm/mononoke:repo_metadata_logger_bookmark_fallback": false
   },
   "ints": {
     "scm/mononoke:sslv2_active_window_days": 0,
