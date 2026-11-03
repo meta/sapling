@@ -2265,6 +2265,52 @@ mod test {
         Ok(())
     }
 
+    /// FIXME: BUG! This did drop the entries of a node whose prefix is longer than the longest
+    /// common prefix with the other maps (`{"foo": 1}` vs `{"bar": 1}` yields nothing) and
+    /// forget the other maps' values behind such a prefix (`{"a": 1, "ab": 2}` vs `{"ab": 2}`
+    /// also yields `("ab", 2, [])`), but should have yielded exactly the entries whose value
+    /// differs from all other maps, each with the other maps' values at that key. This test
+    /// pins the current behaviour; the next diff fixes it.
+    #[mononoke::fbinit_test]
+    async fn test_sharded_map_v2_difference_stream_longer_prefix(fb: FacebookInit) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let blobstore = KeyedMemblob::default();
+        let helper = MapHelper(ctx, blobstore);
+
+        // The map's only entry is absent from the other map, so it must be reported, but
+        // the node prefixes ("foo" and "bar") diverge and the entry is dropped.
+        let map = helper.from_entries(&[("foo", 1)]).await?;
+        let other = helper.from_entries(&[("bar", 1)]).await?;
+        // FIXME: BUG! The entry "foo" is missing; this should be `[("foo", 1, [])]`.
+        assert_eq!(
+            helper
+                .difference_stream(map, vec![other])
+                .await?
+                .into_iter()
+                .sorted()
+                .collect::<Vec<_>>(),
+            Vec::<(String, u32, Vec<u32>)>::new(),
+        );
+
+        // "ab" has the same value in both maps, so only "a" differs, but the other map's
+        // value for "ab" is taken while its node still carries the prefix "b", so "ab" is
+        // also reported, with no previous values.
+        let map = helper.from_entries(&[("a", 1), ("ab", 2)]).await?;
+        let other = helper.from_entries(&[("ab", 2)]).await?;
+        // FIXME: BUG! "ab" must not be reported; this should be `[("a", 1, [])]`.
+        assert_eq!(
+            helper
+                .difference_stream(map, vec![other])
+                .await?
+                .into_iter()
+                .sorted()
+                .collect::<Vec<_>>(),
+            vec![("a".to_string(), 1, vec![]), ("ab".to_string(), 2, vec![])],
+        );
+
+        Ok(())
+    }
+
     #[mononoke::quickcheck_test]
     async fn test_sharded_map_v2_quickcheck(
         fb: FacebookInit,
