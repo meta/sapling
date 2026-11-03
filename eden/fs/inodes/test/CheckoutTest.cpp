@@ -2408,6 +2408,59 @@ TEST_P(CheckoutTest, checkoutFailsOnInProgressCheckout) {
   EXPECT_TRUE(testMount.getEdenMount()->tryStartInodeGC());
 }
 
+TEST_P(CheckoutTest, dryRunAfterInterruptedCheckoutKeepsInProgressMarker) {
+  auto builder1 = FakeTreeBuilder();
+  builder1.setFile("src/main.c", "// Some code.\n");
+  TestMount testMount{RootId{"1"}, builder1};
+  applyParam(testMount);
+
+  auto builder2 = builder1.clone();
+  builder2.replaceFile("src/main.c", "// New code.\n");
+  builder2.finalize(testMount.getBackingStore(), true);
+  testMount.getBackingStore()->putCommit("2", builder2)->setReady();
+
+  auto checkoutTo2 = [&](CheckoutMode mode) {
+    auto executor = testMount.getServerExecutor().get();
+    return testMount.getEdenMount()
+        ->checkout(
+            testMount.getRootInode(),
+            RootId{"2"},
+            ObjectFetchContext::getNullContext(),
+            __func__,
+            mode)
+        .semi()
+        .via(executor)
+        .getVia(executor);
+  };
+
+  // Fail the NORMAL checkout after it has written the in-progress marker.
+  testMount.getServerState()->getFaultInjector().injectError(
+      "TreeInode::checkout",
+      ".*",
+      folly::make_exception_wrapper<std::runtime_error>("checkout failed"),
+      1);
+  EXPECT_THROW(checkoutTo2(CheckoutMode::NORMAL), EdenError);
+  EXPECT_TRUE(testMount.getEdenMount()
+                  ->getCheckoutConfig()
+                  ->getParentCommit()
+                  .isCheckoutInProgress());
+
+  // Sapling sends a DRY_RUN before resuming the interrupted checkout.
+  EXPECT_NO_THROW(checkoutTo2(CheckoutMode::DRY_RUN));
+  EXPECT_TRUE(testMount.getEdenMount()->isCheckoutInProgress());
+  // FIXME: The DRY_RUN should leave the in-progress marker on disk, so this
+  // should be EXPECT_TRUE.
+  EXPECT_FALSE(testMount.getEdenMount()
+                   ->getCheckoutConfig()
+                   ->getParentCommit()
+                   .isCheckoutInProgress());
+
+  testMount.remount();
+  // FIXME: The mount should still be interrupted after a remount, so this
+  // should be EXPECT_TRUE.
+  EXPECT_FALSE(testMount.getEdenMount()->isCheckoutInProgress());
+}
+
 TEST_P(CheckoutTest, overlappingCheckoutInhibitorsBlockInodeGC) {
   FakeTreeBuilder builder;
   TestMount testMount{builder};
