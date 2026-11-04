@@ -2147,11 +2147,14 @@ Do you still want to delete {path}?"""
                 print(f"Removing {mount}...")
                 # Removing reidrection targets from checkout config to allow deletion of redirected paths
                 instance, checkout, _rel_path = require_checkout(args, mount)
-                config = checkout.get_config()
-                config._replace(
-                    redirection_targets={},
-                )
-                checkout.save_config(config)
+                try:
+                    config = checkout.get_config()
+                except config_mod.CheckoutConfigCorruptedError:
+                    # An interrupted removal can leave no config.toml, and
+                    # then there are no redirection targets to clear.
+                    pass
+                else:
+                    checkout.save_config(config._replace(redirection_targets={}))
 
                 result = remove_checkout_impl(
                     instance=instance,
