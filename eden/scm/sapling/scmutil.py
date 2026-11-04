@@ -159,7 +159,8 @@ def callcatch(ui, req, func):
             try:
                 if category:
                     traceui.log("command_info", error_category=category)
-                _uploadtraceback(traceui, str(ex), formatted)
+                if category not in (error.USAGE_ERROR, error.CERTIFICATE_ERROR):
+                    _uploadtraceback(traceui, str(ex), formatted)
             except Exception as ex:
                 ui.warn(_("warning: could not log command traceback: %s\n") % ex)
 
