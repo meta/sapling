@@ -509,16 +509,17 @@ test worktree remove - unmounts an added redirection on Windows
   $ sl worktree add $TESTTMP/with_redirection
   created linked worktree at $TESTTMP/with_redirection
   $ eden redirect add --mount $TESTTMP/with_redirection out bind
-FIXME: EdenFS refuses to delete the symlink of a redirection listed in the
-checkout's redirection-targets, so removal can't unmount it and only empties its
-backing. Removal should unmount it and delete the backing without an error.
+  $ eden redirect list --json --mount $TESTTMP/with_redirection > $TESTTMP/with_redirection.json
+  $ out_backing="$(python -c 'import json, sys; print(next(r["target"] for r in json.load(open(sys.argv[-1])) if r["repo_path"] == "out"))' $TESTTMP/with_redirection.json)"
+  $ test -d "$out_backing"
   $ sl worktree remove $TESTTMP/with_redirection -y --force
   Unmounting redirections...
-  Error unmounting redirections for *with_redirection: failed to unmount redirection out: Failed to remove symlink *out: * (os error 1359) (glob)
   Deleting redirection backing storage: *out... (glob)
   Unmounting checkout...
   Deleting EdenFS checkout state...
   removed $TESTTMP/with_redirection
   $ test -d $TESTTMP/with_redirection
+  [1]
+  $ test -e "$out_backing"
   [1]
 #endif

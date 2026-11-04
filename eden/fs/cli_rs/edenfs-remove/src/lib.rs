@@ -22,6 +22,7 @@ use std::time::Instant;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
+use edenfs_core::checkout::CheckoutConfig;
 use edenfs_core::checkout::EdenFsCheckout;
 use edenfs_core::checkout::find_checkout;
 use edenfs_core::checkout::get_mounts;
@@ -222,7 +223,18 @@ pub async fn remove_checkout_with_event_handler(
         BackingCleanupPolicy::Preserve => BackingCleanupPolicy::Preserve,
     };
 
-    match redirection_cleanup_policy(checkout_is_active, backing_cleanup) {
+    let redirection_cleanup = redirection_cleanup_policy(checkout_is_active, backing_cleanup);
+    if redirection_cleanup.is_some()
+        && let Err(error) = clear_redirection_targets(instance, &client_name).await
+    {
+        event_handler(RemoveCheckoutEvent::Warning(
+            RemoveCheckoutWarning::RedirectionUnmountFailed {
+                path: path.clone(),
+                error: format!("{error:#}"),
+            },
+        ));
+    }
+    match redirection_cleanup {
         Some(BackingCleanupPolicy::DeleteManaged) => {
             // `.eden-redirections` is checkout content, so only client config redirections
             // can be planned while the checkout is unmounted.
@@ -380,6 +392,26 @@ fn get_test_delay() -> Option<Duration> {
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .map(Duration::from_secs)
+}
+
+/// EdenFS on Windows refuses to delete the symlink of a redirection listed in the checkout's
+/// redirection targets, so forget them before unmounting redirections, as
+/// `edenfsctl redirect unmount` does.
+async fn clear_redirection_targets(instance: &EdenFsInstance, client_name: &str) -> Result<()> {
+    let config_dir = instance.config_directory(client_name);
+    if !tokio::fs::try_exists(config_dir.join("config.toml")).await? {
+        return Ok(());
+    }
+    let mut checkout_config = CheckoutConfig::parse_config(&config_dir).with_context(|| {
+        format!(
+            "failed to parse checkout config in {}",
+            config_dir.display()
+        )
+    })?;
+    checkout_config
+        .remove_redirection_targets(&config_dir)
+        .context("failed to remove redirection targets from the checkout config")?;
+    Ok(())
 }
 
 async fn unmount_redirections(instance: &EdenFsInstance, path: &Path) -> Result<()> {
