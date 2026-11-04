@@ -5,6 +5,7 @@
  * GNU General Public License version 2.
  */
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -29,21 +30,32 @@ use crate::Repo;
 const SM_CLEANUP_TIMEOUT_SECS: u64 = 120;
 const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(10);
 
+pub(crate) struct Settings {
+    pub(crate) exit_file: PathBuf,
+    pub(crate) depots: HashMap<String, String>,
+}
+
 fn exit_file_present(exit_file: &Path) -> bool {
     exit_file.exists()
 }
 
 pub(crate) struct P4SyncProcess {
     app: Arc<MononokeApp>,
-    exit_file: PathBuf,
+    settings: Settings,
 }
 
 #[async_trait]
 impl RepoShardedProcess for P4SyncProcess {
     async fn setup(&self, shard: &RepoShard) -> Result<Arc<dyn RepoShardedProcessExecutor>> {
-        if exit_file_present(&self.exit_file) {
+        if exit_file_present(&self.settings.exit_file) {
             tracing::warn!("Exit file detected, refusing shard {}", shard);
             return Err(anyhow!("Exit file detected, refusing shard {shard}"));
+        }
+        if !self.settings.depots.contains_key(&shard.repo_name) {
+            tracing::warn!(
+                "No --repo-depot for {}: holding its shard, importing nothing",
+                shard.repo_name
+            );
         }
 
         let repo_args = RepoArgs::from_repo_name(shard.repo_name.clone());
@@ -51,7 +63,7 @@ impl RepoShardedProcess for P4SyncProcess {
 
         Ok(Arc::new(P4SyncProcessExecutor {
             repo,
-            exit_file: self.exit_file.clone(),
+            exit_file: self.settings.exit_file.clone(),
             cancellation_requested: Arc::new(AtomicBool::new(false)),
         }))
     }
@@ -100,11 +112,11 @@ impl RepoShardedProcessExecutor for P4SyncProcessExecutor {
 pub(crate) async fn run(
     app: MononokeApp,
     sharded_executor_args: ShardedExecutorArgs,
-    exit_file: PathBuf,
+    settings: Settings,
 ) -> Result<()> {
     let process = Arc::new(P4SyncProcess {
         app: Arc::new(app),
-        exit_file,
+        settings,
     });
 
     let Some(executor) = sharded_executor_args.build_executor(
