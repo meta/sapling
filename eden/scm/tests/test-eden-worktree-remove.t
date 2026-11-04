@@ -466,3 +466,51 @@ A linked checkout whose dot dir flavour differs from the main checkout's is chec
   Deleting EdenFS checkout state...
   removed $TESTTMP/shelved_hg
 #endif
+
+test worktree remove - deletes a worktree whose files were read
+(The layout is fbsource's eden/scm/lib/types/src/serde_with, which reproduced
+the Windows failure when smaller layouts didn't.)
+
+  $ cd $TESTTMP
+  $ newclientrepo read_files_repo
+  $ mkdir -p src/serde_with/hgid src/serde_with/sha256
+  $ echo serde_with.rs > src/serde_with.rs
+  $ echo serde_with/hgid.rs > src/serde_with/hgid.rs
+  $ echo serde_with/hgid/bytes.rs > src/serde_with/hgid/bytes.rs
+  $ echo serde_with/hgid/hex.rs > src/serde_with/hgid/hex.rs
+  $ echo serde_with/hgid/tuple.rs > src/serde_with/hgid/tuple.rs
+  $ echo serde_with/key.rs > src/serde_with/key.rs
+  $ echo serde_with/nodeinfo.rs > src/serde_with/nodeinfo.rs
+  $ echo serde_with/sha256.rs > src/serde_with/sha256.rs
+  $ echo serde_with/sha256/bytes.rs > src/serde_with/sha256/bytes.rs
+  $ echo serde_with/sha256/hex.rs > src/serde_with/sha256/hex.rs
+  $ echo serde_with/sha256/tuple.rs > src/serde_with/sha256/tuple.rs
+  $ sl commit -qAm init
+  $ sl worktree add $TESTTMP/read_files
+  created linked worktree at $TESTTMP/read_files
+  $ ls $TESTTMP/read_files/src/serde_with $TESTTMP/read_files/src/serde_with/hgid $TESTTMP/read_files/src/serde_with/sha256 > /dev/null
+  $ cat $TESTTMP/read_files/src/serde_with/hgid.rs $TESTTMP/read_files/src/serde_with/hgid/bytes.rs $TESTTMP/read_files/src/serde_with/hgid/hex.rs $TESTTMP/read_files/src/serde_with/hgid/tuple.rs $TESTTMP/read_files/src/serde_with/key.rs $TESTTMP/read_files/src/serde_with/nodeinfo.rs $TESTTMP/read_files/src/serde_with/sha256.rs $TESTTMP/read_files/src/serde_with/sha256/bytes.rs $TESTTMP/read_files/src/serde_with/sha256/hex.rs $TESTTMP/read_files/src/serde_with/sha256/tuple.rs > /dev/null
+#if windows
+FIXME: deleting the unmounted mount point fails on Windows once files in the
+checkout have been listed and read, which leaves the folder behind and the
+worktree listed. This should print "removed $TESTTMP/read_files" and delete the
+folder, as on other platforms.
+  $ sl worktree remove $TESTTMP/read_files -y
+  Unmounting checkout...
+  Deleting EdenFS checkout state...
+  abort: direct EdenFS removal failed for *read_files: failed to remove mount point *read_files: The provider that supports file system virtualization is temporarily unavailable. (os error 369) (glob)
+  [255]
+  $ test -d $TESTTMP/read_files
+  $ sl worktree list
+    linked  $TESTTMP/read_files
+  * main    $TESTTMP/read_files_repo
+#else
+  $ sl worktree remove $TESTTMP/read_files -y
+  Unmounting checkout...
+  Deleting EdenFS checkout state...
+  removed $TESTTMP/read_files
+  $ test -d $TESTTMP/read_files
+  [1]
+  $ sl worktree list
+  this worktree is not part of a group
+#endif
