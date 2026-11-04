@@ -9,7 +9,13 @@ add_executable(
   notifications/edenfs.exe.manifest
 )
 
-install(TARGETS edenfs RUNTIME DESTINATION bin)
+# Where edenfsctl looks for the daemon: <prefix>/libexec/eden, or <prefix>/libexec
+# on Windows.
+if(WIN32)
+  install(TARGETS edenfs RUNTIME DESTINATION libexec)
+else()
+  install(TARGETS edenfs RUNTIME DESTINATION libexec/eden)
+endif()
 target_include_directories(
   edenfs
   PUBLIC
@@ -27,7 +33,9 @@ if(NOT WIN32)
     edenfs_privhelper
     service/PrivHelperMain.cpp
   )
-  install(TARGETS edenfs_privhelper RUNTIME DESTINATION bin)
+  # edenfsctl starts edenfs with /usr/local/libexec/eden/edenfs_privhelper, or
+  # $EDENFS_PRIVHELPER_PATH, and runs it under sudo unless that's setuid root.
+  install(TARGETS edenfs_privhelper RUNTIME DESTINATION libexec/eden)
   target_include_directories(
     edenfs_privhelper
     PUBLIC
