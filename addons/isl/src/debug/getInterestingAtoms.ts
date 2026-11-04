@@ -153,5 +153,6 @@ function serialize(initialArg: Serializable): Json {
 
   // Return a dummy value instead of throw so if an item in a container is "bad",
   // it does not turn the whole container into an error.
-  return `<unserializable: ${arg}>`;
+  // `String()` rather than a template literal, which throws on Symbols (e.g. `$$typeof` of a React.lazy component).
+  return `<unserializable: ${String(arg)}>`;
 }
