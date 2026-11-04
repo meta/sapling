@@ -9,6 +9,7 @@ use super::*;
 
 mod copies;
 mod endpoints;
+mod paging;
 mod policies;
 
 fn rich_restriction_options(check_permissions: bool) -> ChangedPathsRestrictionOptions {
