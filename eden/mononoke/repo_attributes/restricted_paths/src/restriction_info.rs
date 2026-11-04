@@ -47,7 +47,7 @@ mod tests;
 /// Core restriction information for a path.
 /// Does not include access check results; that is the API layer's concern
 /// (see `mononoke_api::PathAccessInfo`).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct PathRestrictionInfo {
     /// The root path of this restriction (directory containing `.slacl`).
     pub restriction_root: NonRootMPath,

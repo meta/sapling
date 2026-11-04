@@ -18,7 +18,7 @@ use restricted_paths::PathRestrictionInfo;
 use restricted_paths::PermissionRequestGroup;
 
 /// Access check result for a restricted path.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct PathAccessInfo {
     /// Core restriction info from the restricted_paths crate.
     pub restriction: PathRestrictionInfo,
@@ -247,6 +247,62 @@ mod tests {
     use permission_checker::MononokeIdentity;
 
     use super::*;
+
+    // What it tests: equality, sorting and grouping use one complete checked identity.
+    // Expected: only identical rows coalesce; every policy/access difference remains.
+    #[mononoke::test]
+    fn checked_restriction_order_matches_equality_and_grouping() -> Result<(), anyhow::Error> {
+        let original = PathAccessInfo {
+            restriction: PathRestrictionInfo {
+                restriction_root: NonRootMPath::new("secret")?,
+                repo_region_acl: "REPO_REGION:a".into(),
+                permission_request_group: MononokeIdentity::from_str("GROUP:a")?,
+                rollout_allowlist_group: None,
+            },
+            has_access: Some(false),
+        };
+        let mut variants = vec![original.clone()];
+        let mut changed = original.clone();
+        changed.restriction.restriction_root = NonRootMPath::new("other")?;
+        variants.push(changed);
+        let mut changed = original.clone();
+        changed.restriction.repo_region_acl = "REPO_REGION:b".into();
+        variants.push(changed);
+        let mut changed = original.clone();
+        changed.restriction.permission_request_group = MononokeIdentity::from_str("GROUP:b")?;
+        variants.push(changed);
+        let mut changed = original.clone();
+        changed.restriction.rollout_allowlist_group =
+            Some(MononokeIdentity::from_str("GROUP:rollout")?);
+        variants.push(changed);
+        let mut changed = original.clone();
+        changed.has_access = None;
+        variants.push(changed);
+        let mut changed = original.clone();
+        changed.has_access = Some(true);
+        variants.push(changed);
+        variants.push(original);
+        for left in &variants {
+            for right in &variants {
+                assert_eq!(left.cmp(right).is_eq(), left == right);
+            }
+        }
+        let mut sorted = variants.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted[0].restriction_root().to_string(), "other");
+        let grouped: BTreeMap<_, usize> =
+            variants
+                .into_iter()
+                .fold(BTreeMap::new(), |mut groups, info| {
+                    *groups.entry(info).or_default() += 1;
+                    groups
+                });
+        assert_eq!(sorted, grouped.keys().cloned().collect::<Vec<_>>());
+        assert_eq!(sorted.len(), 7);
+        assert_eq!(grouped.values().filter(|count| **count == 2).count(), 1);
+        Ok(())
+    }
 
     fn knobs(enabled: bool) -> JustKnobsInMemory {
         JustKnobsInMemory::new(HashMap::from([(

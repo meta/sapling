@@ -5,8 +5,10 @@
  * GNU General Public License version 2.
  */
 
+mod comparisons;
 mod test_restricted_paths_bypassing;
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -15,6 +17,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use context::CoreContext;
 use fbinit::FacebookInit;
+use futures::TryStreamExt;
 use metaconfig_types::AclManifestMode;
 use metaconfig_types::PathRestrictionMetadata;
 use metaconfig_types::RestrictedPathsConfig;
@@ -45,6 +48,7 @@ use tests_utils::CreateCommitContext;
 use crate::changeset::ChangesetContext;
 use crate::repo::Repo;
 use crate::repo::RepoContext;
+use crate::restricted_paths::ChangedPathsRestrictionOptions;
 use crate::restricted_paths::PathAccessInfo;
 use crate::restricted_paths::RestrictedChangeGroup;
 use crate::restricted_paths::RestrictedPathsChangesInfo;

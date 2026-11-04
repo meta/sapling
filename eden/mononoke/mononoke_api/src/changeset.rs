@@ -115,14 +115,13 @@ use crate::repo::RepoContext;
 use crate::repo::RepoWithBubble;
 use crate::restricted_paths::OmissionCollector;
 use crate::restricted_paths::PathAccessInfo;
-use crate::restricted_paths::RestrictedChangeGroup;
-use crate::restricted_paths::RestrictedPathsChangesInfo;
 use crate::restricted_paths::RestrictedPathsPolicy;
 use crate::specifiers::ChangesetId;
 use crate::specifiers::GitSha1;
 use crate::specifiers::HgChangesetId;
 
 mod find_files;
+mod restricted_paths_changes;
 
 const ENABLE_BONSAI_ONLY_LFS_DIFFS: &str = "scm/mononoke:changeset_diff_enable_bonsai_only_lfs";
 
@@ -2642,62 +2641,6 @@ impl<R: MononokeRepo> ChangesetContext<R> {
                 has_access: None,
             })
             .collect())
-    }
-
-    /// Determine which changed files in this changeset touch restricted paths.
-    ///
-    /// Returns restriction info grouped by restriction root, with the list of
-    /// changed paths under each root.
-    // TODO(T248660146): update this primitive to use AclManifest instead of access logging config.
-    // For draft commit safety (T255927050), the long-term implementation should
-    // resolve ACLs using the closest public ancestor's ACL manifest.
-    /// When `check_permissions` is true, each `PathAccessInfo` will have
-    /// its `has_access` field populated with the result of an ACL check.
-    /// When false, `has_access` will be `None`.
-    pub async fn restricted_paths_changes(
-        &self,
-        check_permissions: bool,
-    ) -> Result<RestrictedPathsChangesInfo, MononokeError> {
-        let file_changes = self.file_changes().await?;
-        let changed_paths: Vec<NonRootMPath> = file_changes.keys().cloned().collect();
-
-        let restriction_results = self
-            .paths_restriction_info(changed_paths, check_permissions)
-            .await?;
-
-        // A path under multiple nested roots will appear in multiple groups.
-        // Expand each (path, infos) into individual (path, info) pairs, then group by root.
-        let groups =
-            restriction_results
-                .into_iter()
-                .flat_map(|(path, infos)| infos.into_iter().map(move |info| (path.clone(), info)))
-                .fold(
-                    std::collections::BTreeMap::<
-                        NonRootMPath,
-                        (PathAccessInfo, Vec<NonRootMPath>),
-                    >::new(),
-                    |mut acc, (path, info)| {
-                        let root = info.restriction_root().clone();
-                        acc.entry(root)
-                            .or_insert_with(|| (info, Vec::new()))
-                            .1
-                            .push(path);
-                        acc
-                    },
-                );
-
-        let restricted_changes = groups
-            .into_values()
-            .map(|(restriction_info, mut changed_paths)| {
-                changed_paths.sort();
-                RestrictedChangeGroup {
-                    restriction_info,
-                    changed_paths,
-                }
-            })
-            .collect();
-
-        Ok(RestrictedPathsChangesInfo { restricted_changes })
     }
 
     /// Check if the repository may have restricted paths.
