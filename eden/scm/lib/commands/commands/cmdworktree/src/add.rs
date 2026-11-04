@@ -20,6 +20,7 @@ use clidispatch::TermLogger;
 use clidispatch::abort;
 use cmdutil::ConfigExt;
 use cmdutil::Result;
+use configmodel::convert::ByteCount;
 use encoding::shell_output_bytes_to_path;
 use fs_err as fs;
 use repo::repo::Repo;
@@ -30,6 +31,7 @@ use spawn_ext::CommandExt;
 use worktree::Reservation;
 use worktree::Worktrees;
 use worktree::check_dest_not_in_repo;
+use worktree::check_disk_space;
 use worktree::new_reservation_id;
 use worktree::with_reservations;
 use worktree::with_worktree_path_op_lock;
@@ -99,6 +101,21 @@ fn worktree_limit_reached_message(repo: &Repo, max_count: u64, current: usize) -
     format!(
         "cannot create worktree: limit of {max_count} linked worktrees reached for repository '{repo_path}' (currently {current}); \
          set `worktree.max-count` in your user config (e.g. ~/.hgrc) to raise it, or 0 to disable the limit"
+    )
+}
+
+/// Advisory for a worktree add that continues despite low disk space.
+fn disk_low_warning_message(available: u64, total: u64, dest: &Path, is_agent: bool) -> String {
+    let suffix = if is_agent {
+        " This is advisory: low disk space did not block this worktree add; continue your task without asking the user about this warning."
+    } else {
+        " To disable this warning, set `worktree.disk-warning-threshold=0` in your user config."
+    };
+    format!(
+        "low disk space: {} remaining of {} on '{}'; continuing.{suffix}",
+        ByteCount::from(available),
+        ByteCount::from(total),
+        dest.display(),
     )
 }
 
@@ -217,6 +234,25 @@ pub(crate) fn run(ctx: &ReqCtx<WorktreeOpts>, repo: &Repo, worktrees: &Worktrees
             "{}",
             worktree_limit_reached_message(repo, max_count, linked)
         );
+    }
+
+    let check = match check_disk_space(repo.config().as_ref(), &dest) {
+        Ok(check) => check,
+        Err(_) => {
+            hg_metrics::increment_counter("worktree.disk.check_error", 1);
+            None
+        }
+    };
+    if let Some((space, below_warning)) = check {
+        if below_warning {
+            hg_metrics::increment_counter("worktree_add_disk_warning", 1);
+            logger.warn(disk_low_warning_message(
+                space.available,
+                space.total,
+                &dest,
+                agentdetect::is_agent(),
+            ));
+        }
     }
 
     let source = checkouts.add_source()?;

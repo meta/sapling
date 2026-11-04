@@ -16,6 +16,7 @@ cmdutil = { version = "0.1.0", path = "../../cmdutil" }
 edenfs-core = { version = "0.1.0", path = "../../../../../fs/cli_rs/edenfs-core", optional = true }
 edenfs-remove = { version = "0.1.0", path = "../../../../../fs/cli_rs/edenfs-remove", optional = true }
 fs-err = "3.3.2"
+sapling-agentdetect = { version = "0.1.0", path = "../../../agentdetect" }
 sapling-async-runtime = { version = "0.1.0", path = "../../../async-runtime", optional = true }
 sapling-clidispatch = { version = "0.1.0", path = "../../../clidispatch" }
 sapling-clone = { version = "0.1.0", path = "../../../clone" }
@@ -25,6 +26,7 @@ sapling-encoding = { version = "0.1.0", path = "../../../encoding" }
 sapling-filters = { version = "0.1.0", path = "../../../filters" }
 sapling-formatter = { version = "0.1.0", path = "../../../formatter" }
 sapling-gitcompat = { version = "0.1.0", path = "../../../gitcompat" }
+sapling-hg-metrics = { version = "0.1.0", path = "../../../hg-metrics" }
 sapling-hook = { version = "0.1.0", path = "../../../hook" }
 sapling-identity = { version = "0.1.0", path = "../../../identity" }
 sapling-pathmatcher = { version = "0.1.0", path = "../../../pathmatcher" }
