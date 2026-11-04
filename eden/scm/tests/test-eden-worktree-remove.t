@@ -518,6 +518,25 @@ test worktree remove - removes an unmounted checkout
   $ sl worktree list
   this worktree is not part of a group
 
+test worktree remove - removes a checkout whose folder is gone
+
+  $ cd $TESTTMP
+  $ newclientrepo missing_folder_repo
+  $ touch file.txt
+  $ sl commit -qAm init
+  $ sl worktree add $TESTTMP/folder_gone
+  created linked worktree at $TESTTMP/folder_gone
+  $ eden unmount $TESTTMP/folder_gone
+  $ rm -rf $TESTTMP/folder_gone
+FIXME: EdenFS still lists the checkout, so it should be removed too.
+  $ sl worktree remove $TESTTMP/folder_gone -y
+  eden checkout $TESTTMP/folder_gone not found on disk, continuing to remove from registry
+  removed $TESTTMP/folder_gone
+  $ sl worktree list
+  this worktree is not part of a group
+  $ eden list | grep folder_gone
+  $TESTTMP?folder_gone (not mounted) (glob)
+
 test worktree remove - unmounts an added redirection on Windows
 
 #if windows
