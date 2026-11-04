@@ -612,13 +612,11 @@ pub async fn check_depot_root(source: &impl ChangeSource, depot_root: &str) -> R
     Err(error.into())
 }
 
-/// The bookmark's changeset and the changelist it was imported from, or `None` before
-/// the first import.
-async fn head(
+async fn head_changeset(
     ctx: &CoreContext,
     repo: &(impl BookmarksRef + RepoBlobstoreRef),
     bookmark: &BookmarkKey,
-) -> Result<Option<(ChangesetId, u64)>> {
+) -> Result<Option<BonsaiChangeset>> {
     let Some(cs_id) = repo
         .bookmarks()
         .get(ctx.clone(), bookmark, Freshness::MostRecent)
@@ -626,8 +624,75 @@ async fn head(
     else {
         return Ok(None);
     };
-    let changeset = cs_id.load(ctx, repo.repo_blobstore()).await?;
-    Ok(Some((cs_id, P4ChangelistId::from_bcs(&changeset)?.id())))
+    Ok(Some(cs_id.load(ctx, repo.repo_blobstore()).await?))
+}
+
+/// The bookmark's changeset and the changelist it was imported from, or `None` before
+/// the first import.
+async fn head(
+    ctx: &CoreContext,
+    repo: &(impl BookmarksRef + RepoBlobstoreRef),
+    bookmark: &BookmarkKey,
+) -> Result<Option<(ChangesetId, u64)>> {
+    let Some(changeset) = head_changeset(ctx, repo, bookmark).await? else {
+        return Ok(None);
+    };
+    let change = P4ChangelistId::from_bcs(&changeset)?.id();
+    Ok(Some((changeset.get_changeset_id(), change)))
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ResumeMismatch {
+    #[error(
+        "{bookmark} was imported from another depot: changelist {change} has no files in {depot_root}"
+    )]
+    OtherDepot {
+        bookmark: String,
+        change: u64,
+        depot_root: String,
+    },
+    #[error("changelist {change} on this server doesn't match what {bookmark} recorded")]
+    RevisionsDiffer { bookmark: String, change: u64 },
+}
+
+/// Rejects resuming unless the server's describe of the bookmark's changelist, in the
+/// depot at `depot_root`, gives the file revisions its changeset recorded. A changelist
+/// has no parent field, so nothing else ties the bookmark's history to this depot and
+/// server (see `import_changelists`): without the check, another depot's changelists
+/// would build on top of it. Design: designs/import_flow.md.
+pub async fn check_resume_continuity(
+    ctx: &CoreContext,
+    repo: &(impl BookmarksRef + RepoBlobstoreRef),
+    source: &impl ChangeSource,
+    depot_root: &str,
+    bookmark: &BookmarkKey,
+) -> Result<()> {
+    let Some(changeset) = head_changeset(ctx, repo, bookmark).await? else {
+        return Ok(());
+    };
+    let change = P4ChangelistId::from_bcs(&changeset)?.id();
+    let recorded = p4_transform::recorded_file_revs(&changeset).with_context(|| {
+        format!(
+            "{bookmark}'s changeset has no {} extra",
+            p4_transform::FILE_REVS_EXTRA
+        )
+    })?;
+    let changelist = source.describe(change).await?;
+    let on_server = p4_transform::file_revs(depot_root, &changelist)?;
+    if on_server == recorded {
+        return Ok(());
+    }
+    let bookmark = bookmark.to_string();
+    let error = if on_server.is_empty() {
+        ResumeMismatch::OtherDepot {
+            bookmark,
+            change,
+            depot_root: depot_root.to_owned(),
+        }
+    } else {
+        ResumeMismatch::RevisionsDiffer { bookmark, change }
+    };
+    Err(error.into())
 }
 
 /// The last changelist imported onto `bookmark`: the next import starts after it. The
@@ -642,8 +707,9 @@ pub async fn resume_point(
 
 /// Imports `changes`, in order, onto `bookmark` (created by the first import) as
 /// `options` say, and returns their changesets. The batch must start after the
-/// `resume_point`, so nothing is imported twice. `depot_root` must pass `check_depot_root`,
-/// as `import_next` makes sure. Logs a row per changelist to the context's Scuba table.
+/// `resume_point`, so nothing is imported twice. `depot_root` must pass `check_depot_root`
+/// and the bookmark `check_resume_continuity`, as `import_next` makes sure. Logs a row
+/// per changelist to the context's Scuba table.
 ///
 /// A changelist has no parent field, unlike a git commit: its parent is whatever the
 /// bookmark points at, so the bookmark is the only record of where the import is. That is
@@ -764,8 +830,8 @@ fn log_imported(ctx: &CoreContext, batch: &ImportedBatch) {
 }
 
 /// Imports the first `limit` changelists of the depot after the bookmark's `resume_point`,
-/// as `import_changelists` does. Nothing is read before `check_depot_root` accepts
-/// `depot_root`.
+/// as `import_changelists` does. Nothing is listed or fetched before `check_depot_root`
+/// accepts `depot_root` and `check_resume_continuity` the bookmark.
 pub async fn import_next(
     ctx: &CoreContext,
     repo: &(
@@ -787,6 +853,7 @@ pub async fn import_next(
     options: &ImportOptions,
 ) -> Result<ImportedBatch> {
     check_depot_root(source, depot_root).await?;
+    check_resume_continuity(ctx, repo, source, depot_root, bookmark).await?;
     let after = resume_point(ctx, repo, bookmark).await?;
     let changes = next_changes(source, depot_root, after, limit, options.changes_window).await?;
     import_changelists(ctx, repo, source, depot_root, bookmark, &changes, options).await

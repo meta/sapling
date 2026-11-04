@@ -93,15 +93,13 @@ pub fn changeset(
         .and_then(|secs| DateTime::from_timestamp(secs, 0))
         .map_err(invalid)?;
     let mut file_changes = Vec::new();
-    let mut revisions = Vec::new();
     for revision in &changelist.files {
         // Without a parent the source can't be in it, so the copy is dropped.
         let copy_from = parent
             .and_then(|parent| Some((copy_sources.get(&revision.depot_path)?.clone(), parent)));
         let content = contents.get(&revision.depot_path);
-        if let Some((path, change)) = file_change(depot_root, revision, content, copy_from)? {
-            revisions.push((path.clone(), revision.revision));
-            file_changes.push((path, change));
+        if let Some(file_change) = file_change(depot_root, revision, content, copy_from)? {
+            file_changes.push(file_change);
         }
     }
     let mut bonsai = BonsaiChangesetMut {
@@ -116,9 +114,10 @@ pub fn changeset(
         file_changes: without_shadowed_deletions(file_changes).collect(),
         ..Default::default()
     };
-    bonsai
-        .hg_extra
-        .insert(FILE_REVS_EXTRA.to_owned(), file_revs(revisions)?);
+    bonsai.hg_extra.insert(
+        FILE_REVS_EXTRA.to_owned(),
+        file_revs(depot_root, changelist)?,
+    );
     if let Some(original) = &changelist.description_bytes {
         if String::from_utf8_lossy(original) != changelist.description {
             return Err(TransformError::DescriptionMismatch {
@@ -134,7 +133,14 @@ pub fn changeset(
     bonsai.freeze().map_err(invalid)
 }
 
-fn file_revs(mut revisions: Vec<(NonRootMPath, u32)>) -> Result<Vec<u8>, TransformError> {
+/// The `FILE_REVS_EXTRA` value of `changelist`'s changeset in the depot at `depot_root`.
+pub fn file_revs(depot_root: &str, changelist: &Changelist) -> Result<Vec<u8>, TransformError> {
+    let mut revisions = Vec::new();
+    for revision in &changelist.files {
+        if let Some(path) = repo_path(depot_root, &revision.depot_path)? {
+            revisions.push((path, revision.revision));
+        }
+    }
     revisions.sort_unstable();
     let mut lines = String::new();
     for (path, rev) in revisions {
@@ -146,6 +152,13 @@ fn file_revs(mut revisions: Vec<(NonRootMPath, u32)>) -> Result<Vec<u8>, Transfo
         lines.push_str(&format!("{rev}\t{path}\n"));
     }
     Ok(lines.into_bytes())
+}
+
+/// The `FILE_REVS_EXTRA` value `changeset` recorded, if it has one.
+pub fn recorded_file_revs(changeset: &BonsaiChangeset) -> Option<&[u8]> {
+    changeset
+        .hg_extra()
+        .find_map(|(key, value)| (key == FILE_REVS_EXTRA).then_some(value))
 }
 
 /// When a file replaces a directory, Perforce also lists the directory's files as

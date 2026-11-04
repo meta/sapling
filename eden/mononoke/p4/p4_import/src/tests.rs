@@ -1435,6 +1435,96 @@ async fn test_rule_depot_must_be_local_or_stream(fb: FacebookInit) -> Result<()>
     Ok(())
 }
 
+async fn import_onto_master(
+    ctx: &CoreContext,
+    repo: &TestRepo,
+    source: &FakeSource,
+    depot_root: &str,
+    limit: usize,
+) -> Result<ImportedBatch> {
+    let master = BookmarkKey::new("master")?;
+    import_next(
+        ctx,
+        repo,
+        source,
+        depot_root,
+        &master,
+        limit,
+        &ImportOptions::default(),
+    )
+    .await
+}
+
+fn calls(source: &FakeSource) -> Vec<&'static str> {
+    std::mem::take(&mut *source.calls.lock().unwrap())
+}
+
+#[mononoke::fbinit_test]
+async fn test_rule_resume_must_continue_the_same_depot(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let master = BookmarkKey::new("master")?;
+    let source = two_changelists()
+        .with_changelist(11, &[("//test1/dir/f.txt", 1, Action::Add, Some(b"f\n"))])
+        .with_changelist(
+            13,
+            &[
+                ("//test1/dir", 1, Action::Add, Some(b"now a file\n")),
+                ("//test1/dir/f.txt", 2, Action::Delete, None),
+            ],
+        );
+
+    let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+    import_onto_master(&ctx, &repo, &source, DEPOT, 1).await?;
+    assert_eq!(["depots", "latest_change"], calls(&source)[..2]);
+    let head = bookmark_target(&ctx, &repo, &master).await?;
+
+    let error = import_onto_master(&ctx, &repo, &source, "//other/", 1)
+        .await
+        .unwrap_err();
+    let expected = ResumeMismatch::OtherDepot {
+        bookmark: "master".to_owned(),
+        change: 7,
+        depot_root: "//other/".to_owned(),
+    };
+    assert_eq!(Some(&expected), error.downcast_ref(), "{error:?}");
+    assert_eq!(
+        "master was imported from another depot: changelist 7 has no files in //other/",
+        error.to_string()
+    );
+    assert_eq!(vec!["depots", "describe"], calls(&source));
+    assert_eq!(head, bookmark_target(&ctx, &repo, &master).await?);
+    for change in [9, 11, 13] {
+        assert_eq!(None, mapped(&ctx, &repo, change).await?);
+    }
+
+    let other_server = FakeSource::default()
+        .with_changelist(7, &[("//test1/a.txt", 2, Action::Edit, Some(b"one\n"))]);
+    let error = import_onto_master(&ctx, &repo, &other_server, DEPOT, 1)
+        .await
+        .unwrap_err();
+    let expected = ResumeMismatch::RevisionsDiffer {
+        bookmark: "master".to_owned(),
+        change: 7,
+    };
+    assert_eq!(Some(&expected), error.downcast_ref(), "{error:?}");
+    assert_eq!(
+        "changelist 7 on this server doesn't match what master recorded",
+        error.to_string()
+    );
+    assert_eq!(vec!["depots", "describe"], calls(&other_server));
+    assert_eq!(head, bookmark_target(&ctx, &repo, &master).await?);
+
+    let batch = import_onto_master(&ctx, &repo, &source, DEPOT, 5).await?;
+    assert_eq!(3, batch.changelists.len());
+    assert_eq!(["depots", "describe", "latest_change"], calls(&source)[..3]);
+    // 13 records its shadowed deletion of dir/f.txt, which its changeset doesn't change.
+    assert_eq!(1, batch.changelists[2].shadowed_deletions);
+    let batch = import_onto_master(&ctx, &repo, &source, DEPOT, 5).await?;
+    assert_eq!(ImportedBatch::default(), batch);
+    assert_eq!(["depots", "describe", "latest_change"], calls(&source)[..3]);
+    Ok(())
+}
+
 /// `two_changelists`, then 11 branching `count` files from `a.txt`.
 fn branches_of_a(count: usize) -> FakeSource {
     let targets: Vec<&'static str> = (0..count)
