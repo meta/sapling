@@ -15,19 +15,13 @@ import {tracker} from '../../analytics';
 import {t} from '../../i18n';
 import {uncommittedChangesWithPreviews} from '../../previews';
 import {useConfirmUnsavedEditsBeforeSplit} from './ConfirmUnsavedEditsBeforeSplit';
-import {
-  bumpStackEditMetric,
-  editingStackIntentionHashes,
-  shouldAutoSplitState,
-} from './stackEditState';
+import {bumpStackEditMetric, editingStackIntentionHashes} from './stackEditState';
 
 export interface BaseSplitButtonProps {
   /** The commit to split */
   commit: CommitInfo;
   /** The event name to track when the button is clicked */
   trackerEventName: TrackEventName;
-  /** Whether to automatically trigger AI split */
-  autoSplit?: boolean;
   /** Function to call after the split action is initiated */
   onSplitInitiated?: () => void;
   /** Whether to bump the "splitFromSuggestion" metric */
@@ -40,7 +34,6 @@ export interface BaseSplitButtonProps {
 export function BaseSplitButton({
   commit,
   trackerEventName,
-  autoSplit = false,
   onSplitInitiated,
   bumpSplitFromSuggestion = false,
   children,
@@ -48,7 +41,6 @@ export function BaseSplitButton({
 }: BaseSplitButtonProps & React.ComponentProps<typeof Button>) {
   const confirmUnsavedEditsBeforeSplit = useConfirmUnsavedEditsBeforeSplit();
   const setEditStackIntentionHashes = useSetAtom(editingStackIntentionHashes);
-  const setShouldAutoSplit = useSetAtom(shouldAutoSplitState);
 
   const uncommittedChanges = useAtomValue(uncommittedChangesWithPreviews);
   const hasUncommittedChanges = uncommittedChanges.length > 0;
@@ -58,9 +50,6 @@ export function BaseSplitButton({
       return;
     }
     setEditStackIntentionHashes(['split', new Set([commit.hash])]);
-    if (autoSplit) {
-      setShouldAutoSplit(true);
-    }
     if (bumpSplitFromSuggestion) {
       bumpStackEditMetric('splitFromSuggestion');
     }

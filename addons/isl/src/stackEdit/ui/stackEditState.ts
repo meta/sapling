@@ -426,8 +426,6 @@ export const loadingStackState = atom<Loading<null>>(get => {
 
 const hasValueState: Loading<null> = {state: 'hasValue', value: null};
 
-export const shouldAutoSplitState = atom<boolean>(false);
-
 /** APIs exposed via useStackEditState() */
 class UseStackEditState {
   state: StackEditState;

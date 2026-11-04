@@ -21,7 +21,7 @@ import type {TypeaheadKind} from './CommitInfoView/types';
 import type {InternalTypes} from './InternalTypes';
 import type {CodeReviewIssue} from './firstPassCodeReview/types';
 import type {Serializable} from './serialize';
-import type {Args, DiffCommit, PartiallySelectedDiffCommit} from './stackEdit/diffSplitTypes';
+import type {PartiallySelectedDiffCommit} from './stackEdit/diffSplitTypes';
 
 export type Result<T> = {value: T; error?: undefined} | {value?: undefined; error: Error};
 
@@ -1166,7 +1166,6 @@ export type ClientToServerMessage =
   | {type: 'bulkFetchFeatureFlags'; id: string; names: Array<string>}
   | {type: 'fetchInternalUserInfo'}
   | {type: 'fetchDevEnvType'; id: string}
-  | {type: 'splitCommitWithAI'; id: string; diffCommit: DiffCommit; args: Args}
   | {type: 'gotUiState'; state: string}
   | CodeReviewProviderSpecificClientToServerMessages
   | PlatformSpecificClientToServerMessages
@@ -1356,11 +1355,6 @@ export type ServerToClientMessage =
   | {type: 'bulkFetchedFeatureFlags'; id: string; result: Record<string, boolean>}
   | {type: 'fetchedInternalUserInfo'; info: Serializable}
   | {type: 'fetchedDevEnvType'; envType: string; id: string}
-  | {
-      type: 'splitCommitWithAI';
-      id: string;
-      result: Result<ReadonlyArray<PartiallySelectedDiffCommit>>;
-    }
   | {type: 'getUiState'}
   | OperationProgressEvent
   | PlatformSpecificServerToClientMessages
