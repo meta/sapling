@@ -57,6 +57,14 @@ mononoke_queries! {
          FROM bonsai_p4_mapping
          WHERE repo_id = {repo_id} AND p4_changelist_id in {p4_changelist_id}"
     }
+
+    read SelectMaxP4ChangelistId(repo_id: RepositoryId) -> (P4ChangelistId,) {
+        "SELECT p4_changelist_id
+         FROM bonsai_p4_mapping
+         WHERE repo_id = {repo_id}
+         ORDER BY p4_changelist_id DESC
+         LIMIT 1"
+    }
 }
 
 pub struct SqlBonsaiP4Mapping {
@@ -190,6 +198,18 @@ impl BonsaiP4Mapping for SqlBonsaiP4Mapping {
         .await?;
         mappings.append(&mut master_mappings);
         Ok(mappings)
+    }
+
+    async fn get_max(&self, ctx: &CoreContext) -> Result<Option<P4ChangelistId>, Error> {
+        ctx.perf_counters()
+            .increment_counter(PerfCounterType::SqlReadsMaster);
+        let rows = SelectMaxP4ChangelistId::query(
+            &self.connections.read_master_connection,
+            ctx.sql_query_telemetry(),
+            &self.repo_id,
+        )
+        .await?;
+        Ok(rows.into_iter().next().map(|(max,)| max))
     }
 }
 

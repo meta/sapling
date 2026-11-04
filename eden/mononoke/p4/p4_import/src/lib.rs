@@ -20,6 +20,7 @@ use blobstore::Loadable;
 use bonsai_p4_mapping::BonsaiP4Mapping;
 use bonsai_p4_mapping::BonsaiP4MappingArc;
 use bonsai_p4_mapping::BonsaiP4MappingEntry;
+use bonsai_p4_mapping::BonsaiP4MappingRef;
 use bookmarks::BookmarkKey;
 use bookmarks::BookmarkTransactionError;
 use bookmarks::BookmarkTransactionHook;
@@ -655,20 +656,49 @@ pub enum ResumeMismatch {
     RevisionsDiffer { bookmark: String, change: u64 },
 }
 
+#[derive(Debug, Error, PartialEq, Eq)]
+#[error(
+    "the repo has p4 mappings up to changelist {max_change} but no {bookmark}: refusing a first import"
+)]
+pub struct MappedWithoutBookmark {
+    pub bookmark: String,
+    pub max_change: u64,
+}
+
+/// Rejects a first import onto `bookmark` in a repo that already maps changelists: they were
+/// imported onto another bookmark, or this one was deleted. A fresh history would either
+/// mix with them in the mapping, or conflict with it after the whole batch is built.
+/// Design: designs/import_flow.md.
+pub async fn check_first_import(
+    ctx: &CoreContext,
+    repo: &impl BonsaiP4MappingRef,
+    bookmark: &BookmarkKey,
+) -> Result<()> {
+    match repo.bonsai_p4_mapping().get_max(ctx).await? {
+        None => Ok(()),
+        Some(max) => Err(MappedWithoutBookmark {
+            bookmark: bookmark.to_string(),
+            max_change: max.id(),
+        }
+        .into()),
+    }
+}
+
 /// Rejects resuming unless the server's describe of the bookmark's changelist, in the
 /// depot at `depot_root`, gives the file revisions its changeset recorded. A changelist
 /// has no parent field, so nothing else ties the bookmark's history to this depot and
 /// server (see `import_changelists`): without the check, another depot's changelists
-/// would build on top of it. Design: designs/import_flow.md.
+/// would build on top of it. Without the bookmark, it must be a first import (see
+/// `check_first_import`). Design: designs/import_flow.md.
 pub async fn check_resume_continuity(
     ctx: &CoreContext,
-    repo: &(impl BookmarksRef + RepoBlobstoreRef),
+    repo: &(impl BookmarksRef + BonsaiP4MappingRef + RepoBlobstoreRef),
     source: &impl ChangeSource,
     depot_root: &str,
     bookmark: &BookmarkKey,
 ) -> Result<()> {
     let Some(changeset) = head_changeset(ctx, repo, bookmark).await? else {
-        return Ok(());
+        return check_first_import(ctx, repo, bookmark).await;
     };
     let change = P4ChangelistId::from_bcs(&changeset)?.id();
     let recorded = p4_transform::recorded_file_revs(&changeset).with_context(|| {

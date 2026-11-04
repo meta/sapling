@@ -150,6 +150,10 @@ impl BonsaiP4Mapping for CachingBonsaiP4Mapping {
             .await
     }
 
+    async fn get_max(&self, ctx: &CoreContext) -> Result<Option<P4ChangelistId>, Error> {
+        self.inner.as_ref().get_max(ctx).await
+    }
+
     async fn get(
         &self,
         ctx: &CoreContext,

@@ -23,6 +23,7 @@ use mononoke_types::BonsaiChangesetMut;
 use mononoke_types::DateTime;
 use mononoke_types_mocks::changesetid as bonsai;
 use mononoke_types_mocks::p4_changelist_id::*;
+use mononoke_types_mocks::repo::REPO_ONE;
 use mononoke_types_mocks::repo::REPO_ZERO;
 use sql_construct::SqlConstruct;
 use test_repo_factory::TestRepoFactory;
@@ -174,6 +175,40 @@ async fn test_missing(fb: FacebookInit) -> Result<(), Error> {
         .await?;
     assert_eq!(result, None);
 
+    Ok(())
+}
+
+/// The highest changelist of this repo, whatever the import order; other repos' don't count.
+#[mononoke::fbinit_test]
+async fn test_get_max(fb: FacebookInit) -> Result<(), Error> {
+    let ctx = CoreContext::test_mock(fb);
+    let builder = SqlBonsaiP4MappingBuilder::with_sqlite_in_memory()?;
+    let mapping = builder.clone().build(REPO_ZERO);
+    assert_eq!(None, mapping.get_max(&ctx).await?);
+
+    builder
+        .build(REPO_ONE)
+        .bulk_import(
+            &ctx,
+            &[BonsaiP4MappingEntry::new(
+                bonsai::FOURS_CSID,
+                P4_CHANGELIST_FOUR,
+            )],
+        )
+        .await?;
+    mapping
+        .bulk_import(
+            &ctx,
+            &[
+                BonsaiP4MappingEntry::new(bonsai::THREES_CSID, P4_CHANGELIST_THREE),
+                BonsaiP4MappingEntry::new(bonsai::ONES_CSID, P4_CHANGELIST_ONE),
+            ],
+        )
+        .await?;
+
+    assert_eq!(Some(P4_CHANGELIST_THREE), mapping.get_max(&ctx).await?);
+    let caching = CachingBonsaiP4Mapping::new_test(Arc::new(mapping));
+    assert_eq!(Some(P4_CHANGELIST_THREE), caching.get_max(&ctx).await?);
     Ok(())
 }
 

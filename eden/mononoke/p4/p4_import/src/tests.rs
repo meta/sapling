@@ -1525,6 +1525,42 @@ async fn test_rule_resume_must_continue_the_same_depot(fb: FacebookInit) -> Resu
     Ok(())
 }
 
+#[mononoke::fbinit_test]
+async fn test_rule_first_import_needs_a_repo_without_mappings(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+    let source = two_changelists();
+    import_onto_master(&ctx, &repo, &source, DEPOT, 1).await?;
+    calls(&source);
+    let main = BookmarkKey::new("main")?;
+
+    let error = import_next(
+        &ctx,
+        &repo,
+        &source,
+        DEPOT,
+        &main,
+        5,
+        &ImportOptions::default(),
+    )
+    .await
+    .unwrap_err();
+
+    let expected = MappedWithoutBookmark {
+        bookmark: "main".to_owned(),
+        max_change: 7,
+    };
+    assert_eq!(Some(&expected), error.downcast_ref(), "{error:?}");
+    assert_eq!(
+        "the repo has p4 mappings up to changelist 7 but no main: refusing a first import",
+        error.to_string()
+    );
+    assert_eq!(vec!["depots"], calls(&source));
+    assert_eq!(None, bookmark_target(&ctx, &repo, &main).await?);
+    assert_eq!(None, mapped(&ctx, &repo, 9).await?);
+    Ok(())
+}
+
 /// `two_changelists`, then 11 branching `count` files from `a.txt`.
 fn branches_of_a(count: usize) -> FakeSource {
     let targets: Vec<&'static str> = (0..count)

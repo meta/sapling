@@ -124,6 +124,10 @@ pub trait BonsaiP4Mapping: Send + Sync {
         field: BonsaisOrP4ChangelistIds,
     ) -> Result<Vec<BonsaiP4MappingEntry>, Error>;
 
+    /// The highest mapped changelist, or `None` if nothing is mapped. Read from the primary,
+    /// uncached, so a just-committed import is seen.
+    async fn get_max(&self, ctx: &CoreContext) -> Result<Option<P4ChangelistId>, Error>;
+
     async fn get_p4_changelist_id_from_bonsai(
         &self,
         ctx: &CoreContext,
