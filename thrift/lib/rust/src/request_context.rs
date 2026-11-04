@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+use std::future::Future;
 use std::marker::PhantomData;
 
 use anyhow::Error;
@@ -48,6 +49,23 @@ pub trait RequestContext {
         _safety: crate::exceptions::ExceptionSafety,
     ) -> Result<(), Error> {
         Ok(())
+    }
+
+    /// Runs the server's `ServiceInterceptor::onRequest` hooks, if it has any.
+    ///
+    /// The generated server calls this after `post_read` and before the
+    /// service method, which is where generated C++ runs them. Keeping it
+    /// there is what lets an interceptor and a `TProcessorEventHandler` see a
+    /// request in the same order whichever server is hosting: the handlers
+    /// have run by the time an interceptor is asked, and a handler that
+    /// refused the request ends it before any interceptor is asked at all.
+    ///
+    /// An `Err` rejects the request, so the service method does not run.
+    ///
+    /// Defaults to doing nothing, for request contexts whose server has no
+    /// interceptors to run.
+    fn run_on_request_interceptors(&self) -> impl Future<Output = Result<(), Error>> + Send {
+        std::future::ready(Ok(()))
     }
 }
 
