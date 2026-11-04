@@ -26,6 +26,8 @@
 #include <folly/File.h>
 #include <folly/SharedMutex.h>
 #include <folly/Synchronized.h>
+#include <folly/hash/Hash.h>
+#include <folly/lang/Align.h>
 #include <folly/synchronization/CallOnce.h>
 
 #include <folly/portability/GTestProd.h>
@@ -285,8 +287,20 @@ class IoUringFuseTransport final : public FuseTransport {
   void destroyRingPool() noexcept;
   static void* allocatePageAlignedBuffer(size_t size);
 
-  mutable folly::Synchronized<std::unordered_map<uint64_t, RingEntry*>>
-      outstandingEntries_;
+  // Every ring worker registers and takes an entry per request, so the map is
+  // sharded by a hash of the request's `unique` to keep workers off each
+  // other's locks.
+  struct alignas(folly::hardware_destructive_interference_size)
+      OutstandingShard {
+    folly::Synchronized<std::unordered_map<uint64_t, RingEntry*>> entries;
+  };
+  mutable std::array<OutstandingShard, 64> outstandingEntries_;
+  folly::Synchronized<std::unordered_map<uint64_t, RingEntry*>>&
+  outstandingShard(uint64_t unique) const {
+    return outstandingEntries_
+        [folly::hash::twang_mix64(unique) % outstandingEntries_.size()]
+            .entries;
+  }
   mutable folly::once_flag sessionInitFlag_;
   mutable std::atomic<size_t> nextWorkerId_{0};
   // When true, pass IORING_ENTER_NO_IOWAIT on io_uring_enter so that a worker

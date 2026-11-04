@@ -38,7 +38,9 @@ eden_add_library(eden_fs_fuse
     Folly::folly_file
     Folly::folly_function
     Folly::folly_futures_core
+    Folly::folly_hash_hash
     Folly::folly_io_async_liburing
+    Folly::folly_lang_align
     Folly::folly_portability
     Folly::folly_portability_gtest_prod
     Folly::folly_range

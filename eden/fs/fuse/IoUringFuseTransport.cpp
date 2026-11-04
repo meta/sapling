@@ -824,7 +824,7 @@ void IoUringFuseTransport::rejectDecodedRequestAfterStop(
 void IoUringFuseTransport::registerOutstandingEntry(
     uint64_t unique,
     RingEntry& entry) const {
-  auto outstandingEntries = outstandingEntries_.wlock();
+  auto outstandingEntries = outstandingShard(unique).wlock();
   auto [it, inserted] = outstandingEntries->emplace(unique, &entry);
   if (!inserted) {
     throw std::runtime_error(
@@ -836,7 +836,7 @@ void IoUringFuseTransport::registerOutstandingEntry(
 
 IoUringFuseTransport::RingEntry& IoUringFuseTransport::takeOutstandingEntry(
     uint64_t unique) const {
-  auto outstandingEntries = outstandingEntries_.wlock();
+  auto outstandingEntries = outstandingShard(unique).wlock();
   auto it = outstandingEntries->find(unique);
   if (it == outstandingEntries->end()) {
     throw std::runtime_error(
@@ -1103,11 +1103,13 @@ void IoUringFuseTransport::recoverCanceledCommitAndFetchCqe(
 }
 
 bool IoUringFuseTransport::isEntryOutstanding(const RingEntry& entry) const {
-  auto outstandingEntries = outstandingEntries_.rlock();
-  for (const auto& [unique, candidate] : *outstandingEntries) {
-    (void)unique;
-    if (candidate == &entry) {
-      return true;
+  for (const auto& shard : outstandingEntries_) {
+    auto outstandingEntries = shard.entries.rlock();
+    for (const auto& [unique, candidate] : *outstandingEntries) {
+      (void)unique;
+      if (candidate == &entry) {
+        return true;
+      }
     }
   }
   return false;
