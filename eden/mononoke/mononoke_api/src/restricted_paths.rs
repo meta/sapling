@@ -44,6 +44,64 @@ impl PathAccessInfo {
     }
 }
 
+/// Lookup behavior for a changed-path restriction comparison.
+#[derive(Clone, Copy, Debug)]
+pub struct ChangedPathsRestrictionOptions {
+    /// Populate complete-side and per-restriction access results.
+    pub check_permissions: bool,
+}
+
+/// Effective restrictions and access at a path, independent of file existence.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PathPolicyInfo {
+    /// All restrictions matching this path, retaining their full identities.
+    pub restrictions: Vec<PathAccessInfo>,
+    /// Complete-side access, or None when permission checking was not requested.
+    pub has_access: Option<bool>,
+}
+
+/// Literal file sides of a net endpoint difference.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ChangedPathRestrictionSides {
+    Added(PathPolicyInfo),
+    Removed(PathPolicyInfo),
+    Changed {
+        base: PathPolicyInfo,
+        target: PathPolicyInfo,
+    },
+}
+
+impl ChangedPathRestrictionSides {
+    pub fn base(&self) -> Option<&PathPolicyInfo> {
+        match self {
+            Self::Added(_) => None,
+            Self::Removed(base) | Self::Changed { base, .. } => Some(base),
+        }
+    }
+    pub fn target(&self) -> Option<&PathPolicyInfo> {
+        match self {
+            Self::Removed(_) => None,
+            Self::Added(target) | Self::Changed { target, .. } => Some(target),
+        }
+    }
+}
+
+/// Restrictions protecting actual changed-file content.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChangedPathRestrictionInfo {
+    pub sides: ChangedPathRestrictionSides,
+}
+impl ChangedPathRestrictionInfo {
+    pub fn content_sides(&self) -> impl Iterator<Item = &PathPolicyInfo> {
+        [self.sides.base(), self.sides.target()]
+            .into_iter()
+            .flatten()
+    }
+    pub fn restriction_info(&self) -> impl Iterator<Item = &PathAccessInfo> {
+        self.content_sides().flat_map(|side| &side.restrictions)
+    }
+}
+
 /// Information about restricted path changes in a changeset.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RestrictedPathsChangesInfo {
