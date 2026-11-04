@@ -55,6 +55,14 @@ TEST(MountHealthCheckTest, parsesTaskStatState) {
   EXPECT_EQ(std::nullopt, detail::parseTaskStatState("42 (truncated"));
 }
 
+TEST(MountHealthCheckTest, parsesPressure) {
+  auto pressure = detail::parsePressure(
+      "some avg10=1.50 avg60=0.10 avg300=0.00 total=12\n"
+      "full avg10=0.25 avg60=0.00 avg300=0.00 total=3\n");
+  EXPECT_EQ(1.5, pressure.some);
+  EXPECT_EQ(0.25, pressure.full);
+}
+
 TEST(MountHealthCheckTest, parsesSchedstatRunQueueWait) {
   EXPECT_EQ(
       std::chrono::nanoseconds{2500000},

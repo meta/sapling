@@ -409,7 +409,10 @@ void logMountHealthCheckTimeout(
     if (auto mount = logContext.mount.lock()) {
       description.update(describeFsChannelLoad(*mount, now));
     }
-    auto detail = folly::toJson(description);
+    description.update(describeSystemPressure());
+    folly::json::serialization_opts sortedKeys;
+    sortedKeys.sort_keys = true;
+    auto detail = folly::json::serialize(description, sortedKeys);
     XLOGF(WARN, "{} for {}: {}", error, logContext.mountPath, detail);
     logContext.log(
         std::string{edenMountHealthIssueReasonString(

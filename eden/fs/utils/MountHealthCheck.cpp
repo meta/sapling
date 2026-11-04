@@ -7,10 +7,12 @@
 
 #include "eden/fs/utils/MountHealthCheck.h"
 
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include <folly/Conv.h>
 #include <folly/FileUtil.h>
@@ -232,6 +234,30 @@ std::optional<char> parseTaskStatState(std::string_view stat) {
   return stat[commEnd + 2];
 }
 
+PressureAvg10 parsePressure(std::string_view pressure) {
+  PressureAvg10 result;
+  std::vector<std::string_view> lines;
+  folly::split('\n', pressure, lines);
+  for (auto line : lines) {
+    std::vector<std::string_view> fields;
+    folly::split(' ', line, fields);
+    constexpr std::string_view kAvg10 = "avg10=";
+    if (fields.size() < 2 || !fields[1].starts_with(kAvg10)) {
+      continue;
+    }
+    auto value = folly::tryTo<double>(fields[1].substr(kAvg10.size()));
+    if (!value.hasValue()) {
+      continue;
+    }
+    if (fields[0] == "some") {
+      result.some = value.value();
+    } else if (fields[0] == "full") {
+      result.full = value.value();
+    }
+  }
+  return result;
+}
+
 std::optional<std::chrono::nanoseconds> parseSchedstatRunQueueWait(
     std::string_view schedstat) {
   std::vector<std::string_view> fields;
@@ -284,6 +310,31 @@ folly::dynamic describeProbeThread(const MountHealthProbeProgress& progress) {
             .count();
   }
   return detail;
+}
+
+folly::dynamic describeSystemPressure() {
+  folly::dynamic result = folly::dynamic::object;
+#ifdef __linux__
+  constexpr std::array<const char*, 3> kResources{"cpu", "memory", "io"};
+  for (const auto* resource : kResources) {
+    std::string contents;
+    if (!folly::readFile(
+            folly::to<std::string>("/proc/pressure/", resource).c_str(),
+            contents)) {
+      continue;
+    }
+    auto pressure = detail::parsePressure(contents);
+    if (pressure.some) {
+      result[folly::to<std::string>("host_", resource, "_some")] =
+          *pressure.some;
+    }
+    if (pressure.full) {
+      result[folly::to<std::string>("host_", resource, "_full")] =
+          *pressure.full;
+    }
+  }
+#endif
+  return result;
 }
 
 std::optional<EdenMountHealthCheckIssue> checkRunningEdenMountHealth(

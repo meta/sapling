@@ -125,10 +125,23 @@ std::optional<ThreadKernelState> readThreadKernelState(uint64_t threadId);
  */
 folly::dynamic describeProbeThread(const MountHealthProbeProgress& progress);
 
+/**
+ * The host's 10 second CPU, memory and IO pressure (PSI) averages as JSON
+ * fields. Empty without /proc/pressure. Linux only.
+ */
+folly::dynamic describeSystemPressure();
+
 namespace detail {
 
 /** The run state from /proc/<pid>/task/<tid>/stat. */
 std::optional<char> parseTaskStatState(std::string_view stat);
+/** The avg10 values of a PSI file such as /proc/pressure/memory. */
+struct PressureAvg10 {
+  std::optional<double> some;
+  std::optional<double> full;
+};
+PressureAvg10 parsePressure(std::string_view pressure);
+
 /** The CPU wait from /proc/<pid>/task/<tid>/schedstat. */
 std::optional<std::chrono::nanoseconds> parseSchedstatRunQueueWait(
     std::string_view schedstat);
