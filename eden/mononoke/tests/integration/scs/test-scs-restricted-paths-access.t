@@ -39,12 +39,17 @@
   > EOF
 
   $ testtool_drawdag -R repo --derive-all --no-default-files << EOF
-  > A
+  > A-B-C
   > # bookmark: A main
   > # modify: A restricted/file.txt secret
   > # modify: A unrestricted/file.txt public
+  > # modify: B restricted/file.txt secret2
+  > # modify: C restricted/file.txt secret
+  > # modify: C unrestricted/other.txt public2
   > EOF
   A=* (glob)
+  B=* (glob)
+  C=* (glob)
 
   $ start_and_wait_for_scs_server
   $ export SCSC_ADMIN_ENABLED=1
@@ -62,5 +67,17 @@ The changes command surfaces the permission request group for changed restricted
   request group: restricted_acl
 
 The changes command includes the permission request group in JSON output
-  $ scsc_as client1 restricted-paths changes -R repo -i $A --json | grep -o '"permission_request_group":"restricted_acl"'
-  "permission_request_group":"restricted_acl"
+  $ scsc_as client1 restricted-paths changes -R repo -i $A --json | jq -r '.compact.policies[].permission_request_group_identity'
+  REPO_REGION:restricted_acl
+
+An explicit range uses the net endpoint difference, excluding changes that were reverted.
+  $ scsc_as client0 restricted-paths changes -R repo -i $A -i $C --json | jq -c '{are_restricted, has_access, changed_paths}'
+  {"are_restricted":"none","has_access":"all","changed_paths":["unrestricted/other.txt"]}
+
+The default first-parent comparison includes the reverted file's change in the tip.
+  $ scsc_as client0 restricted-paths changes -R repo -i $C --json | jq -c '{are_restricted, has_access, changed_paths, authorized_paths}'
+  {"are_restricted":"some","has_access":"some","changed_paths":["restricted/file.txt","unrestricted/other.txt"],"authorized_paths":["unrestricted/other.txt"]}
+
+More than two commit arguments are rejected before making the request.
+  $ scsc_as client0 restricted-paths changes -R repo -i $A -i $B -i $C 2>&1 | grep -o 'expected one target commit or a base and target commit'
+  expected one target commit or a base and target commit

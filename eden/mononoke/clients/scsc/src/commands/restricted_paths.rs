@@ -71,16 +71,17 @@ pub(super) fn convert_restriction_roots(
         .into_iter()
         .map(|(path, roots)| PathRestrictionInfo {
             path,
-            roots: roots
-                .into_iter()
-                .map(|root| RestrictionRootInfo {
-                    root_path: root.path,
-                    acls: root.acls,
-                    permission_request_group: root.permission_request_group,
-                })
-                .collect(),
+            roots: roots.into_iter().map(convert_restriction_root).collect(),
         })
         .collect()
+}
+
+pub(super) fn convert_restriction_root(root: thrift::PathRestrictionRoot) -> RestrictionRootInfo {
+    RestrictionRootInfo {
+        root_path: root.path,
+        acls: root.acls,
+        permission_request_group: root.permission_request_group,
+    }
 }
 
 /// Format the optional permission request group as a trailing display segment,
@@ -144,11 +145,13 @@ mod tests {
             render_line(&with_group),
             "    restricted (ACLs: REPO_REGION:restricted_acl, request group: some_group)\n"
         );
-        assert!(
-            serde_json::to_string(&with_group)
-                .expect("json")
-                .contains("\"permission_request_group\":\"some_group\""),
-            "populated group should serialize as a string"
+        assert_eq!(
+            serde_json::to_value(&with_group).expect("json"),
+            serde_json::json!({
+                "root_path": "restricted",
+                "acls": ["REPO_REGION:restricted_acl"],
+                "permission_request_group": "some_group",
+            }),
         );
 
         let without_group = RestrictionRootInfo {
@@ -160,11 +163,13 @@ mod tests {
             render_line(&without_group),
             "    restricted (ACLs: REPO_REGION:restricted_acl)\n"
         );
-        assert!(
-            serde_json::to_string(&without_group)
-                .expect("json")
-                .contains("\"permission_request_group\":null"),
-            "absent group should serialize as null"
+        assert_eq!(
+            serde_json::to_value(&without_group).expect("json"),
+            serde_json::json!({
+                "root_path": "restricted",
+                "acls": ["REPO_REGION:restricted_acl"],
+                "permission_request_group": null,
+            }),
         );
     }
 }

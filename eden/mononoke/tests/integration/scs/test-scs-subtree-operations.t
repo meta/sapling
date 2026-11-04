@@ -392,6 +392,21 @@ Testing ordered diff with paths-only for subtree replacements
   subtree copy fbb84feb4df70a07a4598f21d8bb31c0d250c278 baz qu/ux
   D qu/ux/fileX
 
+Compact restrictions cover both parent and source-relative changed paths.
+
+  $ scsc restricted-paths changes -R repo -i $K --page-size 1 --json > subtree-restrictions.json
+  $ jq -c '.changed_paths | index("qu/ux/fileX") != null' subtree-restrictions.json
+  true
+  $ scsc diff --ordered --paths-only -R repo -i $K > parent-paths.txt
+  $ scsc diff --ordered --paths-only -R repo -i $K --compare-with-subtree-copy-sources > source-paths.txt
+  $ python3 - <<'PY'
+  > import json
+  > def paths(file):
+  >     return {line[2:].strip() for line in open(file) if line.startswith(('A ', 'M ', 'D '))}
+  > actual = set(json.load(open('subtree-restrictions.json'))['changed_paths'])
+  > assert actual == paths('parent-paths.txt') | paths('source-paths.txt')
+  > PY
+
 Testing cross-repo subtree operations (subtree import and cross-repo merge)
   $ scsc diff --ordered -S bonsai,hg -R repo -i $L --compare-with-subtree-copy-sources
   subtree import git+file://$TESTTMP/gitrepo d3bd984c3a882240b7b1b06e6debd5e564ba3c58  xgitrepo

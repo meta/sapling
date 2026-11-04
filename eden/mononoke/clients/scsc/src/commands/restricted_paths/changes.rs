@@ -5,114 +5,117 @@
  * GNU General Public License version 2.
  */
 
-//! Check restrictions on all paths changed in a commit.
-
-use std::io::Write;
+//! Complete compact restriction comparisons, with immutable endpoints across pages.
 
 use anyhow::Result;
+use anyhow::bail;
+use anyhow::ensure;
 use clap::Parser;
-use commit_id_types::CommitIdArgs;
+use commit_id_types::CommitIdsArgs;
 use scs_client_raw::thrift;
 
-#[cfg(test)]
-mod compact;
-use serde::Serialize;
-
-use super::PathRestrictionInfo;
-use super::convert_restriction_roots;
-use super::path_coverage_to_string;
-use super::render_restriction_root_line;
 use crate::ScscApp;
-use crate::args::commit_id::resolve_commit_id;
+use crate::args::commit_id::resolve_commit_ids;
 use crate::args::repo::RepoArgs;
 use crate::errors::SelectionErrorExt;
-use crate::render::Render;
 
-/// Query restriction information for all file changes in the specified commit.
+mod compact;
+
 #[derive(Parser)]
 pub(super) struct ChangesArgs {
     #[clap(flatten)]
     repo_args: RepoArgs,
     #[clap(flatten)]
-    commit_id_args: CommitIdArgs,
+    commit_ids_args: CommitIdsArgs,
+    /// Maximum paths per request; every page is consumed before rendering.
+    #[clap(long, default_value_t = thrift::COMMIT_RESTRICTED_PATHS_CHANGES_MAX_LIMIT,
+        value_parser = clap::value_parser!(i64).range(1..=thrift::COMMIT_RESTRICTED_PATHS_CHANGES_MAX_LIMIT))]
+    page_size: i64,
 }
 
-#[derive(Serialize)]
-struct ChangesOutput {
-    are_restricted: String,
-    has_access: String,
-    changed_paths: Vec<String>,
-    restriction_roots: Vec<PathRestrictionInfo>,
-    authorized_paths: Vec<String>,
-}
-
-impl Render for ChangesOutput {
-    type Args = ();
-
-    fn render(&self, _args: &Self::Args, w: &mut dyn Write) -> Result<()> {
-        writeln!(w, "Restricted: {}", self.are_restricted)?;
-        writeln!(w, "Has access: {}", self.has_access)?;
-
-        if !self.changed_paths.is_empty() {
-            writeln!(w, "\nChanged paths:")?;
-            for path in &self.changed_paths {
-                writeln!(w, "  {path}")?;
-            }
-        }
-
-        if !self.restriction_roots.is_empty() {
-            writeln!(w, "\nRestriction roots:")?;
-            for info in &self.restriction_roots {
-                writeln!(w, "  {}:", info.path)?;
-                for root in &info.roots {
-                    render_restriction_root_line(w, root)?;
-                }
-            }
-        }
-
-        if !self.authorized_paths.is_empty() {
-            writeln!(w, "\nAuthorized paths:")?;
-            for path in &self.authorized_paths {
-                writeln!(w, "  {path}")?;
-            }
-        }
-
-        Ok(())
+fn comparison_commits(
+    ids: &[thrift::CommitId],
+) -> Result<(thrift::CommitId, Option<thrift::CommitId>)> {
+    match ids {
+        [target] => Ok((target.clone(), None)),
+        [base, target] => Ok((target.clone(), Some(base.clone()))),
+        _ => bail!("expected one target commit or a base and target commit"),
     }
+}
 
-    fn render_json(&self, _args: &Self::Args, w: &mut dyn Write) -> Result<()> {
-        Ok(serde_json::to_writer(w, self)?)
+fn comparison_params(
+    base: Option<&thrift::CommitId>,
+    after: Option<&str>,
+    limit: i64,
+) -> thrift::CommitRestrictedPathsChangesParams {
+    thrift::CommitRestrictedPathsChangesParams {
+        other_commit_id: base.cloned(),
+        ordered_params: Some(thrift::CommitRestrictedPathsChangesOrderedParams {
+            after_path: after.map(str::to_owned),
+            limit,
+            ..Default::default()
+        }),
+        format: Some(thrift::CommitRestrictedPathsChangesFormat::COMPACT),
+        ..Default::default()
     }
 }
 
 pub(super) async fn run(app: ScscApp, args: ChangesArgs) -> Result<()> {
     let repo = args.repo_args.clone().into_repo_specifier();
-    let commit_id = args.commit_id_args.clone().into_commit_id();
+    let commit_ids = args.commit_ids_args.into_commit_ids();
+    ensure!(
+        (1..=2).contains(&commit_ids.len()),
+        "expected one target commit or a base and target commit"
+    );
     let conn = app.get_connection(Some(&repo.name)).await?;
-    let id = resolve_commit_id(&conn, &repo, &commit_id).await?;
-
+    let ids = resolve_commit_ids(&conn, &repo, &commit_ids).await?;
+    let (id, base) = comparison_commits(&ids)?;
     let commit = thrift::CommitSpecifier {
         repo: repo.clone(),
         id,
         ..Default::default()
     };
-
-    let params = thrift::CommitRestrictedPathsChangesParams {
-        ..Default::default()
+    let (conn, commit, repo, base) = (&conn, &commit, &repo, base.as_ref());
+    let page_size = args.page_size;
+    let fetch = move |after: Option<String>| async move {
+        let params = comparison_params(base, after.as_deref(), page_size);
+        conn.commit_restricted_paths_changes(commit, &params)
+            .await
+            .map_err(|error| error.handle_selection_error(repo))
     };
-
-    let response = conn
-        .commit_restricted_paths_changes(&commit, &params)
-        .await
-        .map_err(|e| e.handle_selection_error(&repo))?;
-
-    let output = ChangesOutput {
-        are_restricted: path_coverage_to_string(response.are_restricted),
-        has_access: path_coverage_to_string(response.has_access),
-        changed_paths: response.changed_paths,
-        restriction_roots: convert_restriction_roots(response.restriction_roots),
-        authorized_paths: response.authorized_paths,
-    };
-
+    let output = compact::complete(page_size, fetch).await?;
     app.target.render_one(&(), output).await
+}
+
+#[cfg(test)]
+mod tests {
+    use mononoke_macros::mononoke;
+
+    use super::*;
+
+    #[mononoke::test]
+    fn fixed_endpoints_and_compact_params() -> Result<()> {
+        let base = thrift::CommitId::bonsai(vec![1; 32]);
+        let target = thrift::CommitId::bonsai(vec![2; 32]);
+        assert_eq!(
+            comparison_commits(std::slice::from_ref(&target))?,
+            (target.clone(), None)
+        );
+        assert_eq!(
+            comparison_commits(&[base.clone(), target.clone()])?,
+            (target, Some(base.clone()))
+        );
+        assert!(comparison_commits(&[]).is_err());
+        assert!(comparison_commits(&[base.clone(), base.clone(), base.clone()]).is_err());
+        let params = comparison_params(Some(&base), Some("a/b"), 2);
+        assert_eq!(params.other_commit_id, Some(base));
+        assert_eq!(
+            params.format,
+            Some(thrift::CommitRestrictedPathsChangesFormat::COMPACT)
+        );
+        let ordered = params.ordered_params.expect("compact is paged");
+        assert_eq!(ordered.after_path.as_deref(), Some("a/b"));
+        assert_eq!(ordered.limit, 2);
+        Ok(())
+    }
 }
