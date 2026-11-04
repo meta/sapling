@@ -6,13 +6,10 @@
  */
 
 use std::sync::Arc;
-use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::Instant;
 
-use anyhow::Context;
 use anyhow::Result;
-use async_runtime::block_on;
 use configmodel::Config;
 use configmodel::ConfigExt;
 use configmodel::convert::ByteCount;
@@ -20,7 +17,6 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use metrics::Counter;
 use parking_lot::Mutex;
-use slex::Background;
 
 use crate::CasBatch;
 use crate::CasClient;
@@ -31,9 +27,6 @@ use crate::CasRequestTimeout;
 const DEFAULT_MAX_BLOB_SIZE_BYTES: u64 = 1024 * 1024;
 const DEFAULT_FAILURE_THRESHOLD: u32 = 3;
 const DEFAULT_OPEN_DURATION: Duration = Duration::from_secs(30);
-
-const CAS_WARMUP_HASH: &str = "83276a160cfb6ca8983969c499ee6500dda6ed3a67bb49973fb34186f1e8c05d";
-const CAS_WARMUP_SIZE: u64 = 12;
 
 static BREAKER_OPENED: Counter = Counter::new_counter("scmstore.cas.breaker.opened");
 static BREAKER_CLOSED: Counter = Counter::new_counter("scmstore.cas.breaker.closed");
@@ -47,7 +40,6 @@ pub struct CasFetchManager {
     client: Arc<dyn CasClient>,
     max_blob_size_bytes: u64,
     breaker: Mutex<CircuitBreaker>,
-    warmup_task: OnceLock<Background<()>>,
 }
 
 /// Configures a [`CasFetchManager`].
@@ -88,29 +80,9 @@ impl CasFetchManager {
             .build())
     }
 
-    /// Initializes the underlying client and starts a background warmup.
+    /// Initializes the underlying client.
     pub fn init(&self) -> Result<()> {
-        self.client.init()?;
-        self.warmup_task.get_or_init(|| {
-            let client = Arc::clone(&self.client);
-            slex::background("CAS client warmup", move || {
-                let start = Instant::now();
-                match block_on(warm_cas_client(client.as_ref())) {
-                    Ok(()) => tracing::info!(
-                        target: "cas_client",
-                        duration = ?start.elapsed(),
-                        "warmed CAS client"
-                    ),
-                    Err(error) => tracing::warn!(
-                        target: "cas_client",
-                        ?error,
-                        duration = ?start.elapsed(),
-                        "failed to warm CAS client; normal requests will continue"
-                    ),
-                }
-            })
-        });
-        Ok(())
+        self.client.init()
     }
 
     /// Returns whether a blob is eligible for CAS fetching.
@@ -193,28 +165,8 @@ impl CasFetchManagerBuilder {
                 self.failure_threshold,
                 self.open_duration,
             )),
-            warmup_task: OnceLock::new(),
         }
     }
-}
-
-async fn warm_cas_client(client: &dyn CasClient) -> Result<()> {
-    let digest = CasDigest {
-        hash: CAS_WARMUP_HASH
-            .parse()
-            .context("parsing CAS warmup digest")?,
-        size: CAS_WARMUP_SIZE,
-    };
-    let digests = [digest];
-    let mut batches = client.fetch(&digests, CasDigestType::File);
-
-    while let Some(batch) = batches.next().await {
-        for (_, result) in batch.context("fetching CAS warmup blob")?.results {
-            let _ = result.context("fetching CAS warmup digest")?;
-        }
-    }
-
-    Ok(())
 }
 
 /// Tracks a CAS fetch until its outcome is reported.
@@ -428,27 +380,6 @@ mod tests {
         assert!(!manager.can_fetch_blob(8));
         assert_eq!(manager.breaker.lock().failure_threshold, 5);
         assert_eq!(manager.breaker.lock().open_duration, Duration::from_secs(9));
-    }
-
-    #[test]
-    fn init_starts_warmup_once() -> Result<()> {
-        let client = Arc::new(CountingClient::default());
-        let manager = CasFetchManager::builder(client.clone()).build();
-
-        manager.init()?;
-        manager.init()?;
-        manager
-            .warmup_task
-            .get()
-            .expect("init should create the warmup task")
-            .get();
-
-        assert_eq!(
-            client.fetches.load(Ordering::Relaxed),
-            1,
-            "the shared manager should warm the CAS client only once"
-        );
-        Ok(())
     }
 
     #[test]

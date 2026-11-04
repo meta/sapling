@@ -18,11 +18,9 @@ anyhow = "1.0.104"
 blob = { version = "0.1.0", path = "../blob" }
 futures = { version = "0.3.34", features = ["async-await", "std"], default-features = false }
 parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
-sapling-async-runtime = { version = "0.1.0", path = "../async-runtime" }
 sapling-configmodel = { version = "0.2.0", path = "../config/model" }
 sapling-factory = { version = "0.1.0", path = "../util/factory" }
 sapling-metrics = { version = "0.1.0", path = "../metrics" }
 sapling-types = { version = "0.1.0", path = "../types" }
-slex = { version = "0.1.0", path = "../slex" }
 thiserror = "2.0.21"
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
