@@ -236,6 +236,44 @@ void programExitsUnsuccessfullyIfLogFileIsInaccessibleChild() {
   exit(0);
 }
 
+TEST_F(DaemonStartupLoggerTest, sigHupReportsReopenFailure) {
+  auto tempDir = folly::test::TemporaryDirectory();
+  auto logPath = (tempDir.path() / "logs" / "edenfs.log").string();
+  auto result = runFunctionInSeparateProcess(
+      "sigHupReportsReopenFailureChild", std::vector<std::string>{logPath});
+  // FIXME(T291170716): stderr should get the whole line, "Failed to reopen
+  // <logPath>: No such file or directory\n". Only "Failed to reopen " arrives
+  // because the rest is written to the failed descriptor -1. The next diff
+  // fixes the handler and expects the whole line here.
+  EXPECT_THAT(result.standardError, HasSubstr("Failed to reopen "));
+  EXPECT_THAT(result.standardError, Not(HasSubstr(logPath)));
+}
+
+[[noreturn]] void sigHupReportsReopenFailureChild(const std::string& logPath) {
+  auto logDir = folly::fs::path(logPath).parent_path();
+  folly::fs::create_directories(logDir);
+
+  // A running daemon's stderr is the log file itself; the test points it back
+  // at the real stderr so the handler's report reaches the parent.
+  folly::File savedStderr{::dup(STDERR_FILENO), /*ownsFd=*/true};
+
+  Pipe statusPipe;
+  auto startupStatusChannel = std::make_shared<StartupStatusChannel>();
+  DaemonStartupLogger logger{startupStatusChannel};
+  // Redirects stdout and stderr to logPath and installs the SIGHUP handler.
+  logger.initClient(logPath, std::move(statusPipe.write));
+
+  ::dup2(savedStderr.fd(), STDERR_FILENO);
+  ::dup2(savedStderr.fd(), STDOUT_FILENO);
+
+  // Make reopening the log impossible: the file and its directory are gone.
+  folly::fs::remove(folly::fs::path(logPath));
+  folly::fs::remove(logDir);
+
+  ::raise(SIGHUP);
+  std::exit(0);
+}
+
 void exitWithNoResult(const std::string& logPath) {
   auto startupPublishers = std::make_shared<StartupStatusChannel>();
   DaemonStartupLogger logger{startupPublishers};
@@ -615,6 +653,7 @@ FunctionResult runFunctionInSeparateProcess(
   XCHECK_FUNCTION(exitUnsuccessfullyWritesMessageAndKillsProcessChild);
   XCHECK_FUNCTION(loggedMessagesAreWrittenToStandardErrorChild);
   XCHECK_FUNCTION(programExitsUnsuccessfullyIfLogFileIsInaccessibleChild);
+  XCHECK_FUNCTION(sigHupReportsReopenFailureChild);
   XCHECK_FUNCTION(successWritesStartedMessageToStandardErrorDaemonChild);
   XCHECK_FUNCTION(successWritesStartedMessageToStandardErrorForegroundChild);
   XCHECK_FUNCTION(xlogsAfterSuccessAreWrittenToStandardErrorChild);
