@@ -108,6 +108,8 @@ pub use crate::restricted_paths::RestrictedChangeGroup;
 pub use crate::restricted_paths::RestrictedPathsChangesInfo;
 pub use crate::restricted_paths::RestrictedPathsPolicy;
 pub use crate::restricted_paths::SCS_ENABLE_PARTIAL_RESPONSES_JK;
+pub use crate::restricted_paths::SubtreeSourceMapping;
+pub use crate::restricted_paths::SubtreeSourcePolicyInfo;
 pub use crate::specifiers::ChangesetId;
 pub use crate::specifiers::ChangesetIdPrefix;
 pub use crate::specifiers::ChangesetPrefixSpecifier;

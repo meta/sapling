@@ -13,6 +13,7 @@ use std::sync::atomic::Ordering;
 
 use context::CoreContext;
 use mononoke_types::ChangesetId;
+use mononoke_types::MPath;
 use mononoke_types::NonRootMPath;
 pub use restricted_paths::DenyingRestriction;
 use restricted_paths::PathRestrictionInfo;
@@ -52,6 +53,8 @@ pub struct ChangedPathsRestrictionOptions {
     pub check_permissions: bool,
     /// Compare effective policies, including paths without a file on one side.
     pub include_permission_changes: bool,
+    /// Cover both endpoint and subtree-source-relative views of parent comparisons.
+    pub include_subtree_source_changes: bool,
 }
 
 /// Effective restrictions and access at a path, independent of file existence.
@@ -71,7 +74,22 @@ pub struct PathRestrictionCopySourceInfo {
     pub info: PathPolicyInfo,
 }
 
-/// Literal file sides of a net endpoint difference.
+/// One declared source edge. File paths are mapped component-wise from the destination.
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
+pub struct SubtreeSourceMapping {
+    pub commit_id: ChangesetId,
+    pub source_prefix: MPath,
+    pub destination_prefix: MPath,
+}
+
+/// Effective policy on a declared subtree-copy source edge.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SubtreeSourcePolicyInfo {
+    pub mapping: SubtreeSourceMapping,
+    pub info: PathPolicyInfo,
+}
+
+/// Literal file sides of a path changed in either comparison view.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ChangedPathRestrictionSides {
     Added(PathPolicyInfo),
@@ -80,67 +98,106 @@ pub enum ChangedPathRestrictionSides {
         base: PathPolicyInfo,
         target: PathPolicyInfo,
     },
+    /// No net endpoint change; the declared subtree source differs from target.
+    Unchanged {
+        base: PathPolicyInfo,
+        target: PathPolicyInfo,
+    },
+    /// A subtree-source file is absent from both literal endpoints.
+    SourceOnly(SubtreeSourcePolicyInfo),
 }
 
 impl ChangedPathRestrictionSides {
     pub fn base(&self) -> Option<&PathPolicyInfo> {
         match self {
-            Self::Added(_) => None,
-            Self::Removed(base) | Self::Changed { base, .. } => Some(base),
+            Self::Added(_) | Self::SourceOnly(_) => None,
+            Self::Removed(base) | Self::Changed { base, .. } | Self::Unchanged { base, .. } => {
+                Some(base)
+            }
         }
     }
+
     pub fn target(&self) -> Option<&PathPolicyInfo> {
         match self {
-            Self::Removed(_) => None,
-            Self::Added(target) | Self::Changed { target, .. } => Some(target),
+            Self::Removed(_) | Self::SourceOnly(_) => None,
+            Self::Added(target) | Self::Changed { target, .. } | Self::Unchanged { target, .. } => {
+                Some(target)
+            }
         }
     }
 }
 
-/// An effective policy change, independent of endpoint file existence.
+/// A policy difference at a changed path, including interesting copy sources.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PathPermissionChangeInfo {
+    /// Effective policy at the base revision, even when the file is absent.
     pub base: PathPolicyInfo,
+    /// Effective policy at the target revision, even when the file is absent.
     pub target: PathPolicyInfo,
+    /// Admitted sources whose policy differs from the target path's policy.
     pub copy_sources: Vec<PathRestrictionCopySourceInfo>,
+    /// Declared subtree source, only when its policy differs from target.
+    pub subtree_source: Option<SubtreeSourcePolicyInfo>,
 }
+
 impl PathPermissionChangeInfo {
     pub fn between(
         base: PathPolicyInfo,
         target: PathPolicyInfo,
-        sources: &[PathRestrictionCopySourceInfo],
+        copy_sources: &[PathRestrictionCopySourceInfo],
+        subtree_source: Option<SubtreeSourcePolicyInfo>,
     ) -> Option<Self> {
-        let copy_sources: Vec<_> = sources
+        let copy_sources: Vec<_> = copy_sources
             .iter()
             .filter(|source| source.info != target)
             .cloned()
             .collect();
-        if base == target && copy_sources.is_empty() {
+        let subtree_source = subtree_source.filter(|source| source.info != target);
+        if base == target && copy_sources.is_empty() && subtree_source.is_none() {
             None
         } else {
             Some(Self {
                 base,
                 target,
                 copy_sources,
+                subtree_source,
             })
         }
     }
 }
 
-/// Restrictions protecting actual changed-file content.
+/// Restriction metadata for a changed file, without content enforcement.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChangedPathRestrictionInfo {
     pub sides: ChangedPathRestrictionSides,
+    /// Per-file copy sources admitted by the selected parent comparison.
     pub copy_sources: Vec<PathRestrictionCopySourceInfo>,
+    /// Policy protecting actual source content, absent if that source has no file.
+    pub subtree_source: Option<SubtreeSourcePolicyInfo>,
+    /// Sparse policy delta; absent when endpoint and source policies agree.
+    /// Opposite policies for absent files do not contribute content restrictions.
     pub permission_change: Option<PathPermissionChangeInfo>,
 }
+
 impl ChangedPathRestrictionInfo {
+    /// Actual subtree source content, including a source-only deletion.
+    pub fn subtree_source(&self) -> Option<&SubtreeSourcePolicyInfo> {
+        match &self.sides {
+            ChangedPathRestrictionSides::SourceOnly(source) => Some(source),
+            _ => self.subtree_source.as_ref(),
+        }
+    }
+
+    /// Policies protecting content actually present in either endpoint or source.
     pub fn content_sides(&self) -> impl Iterator<Item = &PathPolicyInfo> {
         [self.sides.base(), self.sides.target()]
             .into_iter()
             .flatten()
             .chain(self.copy_sources.iter().map(|source| &source.info))
+            .chain(self.subtree_source().map(|source| &source.info))
     }
+
+    /// Restrictions on actual content only, excluding absent-side policies.
     pub fn restriction_info(&self) -> impl Iterator<Item = &PathAccessInfo> {
         self.content_sides().flat_map(|side| &side.restrictions)
     }

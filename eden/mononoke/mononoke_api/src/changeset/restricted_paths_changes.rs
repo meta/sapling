@@ -36,9 +36,16 @@ use crate::restricted_paths::PathPolicyInfo;
 use crate::restricted_paths::PathRestrictionCopySourceInfo;
 use crate::restricted_paths::RestrictedChangeGroup;
 use crate::restricted_paths::RestrictedPathsChangesInfo;
+use crate::restricted_paths::SubtreeSourceMapping;
+use crate::restricted_paths::SubtreeSourcePolicyInfo;
 
+mod ordered_union;
 mod resolution;
 mod sources;
+mod subtree_relative;
+
+#[cfg(test)]
+mod tests;
 
 const RESTRICTION_LOOKUP_CONCURRENCY: usize = 25;
 
@@ -46,20 +53,44 @@ enum ChangedPath {
     Added(MPath),
     Removed(MPath),
     Changed(MPath),
+    SubtreeRelative { path: MPath, target_exists: bool },
 }
 
 impl ChangedPath {
     fn path(&self) -> &MPath {
         match self {
-            Self::Added(path) | Self::Removed(path) | Self::Changed(path) => path,
+            Self::Added(path)
+            | Self::Removed(path)
+            | Self::Changed(path)
+            | Self::SubtreeRelative { path, .. } => path,
         }
     }
 }
 
 impl<R: MononokeRepo> ChangesetContext<R> {
-    /// Stream net manifest leaf differences and their actual endpoint restrictions.
-    /// Base defaults to the first parent, or an empty tree for a root commit.
-    /// Denied paths remain metadata; `after_path` is exclusive in component order.
+    /// Stream net changed files with literal base/target restriction metadata.
+    ///
+    /// The base defaults to the first parent, or an empty tree for a root commit.
+    /// Explicit bases compare endpoint manifests, not intervening commits.
+    /// Copy-source metadata is separate from literal endpoint metadata and is
+    /// included only when comparing against an immediate parent. Individual
+    /// copies require an absent destination and a file source in that parent;
+    /// deep copies retain their actual source revisions.
+    ///
+    /// This query does not enforce restrictions or omit denied entries. Present
+    /// unrestricted sides have empty restrictions; an absent side has no file.
+    /// Permission checking populates each side's access result. Paths are ordered
+    /// using weighted manifest traversal with bounded lookup concurrency. Source
+    /// policies are resolved for streamed paths, without walking history. Source-relative
+    /// traversal prepares declared source roots before enumerating their differences.
+    /// Sparse permission changes compare effective policies independently of
+    /// file existence. Optional subtree-source coverage unions the ordinary and
+    /// source-relative views before paging; source-only deletions remain metadata.
+    /// Hypothetical policies never contribute actual-content restrictions.
+    /// Aggregate-only requests skip hypothetical-policy lookups.
+    /// `after_path` excludes paths at or before the cursor before restriction
+    /// lookups; None enumerates the whole comparison. Dropping the stream
+    /// cancels traversal and pending lookups.
     pub async fn changed_paths_restriction_info(
         &self,
         base: Option<&Self>,
@@ -72,6 +103,7 @@ impl<R: MononokeRepo> ChangesetContext<R> {
         let ChangedPathsRestrictionOptions {
             check_permissions,
             include_permission_changes,
+            include_subtree_source_changes,
         } = options;
         let parents = self.parents().await?;
         let base = base.cloned().or_else(|| {
@@ -87,6 +119,7 @@ impl<R: MononokeRepo> ChangesetContext<R> {
         } else {
             None
         };
+        let subtree_sources = Arc::new(self.restriction_subtree_copy_sources(bonsai.as_deref()));
         let (new_root, old_root) = try_join(self.root_content_manifest_id(), async {
             match &base {
                 Some(base) => base.root_content_manifest_id().await.map(Some),
@@ -133,10 +166,24 @@ impl<R: MononokeRepo> ChangesetContext<R> {
                 .boxed(),
         };
 
+        let changes = if include_subtree_source_changes && bonsai.is_some() {
+            let source_changes = subtree_relative::subtree_relative_changes(
+                self,
+                base.as_ref()
+                    .ok_or_else(|| anyhow!("subtree comparison requires a parent"))?,
+                subtree_sources.clone(),
+                after_path,
+            )
+            .await?;
+            ordered_union::ordered_union(changes, source_changes)
+        } else {
+            changes
+        };
         let comparison = Arc::new(resolution::Comparison {
             target: self.clone(),
             base,
             bonsai,
+            subtree_sources,
             check_permissions,
             include_permission_changes,
         });
@@ -227,6 +274,39 @@ impl<R: MononokeRepo> ChangesetContext<R> {
         Ok(Some((base.clone(), NonRootMPath::try_from(source_path)?)))
     }
 
+    async fn restriction_copy_source_is_file(&self, path: &MPath) -> Result<bool, MononokeError> {
+        Ok(matches!(
+            self.root_content_manifest_id()
+                .await?
+                .find_entry(
+                    self.ctx().clone(),
+                    self.repo_ctx().repo().repo_blobstore().clone(),
+                    path.clone(),
+                )
+                .await?,
+            Some(Entry::Leaf(_))
+        ))
+    }
+
+    fn restriction_subtree_copy_sources(
+        &self,
+        bonsai: Option<&BonsaiChangeset>,
+    ) -> manifest::PathTree<Option<(Self, MPath)>> {
+        let Some(bonsai) = bonsai else {
+            return Default::default();
+        };
+        let mut sources = manifest::PathTree::default();
+        for (path, change) in bonsai.subtree_changes() {
+            if let Some((id, source_path)) = change.deep_copy_source() {
+                sources.insert(
+                    path.clone(),
+                    Some((Self::new(self.repo_ctx().clone(), id), source_path.clone())),
+                );
+            }
+        }
+        sources
+    }
+
     /// Group net changed files by full restriction identity and access result.
     ///
     /// Uses the first parent, or an empty tree for a root commit. A path can
@@ -242,6 +322,7 @@ impl<R: MononokeRepo> ChangesetContext<R> {
                 ChangedPathsRestrictionOptions {
                     check_permissions,
                     include_permission_changes: false,
+                    include_subtree_source_changes: false,
                 },
             )
             .await?

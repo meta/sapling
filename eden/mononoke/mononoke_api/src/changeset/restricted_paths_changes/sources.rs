@@ -8,6 +8,33 @@
 use super::resolution::Comparison;
 use super::*;
 
+pub(super) enum SubtreePolicy {
+    File(SubtreeSourcePolicyInfo),
+    AbsentFile(SubtreeSourcePolicyInfo),
+}
+
+impl SubtreePolicy {
+    pub(super) fn policy(&self) -> &SubtreeSourcePolicyInfo {
+        match self {
+            Self::File(info) | Self::AbsentFile(info) => info,
+        }
+    }
+
+    pub(super) fn file(&self) -> Option<&SubtreeSourcePolicyInfo> {
+        match self {
+            Self::File(info) => Some(info),
+            Self::AbsentFile(_) => None,
+        }
+    }
+
+    pub(super) fn into_file(self) -> Option<SubtreeSourcePolicyInfo> {
+        match self {
+            Self::File(info) => Some(info),
+            Self::AbsentFile(_) => None,
+        }
+    }
+}
+
 impl<R: MononokeRepo> Comparison<R> {
     pub(super) async fn ordinary_sources(
         &self,
@@ -35,5 +62,37 @@ impl<R: MononokeRepo> Comparison<R> {
             path,
             info,
         }])
+    }
+
+    pub(super) async fn subtree_source(
+        &self,
+        change: &ChangedPath,
+    ) -> Result<Option<SubtreePolicy>, MononokeError> {
+        let Some((destination_prefix, Some((source, source_prefix)))) = self
+            .subtree_sources
+            .get_nearest_parent(change.path(), Option::is_some)
+        else {
+            return Ok(None);
+        };
+        let path = change.path().reparent(&destination_prefix, source_prefix)?;
+        let exists = source.restriction_copy_source_is_file(&path).await?;
+        if !exists && !self.include_permission_changes {
+            return Ok(None);
+        }
+        let info = SubtreeSourcePolicyInfo {
+            mapping: SubtreeSourceMapping {
+                commit_id: source.id(),
+                source_prefix: source_prefix.clone(),
+                destination_prefix,
+            },
+            info: source
+                .restriction_policy_info(path, self.check_permissions)
+                .await?,
+        };
+        Ok(Some(if exists {
+            SubtreePolicy::File(info)
+        } else {
+            SubtreePolicy::AbsentFile(info)
+        }))
     }
 }

@@ -11,11 +11,13 @@ mod copies;
 mod endpoints;
 mod paging;
 mod policies;
+mod subtrees;
 
 fn rich_restriction_options(check_permissions: bool) -> ChangedPathsRestrictionOptions {
     ChangedPathsRestrictionOptions {
         check_permissions,
         include_permission_changes: true,
+        include_subtree_source_changes: false,
     }
 }
 
