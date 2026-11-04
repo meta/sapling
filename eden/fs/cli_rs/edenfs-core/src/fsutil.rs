@@ -9,7 +9,11 @@ use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
 use std::fs;
+#[cfg(target_os = "windows")]
+use std::os::windows::fs::FileTypeExt;
 use std::path::Path;
+#[cfg(target_os = "windows")]
+use std::path::PathBuf;
 use std::process;
 use std::process::Command;
 
@@ -153,12 +157,74 @@ pub fn forcefully_remove_dir_all(directory: &Path) -> std::io::Result<()> {
             return Ok(());
         }
         if retries >= 3 {
-            // We've tried a few times, the directory refuses to die. Give up and return the error.
+            #[cfg(target_os = "windows")]
+            let res = res.or_else(|err| {
+                tracing::info!(
+                    "deleting {} entry by entry after: {err}",
+                    directory.display()
+                );
+                remove_dir_all_win32(directory)
+            });
             return res;
         }
         release_files_in_dir(directory);
         retries += 1;
     }
+}
+
+/// `fs::remove_dir_all` fails on unmounted ProjectedFS placeholders (error 369), but
+/// path-based Win32 deletion works. Like Python's Windows checkout cleanup using
+/// `shutil.rmtree(..., onerror=collect_errors)`, continue past failures and report their paths.
+#[cfg(target_os = "windows")]
+fn remove_dir_all_win32(directory: &Path) -> std::io::Result<()> {
+    let failures = remove_tree_win32(directory);
+    let Some((_, first_error)) = failures.first() else {
+        return Ok(());
+    };
+    let failed_paths = failures
+        .iter()
+        .map(|(path, error)| format!("{}: {error}", path.display()))
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(std::io::Error::new(
+        first_error.kind(),
+        format!("failed to delete {failed_paths}"),
+    ))
+}
+
+/// Returns the entries it couldn't delete, with their errors.
+#[cfg(target_os = "windows")]
+fn remove_tree_win32(directory: &Path) -> Vec<(PathBuf, std::io::Error)> {
+    // List the whole directory before deleting from it, as `shutil.rmtree` does.
+    let entries = match fs::read_dir(directory)
+        .and_then(|entries| entries.collect::<std::io::Result<Vec<_>>>())
+    {
+        Ok(entries) => entries,
+        Err(error) => return vec![(directory.to_path_buf(), error)],
+    };
+    let mut failures = Vec::new();
+    for entry in entries {
+        let path = entry.path();
+        let result = match entry.file_type() {
+            Ok(file_type) if file_type.is_symlink_dir() => fs::remove_dir(&path),
+            Ok(file_type) if file_type.is_dir() => {
+                failures.extend(remove_tree_win32(&path));
+                continue;
+            }
+            Ok(_) => fs::remove_file(&path),
+            Err(error) => Err(error),
+        };
+        if let Err(error) = result {
+            failures.push((path, error));
+        }
+    }
+    // Only an emptied directory can be deleted, and what is left in it is reported already.
+    if failures.is_empty()
+        && let Err(error) = fs::remove_dir(directory)
+    {
+        failures.push((directory.to_path_buf(), error));
+    }
+    failures
 }
 
 pub fn remove_file(path: &Path) -> std::io::Result<()> {
@@ -926,6 +992,69 @@ fn test_parse_handler_output_detect_format_change() {
     ";
     let actual = parse_handler_output(output);
     assert!(actual.is_err());
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn remove_dir_all_win32_deletes_junctions_without_following_them() {
+    let temp_dir = tempfile::tempdir().expect("temporary directory should be created");
+    let outside = temp_dir.path().join("outside");
+    let tree = temp_dir.path().join("tree");
+    fs::create_dir(&outside).expect("outside directory should be created");
+    fs::write(outside.join("kept"), b"").expect("outside file should be created");
+    fs::create_dir_all(tree.join("dir")).expect("tree should be created");
+    fs::write(tree.join("dir").join("file"), b"").expect("tree file should be created");
+    let status = Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(tree.join("junction"))
+        .arg(&outside)
+        .status()
+        .expect("mklink should run");
+    assert!(status.success(), "mklink /J should create a junction");
+
+    remove_dir_all_win32(&tree).expect("the tree should be deleted");
+
+    assert!(!tree.exists(), "the tree should be deleted");
+    assert!(
+        outside.join("kept").exists(),
+        "the junction's target should be kept"
+    );
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn forcefully_remove_dir_all_deletes_past_a_file_held_open_and_names_it() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let temp_dir = tempfile::tempdir().expect("temporary directory should be created");
+    let tree = temp_dir.path().join("tree");
+    let held = tree.join("a").join("held");
+    let read_only = tree.join("b").join("read-only");
+    fs::create_dir_all(tree.join("a")).expect("tree should be created");
+    fs::create_dir_all(tree.join("b")).expect("tree should be created");
+    fs::write(&held, b"").expect("held file should be created");
+    fs::write(&read_only, b"").expect("read-only file should be created");
+    let mut permissions = fs::metadata(&read_only)
+        .expect("read-only file should exist")
+        .permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&read_only, permissions).expect("file should be made read-only");
+    let _handle = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&held)
+        .expect("held file should open");
+
+    let error = forcefully_remove_dir_all(&tree).expect_err("a file held open can't be deleted");
+
+    assert!(
+        error.to_string().contains(&held.display().to_string()),
+        "the error should name the held file: {error}"
+    );
+    assert!(
+        !tree.join("b").exists(),
+        "the entries after the held file, read-only ones too, should be deleted"
+    );
 }
 
 #[test]

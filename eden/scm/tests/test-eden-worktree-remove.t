@@ -490,21 +490,6 @@ the Windows failure when smaller layouts didn't.)
   created linked worktree at $TESTTMP/read_files
   $ ls $TESTTMP/read_files/src/serde_with $TESTTMP/read_files/src/serde_with/hgid $TESTTMP/read_files/src/serde_with/sha256 > /dev/null
   $ cat $TESTTMP/read_files/src/serde_with/hgid.rs $TESTTMP/read_files/src/serde_with/hgid/bytes.rs $TESTTMP/read_files/src/serde_with/hgid/hex.rs $TESTTMP/read_files/src/serde_with/hgid/tuple.rs $TESTTMP/read_files/src/serde_with/key.rs $TESTTMP/read_files/src/serde_with/nodeinfo.rs $TESTTMP/read_files/src/serde_with/sha256.rs $TESTTMP/read_files/src/serde_with/sha256/bytes.rs $TESTTMP/read_files/src/serde_with/sha256/hex.rs $TESTTMP/read_files/src/serde_with/sha256/tuple.rs > /dev/null
-#if windows
-FIXME: deleting the unmounted mount point fails on Windows once files in the
-checkout have been listed and read, which leaves the folder behind and the
-worktree listed. This should print "removed $TESTTMP/read_files" and delete the
-folder, as on other platforms.
-  $ sl worktree remove $TESTTMP/read_files -y
-  Unmounting checkout...
-  Deleting EdenFS checkout state...
-  abort: direct EdenFS removal failed for *read_files: failed to remove mount point *read_files: The provider that supports file system virtualization is temporarily unavailable. (os error 369) (glob)
-  [255]
-  $ test -d $TESTTMP/read_files
-  $ sl worktree list
-    linked  $TESTTMP/read_files
-  * main    $TESTTMP/read_files_repo
-#else
   $ sl worktree remove $TESTTMP/read_files -y
   Unmounting checkout...
   Deleting EdenFS checkout state...
@@ -513,4 +498,3 @@ folder, as on other platforms.
   [1]
   $ sl worktree list
   this worktree is not part of a group
-#endif
