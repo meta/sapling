@@ -21,6 +21,8 @@ use mononoke_types::NonRootMPath;
 use mononoke_types::path::MPath;
 use source_control as thrift;
 
+#[cfg(test)]
+pub(crate) mod compact;
 const COMPARISON_KNOB: &str = "scm/mononoke:enable_scs_restricted_paths_changes_comparison";
 
 pub(crate) fn use_new_comparison(
@@ -158,6 +160,16 @@ pub(crate) async fn restricted_paths_access_impl(
         authorized_paths,
         ..Default::default()
     })
+}
+
+#[cfg(test)]
+fn retain_comparison_page(
+    results: &mut Vec<(NonRootMPath, ChangedPathRestrictionInfo)>,
+    limit: Option<usize>,
+) -> Option<String> {
+    let limit = limit.filter(|limit| results.len() > *limit)?;
+    results.truncate(limit);
+    results.last().map(|(path, _)| path.to_string())
 }
 
 pub(crate) fn changes_restriction_results_into_response(
