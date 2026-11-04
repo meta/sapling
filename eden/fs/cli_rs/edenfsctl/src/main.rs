@@ -5,7 +5,10 @@
  * GNU General Public License version 2.
  */
 
+use std::any::Any;
 use std::io::Write;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::path::Path;
 use std::process::Command;
 
@@ -41,6 +44,9 @@ struct CliUsageSample;
 
 /// Value used in Python to indicate a command failed to parse
 pub const PYTHON_EDENFSCTL_EX_USAGE: i32 = 64;
+
+/// The exit code of a Rust program whose main thread panicked.
+const PANIC_EXIT_CODE: i32 = 101;
 
 // Initialize OpenSSL before curl's `.init_array` constructor so OpenSSL does
 // not register an atexit cleanup that frees its state under HTTP threads still
@@ -383,6 +389,16 @@ fn trace() {
 
 #[fbinit::main]
 fn main(_fb: FacebookInit) {
+    // Everything that can panic runs under `catch_unwind`: an unwind out of
+    // `main` would drop the `fbinit::DestroyGuard` and run the C++ teardown
+    // that `exit_process` exists to skip. The panic hook has already printed
+    // the message by the time the unwind gets here.
+    let code = catch_unwind(run).unwrap_or(PANIC_EXIT_CODE);
+    exit_process(code)
+}
+
+/// The command, its error report and its usage sample. Returns the exit code.
+fn run() -> i32 {
     #[cfg(fbcode_build)]
     trace();
     // NOTE: if you are considering passing `FacebookInit` down, you may want to check
@@ -395,14 +411,23 @@ fn main(_fb: FacebookInit) {
 
     let scenario = failpoint::setup_fail_points();
 
-    fail_point!("edenfsctl:main");
-
-    let code = match wrapper_main(&mut sample) {
-        Ok(code) => Ok(code),
-        Err(e) => {
+    let code = match catch_unwind(AssertUnwindSafe(|| {
+        fail_point!("edenfsctl:main");
+        wrapper_main(&mut sample)
+    })) {
+        Ok(Ok(code)) => code,
+        Ok(Err(e)) => {
             #[cfg(fbcode_build)]
             sample.set_exception(&e);
-            Err(e)
+            // The text Rust prints for an `Err` returned from `main`. A failed
+            // write (stderr closed) must not turn the exit code into a panic's.
+            let _ = writeln!(std::io::stderr(), "Error: {e:?}");
+            1
+        }
+        Err(panic) => {
+            #[cfg(fbcode_build)]
+            sample.set_exception(&anyhow!("panic: {}", panic_message(panic.as_ref())));
+            PANIC_EXIT_CODE
         }
     };
 
@@ -412,18 +437,24 @@ fn main(_fb: FacebookInit) {
 
     #[cfg(fbcode_build)]
     {
-        sample.set_exit_code(*code.as_ref().unwrap_or(&1));
-        send_edenfs_cli_usage(sample.sample);
+        sample.set_exit_code(code);
+        // Best effort. On a host that is out of threads the send itself panics
+        // ("OS can't spawn worker thread"); the command keeps its exit code.
+        let _ = catch_unwind(AssertUnwindSafe(|| send_edenfs_cli_usage(sample.sample)));
     }
 
-    match code {
-        Ok(code) => exit_process(code),
-        Err(e) => {
-            // The text Rust prints for an `Err` returned from `main`.
-            eprintln!("Error: {e:?}");
-            exit_process(1)
-        }
-    }
+    code
+}
+
+/// The text a panic carried: what `panic!` was given, or the placeholder the
+/// standard panic hook prints for any other payload.
+#[cfg(fbcode_build)]
+fn panic_message(panic: &(dyn Any + Send)) -> &str {
+    panic
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("Box<dyn Any>")
 }
 
 #[cfg(test)]

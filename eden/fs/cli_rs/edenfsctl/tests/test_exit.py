@@ -9,6 +9,9 @@ import subprocess
 import tempfile
 import unittest
 
+# The exit code of a Rust program whose main thread panicked.
+PANIC_EXIT_CODE = 101
+
 
 class EdenfsctlExitTest(unittest.TestCase):
     """How `edenfsctl` leaves the process: exit code and output on every path.
@@ -56,3 +59,11 @@ class EdenfsctlExitTest(unittest.TestCase):
             done.stderr.startswith("Error: Failed to parse directory map"),
             done.stderr,
         )
+
+    def test_panic_prints_the_panic_and_exits_101(self) -> None:
+        done = self.run_eden(
+            "list", "--json", env={"FAILPOINTS": "edenfsctl:main=panic"}
+        )
+        self.assertEqual(done.returncode, PANIC_EXIT_CODE, done.stderr)
+        self.assertIn("panicked", done.stderr)
+        self.assertIn("edenfsctl:main", done.stderr)
