@@ -884,15 +884,16 @@ pub async fn import_changelists(
     .await
     .with_context(|| format!("committing changelists {}..={last}", changes[0]))
     .map_err(|error| batch.failed(ctx, Stage::Commit, error))?;
-    log_repo_update(ctx, repo, bookmark, old, new, commit_infos).await;
     let imported = ImportedBatch {
         changelists: imported,
         build: build.completion_time,
         save_and_derive: save_and_derive.completion_time,
         commit: commit.completion_time,
     };
+    // Synchronous, so a stop during the update-feed await below can't skip them.
     log_imported(ctx, &imported);
     trace_imported(ctx, depot_root, bookmark, old, new, &imported);
+    log_repo_update(ctx, repo, bookmark, old, new, commit_infos).await;
     Ok(imported)
 }
 

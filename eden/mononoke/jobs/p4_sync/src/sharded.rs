@@ -187,7 +187,7 @@ pub(crate) struct P4SyncProcessExecutor {
     p4: P4Cli,
     settings: Arc<Settings>,
     cancellation_requested: AtomicBool,
-    /// Ends a wait early when the shard is stopped.
+    /// Ends a wait or a running batch when the shard is stopped.
     wake: Notify,
 }
 
@@ -249,7 +249,7 @@ impl RepoShardedProcessExecutor for P4SyncProcessExecutor {
 
             let ctx = self.batch_context();
             let source = P4CliSource::new(self.p4.with_scuba(ctx.scuba().clone()));
-            let result = p4_import::import_next(
+            let batch = p4_import::import_next(
                 &ctx,
                 &self.repo,
                 &source,
@@ -257,8 +257,17 @@ impl RepoShardedProcessExecutor for P4SyncProcessExecutor {
                 &bookmark,
                 batch_size.get(),
                 &options,
-            )
-            .await;
+            );
+            // A batch can outlast `SM_CLEANUP_TIMEOUT_SECS` (derivation included), so a stop
+            // drops it: its bookmark and mapping move in one transaction, all or nothing, and
+            // what it saved is reused by the next import.
+            let result = tokio::select! {
+                result = batch => result,
+                _ = self.wake.notified() => {
+                    tracing::info!("{repo_name}: stopped mid-batch");
+                    break;
+                }
+            };
             match &result {
                 Ok(_) => batch_size.succeeded(),
                 Err(error) if p4_import::failed_stage(error) != Some(p4_import::Stage::Prepare) => {

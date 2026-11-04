@@ -1941,3 +1941,97 @@ async fn test_rule_unchanged_revision_keeps_its_file_change(fb: FacebookInit) ->
     );
     Ok(())
 }
+
+/// The p4_sync job drops a batch wherever it is when its shard is stopped. Dropped after each
+/// of its awaits in turn, a batch has moved the bookmark and mapping fully or not at all, and
+/// the next import ends in the same state as an uninterrupted one.
+#[mononoke::fbinit_test]
+async fn test_a_batch_dropped_at_any_point_is_finished_by_the_next_import(
+    fb: FacebookInit,
+) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let master = BookmarkKey::new("master")?;
+    let source = two_changelists();
+    let options = ImportOptions::default();
+    let expected: Vec<_> = {
+        let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+        let batch = import_next(&ctx, &repo, &source, DEPOT, &master, 10, &options).await?;
+        batch
+            .changelists
+            .iter()
+            .map(|i| (i.change, i.cs_id))
+            .collect()
+    };
+    assert_eq!(2, expected.len());
+
+    let mut dropped = 0;
+    let mut saved_not_committed = 0;
+    for polls in 1..=100 {
+        let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+        let mut batch = Box::pin(import_next(
+            &ctx, &repo, &source, DEPOT, &master, 10, &options,
+        ));
+        let mut finished = false;
+        for _ in 0..polls {
+            if futures::poll!(batch.as_mut()).is_ready() {
+                finished = true;
+                break;
+            }
+            // Lets work the batch waits on elsewhere (SQLite, blobstore) make progress.
+            yield_once().await;
+        }
+        drop(batch);
+        if finished {
+            break;
+        }
+        dropped += 1;
+
+        let target = bookmark_target(&ctx, &repo, &master).await?;
+        let first = mapped(&ctx, &repo, expected[0].0).await?;
+        let second = mapped(&ctx, &repo, expected[1].0).await?;
+        let state = (target, first, second);
+        let committed = (
+            Some(expected[1].1),
+            Some(expected[0].1),
+            Some(expected[1].1),
+        );
+        assert!(
+            state == (None, None, None) || state == committed,
+            "after {polls} polls: {state:?}"
+        );
+        if target.is_none() && repo.commit_graph().exists(&ctx, expected[1].1).await? {
+            saved_not_committed += 1;
+        }
+        import_next(&ctx, &repo, &source, DEPOT, &master, 10, &options).await?;
+        assert_eq!(
+            Some(expected[1].1),
+            bookmark_target(&ctx, &repo, &master).await?
+        );
+        for &(change, cs_id) in &expected {
+            assert_eq!(
+                Some(cs_id),
+                mapped(&ctx, &repo, change).await?,
+                "after {polls} polls"
+            );
+        }
+    }
+    // Including after saving the changesets, before the transaction.
+    assert!(
+        dropped > 1 && saved_not_committed > 0,
+        "{dropped}, {saved_not_committed}"
+    );
+    Ok(())
+}
+
+async fn yield_once() {
+    let mut yielded = false;
+    futures::future::poll_fn(|cx| {
+        if yielded {
+            return Poll::Ready(());
+        }
+        yielded = true;
+        cx.waker().wake_by_ref();
+        Poll::Pending
+    })
+    .await
+}
