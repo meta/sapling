@@ -21,6 +21,8 @@ import re
 import shlex
 import sys
 import time
+import email.utils
+
 
 import bindings
 
@@ -2365,6 +2367,7 @@ def do_diff(ui, repo, *pats, **opts):
         ("", "switch-parent", None, _("diff against the second parent")),
         ("r", "rev", [], _("revisions to export"), _("REV")),
         ("", "pattern", [], _("file patterns"), _("PATTERN")),
+        ("", "email", False, _("format export in email style")), # New --email option
     ]
     + diffopts
     + walkopts,
@@ -2443,14 +2446,51 @@ def export(ui, repo, *changesets, **opts):
     else:
         ui.note(_("exporting patch:\n"))
     ui.pager("export")
-    cmdutil.export(
-        repo,
-        revs,
-        fntemplate=opts.get("output"),
-        switch_parent=opts.get("switch_parent"),
-        opts=patch.diffallopts(ui, opts),
-        match=m,
-    )
+
+    if opts.get("email"):
+        for idx, rev in enumerate(revs, 1):
+            ctx = repo[rev]
+            author = ctx.user()
+            date_tuple = ctx.date()
+            date_str = email.utils.formatdate(date_tuple[0], localtime=True)
+            subject = ctx.description().splitlines()[0]
+            commit_hash = ctx.hex()
+            total_patches = len(revs)
+
+            # Format headers for email style
+            ui.write(f"From {commit_hash} {date_str}\n")
+            ui.write(f"From: {author}\n")
+            ui.write(f"Date: {date_str}\n")
+            ui.write(f"Subject: [PATCH {idx}/{total_patches}] {subject}\n")
+            ui.write(f"Message-Id: <{commit_hash}@{repo.root}>\n")
+            ui.write("Content-Type: text/plain; charset=UTF-8\n")
+            ui.write("\n")
+
+            # Write the full commit message
+            ui.write(ctx.description())
+            ui.write("\n\n---\n\n")
+
+             # Include diffstat
+            diffopts = patch.diffopts(ui, opts)
+            m = scmutil.match(ctx, opts.get("pattern", []), opts)
+            diff = patch.diff(repo, ctx.p1(), ctx, m, opts=diffopts)
+            diffstat = patch.diffstat(util.iterlines(diff), git=True)
+            ui.write(diffstat)
+            ui.write("\n\n")
+
+            # Include the diff
+            diff = patch.diff(repo, ctx.p1(), ctx, m, opts=diffopts)
+            ui.write(''.join(diff))
+            ui.write("\n")
+    else:
+        cmdutil.export(
+            repo,
+            revs,
+            fntemplate=opts.get("output"),
+            switch_parent=opts.get("switch_parent"),
+            opts=patch.diffallopts(ui, opts),
+            match=m,
+        )
 
 
 @command(
