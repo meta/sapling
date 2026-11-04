@@ -138,15 +138,19 @@ jobs:
         ulimit -n 65536
         ctest --test-dir _build --output-on-failure -E 'integration_tests\.egg::'
 
-    # delocate puts the libraries that the Python CLI's extensions load in
-    # folly/.dylibs, which upload-artifact leaves out by default.
+    # upload-artifact would store bin/edenfsctl.real, a symlink to the Python
+    # CLI's __main__.py, as a copy, from which Python can't find the CLI's
+    # packages, and leave out folly/.dylibs, where delocate puts the libraries
+    # that its extensions load. A tarball keeps both.
     - name: Install
-      run: DESTDIR="$PWD/_artifacts/mac" cmake --install _build
+      run: |
+        DESTDIR="$PWD/_install" cmake --install _build
+        mkdir _artifacts
+        tar -czf _artifacts/eden-mac.tar.gz -C _install .
     - uses: actions/upload-artifact@v6
       with:
         name: eden
         path: _artifacts
-        include-hidden-files: true
 
     - name: Show sccache stats
       if: always()
