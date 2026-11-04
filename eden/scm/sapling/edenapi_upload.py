@@ -72,6 +72,12 @@ def _uploadfilenodes(repo, fctxs):
     if not fctxs:
         return
 
+    if not hasattr(repo.fileslog, "metadatastore"):
+        raise error.Abort(
+            _("file upload is not supported for %s repositories")
+            % repo.storage_format()
+        )
+
     # Batch fetch file parents in case we don't have them locally.
     repo.fileslog.metadatastore.prefetch(
         [(f.path(), f.filenode()) for f in fctxs], length=1

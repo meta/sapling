@@ -24,8 +24,8 @@ has no metadatastore. This is the repo kind seen in production.
   $ sl debugshell -c 'print(repo.storage_format(), type(repo.fileslog).__name__, hasattr(repo.fileslog, "metadatastore"))'
   revlog fileslog False
 
-Unit level: `_uploadfilenodes` reads `repo.fileslog.metadatastore` first and
-raises an AttributeError on this fileslog:
+Unit level: `_uploadfilenodes` aborts cleanly when the fileslog has no
+`metadatastore` (no remotefilelog stores to upload from):
 
   $ sl debugshell -c '
   > from sapling import edenapi_upload
@@ -34,12 +34,12 @@ raises an AttributeError on this fileslog:
   > except Exception as e:
   >     print("%s: %s" % (type(e).__name__, e))
   > '
-  AttributeError: 'fileslog' object has no attribute 'metadatastore'
+  Abort: file upload is not supported for revlog repositories
 
-BUG: uploading crashes with an AttributeError instead of a clean error.
+Uploading aborts with a clean error that names the repository kind.
   $ sl cloud upload 2>&1 | grep -E '^(AttributeError|abort)'
-  AttributeError: 'fileslog' object has no attribute 'metadatastore'
+  abort: file upload is not supported for revlog repositories
 
   $ echo b > b
   $ sl snapshot createremote 2>&1 | grep -E '^(AttributeError|abort)'
-  AttributeError: 'fileslog' object has no attribute 'metadatastore'
+  abort: file upload is not supported for revlog repositories
