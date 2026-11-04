@@ -68,13 +68,21 @@ type RenderFunctionProps = {
   renderGlyph?: (info: DagCommitInfo) => RenderGlyphResult;
 
   /**
-   * Get extra props for the DivRow for the given commit.
-   * This can be used to tweak styles like selection background, border.
-   * This should be a static-ish function to avoid re-rendering. Inside the function,
-   * it can use hooks to fetch extra state.
+   * Component used to render the row containing the commit's node.
+   * This can be used to tweak styles like selection background, border, or add event handlers.
+   * It should render a `DivRow` with the given props.
+   * This should be a static component (not a closure) to avoid re-rendering.
+   * Default: `DivRow`.
    */
-  useExtraCommitRowProps?: (info: DagCommitInfo) => React.HTMLAttributes<HTMLDivElement> | void;
+  commitRowComponent?: React.ComponentType<CommitRowProps>;
 };
+
+export type DivRowProps = {
+  left?: JSX.Element | null;
+  right?: JSX.Element | null;
+} & React.HTMLAttributes<HTMLDivElement> & {['data-commit-hash']?: string};
+
+export type CommitRowProps = DivRowProps & {info: DagCommitInfo};
 
 /**
  * - 'inside-tile': Inside a <Tile />. Must be a svg element. Size decided by <Tile />.
@@ -125,7 +133,7 @@ export function RenderDag(props: RenderDagProps) {
     renderCommit,
     renderCommitExtras,
     renderGlyph = defaultRenderGlyph,
-    useExtraCommitRowProps,
+    commitRowComponent,
     disableReorderAnimation,
     className,
     ...restProps
@@ -145,7 +153,7 @@ export function RenderDag(props: RenderDagProps) {
         renderCommit={renderCommit}
         renderCommitExtras={renderCommitExtras}
         renderGlyph={renderGlyph}
-        useExtraCommitRowProps={useExtraCommitRowProps}
+        commitRowComponent={commitRowComponent}
       />
     );
   });
@@ -161,12 +169,7 @@ export function RenderDag(props: RenderDagProps) {
   );
 }
 
-function DivRow(
-  props: {
-    left?: JSX.Element | null;
-    right?: JSX.Element | null;
-  } & React.HTMLAttributes<HTMLDivElement> & {['data-commit-hash']?: string},
-) {
+export function DivRow(props: DivRowProps) {
   const {className, left, right, ...restProps} = props ?? {};
   const fullClassName = `render-dag-row ${className ?? ''}`;
   return (
@@ -177,6 +180,10 @@ function DivRow(
   );
 }
 
+function DefaultCommitRow({info: _info, ...rest}: CommitRowProps) {
+  return <DivRow {...rest} />;
+}
+
 function DagRowInner(props: {row: ExtendedGraphRow; info: DagCommitInfo} & RenderFunctionProps) {
   const {
     row,
@@ -184,10 +191,8 @@ function DagRowInner(props: {row: ExtendedGraphRow; info: DagCommitInfo} & Rende
     renderGlyph = defaultRenderGlyph,
     renderCommit,
     renderCommitExtras,
-    useExtraCommitRowProps,
+    commitRowComponent: CommitRow = DefaultCommitRow,
   } = props;
-
-  const {className = '', ...commitRowProps} = useExtraCommitRowProps?.(info) ?? {};
 
   // Layout per commit:
   //
@@ -370,7 +375,7 @@ function DagRowInner(props: {row: ExtendedGraphRow; info: DagCommitInfo} & Rende
   let row1: JSX.Element | null = null;
   let row2: JSX.Element | null = null;
   if (isIrregular) {
-    row0 = <DivRow className={className} {...commitRowProps} left={nodeLinePart} />;
+    row0 = <CommitRow info={info} left={nodeLinePart} />;
     row1 = <DivRow left={postNodeLinePart} right={commitPart} />;
   } else {
     const left = (
@@ -381,9 +386,9 @@ function DagRowInner(props: {row: ExtendedGraphRow; info: DagCommitInfo} & Rende
       </>
     );
     row1 = (
-      <DivRow
-        className={`render-dag-row-commit ${className ?? ''}`}
-        {...commitRowProps}
+      <CommitRow
+        info={info}
+        className="render-dag-row-commit"
         left={left}
         right={commitPart}
         data-commit-hash={info.hash}
@@ -429,7 +434,7 @@ const DagRow = React.memo(DagRowInner, (prevProps, nextProps) => {
     prevProps.renderCommit === nextProps.renderCommit &&
     prevProps.renderCommitExtras === nextProps.renderCommitExtras &&
     prevProps.renderGlyph === nextProps.renderGlyph &&
-    prevProps.useExtraCommitRowProps == nextProps.useExtraCommitRowProps
+    prevProps.commitRowComponent === nextProps.commitRowComponent
   );
 });
 

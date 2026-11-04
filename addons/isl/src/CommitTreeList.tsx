@@ -5,7 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import type {RenderGlyphResult} from './RenderDag';
+import type {CommitRowProps, RenderGlyphResult} from './RenderDag';
 import type {DagCommitInfo} from './dag/dag';
 import type {ExtendedGraphRow} from './dag/render';
 import type {CommitTreeWidth} from './responsive';
@@ -18,6 +18,7 @@ import {DOCUMENTATION_DELAY, Tooltip} from 'isl-components/Tooltip';
 import {ErrorShortMessages} from 'isl-server/src/constants';
 import {atom, useAtom, useAtomValue, useSetAtom} from 'jotai';
 import {useEffect, useRef} from 'react';
+import {cn} from 'shared/cn';
 import {normalizeForComparison} from 'shared/utils';
 import {currentWorktreeName, otherWorktreeCheckoutsByHash} from './CheckedOutElsewhere';
 import {CheckedOutElsewhereBadge, Commit, InlineProgressSpan} from './Commit';
@@ -26,7 +27,7 @@ import {Center, LargeSpinner} from './ComponentUtils';
 import {EmptyState} from './EmptyState';
 import {FetchingAdditionalCommitsRow} from './FetchAdditionalCommitsButton';
 import {highlightedCommits} from './HighlightedCommits';
-import {RegularGlyph, RenderDag, YouAreHereGlyph} from './RenderDag';
+import {DivRow, RegularGlyph, RenderDag, YouAreHereGlyph} from './RenderDag';
 import {StackActions} from './StackActions';
 import {latestCommitTitles} from './codeReview/CodeReviewInfo';
 import {
@@ -204,7 +205,7 @@ function DagCommitList(props: DagCommitListProps) {
       renderCommit={renderCommit}
       renderCommitExtras={renderCommitExtras}
       renderGlyph={renderGlyph}
-      useExtraCommitRowProps={useExtraCommitRowProps}
+      commitRowComponent={SelectableCommitRow}
     />
   );
 }
@@ -264,14 +265,17 @@ function renderGlyph(info: DagCommitInfo): RenderGlyphResult {
   }
 }
 
-function useExtraCommitRowProps(info: DagCommitInfo): React.HTMLAttributes<HTMLDivElement> | void {
+function SelectableCommitRow({info, className, ...rest}: CommitRowProps) {
   const {isSelected, onClickToSelect, onDoubleClickToShowDrawer} = useCommitCallbacks(info);
 
-  return {
-    onClick: onClickToSelect,
-    onDoubleClick: onDoubleClickToShowDrawer,
-    className: isSelected ? 'commit-row-selected' : '',
-  };
+  return (
+    <DivRow
+      {...rest}
+      onClick={onClickToSelect}
+      onDoubleClick={onDoubleClickToShowDrawer}
+      className={cn(className, isSelected && 'commit-row-selected')}
+    />
+  );
 }
 
 function YouAreHereGlyphWithProgress({info}: {info: DagCommitInfo}) {
