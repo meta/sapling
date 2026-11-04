@@ -42,7 +42,7 @@ type StackStateWithOperationProps = {
   splitRange: SplitRangeRecord;
 };
 
-type Intention = 'general' | 'split' | 'absorb';
+export type Intention = 'general' | 'split' | 'absorb';
 
 /** Description of a stack edit operation. Used for display purpose. */
 export type StackEditOpDescription =
