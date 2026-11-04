@@ -195,6 +195,22 @@ TEST(EdenMount, pressureGcReclaimBackoff) {
   EXPECT_FALSE(edenMount->isPressureGcBackedOff());
 }
 
+TEST(EdenMount, reportsTheRunningInodeGC) {
+  FakeTreeBuilder builder;
+  TestMount testMount{builder};
+  const auto& edenMount = testMount.getEdenMount();
+  EXPECT_FALSE(edenMount->getRunningInodeGC().has_value());
+
+  auto lease = edenMount->tryStartInodeGC(/*pressureBased=*/true);
+  ASSERT_TRUE(lease);
+  auto gc = edenMount->getRunningInodeGC();
+  ASSERT_TRUE(gc.has_value());
+  EXPECT_TRUE(gc->pressureBased);
+
+  lease.reset();
+  EXPECT_FALSE(edenMount->getRunningInodeGC().has_value());
+}
+
 TEST(EdenMount, gcTreeLoadFailureLimit) {
   FakeTreeBuilder builder;
   TestMount testMount{builder};

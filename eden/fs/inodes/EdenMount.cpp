@@ -3332,7 +3332,8 @@ ImmediateFuture<TreeInodePtr> EdenMount::ensureDirectoryExists(
   return ensureDirectoryExistsHelper(getRootInode(), childName, rest, context);
 }
 
-std::optional<EdenMount::InodeGCLease> EdenMount::tryStartInodeGC() {
+std::optional<EdenMount::InodeGCLease> EdenMount::tryStartInodeGC(
+    bool pressureBased) {
   auto mount = shared_from_this();
   auto failureLimit = getEdenConfig()->gcMaxTreeLoadFailures.getValue();
   auto state = inodeGCState_.wlock();
@@ -3345,6 +3346,8 @@ std::optional<EdenMount::InodeGCLease> EdenMount::tryStartInodeGC() {
   state->remainingTreeLoadFailures = failureLimit;
   auto cancellationToken = state->cancellationSource.getToken();
   state->gcRunning = true;
+  state->pressureBased = pressureBased;
+  state->startTime = std::chrono::steady_clock::now();
   return InodeGCLease{
       std::move(mount),
       /*representsRunningGc=*/true,
@@ -3353,6 +3356,16 @@ std::optional<EdenMount::InodeGCLease> EdenMount::tryStartInodeGC() {
 
 bool EdenMount::isInodeGCRunning() const {
   return inodeGCState_.rlock()->gcRunning;
+}
+
+std::optional<EdenMount::RunningInodeGC> EdenMount::getRunningInodeGC() const {
+  auto state = inodeGCState_.rlock();
+  if (!state->gcRunning) {
+    return std::nullopt;
+  }
+  return RunningInodeGC{
+      std::chrono::steady_clock::now() - state->startTime,
+      state->pressureBased};
 }
 
 void EdenMount::recordInodeGCTreeLoadFailure() {

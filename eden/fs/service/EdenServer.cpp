@@ -341,8 +341,8 @@ struct MountHealthIssueLogContext {
 };
 
 /**
- * The checkout's filesystem channel load, as JSON fields: the requests the
- * kernel is waiting on, the oldest one, and whether a checkout is running.
+ * The checkout's load, as JSON fields: the requests the kernel is waiting on,
+ * the oldest one, and whether a checkout or an inode GC is running.
  */
 folly::dynamic describeFsChannelLoad(
     EdenMount& mount,
@@ -379,6 +379,11 @@ folly::dynamic describeFsChannelLoad(
 #else
   (void)now;
 #endif
+  if (auto gc = mount.getRunningInodeGC()) {
+    detail["gc_kind"] = gc->pressureBased ? "pressure" : "periodic";
+    detail["gc_age_ms"] =
+        std::chrono::duration_cast<std::chrono::milliseconds>(gc->age).count();
+  }
   return detail;
 }
 
@@ -4336,7 +4341,7 @@ ImmediateFuture<uint64_t> EdenServer::garbageCollectInodes(
     std::chrono::system_clock::time_point cutoff,
     const ObjectFetchContextPtr& context,
     bool pressureBased) {
-  auto lease = mount.tryStartInodeGC();
+  auto lease = mount.tryStartInodeGC(pressureBased);
   if (!lease) {
     XLOGF(
         DBG6,
@@ -4474,7 +4479,7 @@ void EdenServer::garbageCollectAllMounts() {
       }
     }
 
-    auto lease = mount.tryStartInodeGC();
+    auto lease = mount.tryStartInodeGC(pressureBasedGc);
     if (!lease) {
       XLOGF(
           DBG6,

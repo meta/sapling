@@ -1188,7 +1188,15 @@ class EdenMount : public std::enable_shared_from_this<EdenMount> {
    * This returns a std::nullopt if a background GC is still running or
    * checkout currently holds the GC lease.
    */
-  std::optional<InodeGCLease> tryStartInodeGC();
+  std::optional<InodeGCLease> tryStartInodeGC(bool pressureBased = false);
+
+  struct RunningInodeGC {
+    std::chrono::steady_clock::duration age;
+    bool pressureBased;
+  };
+
+  /** The running background inode GC, if any. */
+  std::optional<RunningInodeGC> getRunningInodeGC() const;
 
   /**
    * Count a tree-load failure in the active GC run, cancelling it and backing
@@ -1563,6 +1571,8 @@ class EdenMount : public std::enable_shared_from_this<EdenMount> {
 
   struct InodeGCState {
     bool gcRunning{false};
+    bool pressureBased{false};
+    std::chrono::steady_clock::time_point startTime;
     uint64_t inhibitorCount{0};
     uint64_t treeLoadFailureLimit{0};
     uint64_t remainingTreeLoadFailures{0};
