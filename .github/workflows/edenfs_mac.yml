@@ -138,12 +138,15 @@ jobs:
         ulimit -n 65536
         ctest --test-dir _build --output-on-failure -E 'integration_tests\.egg::'
 
+    # delocate puts the libraries that the Python CLI's extensions load in
+    # folly/.dylibs, which upload-artifact leaves out by default.
     - name: Install
       run: DESTDIR="$PWD/_artifacts/mac" cmake --install _build
     - uses: actions/upload-artifact@v6
       with:
         name: eden
         path: _artifacts
+        include-hidden-files: true
 
     - name: Show sccache stats
       if: always()
