@@ -315,6 +315,13 @@ fn dispatch_command(
                     Some(dispatcher.config().as_ref()),
                     dispatcher.global_opts().traceback,
                 );
+                if let Some(category) = errors::error_category(&err) {
+                    if let Err(err) =
+                        sampling::log!(target: "command_info", error_category = category)
+                    {
+                        tracing::warn!(?err, "could not log command error category");
+                    }
+                }
                 errors::upload_traceback(&err, start_time.epoch_ms());
                 255
             }

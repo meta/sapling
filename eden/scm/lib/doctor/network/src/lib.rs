@@ -91,6 +91,17 @@ impl fmt::Debug for HttpResponse {
 }
 
 impl Diagnosis {
+    /// Whether the problem is the client's own certificate being missing or
+    /// invalid, as opposed to connectivity or the server.
+    pub fn is_cert_problem(&self) -> bool {
+        match self {
+            Self::HttpProblem(err) | Self::AuthProxyProblem(err) => {
+                matches!(err, HttpError::MissingCerts(_) | HttpError::InvalidCert(..))
+            }
+            _ => false,
+        }
+    }
+
     pub fn treatment(&self, config: &dyn Config) -> String {
         match self {
             Self::NoServer(_) => {

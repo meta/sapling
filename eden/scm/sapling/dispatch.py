@@ -1050,6 +1050,7 @@ def _dispatch(req):
                                     hint=_(
                                         "use 'cd' to go to a directory inside a repository and try again"
                                     ),
+                                    error_category=error.USAGE_ERROR,
                                 )
                             raise
                 if repo:

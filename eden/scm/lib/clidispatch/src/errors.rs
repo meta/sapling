@@ -7,11 +7,35 @@
 
 use std::borrow::Cow;
 
+use cliparser::parser::ParseError;
 use configmodel::Config;
 use configmodel::ConfigExt;
 use thiserror::Error;
 #[cfg(feature = "eden")]
 use thrift_types::edenfs_clients as eden_clients;
+
+/// A network failure the network doctor could explain. Displays as the
+/// diagnosis text so it prints like any other error.
+#[derive(Debug, Error)]
+#[error("{message}")]
+pub struct DiagnosedNetworkError {
+    pub diagnosis: network_doctor::Diagnosis,
+    message: String,
+}
+
+/// Sampling metadata shared with Python's `error.py` and the telemetry wrapper.
+pub fn error_category(err: &anyhow::Error) -> Option<&'static str> {
+    if err.is::<RepoRequired>() || err.is::<ParseError>() || err.is::<MalformedConfigOption>() {
+        Some("usage")
+    } else if err
+        .downcast_ref::<DiagnosedNetworkError>()
+        .is_some_and(|err| err.diagnosis.is_cert_problem())
+    {
+        Some("certificate")
+    } else {
+        None
+    }
+}
 
 #[derive(Debug, Error)]
 #[error("cannot decode arguments")]
@@ -69,7 +93,6 @@ pub fn print_error(
     config: Option<&dyn configmodel::Config>,
     traceback: bool,
 ) {
-    use cliparser::parser::ParseError;
     let cli_name = identity::cli_name();
     if let Some(e) = err.downcast_ref::<types::errors::PermissionDenied>() {
         if let Some(config) = config {
@@ -163,12 +186,13 @@ pub fn triage_error(
             Err(diagnosis) =>
             // TODO: colorize diagnosis, vary output by verbose/quiet
             {
-                anyhow::anyhow!(
+                let message = format!(
                     "command failed due to network error\n\n{}\n\nDetails:\n\n{:?}\n\nOriginal error:\n\n{:?}\n",
                     diagnosis.treatment(config),
                     diagnosis,
                     cmd_err
-                )
+                );
+                DiagnosedNetworkError { diagnosis, message }.into()
             }
         }
     } else {
@@ -226,5 +250,25 @@ mod tests {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod error_category_tests {
+    use super::*;
+
+    #[test]
+    fn test_error_category() {
+        let repo_required: anyhow::Error = RepoRequired("/tmp".to_string()).into();
+        assert_eq!(error_category(&repo_required), Some("usage"));
+
+        let bad_option: anyhow::Error = ParseError::OptionNotRecognized {
+            option_name: "--bogus".to_string(),
+        }
+        .into();
+        assert_eq!(error_category(&bad_option), Some("usage"));
+
+        let unexpected = anyhow::anyhow!("something broke");
+        assert_eq!(error_category(&unexpected), None);
     }
 }

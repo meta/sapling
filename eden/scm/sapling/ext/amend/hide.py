@@ -130,7 +130,7 @@ def hide(ui, repo, *revs, **opts):
         if not revs:
             if removednames:
                 return 0
-            raise error.Abort(_("nothing to hide"))
+            raise error.Abort(_("nothing to hide"), error_category=error.USAGE_ERROR)
 
         hidectxs = [repo[r] for r in revs]
 

@@ -437,6 +437,7 @@ def _findnexttarget(
             else:
                 raise error.Abort(
                     _("ambiguous next commit"),
+                    error_category=error.USAGE_ERROR,
                     hint=_(
                         "use the --newest or --towards flags "
                         "to specify which child to pick"
@@ -483,6 +484,7 @@ def _findstacktop(ui, repo, newest=False, hint=_MULTI_CHILDREN_HINT):
             return _choosenode(ui, heads)
         raise error.Abort(
             _("ambiguous next commit"),
+            error_category=error.USAGE_ERROR,
             hint=hint,
         )
     else:

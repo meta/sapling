@@ -143,6 +143,34 @@ def callcatch(ui, req, func):
     return func() if no exception happens. otherwise do some error handling
     and return an exit code accordingly. does not handle all exceptions.
     """
+    trace = []
+    category = None
+    try:
+        ret = _callcatch(ui, req, func, trace)
+        if trace:
+            category = _errorcategory(trace[0][1])
+        return ret
+    except BaseException as ex:
+        category = _errorcategory(ex)
+        raise
+    finally:
+        if trace:
+            traceui, ex, formatted = trace[0]
+            try:
+                if category:
+                    traceui.log("command_info", error_category=category)
+                _uploadtraceback(traceui, str(ex), formatted)
+            except Exception as ex:
+                ui.warn(_("warning: could not log command traceback: %s\n") % ex)
+
+
+def _errorcategory(ex):
+    if isinstance(ex, error.CertificateError):
+        return error.CERTIFICATE_ERROR
+    return getattr(ex, "error_category", None)
+
+
+def _callcatch(ui, req, func, trace):
     try:
         try:
             try:
@@ -154,8 +182,7 @@ def callcatch(ui, req, func):
 
                 ui.traceback()
 
-                # Log error info for all non-zero exits.
-                _uploadtraceback(ui, str(ex), util.smartformatexc())
+                trace.append((ui, ex, util.smartformatexc()))
 
                 raise
             finally:
@@ -195,6 +222,8 @@ def callcatch(ui, req, func):
                     ui.warn("\n{}\n".format(problem[0]), label="doctor.treatment")
                     ui.note("  {}\n".format(problem[1]))
                     ui.debug("\nOriginal error:\n{}\n".format(inst))
+                    if problem[2]:
+                        inst.error_category = error.CERTIFICATE_ERROR
                     return 1
 
             raise

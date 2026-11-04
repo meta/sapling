@@ -371,7 +371,7 @@ def _rebase(orig, ui, repo, *pats, **opts):
             "If you want to continue or abort an interactive rebase please"
             ' use "histedit --continue/--abort" instead.'
         )
-        raise error.Abort(msg, hint=hint)
+        raise error.Abort(msg, error_category=error.USAGE_ERROR, hint=hint)
 
     if not opts.get("interactive"):
         return orig(ui, repo, *pats, **opts)
