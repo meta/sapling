@@ -941,6 +941,17 @@ class EdenConfig : private ConfigSettingManager {
       this};
 
   /**
+   * How long a mount health check probe may run before the checkout is
+   * reported as hung (`daemon_running_mount_hung`). At or below the 5 s probe
+   * timeout, including the default of 0, a probe that runs past 5 s is
+   * reported as timed out instead.
+   */
+  ConfigSetting<std::chrono::nanoseconds> mountHealthCheckHangThreshold{
+      "mount:mount-health-check-hang-threshold",
+      std::chrono::seconds(0),
+      this};
+
+  /**
    * The soong build system used in AOSP loves to crawls the entirety of the
    * repository, including the .eden directory. In doing so, it infinitely
    * recurse into the this-dir.

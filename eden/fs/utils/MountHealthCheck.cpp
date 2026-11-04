@@ -184,6 +184,8 @@ std::string_view edenMountHealthIssueReasonString(
       return "daemon_running_checkout_flapping";
     case EdenMountHealthIssueReason::DaemonRunningMountCheckNotStarted:
       return "daemon_running_mount_check_not_started";
+    case EdenMountHealthIssueReason::DaemonRunningMountHung:
+      return "daemon_running_mount_hung";
   }
   return "unknown";
 }

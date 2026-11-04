@@ -505,13 +505,45 @@ void scheduleMountHealthCheckStartTimeout(
           }));
 }
 
+void scheduleMountHealthCheckHangTimeout(
+    std::shared_ptr<std::atomic_bool> completed,
+    std::shared_ptr<const MountHealthIssueLogContext> logContext,
+    std::chrono::nanoseconds delay) {
+  folly::futures::detachOnGlobalCPUExecutor(
+      folly::futures::sleep(
+          std::chrono::duration_cast<folly::HighResDuration>(delay))
+          .deferValue([completed = std::move(completed),
+                       logContext = std::move(logContext)](auto&&) {
+            if (completed->exchange(true)) {
+              return;
+            }
+            logContext->count(&MountHealthCheckStats::hung);
+            logMountHealthCheckTimeout(
+                *logContext,
+                EdenMountHealthIssueReason::DaemonRunningMountHung,
+                "EdenFS mount health check hung");
+          }));
+}
+
 void scheduleMountHealthCheckRuntimeTimeout(
     std::shared_ptr<std::atomic_bool> completed,
-    std::shared_ptr<const MountHealthIssueLogContext> logContext) {
+    std::shared_ptr<const MountHealthIssueLogContext> logContext,
+    std::chrono::nanoseconds hangThreshold) {
   folly::futures::detachOnGlobalCPUExecutor(
       folly::futures::sleep(kMountHealthCheckTimeout)
           .deferValue([completed = std::move(completed),
-                       logContext = std::move(logContext)](auto&&) {
+                       logContext = std::move(logContext),
+                       hangThreshold](auto&&) mutable {
+            if (hangThreshold > kMountHealthCheckTimeout) {
+              // A slow probe is not reported until it passes the threshold.
+              if (!completed->load(std::memory_order_acquire)) {
+                scheduleMountHealthCheckHangTimeout(
+                    std::move(completed),
+                    std::move(logContext),
+                    hangThreshold - kMountHealthCheckTimeout);
+              }
+              return;
+            }
             if (completed->exchange(true)) {
               return;
             }
@@ -4732,9 +4764,10 @@ void EdenServer::scheduleRunningMountHealthCheck(
       ? std::weak_ptr<ServerState>{serverState_}
       : std::weak_ptr<ServerState>{};
 
+  auto config = serverState_->getEdenConfig();
+  const auto hangThreshold = config->mountHealthCheckHangThreshold.getValue();
   MountHealthCheckOptions options;
-  options.useStatx =
-      serverState_->getEdenConfig()->mountHealthCheckStatx.getValue();
+  options.useStatx = config->mountHealthCheckStatx.getValue();
   if (auto edenMount = logContext->mount.lock()) {
     options.knownDevice = edenMount->getHealthCheckDevice();
   }
@@ -4748,6 +4781,7 @@ void EdenServer::scheduleRunningMountHealthCheck(
        completed,
        logContext,
        options,
+       hangThreshold,
        serverState = std::move(faultInjectionState)]() {
         started->store(true, std::memory_order_release);
         if (completed->load(std::memory_order_acquire)) {
@@ -4755,7 +4789,8 @@ void EdenServer::scheduleRunningMountHealthCheck(
         }
         auto& progress = *logContext->progress;
         progress.start();
-        scheduleMountHealthCheckRuntimeTimeout(completed, logContext);
+        scheduleMountHealthCheckRuntimeTimeout(
+            completed, logContext, hangThreshold);
         if (auto state = serverState.lock()) {
           state->getFaultInjector().check(
               "mountHealthCheck", logContext->mountPath);

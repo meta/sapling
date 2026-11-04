@@ -33,6 +33,8 @@ enum class EdenMountHealthIssueReason {
   DaemonRunningCheckoutFlapping,
   // No health check thread picked up the probe in time.
   DaemonRunningMountCheckNotStarted,
+  // The probe ran past `mount:mount-health-check-hang-threshold`.
+  DaemonRunningMountHung,
 };
 
 std::string_view edenMountHealthIssueReasonString(

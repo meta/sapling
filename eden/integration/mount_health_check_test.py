@@ -90,3 +90,16 @@ class StatxMountHealthCheckTest(MountHealthCheckTestBase):
         healthy = self.counter("healthy")
         self.assertGreaterEqual(self.counter("statx_mount_check"), healthy)
         self.assertEqual(0, self.counter("issue"))
+
+
+@testcase.eden_repo_test(run_on_nfs=False, run_coroutines=False, run_io_uring=False)
+@unittest.skipIf(sys.platform != "linux", "exercised on Linux FUSE mounts")
+class HangThresholdMountHealthCheckTest(MountHealthCheckTestBase):
+    def mount_config(self) -> List[str]:
+        return super().mount_config() + ['mount-health-check-hang-threshold = "6s"']
+
+    def test_probe_past_the_threshold_is_counted_as_hung(self) -> None:
+        self.wait_for_counter("healthy")
+        self.delay_next_probe(9)
+        self.wait_for_counter("hung")
+        self.assertEqual(0, self.counter("timed_out"))

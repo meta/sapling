@@ -890,6 +890,7 @@ struct MountHealthCheckStats : StatsGroup<MountHealthCheckStats> {
   Counter issue{"mount_health_check.issue"};
   Counter timedOut{"mount_health_check.timed_out"};
   Counter notStarted{"mount_health_check.not_started"};
+  Counter hung{"mount_health_check.hung"};
   // Probes that confirmed the mount with statx instead of the mount table.
   Counter statxMountCheck{"mount_health_check.statx_mount_check"};
 };
