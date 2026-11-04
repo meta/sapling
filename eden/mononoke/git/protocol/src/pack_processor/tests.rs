@@ -34,6 +34,8 @@ use weight_observer::WeightObserver;
 
 use super::parse_pack;
 
+mod scan_validation;
+
 const EVENT_TIMEOUT: Duration = Duration::from_secs(5);
 const PAYLOAD: &[u8] = b"hello";
 

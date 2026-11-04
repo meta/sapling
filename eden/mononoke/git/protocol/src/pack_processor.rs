@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::Write;
+use std::mem::size_of;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -57,6 +58,7 @@ use weight_observer::WeightObserver;
 use crate::PACKFILE_SUFFIX;
 
 const MAX_ALLOWED_DEPTH: u8 = 30;
+const MAX_CACHED_PACK_ENTRIES_BYTES: usize = 8 * 1024 * 1024;
 type ObjectMap = HashMap<ObjectId, ObjectContent>;
 
 struct DecodeWeight {
@@ -196,24 +198,46 @@ fn resolve_delta(
     })
 }
 
-async fn fetch_prereq_objects(
+fn new_entry_cache(entry_count: usize) -> Option<Vec<InputEntry>> {
+    let max_entries = MAX_CACHED_PACK_ENTRIES_BYTES
+        .saturating_sub(size_of::<Option<Vec<InputEntry>>>())
+        / size_of::<InputEntry>();
+    if entry_count > max_entries {
+        return None;
+    }
+    let mut entries = Vec::new();
+    entries
+        .try_reserve_exact(entry_count.min(max_entries))
+        .ok()?;
+    (entries.capacity() <= max_entries).then_some(entries)
+}
+
+async fn load_entries_and_prereq_objects(
     pack_file: &data::File,
     ctx: &CoreContext,
     blobstore: Arc<RepoBlobstore>,
     concurrency: usize,
-) -> Result<ObjectMap> {
-    // Iterate over all packfile entries and fetch all the required base items
+) -> Result<(Option<Vec<InputEntry>>, ObjectMap)> {
     let mut base_items = HashSet::new();
     let pack_stream = pack_file
         .streaming_iter()
         .context("Failure in iterating packfile")?;
+    let mut pending_entries = new_entry_cache(pack_stream.size_hint().0);
     for entry in pack_stream {
-        let entry = entry.context("Invalid packfile entry")?;
+        let mut entry = entry.context("Invalid packfile entry")?;
         if let RefDelta { base_id } = entry.header {
             base_items.insert(base_id);
         }
+        entry.compressed = None;
+        if let Some(entries) = &mut pending_entries {
+            if entries.len() < entries.capacity() {
+                entries.push(entry);
+            } else {
+                pending_entries = None;
+            }
+        }
     }
-    stream::iter(base_items)
+    let prereq_objects = stream::iter(base_items)
         .map(async |object_id| {
             let git_identifier = GitIdentifier::Basic(GitSha1::from_object_id(object_id.as_ref())?);
             anyhow::Ok(
@@ -235,7 +259,8 @@ async fn fetch_prereq_objects(
         .buffer_unordered(concurrency)
         .try_filter_map(|maybe_object| future::ready(Ok(maybe_object)))
         .try_collect::<HashMap<_, _>>()
-        .await
+        .await?;
+    Ok((pending_entries, prereq_objects))
 }
 
 /// Method responsible for parsing the packfile provided as part of push, verifying its correctness
@@ -358,20 +383,22 @@ async fn parse_stored_pack(
         "Push".to_string(),
     )?;
 
-    // Load all the prerequisite objects
-    let prereq_objects = fetch_prereq_objects(&pack_file, ctx, blobstore.clone(), concurrency)
-        .try_timed()
-        .await?
-        .log_future_stats(
-            ctx.scuba().clone(),
-            "Fetched Prerequisite Objects",
-            "Push".to_string(),
-        );
-    // Fetch all the entries that need to be processed
-    let pending_entries = pack_file
-        .streaming_iter()
-        .context("Failure in iterating packfile")?
-        .collect::<Result<Vec<_>, InputError>>()?;
+    let (cached_entries, prereq_objects) =
+        load_entries_and_prereq_objects(&pack_file, ctx, blobstore.clone(), concurrency)
+            .try_timed()
+            .await?
+            .log_future_stats(
+                ctx.scuba().clone(),
+                "Fetched Prerequisite Objects",
+                "Push".to_string(),
+            );
+    let pending_entries = match cached_entries {
+        Some(entries) => entries,
+        None => pack_file
+            .streaming_iter()
+            .context("Failure in iterating packfile")?
+            .collect::<Result<Vec<_>, InputError>>()?,
+    };
 
     // Process all the entries. Weight is tracked inline inside
     // process_pack_entries using outcome.object_size from decode_entry —
