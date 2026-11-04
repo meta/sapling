@@ -12,19 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-if (PYTHON_EXTENSIONS)
-  set(FB303_LANG cpp py)
-else ()
-  set(FB303_LANG cpp)
-endif ()
-
-add_fbthrift_library(
-  fb303_thrift
+thrift_add_library(
+  fb303_thrift_cpp
   fb303_core.thrift
-  LANGUAGES ${FB303_LANG}
-  THRIFT_INCLUDE_DIR "${INCLUDE_INSTALL_DIR}/thrift-files"
+  LANGUAGE cpp2
   SERVICES
     BaseService
+)
+target_include_directories(
+  fb303_thrift_cpp PUBLIC $<INSTALL_INTERFACE:${INCLUDE_INSTALL_DIR}>
+)
+target_include_directories(
+  fb303_thrift_cpp.thrift_includes
+  INTERFACE $<INSTALL_INTERFACE:${INCLUDE_INSTALL_DIR}/thrift-files>
 )
 if (BUILD_SHARED_LIBS)
   set_property(TARGET fb303_thrift_cpp PROPERTY VERSION ${PACKAGE_VERSION})
@@ -42,7 +42,7 @@ install(
   LIBRARY DESTINATION "${LIB_INSTALL_DIR}"
   ARCHIVE DESTINATION "${LIB_INSTALL_DIR}"
   PUBLIC_HEADER DESTINATION
-    "$<TARGET_PROPERTY:fb303_thrift_cpp,HEADER_INSTALL_DIR>"
+    "${INCLUDE_INSTALL_DIR}/$<TARGET_PROPERTY:fb303_thrift_cpp,THRIFT_HEADER_DIR>"
 )
 install(
   TARGETS fb303_thrift_cpp.thrift_includes
@@ -50,10 +50,17 @@ install(
 )
 install(
   FILES fb303_core.thrift
-  DESTINATION "$<TARGET_PROPERTY:fb303_thrift_cpp,THRIFT_INSTALL_DIR>"
+  DESTINATION "${INCLUDE_INSTALL_DIR}/thrift-files/fb303/thrift"
 )
 
 if (PYTHON_EXTENSIONS)
+  add_fbthrift_py_library(
+    fb303_thrift_py
+    fb303_core.thrift
+    THRIFT_INCLUDE_DIR "${INCLUDE_INSTALL_DIR}/thrift-files"
+    SERVICES
+      BaseService
+  )
   install_fb_python_library(fb303_thrift_py EXPORT fb303-exports)
   install(
     TARGETS fb303_thrift_py.thrift_includes
