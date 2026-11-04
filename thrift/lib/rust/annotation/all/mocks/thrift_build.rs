@@ -10,7 +10,6 @@ thrift/annotation/cpp.thrift cpp //thrift/annotation:cpp-rust
 thrift/annotation/erlang.thrift erlang //thrift/annotation:erlang-rust
 thrift/annotation/go.thrift go //thrift/annotation:go-rust
 thrift/annotation/hack.thrift hack //thrift/annotation:hack-rust
-thrift/annotation/internal.thrift internal //thrift/annotation:internal-rust
 thrift/annotation/java.thrift java //thrift/annotation:java-rust
 thrift/annotation/python.thrift python //thrift/annotation:python-rust
 thrift/annotation/rust.thrift rust //thrift/annotation:rust-rust
