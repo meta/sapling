@@ -48,6 +48,14 @@ The limit includes raw Git worktrees.
   abort: cannot create worktree: limit of 3 linked worktrees reached for repository '$TESTTMP/sl linked' (currently 3); set `worktree.max-count` in your user config (e.g. ~/.hgrc) to raise it, or 0 to disable the limit
   [255]
 
+A revset expression is resolved by Sapling too.
+FIXME: This should create the worktree at "first". The Rust resolver doesn't
+parse revset expressions.
+
+  $ sl worktree add $TESTTMP/at-parent -r "$(git rev-parse main)^"
+  abort: unknown revision '*^' (glob)
+  [255]
+
 Adding from a linked checkout inherits its sparse patterns and worktree configuration.
 
   $ cd $TESTTMP/native

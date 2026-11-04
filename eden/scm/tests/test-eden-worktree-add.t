@@ -118,12 +118,29 @@ test worktree add - revision flag checks out requested revision and accepts book
   $ test "$linked_revision_hash" = "$base_hash"
   $ test "$linked_revision_hash" != "$tip_hash"
 
+test worktree add - revision flag accepts revset expressions and Phabricator diffs
+
+FIXME: This should create the worktree at "$base_hash". The Rust resolver
+doesn't parse revset expressions.
+
+  $ sl worktree add $TESTTMP/linked_parent --rev '.^'
+  abort: unknown revision '.^'
+  [255]
+
 test worktree add - invalid revision does not create a worktree
 
   $ sl worktree add $TESTTMP/invalid_rev --rev does-not-exist
   abort: unknown revision 'does-not-exist'
   [255]
   $ test -d $TESTTMP/invalid_rev
+  [1]
+
+FIXME: This should report "empty revision set".
+
+  $ sl worktree add $TESTTMP/empty_rev --rev 'draft() and public()'
+  abort: unknown revision 'draft() and public()'
+  [255]
+  $ test -d $TESTTMP/empty_rev
   [1]
 
 test worktree add - revision flag accepts remote-only commit hashes
@@ -142,6 +159,21 @@ test worktree add - revision flag accepts remote-only commit hashes
   created linked worktree at $TESTTMP/remote_linked
   $ remote_linked_hash=$(cd $TESTTMP/remote_linked && sl log -r . -T '{node}')
   $ test "$remote_linked_hash" = "$remote_hash"
+
+test worktree add - revision flag pulls a Phabricator diff that isn't local
+
+  $ cd $TESTTMP/remote_server
+  $ echo diff > file.txt
+  $ sl commit -Aqm "remote diff"
+  $ diff_hash=$(sl log -r . -T '{node}')
+  $ cd $TESTTMP/remote_client
+
+FIXME: This should pull D5678 and create the worktree at "$diff_hash". The Rust
+resolver doesn't know Phabricator diffs.
+
+  $ sl worktree add $TESTTMP/remote_diff --rev D5678 --config extensions.fbcodereview= --config phrevset.callsign=CALLSIGN --config phrevset.mock-D5678=$diff_hash
+  abort: unknown revision 'D5678'
+  [255]
   $ cd $TESTTMP/myrepo
 
 test worktree add - writes .sl/worktreename marker (basename when no --label)
@@ -153,6 +185,23 @@ test worktree add - marker reflects --label when provided
 
   $ cat $TESTTMP/linked2/.sl/worktreename
   feature-x (no-eol)
+
+test worktree add - revision flag sees hidden commits with --hidden
+
+  $ newclientrepo hidden_repo
+  $ enable amend
+  $ setconfig mutation.record=true mutation.enabled=true
+  $ echo hidden > file.txt
+  $ sl commit -Aqm "hidden predecessor"
+  $ sl amend -qm "amended"
+
+FIXME: This should create the worktree at "hidden predecessor". The Rust
+resolver doesn't parse revset expressions.
+
+  $ sl --hidden worktree add $TESTTMP/hidden_rev --rev 'obsolete()'
+  abort: unknown revision 'obsolete()'
+  [255]
+  $ cd $TESTTMP/myrepo
 
 test worktree add - edensparse filters are copied to linked checkout
 
