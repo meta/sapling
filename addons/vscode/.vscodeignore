@@ -3,3 +3,4 @@ node_modules
 **/*.tsx
 webview/
 extension/
+docs/

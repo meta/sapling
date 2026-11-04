@@ -21,6 +21,7 @@ export default defineConfig({
     format: 'cjs',
     dir: 'dist',
     sourcemap: true,
+    sourcemapExcludeSources: isProduction,
     minify: isProduction,
   },
   external: ['ws', 'vscode'],
