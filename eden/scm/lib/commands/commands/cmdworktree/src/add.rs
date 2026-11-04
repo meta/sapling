@@ -104,6 +104,21 @@ fn worktree_limit_reached_message(repo: &Repo, max_count: u64, current: usize) -
     )
 }
 
+/// Record free space for every measured add and the warning shown to this caller.
+fn record_disk_check_metrics(available: u64, below_warning: bool, is_agent: bool) {
+    hg_metrics::max_counter("worktree.disk.free_gb", available >> 30);
+    if below_warning {
+        hg_metrics::increment_counter(
+            if is_agent {
+                "worktree.disk.agent_warned"
+            } else {
+                "worktree.disk.human_warned"
+            },
+            1,
+        );
+    }
+}
+
 /// Advisory for a worktree add that continues despite low disk space.
 fn disk_low_warning_message(available: u64, total: u64, dest: &Path, is_agent: bool) -> String {
     let suffix = if is_agent {
@@ -244,13 +259,14 @@ pub(crate) fn run(ctx: &ReqCtx<WorktreeOpts>, repo: &Repo, worktrees: &Worktrees
         }
     };
     if let Some((space, below_warning)) = check {
+        let is_agent = agentdetect::is_agent();
+        record_disk_check_metrics(space.available, below_warning, is_agent);
         if below_warning {
-            hg_metrics::increment_counter("worktree_add_disk_warning", 1);
             logger.warn(disk_low_warning_message(
                 space.available,
                 space.total,
                 &dest,
-                agentdetect::is_agent(),
+                is_agent,
             ));
         }
     }
