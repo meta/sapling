@@ -12,7 +12,7 @@ import {ErrorNotice} from 'isl-components/ErrorNotice';
 import {Icon} from 'isl-components/Icon';
 import {Subtle} from 'isl-components/Subtle';
 import {Tooltip} from 'isl-components/Tooltip';
-import {useAtom, useAtomValue} from 'jotai';
+import {useAtom} from 'jotai';
 import {useEffect} from 'react';
 import {ComparisonType} from 'shared/Comparison';
 import {cn} from 'shared/cn';
@@ -26,7 +26,6 @@ import {Link} from '../Link';
 import {T, t} from '../i18n';
 import platform from '../platform';
 import {RelativeDate} from '../relativeDate';
-import {themeState} from '../theme';
 import css from './DiffComments.module.css';
 import {diffCommentData} from './codeReviewAtoms';
 
@@ -77,8 +76,6 @@ function Comment({comment, isTopLevel}: {comment: DiffComment; isTopLevel?: bool
   );
 }
 
-const useThemeHook = () => useAtomValue(themeState);
-
 function InlineDiff({patch}: {patch: ParsedDiff}) {
   const path = patch.newFileName ?? '';
   return (
@@ -95,7 +92,6 @@ function InlineDiff({patch}: {patch: ParsedDiff}) {
             },
             setCollapsed: () => null,
             display: 'unified',
-            useThemeHook,
           }}
         />
       </div>

@@ -44,7 +44,6 @@ import {
   latestUncommittedChanges,
   latestUncommittedChangesData,
 } from '../serverAPIState';
-import {themeState} from '../theme';
 import {copyAndShowToast} from '../toast';
 import {GeneratedStatus} from '../types';
 import {SplitDiffView} from './SplitDiffView';
@@ -595,6 +594,8 @@ function useComparisonDisplayMode(): ComparisonDisplayMode {
   return mode;
 }
 
+const latestHeadCommitHash = atom(get => get(latestHeadCommit)?.hash ?? '');
+
 function ComparisonViewFile({
   diff,
   comparison,
@@ -652,9 +653,7 @@ function ComparisonViewFile({
     // also changing the head commit's hash.
     // Note: we use latestHeadCommit WITHOUT previews, so we don't accidentally cache the file content
     // AGAIN on the same data while waiting for some new operation to finish.
-    // eslint-disable-next-line react-hooks/rules-of-hooks
-    useComparisonInvalidationKeyHook: () => useAtomValue(latestHeadCommit)?.hash ?? '',
-    useThemeHook: () => useAtomValue(themeState),
+    comparisonInvalidationKey: latestHeadCommitHash,
     t,
     collapsed,
     setCollapsed,

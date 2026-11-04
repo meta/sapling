@@ -46,7 +46,6 @@ import {defaultRenderGlyph, RenderDag} from '../../RenderDag';
 import {YOU_ARE_HERE_VIRTUAL_COMMIT} from '../../dag/virtualCommit';
 import {t, T} from '../../i18n';
 import {readAtom, writeAtom} from '../../jotaiUtils';
-import {themeState} from '../../theme';
 import {prev} from '../revMath';
 import {calculateDagFromStack} from '../stackDag';
 import css from './AbsorbStackEditPanel.module.css';
@@ -524,12 +523,10 @@ function SingleAbsorbEdit(props: {
     }
   };
 
-  const useThemeHook = () => useAtomValue(themeState);
   const ctx: Context = {
     id: {comparison: {type: ComparisonType.UncommittedChanges} as Comparison, path: path ?? ''},
     collapsed: false,
     setCollapsed: () => null,
-    useThemeHook,
     t,
     display: 'unified' as const,
   };

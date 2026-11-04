@@ -5,8 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+import type {Atom} from 'jotai';
 import type {Comparison} from 'shared/Comparison';
-import type {ThemeColor} from '../../theme';
 import type {Result} from '../../types';
 
 type ContextId = {path: string; comparison: Comparison};
@@ -29,11 +29,8 @@ export type Context = {
     numLines: number,
   ): Promise<Result<Array<string>>>;
   displayLineNumbers?: boolean;
-  /** A React hook that gives a string value used as an effect dependency. If this value changes, the comparison will be considered invalidated and must be refreshed.
-   * This is a hook so it can trigger rerenders. */
-  useComparisonInvalidationKeyHook?: () => string;
-  /** A React hook that returns the current theme color. This is a hook so it can trigger rerenders, but can use atom values. */
-  useThemeHook: () => ThemeColor;
+  /** An atom whose value is used as an effect dependency. If this value changes, the comparison will be considered invalidated and must be refreshed. */
+  comparisonInvalidationKey?: Atom<string>;
   /** Translation function for the current language. */
   t?: (s: string) => string;
   /**

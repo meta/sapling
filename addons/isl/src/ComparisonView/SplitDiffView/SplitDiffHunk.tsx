@@ -14,6 +14,7 @@ import type {Context, OneIndexedLineNumber} from './types';
 import {diffChars} from 'diff';
 import {ErrorNotice} from 'isl-components/ErrorNotice';
 import {Icon} from 'isl-components/Icon';
+import {atom, useAtomValue} from 'jotai';
 import React, {useCallback, useEffect, useState} from 'react';
 import {comparisonStringKey} from 'shared/Comparison';
 import organizeLinesIntoGroups from 'shared/SplitDiffView/organizeLinesIntoGroups';
@@ -54,7 +55,6 @@ export const SplitDiffTable = React.memo(
     const tokenization = useTokenizedHunks(
       patch.newFileName ?? '',
       patch.hunks,
-      ctx.useThemeHook,
       contextLinesBefore,
     );
 
@@ -529,7 +529,7 @@ function ExpandingSeparator({
   const result = useFetchLines(ctx, numLines, start);
   const t = ctx.t ?? (s => s);
 
-  const tokenization = useTokenizedContents(path, result?.value, ctx.useThemeHook);
+  const tokenization = useTokenizedContents(path, result?.value);
   if (result == null) {
     return (
       <SeparatorRow>
@@ -577,12 +577,14 @@ function SeparatorRow({children}: {children: React.ReactNode}): React.ReactEleme
   );
 }
 
+const noInvalidationKey = atom('');
+
 /** Fetches context lines */
 function useFetchLines(ctx: Context, numLines: number, start: number) {
   const [fetchedLines, setFetchedLines] = useState<Result<Array<string>> | undefined>(undefined);
 
   // Use-case controlled key that allows invalidating the fetched lines.
-  const invalidationKey = ctx.useComparisonInvalidationKeyHook?.();
+  const invalidationKey = useAtomValue(ctx.comparisonInvalidationKey ?? noInvalidationKey);
 
   const comparisonKey = comparisonStringKey(ctx.id.comparison);
   useEffect(() => {
@@ -614,7 +616,7 @@ function useContextLinesBeforeHunks(
   const shouldFetch = numLines > 0 && numLines <= MAX_CONTEXT_LINES_FOR_SYNTAX_HIGHLIGHTING;
 
   // Use-case controlled key that allows invalidating the fetched lines.
-  const invalidationKey = ctx.useComparisonInvalidationKeyHook?.();
+  const invalidationKey = useAtomValue(ctx.comparisonInvalidationKey ?? noInvalidationKey);
 
   const comparisonKey = comparisonStringKey(ctx.id.comparison);
   // Lines fetched for an earlier comparison or file must not be used for this one.

@@ -12,7 +12,6 @@ import {lazy, Suspense} from 'react';
 import {ComparisonType} from 'shared/Comparison';
 import type {DiffViewMode} from '../ComparisonView/SplitDiffView/types';
 import {Column, Row} from '../ComponentUtils';
-import type {ThemeColor} from '../theme';
 import type {CodeChange, DiffComment, SuggestedChange} from '../types';
 import {CodePatchSuggestionStatus, SuggestedChangeType} from '../types';
 import css from './InlineComment.module.css';
@@ -33,7 +32,6 @@ export function InlineComment({
   onClickHeader,
   headerControls,
   bottomControls,
-  useThemeHook,
   ref,
 }: {
   comment: DiffComment;
@@ -53,7 +51,6 @@ export function InlineComment({
   headerControls: ReactNode;
   bottomControls: ReactNode;
 
-  useThemeHook: () => ThemeColor;
   ref?: React.Ref<HTMLDivElement>;
 }) {
   const path = comment?.filename ?? '';
@@ -86,7 +83,6 @@ export function InlineComment({
               },
               setCollapsed: () => null,
               display: diffViewMode,
-              useThemeHook,
             }}
           />
         </div>

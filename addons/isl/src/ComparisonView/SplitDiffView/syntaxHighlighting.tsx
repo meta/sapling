@@ -9,15 +9,16 @@ import type {ParsedDiff} from 'shared/patch/types';
 import type {
   SyntaxWorkerRequest,
   SyntaxWorkerResponse,
-  ThemeColor,
   TokenizedDiffHunks,
   TokenizedHunk,
 } from './syntaxHighlightingTypes';
 
+import {useAtomValue} from 'jotai';
 import {useEffect, useState} from 'react';
 import {CancellationToken} from 'shared/CancellationToken';
 import {updateTextMateGrammarCSS} from 'shared/textmate-lib/textmateStyles';
 import {isVscode} from '../../environment';
+import {themeState} from '../../theme';
 // Vite generates this module at build time, so the import plugin can't see its default export.
 // eslint-disable-next-line import/default
 import syntaxHighlightingWorkerUrl from './syntaxHighlightingWorker?worker&url';
@@ -116,10 +117,9 @@ function getWorker(): Promise<WorkerApi<SyntaxWorkerRequest, SyntaxWorkerRespons
 export function useTokenizedHunks(
   path: string,
   hunks: ParsedDiff['hunks'],
-  useThemeHook: () => ThemeColor,
   contextLinesBefore?: Array<string>,
 ): TokenizedDiffHunks | undefined {
-  const theme = useThemeHook();
+  const theme = useAtomValue(themeState);
 
   const [tokenized, setTokenized] = useState<TokenizedDiffHunks | undefined>(undefined);
 
@@ -145,9 +145,8 @@ export function useTokenizedHunks(
 export function useTokenizedContents(
   path: string,
   content: Array<string> | undefined,
-  useThemeHook: () => ThemeColor,
 ): TokenizedHunk | undefined {
-  const theme = useThemeHook();
+  const theme = useAtomValue(themeState);
 
   const [tokenized, setTokenized] = useState<TokenizedHunk | undefined>(undefined);
 
@@ -180,9 +179,8 @@ export function useTokenizedContentsOnceVisible(
   contentBefore: Array<string> | undefined,
   contentAfter: Array<string> | undefined,
   parentNode: React.MutableRefObject<HTMLElement | null>,
-  useThemeHook: () => ThemeColor,
 ): [TokenizedHunk, TokenizedHunk] | undefined {
-  const theme = useThemeHook();
+  const theme = useAtomValue(themeState);
   const [tokenized, setTokenized] = useState<[TokenizedHunk, TokenizedHunk] | undefined>(undefined);
   const [hasBeenVisible, setHasBeenVisible] = useState(false);
 
