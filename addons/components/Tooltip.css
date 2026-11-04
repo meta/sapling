@@ -53,6 +53,17 @@
   border-bottom: 1px solid var(--tooltip-border);
 }
 
+/* Pad inside the scroll container rather than around it, so scrolled content reaches the border.
+   Other `.tooltip` elements (e.g. toasts) keep the outer padding. */
+.tooltip.tooltip-with-content {
+  padding: 0;
+}
+
+.tooltip-content {
+  padding: var(--pad);
+  box-sizing: border-box;
+}
+
 .tooltip.simple-text-tooltip {
   max-width: 250px;
   white-space: pre-wrap;

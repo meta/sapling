@@ -409,7 +409,7 @@ function RenderTooltipOnto({
         ref={tooltipRef}
         role="tooltip"
         className={
-          `tooltip tooltip-${effectivePlacement}` +
+          `tooltip tooltip-with-content tooltip-${effectivePlacement}` +
           (typeof children === 'string' ? ' simple-text-tooltip' : '')
         }
         style={style}
