@@ -150,6 +150,7 @@
 #include <sys/wait.h>
 #include "eden/fs/fuse/FuseChannel.h"
 #include "eden/fs/inodes/Overlay.h"
+#include "eden/fs/nfs/Nfsd3.h"
 #include "eden/fs/notifications/CommandNotifier.h"
 #include "eden/fs/takeover/TakeoverClient.h"
 #include "eden/fs/takeover/TakeoverServer.h"
@@ -287,12 +288,14 @@ struct MountHealthIssueLogContext {
       EdenStatsPtr stats,
       std::string mountPath,
       std::string repoSource,
+      std::weak_ptr<EdenMount> mount,
       std::shared_ptr<MountHealthProbeProgress> progress)
       : edenFsEventsLogger_{std::move(edenFsEventsLogger)},
         emittedMountHealthIssues{std::move(emittedMountHealthIssues)},
         stats{std::move(stats)},
         mountPath{std::move(mountPath)},
         repoSource{std::move(repoSource)},
+        mount{std::move(mount)},
         progress{std::move(progress)} {}
 
   void count(StatsGroupBase::Counter MountHealthCheckStats::* counter) const {
@@ -332,8 +335,52 @@ struct MountHealthIssueLogContext {
   EdenStatsPtr stats;
   std::string mountPath;
   std::string repoSource;
+  // Weak, so that a stuck probe never keeps an unmounted checkout alive.
+  std::weak_ptr<EdenMount> mount;
   std::shared_ptr<MountHealthProbeProgress> progress;
 };
+
+/**
+ * The checkout's filesystem channel load, as JSON fields: the requests the
+ * kernel is waiting on, the oldest one, and whether a checkout is running.
+ */
+folly::dynamic describeFsChannelLoad(
+    EdenMount& mount,
+    std::chrono::steady_clock::time_point now) {
+  folly::dynamic detail = folly::dynamic::object(
+      "checkout_in_progress", mount.isCheckoutInProgress());
+#ifndef _WIN32
+  auto toMs = [](std::chrono::steady_clock::duration duration) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(duration)
+        .count();
+  };
+  auto byStartTime = [](const auto& a, const auto& b) {
+    return a.requestStartTime < b.requestStartTime;
+  };
+  if (auto* fuse = mount.getFuseChannel()) {
+    auto requests = fuse->getOutstandingRequests();
+    detail["outstanding"] = requests.size();
+    auto oldest =
+        std::min_element(requests.begin(), requests.end(), byStartTime);
+    if (oldest != requests.end()) {
+      detail["oldest_ms"] = toMs(now - oldest->requestStartTime);
+      detail["oldest_op"] = fuseOpcodeName(oldest->request.opcode).str();
+      detail["oldest_pid"] = oldest->request.pid;
+    }
+  } else if (auto* nfs = mount.getNfsdChannel()) {
+    auto requests = nfs->getOutstandingRequests();
+    detail["outstanding"] = requests.size();
+    auto oldest =
+        std::min_element(requests.begin(), requests.end(), byStartTime);
+    if (oldest != requests.end()) {
+      detail["oldest_ms"] = toMs(now - oldest->requestStartTime);
+    }
+  }
+#else
+  (void)now;
+#endif
+  return detail;
+}
 
 folly::CPUThreadPoolExecutor* getMountHealthCheckThreadPool() {
   // Process-lifetime so a stuck filesystem syscall cannot make EdenServer
@@ -359,6 +406,9 @@ void logMountHealthCheckTimeout(
     const auto now = std::chrono::steady_clock::now();
     auto description = describeProbeProgress(*logContext.progress, now);
     description.update(describeProbeThread(*logContext.progress));
+    if (auto mount = logContext.mount.lock()) {
+      description.update(describeFsChannelLoad(*mount, now));
+    }
     auto detail = folly::toJson(description);
     XLOGF(WARN, "{} for {}: {}", error, logContext.mountPath, detail);
     logContext.log(
@@ -4579,7 +4629,8 @@ bool EdenServer::isInodeGCRunningForAnyMount() const {
 
 void EdenServer::scheduleRunningMountHealthCheck(
     const AbsolutePath& mountPath,
-    std::string repoSource) {
+    std::string repoSource,
+    std::weak_ptr<EdenMount> mount) {
   auto mountPathString = std::string{mountPath.view()};
   auto runningMountHealthChecks = runningMountHealthChecks_;
   {
@@ -4601,6 +4652,7 @@ void EdenServer::scheduleRunningMountHealthCheck(
       serverState_->getStats().copy(),
       std::move(mountPathString),
       std::move(repoSource),
+      std::move(mount),
       std::make_shared<MountHealthProbeProgress>(
           /*queued=*/std::chrono::steady_clock::now()));
   logContext->count(&MountHealthCheckStats::probes);
@@ -4703,8 +4755,13 @@ void EdenServer::checkMountHealth() {
   // the live mount map -- not config.json -- is the authoritative input. Both
   // the paths to prune against and the paths to probe are collected under a
   // single lock, so they cannot describe two different snapshots.
+  struct ProbeTarget {
+    AbsolutePath mountPath;
+    std::string repoSource;
+    std::weak_ptr<EdenMount> mount;
+  };
   std::unordered_set<std::string> registeredMountPaths;
-  std::vector<std::pair<AbsolutePath, std::string>> probeTargets;
+  std::vector<ProbeTarget> probeTargets;
   {
     const auto mountPoints = mountPoints_->rlock();
     registeredMountPaths.reserve(mountPoints->size());
@@ -4725,8 +4782,11 @@ void EdenServer::checkMountHealth() {
       if (!shouldProbeMountHealth(mount->getState())) {
         continue;
       }
-      probeTargets.emplace_back(
-          mountPath, mount->getCheckoutConfig()->getRepoSource());
+      probeTargets.push_back(
+          ProbeTarget{
+              mountPath,
+              mount->getCheckoutConfig()->getRepoSource(),
+              mount->getWeakMount()});
     }
   }
   // config.json is read on this thread, as accidental unmount recovery does;
@@ -4738,10 +4798,13 @@ void EdenServer::checkMountHealth() {
   const auto edenConfig = serverState_->getEdenConfig();
   pruneMountHealthIssues(emittedMountHealthIssues_, registeredMountPaths);
 
-  // The probe only needs the path and the repo source, both copied above, so
-  // no reference to the mount is held across the asynchronous check.
-  for (auto& [mountPath, repoSource] : probeTargets) {
-    scheduleRunningMountHealthCheck(mountPath, std::move(repoSource));
+  // The probe holds only a weak reference to the mount, so no strong
+  // reference is held across the asynchronous check.
+  for (auto& target : probeTargets) {
+    scheduleRunningMountHealthCheck(
+        target.mountPath,
+        std::move(target.repoSource),
+        std::move(target.mount));
   }
 
   for (auto& [mountPath, config] : notServed) {

@@ -868,7 +868,8 @@ class EdenServer : private TakeoverHandler {
   // Checks a running mount point without blocking the main EventBase.
   void scheduleRunningMountHealthCheck(
       const AbsolutePath& mountPath,
-      std::string repoSource);
+      std::string repoSource,
+      std::weak_ptr<EdenMount> mount);
 
   // Rechecks restricted roots that omitted mode hides from their parent's
   // listing, so that a re-grant becomes visible without an explicit access.
