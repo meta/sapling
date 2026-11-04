@@ -41,5 +41,5 @@ whoami = "2.1.3"
 [dev-dependencies]
 fb303_core_clients = { version = "0.0.0", git = "https://github.com/facebook/fb303.git", branch = "main" }
 fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
-mockall = "0.14.0"
+mockall = "0.15.0"
 tempfile = "3.27.0"
