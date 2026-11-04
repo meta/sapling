@@ -1304,6 +1304,85 @@ Would remount {mounts[1]}
         )
         return exit_code, out.getvalue(), mounts
 
+    def _run_doctor_with_unreadable_config_json(
+        self, instance: FakeEdenInstance
+    ) -> Tuple[int, str]:
+        # The error EdenInstance._get_directory_map() raises for a truncated
+        # config.json.
+        error = Exception(
+            f"invalid JSON data found in {instance.state_dir}/config.json"
+        )
+        out = TestOutput()
+        with (
+            patch.object(instance, "get_mount_paths", side_effect=error),
+            patch.object(instance, "get_checkouts", side_effect=error),
+        ):
+            exit_code = doctor.cure_what_ails_you(
+                typing.cast(EdenInstance, instance),
+                dry_run=True,
+                min_severity_to_report=ProblemSeverity.ALL,
+                mount_table=instance.mount_table,
+                fs_util=FakeFsUtil(),
+                proc_utils=self.make_proc_utils(),
+                vscode_extensions_checker=getFakeVSCodeExtensionsChecker(),
+                network_checker=FakeNetworkChecker(),
+                out=out,
+            )
+        return exit_code, out.getvalue()
+
+    @patch("eden.fs.cli.doctor.check_filesystems.check_disk_usage")
+    @patch("eden.fs.cli.doctor.check_watchman._call_watchman")
+    def test_unreadable_config_json_with_edenfs_running(
+        self, mock_watchman: MagicMock, mock_check_disk_usage: MagicMock
+    ) -> None:
+        mock_watchman.return_value = {"roots": []}
+        instance = FakeEdenInstance(self.make_temporary_directory())
+        instance.create_test_mount("path1")
+
+        # FIXME(T296478200): doctor crashes with the error from
+        # get_mount_paths() and skips the disk usage check. It should report
+        # a "Could not read the list of configured EdenFS checkouts" problem
+        # with a repair hint for config.json, still run the disk usage check,
+        # and exit 1. The next diff fixes this.
+        with self.assertRaises(Exception) as context:
+            self._run_doctor_with_unreadable_config_json(instance)
+
+        self.assertEqual(
+            str(context.exception),
+            f"invalid JSON data found in {instance.state_dir}/config.json",
+        )
+        mock_check_disk_usage.assert_not_called()
+
+    @patch("eden.fs.cli.doctor.check_filesystems.check_disk_usage")
+    @patch("eden.fs.cli.doctor.check_stale_mounts.check_for_stale_mounts")
+    @patch("eden.fs.cli.doctor.check_watchman._call_watchman")
+    def test_unreadable_config_json_with_edenfs_not_running(
+        self,
+        mock_watchman: MagicMock,
+        mock_check_for_stale_mounts: MagicMock,
+        mock_check_disk_usage: MagicMock,
+    ) -> None:
+        mock_watchman.return_value = {"roots": []}
+        instance = FakeEdenInstance(
+            self.make_temporary_directory(), status=fb303_status.DEAD
+        )
+        instance.create_test_mount("path1", active=False)
+
+        # FIXME(T296478200): doctor crashes with the error from
+        # get_mount_paths() and skips the stale mount and disk usage checks.
+        # It should report a "Could not read the list of configured EdenFS
+        # checkouts" problem, not report "EdenFS is not running", still run
+        # both checks, and exit 1. The next diff fixes this.
+        with self.assertRaises(Exception) as context:
+            self._run_doctor_with_unreadable_config_json(instance)
+
+        self.assertEqual(
+            str(context.exception),
+            f"invalid JSON data found in {instance.state_dir}/config.json",
+        )
+        mock_check_for_stale_mounts.assert_not_called()
+        mock_check_disk_usage.assert_not_called()
+
     def test_unmounted_checkout_missing_config_dry_run(self) -> None:
         exit_code, out, instance, checkout = (
             self._test_unmounted_checkout_missing_config(dry_run=True)
