@@ -59,6 +59,7 @@
     "scm/mononoke:create_commit_bypass_config_enforce": false,
     "scm/mononoke:rendezvous_bonsai_tag_mapping": true,
     "scm/mononoke:scs_restricted_paths_use_mock_api": false,
+    "scm/mononoke:enable_scs_restricted_paths_changes_comparison": true,
     "scm/mononoke:restricted_paths_use_schematized_logger": false,
     "scm/mononoke:scs_log_unverified_forwarded_identities": false,
     "scm/mononoke:enable_merge_identity_set_attributes": true,

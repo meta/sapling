@@ -30,6 +30,7 @@ use hooks::LogOnlyRejections;
 use itertools::Either;
 use mononoke_api::BookmarkKey;
 use mononoke_api::CandidateSelectionHintArgs;
+use mononoke_api::ChangedPathsRestrictionOptions;
 use mononoke_api::ChangesetContext;
 use mononoke_api::ChangesetFileOrdering;
 use mononoke_api::ChangesetHistoryOptions;
@@ -2025,44 +2026,53 @@ impl SourceControlServiceImpl {
         ))
     }
 
-    /// Query restriction information for all file changes in the specified commit.
+    /// Query restrictions on every content side of a commit comparison.
     pub(crate) async fn commit_restricted_paths_changes(
         &self,
         ctx: CoreContext,
         commit: thrift::CommitSpecifier,
-        _params: thrift::CommitRestrictedPathsChangesParams,
+        params: thrift::CommitRestrictedPathsChangesParams,
     ) -> Result<thrift::CommitRestrictedPathsChangesResponse, scs_errors::ServiceError> {
-        let (repo, changeset) = self.repo_changeset(ctx.clone(), &commit).await?;
-        if commit_restricted_paths::use_mock_api(repo.name())? {
-            return Err(scs_errors::not_implemented(
-                "commit_restricted_paths_changes is not mocked yet".to_string(),
+        if !commit_restricted_paths::use_new_comparison(&params)? {
+            let (repo, changeset) = self.repo_changeset(ctx.clone(), &commit).await?;
+            if commit_restricted_paths::use_mock_api(repo.name())? {
+                return Err(scs_errors::not_implemented(
+                    "commit_restricted_paths_changes is not mocked yet".to_owned(),
+                )
+                .into());
+            }
+            return commit_restricted_paths::bonsai_changes_response(&changeset).await;
+        }
+        if params.format.is_some()
+            || params.ordered_params.is_some()
+            || params.other_commit_id.is_some()
+        {
+            return Err(scs_errors::invalid_request(
+                "compact comparison requests are not supported by this handler",
             )
             .into());
         }
-
-        // Get changed paths from the bonsai changeset
-        let bonsai = changeset.bonsai_changeset().await?;
-        let changed_paths: BTreeSet<String> = bonsai
-            .file_changes_map()
-            .keys()
-            .map(|path| path.to_string())
-            .collect();
-
-        let access_response = commit_restricted_paths::restricted_paths_access_impl(
-            &changeset,
-            changed_paths.clone(),
-            true, // Always check permissions for changes endpoint
-        )
-        .await?;
-
-        Ok(thrift::CommitRestrictedPathsChangesResponse {
-            are_restricted: access_response.are_restricted,
-            has_access: access_response.has_access,
-            restriction_roots: access_response.restriction_roots,
-            authorized_paths: access_response.authorized_paths,
-            changed_paths: changed_paths.into_iter().collect(),
-            ..Default::default()
-        })
+        let (_, changeset) = self.repo_changeset(ctx, &commit).await?;
+        if commit_restricted_paths::use_mock_api(changeset.repo_ctx().name())? {
+            return Err(scs_errors::not_implemented(
+                "commit_restricted_paths_changes is not mocked yet".to_owned(),
+            )
+            .into());
+        }
+        let results = changeset
+            .changed_paths_restriction_info(
+                None,
+                None,
+                ChangedPathsRestrictionOptions {
+                    check_permissions: true,
+                    include_permission_changes: false,
+                    include_subtree_source_changes: false,
+                },
+            )
+            .await?
+            .try_collect::<Vec<_>>()
+            .await?;
+        Ok(commit_restricted_paths::changes_restriction_results_into_response(results))
     }
 }
 

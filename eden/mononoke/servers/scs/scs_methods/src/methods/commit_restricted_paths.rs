@@ -13,11 +13,54 @@ use anyhow::Result;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use mononoke_api::MononokeError;
+use mononoke_api::PathAccessInfo;
 use mononoke_api::Repo;
 use mononoke_api::changeset::ChangesetContext;
+use mononoke_api::restricted_paths::ChangedPathRestrictionInfo;
 use mononoke_types::NonRootMPath;
 use mononoke_types::path::MPath;
 use source_control as thrift;
+
+const COMPARISON_KNOB: &str = "scm/mononoke:enable_scs_restricted_paths_changes_comparison";
+
+pub(crate) fn use_new_comparison(
+    params: &thrift::CommitRestrictedPathsChangesParams,
+) -> Result<bool, scs_errors::ServiceError> {
+    // OSS has no runtime knob registry; its comparison remains enabled.
+    let enabled = cfg!(not(fbcode_build)) || justknobs::eval(COMPARISON_KNOB, None, None);
+    if !enabled
+        && (params.format.is_some()
+            || params.ordered_params.is_some()
+            || params.other_commit_id.is_some())
+    {
+        return Err(scs_errors::not_implemented(
+            "restriction comparison is disabled; only original requests are supported".to_owned(),
+        )
+        .into());
+    }
+    Ok(enabled)
+}
+
+/// The rollback response checks only paths recorded in the target Bonsai changeset.
+pub(crate) async fn bonsai_changes_response(
+    changeset: &ChangesetContext<Repo>,
+) -> Result<thrift::CommitRestrictedPathsChangesResponse, scs_errors::ServiceError> {
+    let bonsai = changeset.bonsai_changeset().await?;
+    let changed_paths: BTreeSet<String> = bonsai
+        .file_changes_map()
+        .keys()
+        .map(|path| path.to_string())
+        .collect();
+    let access = restricted_paths_access_impl(changeset, changed_paths.clone(), true).await?;
+    Ok(thrift::CommitRestrictedPathsChangesResponse {
+        are_restricted: access.are_restricted,
+        has_access: access.has_access,
+        restriction_roots: access.restriction_roots,
+        authorized_paths: access.authorized_paths,
+        changed_paths: changed_paths.into_iter().collect(),
+        ..Default::default()
+    })
+}
 
 pub(crate) async fn restricted_paths_access_impl(
     cs_ctx: &ChangesetContext<Repo>,
@@ -117,6 +160,69 @@ pub(crate) async fn restricted_paths_access_impl(
     })
 }
 
+pub(crate) fn changes_restriction_results_into_response(
+    results: Vec<(NonRootMPath, ChangedPathRestrictionInfo)>,
+) -> thrift::CommitRestrictedPathsChangesResponse {
+    let mut response = comparison_common_response(&results);
+    response.restriction_roots = results
+        .iter()
+        .filter_map(|(path, info)| {
+            let roots: BTreeSet<_> = info
+                .restriction_info()
+                .map(path_restriction_root_into_response)
+                .collect();
+            (!roots.is_empty()).then(|| (path.to_string(), roots.into_iter().collect()))
+        })
+        .collect();
+    response
+}
+
+/// Unchecked side results are not evidence of access.
+fn has_access_to_content(info: &ChangedPathRestrictionInfo) -> bool {
+    info.content_sides()
+        .all(|side| side.has_access == Some(true))
+}
+
+fn comparison_common_response(
+    results: &[(NonRootMPath, ChangedPathRestrictionInfo)],
+) -> thrift::CommitRestrictedPathsChangesResponse {
+    let mut is_restricted = Vec::with_capacity(results.len());
+    let mut has_access = Vec::with_capacity(results.len());
+    let mut changed_paths = Vec::with_capacity(results.len());
+    let mut authorized_paths = Vec::new();
+    for (path, info) in results {
+        let path = path.to_string();
+        is_restricted.push(info.restriction_info().next().is_some());
+        let access = has_access_to_content(info);
+        has_access.push(access);
+        if access {
+            authorized_paths.push(path.clone());
+        }
+        changed_paths.push(path);
+    }
+    thrift::CommitRestrictedPathsChangesResponse {
+        are_restricted: compute_path_coverage(is_restricted),
+        has_access: if changed_paths.is_empty() {
+            thrift::PathCoverage::ALL
+        } else {
+            compute_path_coverage(has_access)
+        },
+        authorized_paths,
+        changed_paths,
+        checked_both_sides: Some(true),
+        ..Default::default()
+    }
+}
+
+fn path_restriction_root_into_response(info: &PathAccessInfo) -> thrift::PathRestrictionRoot {
+    thrift::PathRestrictionRoot {
+        path: info.restriction_root().to_string(),
+        acls: vec![info.repo_region_acl().to_string()],
+        permission_request_group: Some(info.permission_request_group().id_data().to_string()),
+        ..Default::default()
+    }
+}
+
 /// Find all restriction roots that are nested under the given filter paths.
 /// Returns a stream of restriction roots where the restriction root path
 /// starts with one of the filter paths (i.e., the root is under the filter).
@@ -198,15 +304,19 @@ mod tests {
     use std::collections::HashMap;
     use std::str::FromStr;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
 
     use anyhow::Context;
     use async_trait::async_trait;
     use context::CoreContext;
     use fbinit::FacebookInit;
+    use futures::TryStreamExt;
     use metaconfig_types::AclManifestMode;
     use metaconfig_types::PathRestrictionMetadata;
     use metaconfig_types::RestrictedPathsConfig;
     use metaconfig_types::RestrictedPathsManifestIdStoreConfig;
+    use mononoke_api::ChangedPathsRestrictionOptions;
     use mononoke_api::Repo;
     use mononoke_api::RepoContext;
     use mononoke_api::changeset::ChangesetContext;
@@ -233,14 +343,40 @@ mod tests {
 
     use super::*;
 
+    mod content_sides;
+    mod lookup_modes;
+    #[cfg(fbcode_build)]
+    mod rollback;
+
+    #[cfg(not(fbcode_build))]
+    #[mononoke::test]
+    fn oss_comparison_stays_enabled_without_a_runtime_knob() {
+        assert!(
+            use_new_comparison(&thrift::CommitRestrictedPathsChangesParams::default())
+                .expect("OSS uses the new comparison")
+        );
+    }
+
     struct TestAclProvider {
         allow_repo_region_reads: bool,
+        allowed_repo_region: Option<String>,
+        region_lookups: Option<Arc<AtomicUsize>>,
     }
 
     impl TestAclProvider {
         fn new(allow_repo_region_reads: bool) -> Arc<dyn AclProvider> {
             Arc::new(Self {
                 allow_repo_region_reads,
+                allowed_repo_region: None,
+                region_lookups: None,
+            })
+        }
+
+        fn counting(lookups: Arc<AtomicUsize>) -> Arc<dyn AclProvider> {
+            Arc::new(Self {
+                allow_repo_region_reads: true,
+                allowed_repo_region: None,
+                region_lookups: Some(lookups),
             })
         }
     }
@@ -251,13 +387,19 @@ mod tests {
             Ok(PermissionCheckerBuilder::new().allow_all().build())
         }
 
-        async fn repo_region_acl(&self, _name: &str) -> Result<BoxPermissionChecker> {
+        async fn repo_region_acl(&self, name: &str) -> Result<BoxPermissionChecker> {
+            if let Some(lookups) = &self.region_lookups {
+                lookups.fetch_add(1, Ordering::Relaxed);
+            }
             let builder = PermissionCheckerBuilder::new();
-            Ok(if self.allow_repo_region_reads {
-                builder.allow_all().build()
-            } else {
-                builder.build()
-            })
+            Ok(
+                if self.allow_repo_region_reads || self.allowed_repo_region.as_deref() == Some(name)
+                {
+                    builder.allow_all().build()
+                } else {
+                    builder.build()
+                },
+            )
         }
 
         async fn tier_acl(&self, _name: &str) -> Result<BoxPermissionChecker> {
@@ -365,54 +507,32 @@ mod tests {
             SqlRestrictedPathsManifestIdStoreBuilder::with_sqlite_in_memory()?
                 .with_repo_id(repo_id),
         );
-        let acl_provider = DummyAclProvider::new(fb)?;
-        let scuba = MononokeScubaSampleBuilder::with_discard();
-        let config_based = Arc::new(RestrictedPathsConfigBased::new(
-            config,
-            manifest_id_store,
-            None,
-        ));
-
-        let mut factory = TestRepoFactory::new(fb).context("Failed to create TestRepoFactory")?;
-        let repo: Repo = factory.build().await.context("Failed to build test repo")?;
-        let repo_derived_data = repo.repo_derived_data_arc();
-        let restricted_paths = Arc::new(RestrictedPaths::new(
-            config_based,
-            acl_provider,
-            scuba,
-            repo_derived_data,
+        let mut factory = TestRepoFactory::new(fb)?;
+        let repo: Repo = factory.build().await?;
+        let restricted = Arc::new(RestrictedPaths::new(
+            Arc::new(RestrictedPathsConfigBased::new(
+                config,
+                manifest_id_store,
+                None,
+            )),
+            DummyAclProvider::new(fb)?,
+            MononokeScubaSampleBuilder::with_discard(),
+            repo.repo_derived_data_arc(),
         )?);
-        let repo: Repo = factory
-            .with_restricted_paths(restricted_paths)
-            .build()
-            .await
-            .context("Failed to build test repo")?;
-
-        let mut commit_ctx = CreateCommitContext::new_root(&ctx, &repo);
-        for file_path in file_paths {
-            commit_ctx = commit_ctx.add_file(file_path, "content");
+        let repo: Repo = factory.with_restricted_paths(restricted).build().await?;
+        let mut commit = CreateCommitContext::new_root(&ctx, &repo);
+        for path in file_paths {
+            commit = commit.add_file(path, "content");
         }
         for (root, acl) in acl_manifest_path_acls {
-            let slacl_path = format!("{root}/.slacl");
-            let slacl_content = format!("repo_region_acl = \"{acl}\"\n");
-            commit_ctx = commit_ctx.add_file(slacl_path.as_str(), slacl_content);
+            let path = format!("{root}/.slacl");
+            commit = commit.add_file(path.as_str(), format!("repo_region_acl = \"{acl}\"\n"));
         }
-        let root_cs_id = commit_ctx
-            .commit()
-            .await
-            .context("Failed to create root commit")?;
-
-        let repo_ctx = RepoContext::new_test(ctx.clone(), Arc::new(repo))
-            .await
-            .context("Failed to create test RepoContext")?;
-
-        let cs_ctx = repo_ctx
-            .changeset(root_cs_id)
-            .await
-            .context(format!("Failed to resolve changeset {root_cs_id}"))?
-            .ok_or_else(|| anyhow::anyhow!("Changeset {root_cs_id} not found"))?;
-
-        Ok(cs_ctx)
+        let id = commit.commit().await?;
+        let repo = RepoContext::new_test(ctx, Arc::new(repo)).await?;
+        repo.changeset(id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("test changeset missing"))
     }
 
     fn build_path_restriction_metadata(
@@ -453,8 +573,6 @@ mod tests {
             create_test_restricted_paths_with_acl_provider(fb, path_acls, acl_provider).await?;
         changeset_with_restricted_paths(fb, restricted_paths, "file.txt").await
     }
-
-    // Tests for `restricted_paths_access_impl`
 
     #[mononoke::fbinit_test]
     async fn test_restricted_paths_access_exact_match(fb: FacebookInit) -> Result<()> {
