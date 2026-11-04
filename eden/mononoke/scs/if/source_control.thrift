@@ -2074,7 +2074,93 @@ struct CommitFindRestrictedPathsParams {
   3: optional bool return_only_accessible;
 }
 
-struct CommitRestrictedPathsChangesParams {}
+const i64 COMMIT_RESTRICTED_PATHS_CHANGES_MAX_LIMIT = 10000;
+
+struct CommitRestrictedPathsChangesOrderedParams {
+  /// Continue strictly after this path in component-wise path order.
+  1: optional Path after_path;
+  /// Maximum changed paths returned, including inaccessible paths.
+  /// Must be between 1 and COMMIT_RESTRICTED_PATHS_CHANGES_MAX_LIMIT.
+  2: i64 limit;
+}
+
+enum CommitRestrictedPathsChangesFormat {
+  /// Page-local policy definitions with aggregate and sparse side references.
+  COMPACT = 1,
+}
+
+/// A restriction policy and its checked access in this response's caller context.
+/// Unlike CommitFindRestrictedPathsStreamItem, access is always checked and
+/// the request group is a full typed identity. Rollout controls remain internal.
+@rust.Ord
+struct CheckedPathRestrictionPolicy {
+  1: Path path;
+  2: list<PathAcl> acls;
+  /// Full typed identity, including the ACL fallback when no group is configured.
+  3: string permission_request_group_identity;
+  5: bool has_access;
+}
+
+/// Effective policy at a path, even when no file exists there.
+struct PathPolicyInfoCompact {
+  /// Indices into the enclosing response's checked policies table.
+  1: list<i32> restrictions;
+}
+
+struct PathRestrictionCopySourceInfoCompact {
+  /// Actual source revision, represented as a Bonsai commit ID.
+  1: CommitId commit_id;
+  2: Path path;
+  3: PathPolicyInfoCompact info;
+}
+
+/// A declared subtree-copy edge shared by all paths under its destination.
+@rust.Ord
+struct SubtreeSource {
+  1: CommitId commit_id;
+  2: Path source_prefix;
+  3: Path destination_prefix;
+}
+
+struct SubtreeSourcePolicyInfoCompact {
+  1: i32 subtree_source_index;
+  2: PathPolicyInfoCompact info;
+}
+
+struct PathPermissionChangeInfoCompact {
+  1: PathPolicyInfoCompact base;
+  2: PathPolicyInfoCompact target;
+  /// Per-file copy sources whose policy differs from the target path policy.
+  3: list<PathRestrictionCopySourceInfoCompact> copy_sources;
+  /// Present only when the selected subtree source policy differs from target.
+  4: optional SubtreeSourcePolicyInfoCompact subtree_source;
+}
+
+struct CommitRestrictedPathsChangesCompact {
+  /// Response-local definitions, deduplicated by full policy and checked access.
+  /// Every row is referenced; table order has no meaning outside this response.
+  1: list<CheckedPathRestrictionPolicy> policies;
+  /// Actual-content restriction union. Index lists reference policies, not access.
+  2: map<Path, list<i32>> restriction_roots;
+  /// Sparse effective-policy differences for returned changed paths only.
+  /// Missing entries mean aggregate metadata suffices, not that paths are public.
+  3: map<Path, PathPermissionChangeInfoCompact> permission_changes;
+  /// Response-local source-prefix mappings. Reparent a changed path by removing
+  /// destination_prefix component-wise and adding source_prefix.
+  4: list<SubtreeSource> subtree_sources;
+}
+
+struct CommitRestrictedPathsChangesParams {
+  /// Available only with COMPACT and ordered_params. The selected base is in
+  /// the same repo; otherwise the comparison uses the first parent or an empty
+  /// tree for a root. COMPACT also covers the subtree-source view for parents.
+  1: optional CommitId other_commit_id;
+  /// Required with COMPACT. Original-format requests remain unpaged.
+  2: optional CommitRestrictedPathsChangesOrderedParams ordered_params;
+  /// If absent, return the original aggregate format. COMPACT returns a policy
+  /// table and references in response.compact, with legacy restriction_roots empty.
+  3: optional CommitRestrictedPathsChangesFormat format;
+}
 
 struct CommitSparseProfileDeltaToken {
   1: i64 id;
@@ -3042,16 +3128,32 @@ struct CommitFindRestrictedPathsStreamItem {
 }
 
 struct CommitRestrictedPathsChangesResponse {
-  /// Extent to which the changed paths in this commit are restricted
+  /// Coverage of actual literal, ordinary-copy and subtree-source restrictions on each returned path.
   1: PathCoverage are_restricted;
-  /// Extent to which the caller has authorization to access the changed paths
+  /// Coverage of access to all actual content sides and admitted sources of each returned path.
   2: PathCoverage has_access;
-  /// Maps each changed path that is inside a restriction to its restriction roots and their ACLs.
+  /// Union of actual literal, ordinary-copy and subtree-source restrictions.
+  /// A source's restriction root need not cover the changed destination path.
+  /// Different ACLs or request groups at the same root are separate; absent-file policies are excluded.
   3: map<Path, list<PathRestrictionRoot>> restriction_roots;
-  /// Subset of the changed paths that the caller has access to
+  /// Returned paths whose complete comparisons the caller can access, in component-wise order.
   4: list<Path> authorized_paths;
-  /// All paths changed in this commit (added, modified, or deleted)
+  /// Net endpoint file differences, in component-wise path order. COMPACT parent comparisons
+  /// also include differences against declared subtree sources: an unchanged destination or
+  /// a source-only deleted file can therefore appear. Bounded by ordered_params.limit.
   5: list<Path> changed_paths;
+  /// True when all actual literal, ordinary-copy and subtree-source content sides of every
+  /// returned path were checked, including empty/root comparisons. This is not completion.
+  /// Clients requiring these semantics must reject an absent or false verdict.
+  6: optional bool checked_both_sides;
+  /// Continuation cursor for an ordered request, set only when more paths remain.
+  /// Pass as after_path with the same target and comparison base.
+  /// Absence means enumeration is complete. Unordered requests return the whole comparison.
+  7: optional Path last_path;
+  /// Present only for a COMPACT request, including an empty comparison.
+  /// Policy indexes are local to this response, never stable across pages.
+  /// Absence on a COMPACT request means unsupported, not unrestricted content.
+  10: optional CommitRestrictedPathsChangesCompact compact;
 }
 
 struct CommitSparseProfileDeltaResponse {
@@ -4381,9 +4483,11 @@ service SourceControlService {
     3: OverloadError overload_error,
   );
 
-  /// Query restriction information for all file changes in the specified commit.
-  /// This is a convenience wrapper around commit_restricted_paths_access that
-  /// extracts the changed paths from the commit first.
+  /// Query literal endpoint file differences; COMPACT parent requests also cover differences
+  /// against declared subtree sources. Check every actual literal, ordinary-copy and
+  /// subtree-source content side under its own policy, retaining inaccessible paths as metadata.
+  /// No content is returned. Verdicts cover the retained page, not the whole enumeration.
+  /// Continue ordered requests until last_path is absent; checked_both_sides is not completion.
   CommitRestrictedPathsChangesResponse commit_restricted_paths_changes(
     1: CommitSpecifier commit,
     2: CommitRestrictedPathsChangesParams params,
