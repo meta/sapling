@@ -86,6 +86,7 @@ class HeartbeatManager;
 class SaplingBackingStore;
 class IScribeLogger;
 class Journal;
+class MountHealthProbeProgress;
 class MountInfo;
 class ObjectStore;
 class PrivHelper;
@@ -1134,7 +1135,10 @@ class EdenServer : private TakeoverHandler {
    */
   std::shared_ptr<folly::Executor> prefetchFilesV2Executor_;
 
-  std::shared_ptr<folly::Synchronized<std::unordered_set<std::string>>>
+  // In-flight health check probes, by mount path.
+  std::shared_ptr<folly::Synchronized<std::unordered_map<
+      std::string,
+      std::shared_ptr<const MountHealthProbeProgress>>>>
       runningMountHealthChecks_;
 
   static constexpr uint32_t kMaxCheckoutRecoveryAttempts = 3;

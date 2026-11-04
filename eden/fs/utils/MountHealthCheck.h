@@ -31,6 +31,8 @@ enum class EdenMountHealthIssueReason {
   // Not served, and no longer recovered because it kept stopping soon after
   // each recovery.
   DaemonRunningCheckoutFlapping,
+  // No health check thread picked up the probe in time.
+  DaemonRunningMountCheckNotStarted,
 };
 
 std::string_view edenMountHealthIssueReasonString(

@@ -340,6 +340,41 @@ struct MountHealthIssueLogContext {
   std::shared_ptr<MountHealthProbeProgress> progress;
 };
 
+using RunningMountHealthChecks = folly::Synchronized<std::unordered_map<
+    std::string,
+    std::shared_ptr<const MountHealthProbeProgress>>>;
+
+/**
+ * The probes holding health check threads while another probe waits, as a
+ * JSON field.
+ */
+folly::dynamic describeProbesHoldingThreads(
+    const RunningMountHealthChecks& runningChecks,
+    const std::string& waitingMountPath,
+    std::chrono::steady_clock::time_point now) {
+  std::vector<
+      std::pair<std::string, std::shared_ptr<const MountHealthProbeProgress>>>
+      running;
+  {
+    auto checks = runningChecks.rlock();
+    for (const auto& [mountPath, progress] : *checks) {
+      if (mountPath != waitingMountPath && progress->started() &&
+          progress->step() != MountHealthProbeStep::Done) {
+        running.emplace_back(mountPath, progress);
+      }
+    }
+  }
+  // Reads /proc for each probe, so do it without holding the lock.
+  folly::dynamic holders = folly::dynamic::array;
+  for (const auto& [mountPath, progress] : running) {
+    auto holder = describeProbeProgress(*progress, now);
+    holder.update(describeProbeThread(*progress));
+    holder["mount"] = mountPath;
+    holders.push_back(std::move(holder));
+  }
+  return folly::dynamic::object("holders", std::move(holders));
+}
+
 /**
  * The checkout's load, as JSON fields: the requests the kernel is waiting on,
  * the oldest one, and whether a checkout or an inode GC is running.
@@ -406,7 +441,9 @@ folly::CPUThreadPoolExecutor* getCgroupFileCacheReclaimThreadPool() {
 
 void logMountHealthCheckTimeout(
     const MountHealthIssueLogContext& logContext,
-    std::string error) {
+    EdenMountHealthIssueReason reason,
+    std::string error,
+    const folly::dynamic& extraDetail = folly::dynamic::object) {
   try {
     const auto now = std::chrono::steady_clock::now();
     auto description = describeProbeProgress(*logContext.progress, now);
@@ -415,13 +452,13 @@ void logMountHealthCheckTimeout(
       description.update(describeFsChannelLoad(*mount, now));
     }
     description.update(describeSystemPressure());
+    description.update(extraDetail);
     folly::json::serialization_opts sortedKeys;
     sortedKeys.sort_keys = true;
     auto detail = folly::json::serialize(description, sortedKeys);
     XLOGF(WARN, "{} for {}: {}", error, logContext.mountPath, detail);
     logContext.log(
-        std::string{edenMountHealthIssueReasonString(
-            EdenMountHealthIssueReason::DaemonRunningMountTimedOut)},
+        std::string{edenMountHealthIssueReasonString(reason)},
         std::move(error),
         std::move(detail),
         std::chrono::duration<double>{now - logContext.progress->queued()}
@@ -436,12 +473,14 @@ void logMountHealthCheckTimeout(
 void scheduleMountHealthCheckStartTimeout(
     std::shared_ptr<std::atomic_bool> started,
     std::shared_ptr<std::atomic_bool> completed,
-    std::shared_ptr<const MountHealthIssueLogContext> logContext) {
+    std::shared_ptr<const MountHealthIssueLogContext> logContext,
+    std::shared_ptr<const RunningMountHealthChecks> runningChecks) {
   folly::futures::detachOnGlobalCPUExecutor(
       folly::futures::sleep(kMountHealthCheckTimeout)
           .deferValue([started = std::move(started),
                        completed = std::move(completed),
-                       logContext = std::move(logContext)](auto&&) {
+                       logContext = std::move(logContext),
+                       runningChecks = std::move(runningChecks)](auto&&) {
             if (started->load(std::memory_order_acquire)) {
               return;
             }
@@ -451,8 +490,13 @@ void scheduleMountHealthCheckStartTimeout(
             logContext->count(&MountHealthCheckStats::notStarted);
             logMountHealthCheckTimeout(
                 *logContext,
+                EdenMountHealthIssueReason::DaemonRunningMountCheckNotStarted,
                 "EdenFS mount health check did not start within timeout; "
-                "worker pool may be saturated");
+                "worker pool may be saturated",
+                describeProbesHoldingThreads(
+                    *runningChecks,
+                    logContext->mountPath,
+                    std::chrono::steady_clock::now()));
           }));
 }
 
@@ -468,7 +512,9 @@ void scheduleMountHealthCheckRuntimeTimeout(
             }
             logContext->count(&MountHealthCheckStats::timedOut);
             logMountHealthCheckTimeout(
-                *logContext, "EdenFS mount health check timed out");
+                *logContext,
+                EdenMountHealthIssueReason::DaemonRunningMountTimedOut,
+                "EdenFS mount health check timed out");
           }));
 }
 
@@ -939,7 +985,7 @@ EdenServer::EdenServer(
       prefetchFilesV2Executor_{
           makePrefetchFilesV2Threads(thriftUsePrefetchExecutor_, edenConfig)},
       runningMountHealthChecks_{std::make_shared<
-          folly::Synchronized<std::unordered_set<std::string>>>()},
+          std::decay_t<decltype(*runningMountHealthChecks_)>>()},
       progressManager_{
           std::make_unique<folly::Synchronized<EdenServer::ProgressManager>>()},
       startupStatusChannel_{std::move(startupStatusChannel)},
@@ -4641,9 +4687,11 @@ void EdenServer::scheduleRunningMountHealthCheck(
     std::weak_ptr<EdenMount> mount) {
   auto mountPathString = std::string{mountPath.view()};
   auto runningMountHealthChecks = runningMountHealthChecks_;
+  auto progress = std::make_shared<MountHealthProbeProgress>(
+      /*queued=*/std::chrono::steady_clock::now());
   {
     auto runningChecks = runningMountHealthChecks->wlock();
-    if (!runningChecks->insert(mountPathString).second) {
+    if (!runningChecks->emplace(mountPathString, progress).second) {
       return;
     }
   }
@@ -4661,11 +4709,11 @@ void EdenServer::scheduleRunningMountHealthCheck(
       std::move(mountPathString),
       std::move(repoSource),
       std::move(mount),
-      std::make_shared<MountHealthProbeProgress>(
-          /*queued=*/std::chrono::steady_clock::now()));
+      std::move(progress));
   logContext->count(&MountHealthCheckStats::probes);
 
-  scheduleMountHealthCheckStartTimeout(started, completed, logContext);
+  scheduleMountHealthCheckStartTimeout(
+      started, completed, logContext, runningMountHealthChecks);
 
   // Only tests turn on fault injection. Otherwise this stays empty, so a probe
   // never holds ServerState and never becomes its last owner.

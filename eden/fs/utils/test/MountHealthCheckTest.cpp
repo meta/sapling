@@ -119,6 +119,10 @@ TEST(MountHealthCheckTest, reasonStringsMatchTelemetryContract) {
       "daemon_running_checkout_flapping",
       edenMountHealthIssueReasonString(
           EdenMountHealthIssueReason::DaemonRunningCheckoutFlapping));
+  EXPECT_EQ(
+      "daemon_running_mount_check_not_started",
+      edenMountHealthIssueReasonString(
+          EdenMountHealthIssueReason::DaemonRunningMountCheckNotStarted));
 }
 
 TEST(MountHealthCheckTest, probeStepNamesMatchTelemetryContract) {

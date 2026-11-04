@@ -4,6 +4,8 @@
 # This software may be used and distributed according to the terms of the
 # GNU General Public License version 2.
 
+import os
+import re
 import sys
 import unittest
 from typing import Dict, List, Optional
@@ -37,12 +39,12 @@ class MountHealthCheckTest(testcase.EdenRepoTest):
     def wait_for_counter(self, name: str) -> None:
         poll_until(lambda: True if self.counter(name) > 0 else None, timeout=30)
 
-    def delay_next_probe(self, seconds: float) -> None:
+    def delay_next_probe(self, seconds: float, mount: Optional[str] = None) -> None:
         with self.eden.get_thrift_client() as client:
             client.injectFault(
                 FaultDefinition(
                     keyClass="mountHealthCheck",
-                    keyValueRegex=".*",
+                    keyValueRegex=re.escape(mount) if mount else ".*",
                     delayMilliseconds=int(seconds * 1000),
                     count=1,
                 )
@@ -59,3 +61,14 @@ class MountHealthCheckTest(testcase.EdenRepoTest):
         self.delay_next_probe(7)
         self.wait_for_counter("timed_out")
         self.assertEqual(0, self.counter("not_started"))
+
+    def test_probe_waiting_for_a_thread_is_counted_as_not_started(self) -> None:
+        stuck = [self.mount, os.path.join(self.mounts_dir, "second")]
+        self.eden.clone(self.repo.path, stuck[1])
+        self.eden.clone(self.repo.path, os.path.join(self.mounts_dir, "third"))
+        self.wait_for_counter("healthy")
+        # Two stuck probes hold both health check threads, so the third
+        # checkout's probe cannot start.
+        for mount in stuck:
+            self.delay_next_probe(8, mount)
+        self.wait_for_counter("not_started")
