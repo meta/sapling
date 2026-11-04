@@ -217,13 +217,15 @@ pub async fn upload_changelist_contents(
     let revisions = in_depot(depot_root, changelist, |revision| {
         revision.action.has_content()
     })?;
-    stream::iter(revisions)
+    // Owned items: a closure over borrowed ones makes the future not `Send` for every
+    // lifetime, which a caller inside an `async_trait` (the p4_sync job) needs.
+    stream::iter(revisions.into_iter().cloned())
         .map(|revision| async move {
             let name = || format!("{}#{}", revision.depot_path, revision.revision);
             let size = revision
                 .size
                 .with_context(|| format!("describe gave no size for {}", name()))?;
-            let content = source.print(revision).await?;
+            let content = source.print(&revision).await?;
             let file_type = p4_transform::file_type(&revision.file_type);
             let metadata = upload_file_content(ctx, repo, file_type, size, content)
                 .await
@@ -462,10 +464,11 @@ async fn build_changeset(
     // blame would follow it anyway.
     let (copy_source_checks, missing) = async {
         let base_root = base_root_for(ctx, repo, base, built, copy_sources.values()).await?;
-        stream::iter(&copy_sources)
+        // Owned, as for the uploads: see upload_changelist_contents.
+        stream::iter(copy_sources.clone())
             .map(|(target, copy_source)| async move {
-                let parent_file = file_in_parent(ctx, repo, base_root, built, copy_source).await?;
-                anyhow::Ok(parent_file.is_none().then(|| target.clone()))
+                let parent_file = file_in_parent(ctx, repo, base_root, built, &copy_source).await?;
+                anyhow::Ok(parent_file.is_none().then_some(target))
             })
             .buffer_unordered(concurrency)
             .try_filter_map(|missing| async move { Ok(missing) })
@@ -527,8 +530,8 @@ pub async fn build_changesets(
     let (mut sender, mut receiver) = mpsc::channel(0);
     let fetch = async move {
         let mut fetched = pin!(
-            stream::iter(changes)
-                .map(|&change| async move {
+            stream::iter(changes.iter().copied())
+                .map(|change| async move {
                     fetch_changelist(ctx, repo, source, depot_root, change, concurrency)
                         .await
                         .with_context(|| BuildingChangelist(change))
