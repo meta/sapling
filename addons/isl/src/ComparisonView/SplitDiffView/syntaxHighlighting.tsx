@@ -69,10 +69,14 @@ function getWorker(): Promise<WorkerApi<SyntaxWorkerRequest, SyntaxWorkerRespons
       worker = new WorkerApi(
         new Worker(new URL('./syntaxHighlightingWorker', import.meta.url), {type: 'module'}),
       );
-    } else {
+    } else if (process.env.NODE_ENV !== 'production') {
+      // Tests (jsdom) have no WebWorker. Gated on NODE_ENV so production builds don't
+      // emit a second, non-worker copy of syntaxHighlightingWorker just for this fallback.
       worker = new WorkerApi(
         new SynchronousWorker(() => import('./syntaxHighlightingWorker')) as unknown as Worker,
       );
+    } else {
+      throw new Error('WebWorkers are not available; syntax highlighting is disabled');
     }
 
     // Explicitly set the base URI so the worker can make fetch requests.
