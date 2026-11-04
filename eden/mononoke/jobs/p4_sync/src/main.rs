@@ -8,13 +8,11 @@
 //! Perforce -> Mononoke mirror tailer: for each repo ShardManager assigns it, imports the
 //! depot's new changelists in batches with `p4_import::import_next`.
 
-use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::Context;
 use anyhow::Result;
 use clap::Parser;
 use executor_lib::args::ShardedExecutorArgs;
@@ -53,11 +51,11 @@ struct P4SyncArgs {
     #[clap(flatten, next_help_heading = "PERFORCE OPTIONS")]
     p4_args: P4Args,
 
-    /// The depot a repo mirrors, as `<repo>=<depot root>` (e.g. `p4/test1=//depot/`); the
-    /// shard of any other repo is held and nothing is imported into it. Until the repo config
-    /// says which depot it mirrors.
-    #[clap(long = "repo-depot", value_parser = parse_repo_depot)]
-    repo_depots: Vec<(String, String)>,
+    /// The Perforce server this job imports from, as repo configs name it in
+    /// `p4_source.server_alias` (e.g. `test1`). Shards of repos on another server are held,
+    /// and so are all shards while this is unset.
+    #[clap(long)]
+    p4_server_alias: Option<String>,
 
     /// Changelists imported per batch (at least 1)
     #[clap(long, default_value = "100")]
@@ -67,17 +65,6 @@ struct P4SyncArgs {
     /// least 1)
     #[clap(long, value_parser = parse_secs, default_value = "30")]
     idle_interval_secs: Duration,
-}
-
-fn parse_repo_depot(arg: &str) -> Result<(String, String)> {
-    let (repo, depot) = arg
-        .split_once('=')
-        .with_context(|| format!("expected <repo>=<depot root>, got {arg}"))?;
-    anyhow::ensure!(
-        !repo.is_empty() && depot.starts_with("//") && depot.ends_with('/'),
-        "expected <repo>=//<depot>/, got {arg}"
-    );
-    Ok((repo.to_owned(), depot.to_owned()))
 }
 
 /// Whole seconds, at least 1: a zero wait would poll Perforce in a tight loop.
@@ -98,10 +85,9 @@ fn main(fb: FacebookInit) -> Result<()> {
 
 async fn async_main(app: MononokeApp) -> Result<()> {
     let args = app.args::<P4SyncArgs>()?;
-    let depots: HashMap<_, _> = args.repo_depots.into_iter().collect();
     let settings = sharded::Settings {
         exit_file: args.exit_file,
-        depots,
+        p4_server_alias: args.p4_server_alias,
         batch_size: args.batch_size,
         idle_interval: args.idle_interval_secs,
     };

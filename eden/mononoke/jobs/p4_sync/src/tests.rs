@@ -11,32 +11,41 @@ use justknobs::test_helpers::JustKnobsInMemory;
 use justknobs::test_helpers::KnobVal;
 use justknobs::test_helpers::with_just_knobs;
 use maplit::hashmap;
+use metaconfig_types::P4SourceConfig;
+use metaconfig_types::RepoConfig;
 use mononoke_macros::mononoke;
 
 use super::*;
 use crate::sharded::BatchSize;
+use crate::sharded::ConfiguredDepot;
+use crate::sharded::configured_depot;
 use crate::sharded::import_enabled;
 use crate::sharded::retry_delay;
 
 #[mononoke::test]
-fn test_repo_depot_splits_at_the_first_equals_sign() {
+fn test_only_a_repo_on_this_server_has_a_depot_to_import() {
+    let config = RepoConfig {
+        p4_source: Some(P4SourceConfig {
+            server_alias: "test1".to_owned(),
+            depot: "//project_test_stream/".to_owned(),
+        }),
+        ..Default::default()
+    };
     assert_eq!(
-        parse_repo_depot("p4/test1=//test_bjc_a_stream/").unwrap(),
-        ("p4/test1".to_owned(), "//test_bjc_a_stream/".to_owned())
+        configured_depot(&config, Some("test1")),
+        ConfiguredDepot::Depot("//project_test_stream/".to_owned())
     );
-}
-
-#[mononoke::test]
-fn test_repo_depot_needs_a_repo_and_a_depot_root() {
-    for arg in [
-        "p4/test1",
-        "=//depot/",
-        "p4/test1=depot/",
-        "p4/test1=//depot",
-        "p4/test1=",
-    ] {
-        assert!(parse_repo_depot(arg).is_err(), "{arg} should be rejected");
-    }
+    assert_eq!(
+        configured_depot(&config, Some("test2")),
+        ConfiguredDepot::OtherServer {
+            configured: "test1".to_owned()
+        }
+    );
+    assert_eq!(configured_depot(&config, None), ConfiguredDepot::NoOwnAlias);
+    assert_eq!(
+        configured_depot(&RepoConfig::default(), Some("test1")),
+        ConfiguredDepot::NotAMirror
+    );
 }
 
 #[mononoke::test]
