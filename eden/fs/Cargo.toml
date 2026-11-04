@@ -100,6 +100,7 @@ wezterm-color-types = { git = "https://github.com/wezterm/wezterm.git", rev = "0
 wezterm-dynamic = { git = "https://github.com/wezterm/wezterm.git", rev = "05343b387085842b434d267f91b6b0ec157e4331" }
 wezterm-input-types = { git = "https://github.com/wezterm/wezterm.git", rev = "05343b387085842b434d267f91b6b0ec157e4331" }
 x509-certificate = { git = "https://github.com/indygreg/cryptography-rs", rev = "43a652c233e9dfe3edfe10c9826602655acc1fd1" }
+zlink-core = { git = "https://github.com/waffle2k/zlink", rev = "6210c2a99b4adfa6591f61c389fad48ff4ed3c41" }
 
 [patch."https://github.com/lance-format/lance.git"]
 fsst = { git = "https://github.com/fbsource/lance", rev = "e5a3553b1699a7062ff7afe4ee268d596bbf2e0d" }
