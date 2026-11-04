@@ -5,6 +5,8 @@
  * GNU General Public License version 2.
  */
 
+use std::collections::BTreeSet;
+
 use mononoke_macros::mononoke;
 use mononoke_types::hash::Blake3;
 use mononoke_types::hash::RichGitSha1;
@@ -17,6 +19,7 @@ use mononoke_types_mocks::contentid::ONES_CTID;
 use super::*;
 
 const DEPOT: &str = "//test1/";
+const SERVER_ID: &str = "commit-standby";
 
 /// Only `content_id` and `total_size` make it into a file change.
 fn content() -> ContentMetadataV2 {
@@ -417,6 +420,7 @@ fn test_changelist_becomes_a_changeset_on_its_parent() {
     let contents = contents(&["//test1/a.txt"]);
     let bcs = changeset(
         DEPOT,
+        SERVER_ID,
         &changelist,
         Some(ONES_CSID),
         &contents,
@@ -449,7 +453,15 @@ fn test_first_changeset_has_no_parent_and_no_copies() {
         "//test1/new.txt".to_owned(),
         NonRootMPath::new("old.txt").unwrap(),
     )]);
-    let bcs = changeset(DEPOT, &changelist, None, &contents, &copy_sources).unwrap();
+    let bcs = changeset(
+        DEPOT,
+        SERVER_ID,
+        &changelist,
+        None,
+        &contents,
+        &copy_sources,
+    )
+    .unwrap();
     assert_eq!(0, bcs.parents().count());
     assert_eq!(
         vec![("new.txt".to_owned(), tracked(FileType::Regular))],
@@ -465,6 +477,7 @@ fn test_copies_are_from_the_parent() {
     let copy_sources = HashMap::from([("//test1/new.txt".to_owned(), from.clone())]);
     let bcs = changeset(
         DEPOT,
+        SERVER_ID,
         &changelist,
         Some(TWOS_CSID),
         &contents,
@@ -486,6 +499,7 @@ fn test_rule_shadowed_child_deletions_are_dropped() {
     let contents = contents(&["//test1/a"]);
     let bcs = changeset(
         DEPOT,
+        SERVER_ID,
         &changelist,
         Some(ONES_CSID),
         &contents,
@@ -510,6 +524,7 @@ fn test_directory_replacing_a_deleted_file_keeps_the_deletion() {
     let contents = contents(&["//test1/a/b"]);
     let bcs = changeset(
         DEPOT,
+        SERVER_ID,
         &changelist,
         Some(ONES_CSID),
         &contents,
@@ -534,6 +549,7 @@ fn test_file_and_a_file_under_it_both_changed_is_an_error() {
     let contents = contents(&["//test1/a", "//test1/a/b"]);
     let result = changeset(
         DEPOT,
+        SERVER_ID,
         &changelist,
         Some(ONES_CSID),
         &contents,
@@ -552,7 +568,14 @@ fn test_file_and_a_file_under_it_both_changed_is_an_error() {
 fn test_user_with_a_newline_is_an_error() {
     let mut changelist = changelist(vec![revision("//test1/a.txt", Action::Delete)]);
     changelist.user = "jdoe\nFake: header".to_owned();
-    let result = changeset(DEPOT, &changelist, None, &HashMap::new(), &HashMap::new());
+    let result = changeset(
+        DEPOT,
+        SERVER_ID,
+        &changelist,
+        None,
+        &HashMap::new(),
+        &HashMap::new(),
+    );
     assert!(
         matches!(
             &result,
@@ -580,12 +603,36 @@ fn test_rule_p4_file_revs_format() {
         numbered("//other/c.txt", Action::Edit, 7),
     ]);
     let contents = contents(&["//test1/z.txt", "//test1/img/foo%402x.png"]);
-    let bcs = changeset(DEPOT, &changelist, None, &contents, &HashMap::new()).unwrap();
+    let bcs = changeset(
+        DEPOT,
+        SERVER_ID,
+        &changelist,
+        None,
+        &contents,
+        &HashMap::new(),
+    )
+    .unwrap();
     assert_eq!(
         Some(&b"2\tb.txt\n1\timg/foo@2x.png\n3\tz.txt\n"[..]),
         extra(&bcs, FILE_REVS_EXTRA)
     );
     assert_eq!(42, P4ChangelistId::from_bcs(&bcs).unwrap().id());
+}
+
+#[mononoke::test]
+fn test_every_changeset_records_its_server() {
+    let changelist = changelist(vec![]);
+    let bcs = changeset(
+        DEPOT,
+        SERVER_ID,
+        &changelist,
+        None,
+        &HashMap::new(),
+        &HashMap::new(),
+    )
+    .unwrap();
+    assert_eq!(Some(SERVER_ID.as_bytes()), extra(&bcs, SERVER_ID_EXTRA));
+    assert_eq!(Some(SERVER_ID), recorded_server_id(&bcs));
 }
 
 #[mononoke::test]
@@ -602,6 +649,7 @@ fn test_file_revs_list_deletions_a_file_shadows() {
     let contents = contents(&["//test1/a"]);
     let bcs = changeset(
         DEPOT,
+        SERVER_ID,
         &changelist,
         Some(ONES_CSID),
         &contents,
@@ -626,15 +674,22 @@ fn test_file_revs_key_is_not_a_changelist_id_key() {
     for (key, _) in P4ChangelistId::new(42).to_hg_extras() {
         assert!(!key.starts_with("p4-"), "{key}");
     }
-    assert!(FILE_REVS_EXTRA.starts_with("p4-"));
-    assert!(DESCRIPTION_BYTES_EXTRA.starts_with("p4-"));
-    assert_ne!(FILE_REVS_EXTRA, DESCRIPTION_BYTES_EXTRA);
+    let keys = BTreeSet::from([FILE_REVS_EXTRA, DESCRIPTION_BYTES_EXTRA, SERVER_ID_EXTRA]);
+    assert_eq!(3, keys.len());
+    assert!(keys.iter().all(|key| key.starts_with("p4-")), "{keys:?}");
 }
 
 #[mononoke::test]
 fn test_path_with_a_newline_is_an_error() {
     let changelist = changelist(vec![revision("//test1/a\nb", Action::Delete)]);
-    let result = changeset(DEPOT, &changelist, None, &HashMap::new(), &HashMap::new());
+    let result = changeset(
+        DEPOT,
+        SERVER_ID,
+        &changelist,
+        None,
+        &HashMap::new(),
+        &HashMap::new(),
+    );
     assert!(
         matches!(&result, Err(TransformError::NewlineInPath(path)) if path == "a\nb"),
         "{result:?}"
@@ -663,7 +718,15 @@ fn with_description(original: &[u8]) -> Changelist {
 fn test_non_utf8_description_stores_its_original_bytes() {
     for original in NOT_UTF8 {
         let changelist = with_description(original);
-        let bcs = changeset(DEPOT, &changelist, None, &HashMap::new(), &HashMap::new()).unwrap();
+        let bcs = changeset(
+            DEPOT,
+            SERVER_ID,
+            &changelist,
+            None,
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap();
         assert_eq!(
             Some(original),
             extra(&bcs, DESCRIPTION_BYTES_EXTRA),
@@ -679,6 +742,7 @@ fn test_utf8_description_stores_no_bytes() {
     for original in utf8 {
         let bcs = changeset(
             DEPOT,
+            SERVER_ID,
             &with_description(original),
             None,
             &HashMap::new(),
@@ -690,6 +754,7 @@ fn test_utf8_description_stores_no_bytes() {
     let without_bytes = changelist(vec![revision("//test1/a.txt", Action::Delete)]);
     let bcs = changeset(
         DEPOT,
+        SERVER_ID,
         &without_bytes,
         None,
         &HashMap::new(),
@@ -703,7 +768,14 @@ fn test_utf8_description_stores_no_bytes() {
 fn test_description_that_is_not_from_its_bytes_is_an_error() {
     let mut changelist = changelist(vec![revision("//test1/a.txt", Action::Delete)]);
     changelist.description_bytes = Some(NOT_UTF8[0].to_vec());
-    let result = changeset(DEPOT, &changelist, None, &HashMap::new(), &HashMap::new());
+    let result = changeset(
+        DEPOT,
+        SERVER_ID,
+        &changelist,
+        None,
+        &HashMap::new(),
+        &HashMap::new(),
+    );
     assert!(
         matches!(
             result,

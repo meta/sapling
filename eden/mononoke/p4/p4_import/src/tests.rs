@@ -37,11 +37,13 @@ use mononoke_types::P4ChangelistId;
 use mononoke_types_mocks::changesetid::ONES_CSID;
 use mononoke_types_mocks::contentid::ONES_CTID;
 use p4_types::Action;
+use p4_types::CaseHandling;
 use p4_types::Depot;
 use p4_types::DepotType;
 use p4_types::FileRevision;
 use p4_types::Integration;
 use p4_types::IntegrationHow;
+use p4_types::ServerInfo;
 use repo_blobstore::RepoBlobstore;
 use repo_derived_data::RepoDerivedData;
 use repo_identity::RepoIdentity;
@@ -337,6 +339,26 @@ struct FakeSource {
     describes: InFlight,
     prints: InFlight,
     filelogs: InFlight,
+    server: FakeServer,
+}
+
+const REPLICA_ID: &str = "standby-1";
+const COMMIT_SERVER_ID: &str = "commit-1";
+const FAKE_ADDRESS: &str = "fake:1666";
+
+/// What `p4 info` reports: by default the replica `REPLICA_ID` of `COMMIT_SERVER_ID`.
+struct FakeServer {
+    server_id: Option<&'static str>,
+    commit_server_id: Option<&'static str>,
+}
+
+impl Default for FakeServer {
+    fn default() -> Self {
+        Self {
+            server_id: Some(REPLICA_ID),
+            commit_server_id: Some(COMMIT_SERVER_ID),
+        }
+    }
 }
 
 /// Counts the calls in flight at once.
@@ -375,6 +397,19 @@ fn key(file: &FileRevision) -> String {
 
 #[async_trait]
 impl ChangeSource for FakeSource {
+    async fn server_info(&self) -> Result<ServerInfo> {
+        self.record("server_info");
+        Ok(ServerInfo {
+            server_id: self.server.server_id.map(str::to_owned),
+            commit_server_id: self.server.commit_server_id.map(str::to_owned),
+            address: FAKE_ADDRESS.to_owned(),
+            version: "P4D/FAKE".to_owned(),
+            case_handling: CaseHandling::Sensitive,
+            unicode: false,
+            services: "standard".to_owned(),
+        })
+    }
+
     async fn latest_change(&self) -> Result<u64> {
         self.record("latest_change");
         let newest = self.changelists.keys().max().copied().unwrap_or(0);
@@ -491,6 +526,18 @@ impl FakeSource {
             files,
         };
         self.changelists.insert(number, changelist);
+        self
+    }
+
+    fn with_server(
+        mut self,
+        server_id: Option<&'static str>,
+        commit_server_id: Option<&'static str>,
+    ) -> Self {
+        self.server = FakeServer {
+            server_id,
+            commit_server_id,
+        };
         self
     }
 
@@ -1630,8 +1677,8 @@ async fn test_rule_depot_root_must_match_the_server_exactly(fb: FacebookInit) ->
     let batch = import_next_from(fb, &exact, DEPOT).await?;
     assert_eq!(2, batch.changelists.len());
     assert_eq!(
-        ["depots", "latest_change"],
-        exact.calls.lock().unwrap()[..2]
+        ["depots", "server_info", "latest_change"],
+        exact.calls.lock().unwrap()[..3]
     );
 
     for (depot_root, expected) in [
@@ -1713,68 +1760,151 @@ fn calls(source: &FakeSource) -> Vec<&'static str> {
 }
 
 #[mononoke::fbinit_test]
-async fn test_rule_resume_must_continue_the_same_depot(fb: FacebookInit) -> Result<()> {
+async fn test_rule_resume_must_continue_the_same_server(fb: FacebookInit) -> Result<()> {
     let ctx = CoreContext::test_mock(fb);
     let master = BookmarkKey::new("master")?;
-    let source = two_changelists()
-        .with_changelist(11, &[("//test1/dir/f.txt", 1, Action::Add, Some(b"f\n"))])
-        .with_changelist(
-            13,
-            &[
-                ("//test1/dir", 1, Action::Add, Some(b"now a file\n")),
-                ("//test1/dir/f.txt", 2, Action::Delete, None),
-            ],
-        );
-
+    let source = two_changelists();
     let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
     import_onto_master(&ctx, &repo, &source, DEPOT, 1).await?;
-    assert_eq!(["depots", "latest_change"], calls(&source)[..2]);
-    let head = bookmark_target(&ctx, &repo, &master).await?;
-
-    let error = import_onto_master(&ctx, &repo, &source, "//other/", 1)
-        .await
-        .unwrap_err();
-    let expected = ResumeMismatch::OtherDepot {
-        bookmark: "master".to_owned(),
-        change: 7,
-        depot_root: "//other/".to_owned(),
-    };
-    assert_eq!(Some(&expected), error.downcast_ref(), "{error:?}");
     assert_eq!(
-        "master was imported from another depot: changelist 7 has no files in //other/",
-        error.root_cause().to_string()
+        ["depots", "server_info", "latest_change"],
+        calls(&source)[..3]
     );
-    assert_eq!(vec!["depots", "describe"], calls(&source));
-    assert_eq!(head, bookmark_target(&ctx, &repo, &master).await?);
-    for change in [9, 11, 13] {
-        assert_eq!(None, mapped(&ctx, &repo, change).await?);
-    }
+    let head = bookmark_target(&ctx, &repo, &master).await?;
+    let head_changeset = head.unwrap().load(&ctx, repo.repo_blobstore()).await?;
+    assert_eq!(
+        Some(COMMIT_SERVER_ID),
+        p4_transform::recorded_server_id(&head_changeset)
+    );
 
-    let other_server = FakeSource::default()
-        .with_changelist(7, &[("//test1/a.txt", 2, Action::Edit, Some(b"one\n"))]);
+    let other_server = two_changelists().with_server(Some(REPLICA_ID), Some("other-commit"));
     let error = import_onto_master(&ctx, &repo, &other_server, DEPOT, 1)
         .await
         .unwrap_err();
-    let expected = ResumeMismatch::RevisionsDiffer {
+    let expected = ResumeMismatch::OtherServer {
         bookmark: "master".to_owned(),
-        change: 7,
+        recorded: COMMIT_SERVER_ID.to_owned(),
+        current: "other-commit".to_owned(),
     };
     assert_eq!(Some(&expected), error.downcast_ref(), "{error:?}");
     assert_eq!(
-        "changelist 7 on this server doesn't match what master recorded",
+        "master was imported from Perforce server commit-1, not other-commit",
         error.root_cause().to_string()
     );
-    assert_eq!(vec!["depots", "describe"], calls(&other_server));
+    assert_eq!(vec!["depots", "server_info"], calls(&other_server));
+    assert_eq!(head, bookmark_target(&ctx, &repo, &master).await?);
+    assert_eq!(None, mapped(&ctx, &repo, 9).await?);
+
+    // The depot is the repo config's, so changing it is not a mismatch.
+    let batch = import_onto_master(&ctx, &repo, &source, "//other/", 1).await?;
+    assert_eq!(9, batch.changelists[0].change);
+    assert_eq!(3, batch.changelists[0].other_depot_files);
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_rule_resume_via_another_replica_of_the_same_commit_server(
+    fb: FacebookInit,
+) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+    let three_changelists = || {
+        two_changelists().with_changelist(11, &[("//test1/a.txt", 3, Action::Edit, Some(b"3\n"))])
+    };
+    import_onto_master(&ctx, &repo, &three_changelists(), DEPOT, 1).await?;
+
+    // Reading from the commit server itself, then from another standby: the same history.
+    for (server_id, commit_server_id, change) in [
+        (COMMIT_SERVER_ID, None, 9),
+        ("standby-2", Some(COMMIT_SERVER_ID), 11),
+    ] {
+        let source = three_changelists().with_server(Some(server_id), commit_server_id);
+        let batch = import_onto_master(&ctx, &repo, &source, DEPOT, 1).await?;
+        assert_eq!(change, batch.changelists[0].change, "via {server_id}");
+    }
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_rule_standalone_server_records_its_server_id(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let master = BookmarkKey::new("master")?;
+    let source = two_changelists().with_server(Some("standalone-1"), None);
+    let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+    import_onto_master(&ctx, &repo, &source, DEPOT, 1).await?;
+    let head = bookmark_target(&ctx, &repo, &master).await?;
+    let head_changeset = head.unwrap().load(&ctx, repo.repo_blobstore()).await?;
+    assert_eq!(
+        Some("standalone-1"),
+        p4_transform::recorded_server_id(&head_changeset)
+    );
+
+    let other_server = two_changelists().with_server(Some("standalone-2"), None);
+    let error = import_onto_master(&ctx, &repo, &other_server, DEPOT, 1)
+        .await
+        .unwrap_err();
+    let expected = ResumeMismatch::OtherServer {
+        bookmark: "master".to_owned(),
+        recorded: "standalone-1".to_owned(),
+        current: "standalone-2".to_owned(),
+    };
+    assert_eq!(Some(&expected), error.downcast_ref(), "{error:?}");
     assert_eq!(head, bookmark_target(&ctx, &repo, &master).await?);
 
-    let batch = import_onto_master(&ctx, &repo, &source, DEPOT, 5).await?;
-    assert_eq!(3, batch.changelists.len());
-    assert_eq!(["depots", "describe", "latest_change"], calls(&source)[..3]);
-    // 13 records its shadowed deletion of dir/f.txt, which its changeset doesn't change.
-    assert_eq!(1, batch.changelists[2].shadowed_deletions);
-    let batch = import_onto_master(&ctx, &repo, &source, DEPOT, 5).await?;
-    assert_eq!(ImportedBatch::default(), batch);
-    assert_eq!(["depots", "describe", "latest_change"], calls(&source)[..3]);
+    let batch = import_onto_master(&ctx, &repo, &source, DEPOT, 1).await?;
+    assert_eq!(9, batch.changelists[0].change);
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_rule_server_without_a_server_id_is_refused(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let master = BookmarkKey::new("master")?;
+    let source = two_changelists().with_server(None, None);
+    let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+
+    let error = import_onto_master(&ctx, &repo, &source, DEPOT, 1)
+        .await
+        .unwrap_err();
+
+    let expected = NoServerId {
+        address: FAKE_ADDRESS.to_owned(),
+    };
+    assert_eq!(Some(&expected), error.downcast_ref(), "{error:?}");
+    assert_eq!(Some(Stage::Prepare), failed_stage(&error));
+    assert_eq!(vec!["depots", "server_info"], calls(&source));
+    assert_eq!(None, bookmark_target(&ctx, &repo, &master).await?);
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_rule_head_without_a_server_id_is_refused(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let master = BookmarkKey::new("master")?;
+    let source = two_changelists();
+    let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+    import_onto_master(&ctx, &repo, &source, DEPOT, 1).await?;
+    let head = bookmark_target(&ctx, &repo, &master).await?.unwrap();
+    let mut unrecorded = head.load(&ctx, repo.repo_blobstore()).await?.into_mut();
+    unrecorded.hg_extra.remove(p4_transform::SERVER_ID_EXTRA);
+    let unrecorded = unrecorded.freeze()?;
+    let unrecorded_id = unrecorded.get_changeset_id();
+    save_and_derive_batch(&ctx, &repo, vec![unrecorded], &[]).await?;
+    let mut txn = repo.bookmarks().create_transaction(ctx.clone());
+    txn.update(&master, unrecorded_id, head, IMPORT_REASON)?;
+    assert!(txn.commit().await?.is_some());
+    calls(&source);
+
+    let error = import_onto_master(&ctx, &repo, &source, DEPOT, 1)
+        .await
+        .unwrap_err();
+
+    let expected = ResumeMismatch::NoServerRecorded {
+        bookmark: "master".to_owned(),
+    };
+    assert_eq!(Some(&expected), error.downcast_ref(), "{error:?}");
+    assert_eq!(vec!["depots", "server_info"], calls(&source));
+    assert_eq!(None, mapped(&ctx, &repo, 9).await?);
     Ok(())
 }
 
@@ -1808,7 +1938,7 @@ async fn test_rule_first_import_needs_a_repo_without_mappings(fb: FacebookInit) 
         "the repo has p4 mappings up to changelist 7 but no main: refusing a first import",
         error.root_cause().to_string()
     );
-    assert_eq!(vec!["depots"], calls(&source));
+    assert_eq!(vec!["depots", "server_info"], calls(&source));
     assert_eq!(None, bookmark_target(&ctx, &repo, &main).await?);
     assert_eq!(None, mapped(&ctx, &repo, 9).await?);
     Ok(())

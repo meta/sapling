@@ -445,6 +445,7 @@ async fn build_changeset(
     ctx: &CoreContext,
     repo: &(impl RepoBlobstoreRef + RepoDerivedDataRef),
     depot_root: &str,
+    commit_server_id: &str,
     base: Option<ChangesetId>,
     built: &[BuiltChangeset],
     fetched: FetchedChangelist,
@@ -483,8 +484,14 @@ async fn build_changeset(
         .last()
         .map(|b| b.changeset.get_changeset_id())
         .or(base);
-    let changeset =
-        p4_transform::changeset(depot_root, &changelist, parent, &contents, &copy_sources)?;
+    let changeset = p4_transform::changeset(
+        depot_root,
+        commit_server_id,
+        &changelist,
+        parent,
+        &contents,
+        &copy_sources,
+    )?;
     let mut other_depot_files = 0;
     for revision in &changelist.files {
         if p4_transform::repo_path(depot_root, &revision.depot_path)?.is_none() {
@@ -511,8 +518,9 @@ async fn build_changeset(
 struct BuildingChangelist(u64);
 
 /// The changesets for `changes`, in order, each on top of the one before and the first on
-/// top of `base`. Their contents are stored; the changesets themselves are not. Changelists
-/// are fetched ahead while earlier ones are built, but built one at a time, in order.
+/// top of `base`, each recording the source's commit server's id (see `commit_server_id`).
+/// Their contents are stored; the changesets themselves are not. Changelists are fetched ahead while earlier ones are
+/// built, but built one at a time, in order.
 pub async fn build_changesets(
     ctx: &CoreContext,
     repo: &(impl RepoBlobstoreRef + RepoDerivedDataRef + FilestoreConfigRef),
@@ -522,6 +530,8 @@ pub async fn build_changesets(
     changes: &[u64],
     options: &ImportOptions,
 ) -> Result<Vec<BuiltChangeset>> {
+    let commit_server_id = commit_server_id(source).await?;
+    let commit_server_id = commit_server_id.as_str();
     let concurrency = options.file_concurrency.max(1);
     // Room for one fetched changelist waiting for the build, besides those in flight.
     let (mut sender, mut receiver) = mpsc::channel(0);
@@ -547,10 +557,18 @@ pub async fn build_changesets(
         while let Some(fetched) = receiver.next().await {
             let fetched: FetchedChangelist = fetched?;
             let change = fetched.changelist.number;
-            let changeset =
-                build_changeset(ctx, repo, depot_root, base, &built, fetched, concurrency)
-                    .await
-                    .with_context(|| BuildingChangelist(change))?;
+            let changeset = build_changeset(
+                ctx,
+                repo,
+                depot_root,
+                commit_server_id,
+                base,
+                &built,
+                fetched,
+                concurrency,
+            )
+            .await
+            .with_context(|| BuildingChangelist(change))?;
             built.push(changeset);
         }
         anyhow::Ok(built)
@@ -626,6 +644,26 @@ pub async fn check_depot_root(source: &impl ChangeSource, depot_root: &str) -> R
     Err(error.into())
 }
 
+#[derive(Debug, Error, PartialEq, Eq)]
+#[error(
+    "the Perforce server at {address} has no ServerID (set with `p4 serverid`), so its history can't be told from another server's"
+)]
+pub struct NoServerId {
+    pub address: String,
+}
+
+/// The commit server's id, which each imported changeset records: a replica's commit server,
+/// or the server itself when standalone. A failover or a move to another replica keeps it.
+async fn commit_server_id(source: &impl ChangeSource) -> Result<String> {
+    let info = source.server_info().await?;
+    info.commit_server_id.or(info.server_id).ok_or_else(|| {
+        NoServerId {
+            address: info.address,
+        }
+        .into()
+    })
+}
+
 async fn head_changeset(
     ctx: &CoreContext,
     repo: &(impl BookmarksRef + RepoBlobstoreRef),
@@ -657,16 +695,17 @@ async fn head(
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ResumeMismatch {
-    #[error(
-        "{bookmark} was imported from another depot: changelist {change} has no files in {depot_root}"
-    )]
-    OtherDepot {
+    #[error("{bookmark} was imported from Perforce server {recorded}, not {current}")]
+    OtherServer {
         bookmark: String,
-        change: u64,
-        depot_root: String,
+        recorded: String,
+        current: String,
     },
-    #[error("changelist {change} on this server doesn't match what {bookmark} recorded")]
-    RevisionsDiffer { bookmark: String, change: u64 },
+    #[error(
+        "{bookmark}'s changeset records no Perforce server ({})",
+        p4_transform::SERVER_ID_EXTRA
+    )]
+    NoServerRecorded { bookmark: String },
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -697,45 +736,35 @@ pub async fn check_first_import(
     }
 }
 
-/// Rejects resuming unless the server's describe of the bookmark's changelist, in the
-/// depot at `depot_root`, gives the file revisions its changeset recorded. A changelist
-/// has no parent field, so nothing else ties the bookmark's history to this depot and
-/// server (see `import_changelists`): without the check, another depot's changelists
-/// would build on top of it. Without the bookmark, it must be a first import (see
-/// `check_first_import`). Design: designs/import_flow.md.
+/// Rejects a server without a `ServerID`, and resuming unless the bookmark's changeset
+/// recorded this server's commit server id (see `commit_server_id`). Changelist numbers are
+/// only unique per commit server and a changelist has no parent field, so nothing else ties
+/// the bookmark's history to the server (see `import_changelists`): without the check,
+/// another server's changelists would build on top of it. The depot isn't checked: it is
+/// the repo config's to change. Without the bookmark, it must be a first import (see
+/// `check_first_import`).
+/// Design: designs/import_flow.md.
 pub async fn check_resume_continuity(
     ctx: &CoreContext,
     repo: &(impl BookmarksRef + BonsaiP4MappingRef + RepoBlobstoreRef),
     source: &impl ChangeSource,
-    depot_root: &str,
     bookmark: &BookmarkKey,
 ) -> Result<()> {
+    let current = commit_server_id(source).await?;
     let Some(changeset) = head_changeset(ctx, repo, bookmark).await? else {
         return check_first_import(ctx, repo, bookmark).await;
     };
-    let change = P4ChangelistId::from_bcs(&changeset)?.id();
-    let recorded = p4_transform::recorded_file_revs(&changeset).with_context(|| {
-        format!(
-            "{bookmark}'s changeset has no {} extra",
-            p4_transform::FILE_REVS_EXTRA
-        )
-    })?;
-    let changelist = source.describe(change).await?;
-    let on_server = p4_transform::file_revs(depot_root, &changelist)?;
-    if on_server == recorded {
-        return Ok(());
-    }
     let bookmark = bookmark.to_string();
-    let error = if on_server.is_empty() {
-        ResumeMismatch::OtherDepot {
+    match p4_transform::recorded_server_id(&changeset) {
+        Some(recorded) if recorded == current => Ok(()),
+        Some(recorded) => Err(ResumeMismatch::OtherServer {
             bookmark,
-            change,
-            depot_root: depot_root.to_owned(),
+            recorded: recorded.to_owned(),
+            current,
         }
-    } else {
-        ResumeMismatch::RevisionsDiffer { bookmark, change }
-    };
-    Err(error.into())
+        .into()),
+        None => Err(ResumeMismatch::NoServerRecorded { bookmark }.into()),
+    }
 }
 
 /// The last changelist imported onto `bookmark`: the next import starts after it. The
@@ -1102,7 +1131,7 @@ pub async fn import_next(
 ) -> Result<ImportedBatch> {
     let changes = async {
         check_depot_root(source, depot_root).await?;
-        check_resume_continuity(ctx, repo, source, depot_root, bookmark).await?;
+        check_resume_continuity(ctx, repo, source, bookmark).await?;
         let after = resume_point(ctx, repo, bookmark).await?;
         next_changes(source, depot_root, after, limit).await
     }

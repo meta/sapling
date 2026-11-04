@@ -61,18 +61,24 @@ pub enum TransformError {
 /// Design: designs/file_revisions_and_copy_from.md.
 pub const FILE_REVS_EXTRA: &str = "p4-file-revs";
 
+/// The id of the commit server the changelist came from: a replica's commit server, or the
+/// server itself when standalone. Changelist numbers are only unique per commit server, so
+/// this is what ties a repo's history to one server, whichever replica it is read from.
+pub const SERVER_ID_EXTRA: &str = "p4-server-id";
+
 /// For a description that isn't UTF-8, its original bytes; the message is their
 /// `String::from_utf8_lossy` decoding.
 pub const DESCRIPTION_BYTES_EXTRA: &str = "p4-description-bytes";
 
-/// Builds the commit for one changelist: author, date and message from the changelist,
-/// parent `parent`, and a file change for each of its files under `depot_root`
-/// (files in other depots are skipped). `contents` and `copy_sources` are looked up
-/// by full Perforce path, e.g. `//non-stream-depot/docs/readme.txt`.
+/// Builds the commit for one changelist of the server `server_id`: author, date and message
+/// from the changelist, parent `parent`, and a file change for each of its files under
+/// `depot_root` (files in other depots are skipped). `contents` and `copy_sources` are
+/// looked up by full Perforce path, e.g. `//non-stream-depot/docs/readme.txt`.
 /// Every revision keeps its file change, even an unchanged one; a changelist without
 /// files is an empty changeset. Design: designs/data_model.md.
 pub fn changeset(
     depot_root: &str,
+    server_id: &str,
     changelist: &Changelist,
     parent: Option<ChangesetId>,
     contents: &HashMap<String, ContentMetadataV2>,
@@ -117,6 +123,9 @@ pub fn changeset(
         FILE_REVS_EXTRA.to_owned(),
         file_revs(depot_root, changelist)?,
     );
+    bonsai
+        .hg_extra
+        .insert(SERVER_ID_EXTRA.to_owned(), server_id.as_bytes().to_vec());
     if let Some(original) = &changelist.description_bytes {
         if String::from_utf8_lossy(original) != changelist.description {
             return Err(TransformError::DescriptionMismatch {
@@ -153,11 +162,12 @@ pub fn file_revs(depot_root: &str, changelist: &Changelist) -> Result<Vec<u8>, T
     Ok(lines.into_bytes())
 }
 
-/// The `FILE_REVS_EXTRA` value `changeset` recorded, if it has one.
-pub fn recorded_file_revs(changeset: &BonsaiChangeset) -> Option<&[u8]> {
+/// The `SERVER_ID_EXTRA` value `changeset` recorded, if it has one.
+pub fn recorded_server_id(changeset: &BonsaiChangeset) -> Option<&str> {
     changeset
         .hg_extra()
-        .find_map(|(key, value)| (key == FILE_REVS_EXTRA).then_some(value))
+        .find_map(|(key, value)| (key == SERVER_ID_EXTRA).then_some(value))
+        .and_then(|value| std::str::from_utf8(value).ok())
 }
 
 /// When a file replaces a directory, Perforce also lists the directory's files as

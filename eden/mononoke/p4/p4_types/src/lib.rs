@@ -337,6 +337,8 @@ pub enum Principal {
 pub struct ServerInfo {
     /// `None` until set with `p4 serverid`.
     pub server_id: Option<String>,
+    /// A replica's commit server's `ServerID`; `None` on the commit server or a standalone.
+    pub commit_server_id: Option<String>,
     /// `unknown` for an `rsh:` server.
     pub address: String,
     pub version: String,
@@ -398,6 +400,8 @@ impl fmt::Display for DepotType {
 /// implementation must not rely on them coming one at a time.
 #[async_trait]
 pub trait ChangeSource: Send + Sync {
+    async fn server_info(&self) -> Result<ServerInfo>;
+
     /// The newest submitted changelist on the server.
     async fn latest_change(&self) -> Result<u64>;
 
