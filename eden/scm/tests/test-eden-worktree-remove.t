@@ -499,6 +499,38 @@ the Windows failure when smaller layouts didn't.)
   $ sl worktree list
   this worktree is not part of a group
 
+test worktree remove - removes an unmounted checkout
+
+  $ cd $TESTTMP
+  $ newclientrepo unmounted_repo
+  $ touch file.txt
+  $ sl commit -qAm init
+  $ sl worktree add $TESTTMP/unmounted
+  created linked worktree at $TESTTMP/unmounted
+  $ eden unmount $TESTTMP/unmounted
+#if windows
+FIXME: `.eden\config` stays in the folder after unmounting, so removal takes the
+checkout for a mounted one and the daemon refuses to unmount it. This should
+remove the checkout as on the other platforms.
+  $ sl worktree remove $TESTTMP/unmounted -y --force
+  Unmounting checkout...
+  abort: direct EdenFS removal failed for $TESTTMP?unmounted: failed to unmount mount point at *: *no such mount point* (glob)
+  [255]
+  $ sl worktree list
+    linked  $TESTTMP?unmounted (glob)
+  * main    $TESTTMP?unmounted_repo (glob)
+#else
+  $ sl worktree remove $TESTTMP/unmounted -y --force
+  Cannot inspect repository-configured redirections while $TESTTMP/unmounted is unmounted. Their backing storage may remain. APFS volumes left behind require manual cleanup. (osx !)
+  Cannot inspect repository-configured redirections while $TESTTMP/unmounted is unmounted. Their backing storage may remain. Run `eden du --clean-orphaned` to reclaim leftover backing storage. (no-osx !)
+  Deleting EdenFS checkout state...
+  removed $TESTTMP/unmounted
+  $ test -d $TESTTMP/unmounted
+  [1]
+  $ sl worktree list
+  this worktree is not part of a group
+#endif
+
 test worktree remove - unmounts an added redirection on Windows
 
 #if windows
