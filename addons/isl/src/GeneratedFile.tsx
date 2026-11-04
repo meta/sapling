@@ -25,7 +25,7 @@ const currentlyFetching = new Set<RepoRelativePath>();
  * Generated files are cached in `generatedFileCache` LRU.
  * For historical reasons, the files are not an atom.
  * In order to allow rerender dependencies when we update file statuses,
- * store a generation index in recoil.
+ * store a generation index in an atom.
  * This state should generally be used through useGeneratedFileStatus helpers.
  */
 const generatedFileGeneration = atom<number>(0);

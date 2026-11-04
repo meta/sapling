@@ -24,7 +24,7 @@ type SuccessionCallback = (successions: Successions) => unknown;
  * to show stale data. For example, if you select a commit and amend a commit earlier in the stack,
  * your selection will now disappear.
  *
- * To avoid this, we keep track of commits being succeeded, and any recoil state keyed on hashes
+ * To avoid this, we keep track of commits being succeeded, and any atom keyed on hashes
  * can listen to this event and update itself with the new oldHash -> newHash.
  *
  * Succession is tracked by looking at each new batch of commits we get, each of which may have

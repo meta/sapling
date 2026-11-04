@@ -513,7 +513,7 @@ function ComparisonSettingsDropdown() {
 /**
  * Derive from the parsed diff state which files should be expanded or collapsed by default.
  * This state is the source of truth of which files are expanded/collapsed.
- * This is a hook instead of a recoil selector since it depends on the comparison
+ * This is a hook instead of a derived atom since it depends on the comparison
  * which is a prop.
  */
 function useCollapsedFilesState(data: {

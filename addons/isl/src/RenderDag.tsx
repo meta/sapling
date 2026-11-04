@@ -41,7 +41,7 @@ type RenderFunctionProps = {
    * How to render a commit.
    *
    * To avoid re-rendering, pass a "static" (ex. not a closure) function,
-   * then use hooks (ex. recoil selector) to trigger re-rendering inside
+   * then use hooks (ex. useAtomValue) to trigger re-rendering inside
    * the static function.
    */
   renderCommit?: (info: DagCommitInfo) => JSX.Element | null;
@@ -50,7 +50,7 @@ type RenderFunctionProps = {
    * How to render extra stuff below a commit. Default: nothing.
    *
    * To avoid re-rendering, pass a "static" (ex. not a closure) function,
-   * then use hooks (ex. recoil selector) to trigger re-rendering inside
+   * then use hooks (ex. useAtomValue) to trigger re-rendering inside
    * the static function.
    */
   renderCommitExtras?: (info: DagCommitInfo, row: ExtendedGraphRow) => null | JSX.Element;
@@ -62,7 +62,7 @@ type RenderFunctionProps = {
    * Default: defaultRenderGlyphSvg, draw a circle.
    *
    * To avoid re-rendering, pass a "static" (ex. not a closure) function,
-   * then use hooks (ex. recoil selector) to trigger re-rendering inside
+   * then use hooks (ex. useAtomValue) to trigger re-rendering inside
    * the static function.
    */
   renderGlyph?: (info: DagCommitInfo) => RenderGlyphResult;
@@ -124,7 +124,7 @@ export type RenderGlyphResult = ['inside-tile', JSX.Element] | ['replace-tile', 
  *
  * This component is intended to be used in multiple places,
  * ex. the main dag, "mutation dag", context-menu sub-dag, etc.
- * So it should avoid depending on Recoil states.
+ * So it should avoid depending on global atoms.
  */
 export function RenderDag(props: RenderDagProps) {
   const {

@@ -203,7 +203,7 @@ type StackEditState = {
   history: Loading<History>;
 };
 
-/** Lightweight recoil Loadable alternative that is not coupled with Promise. */
+/** Like Jotai's `loadable`, but not coupled with Promise. */
 export type Loading<T> =
   | {
       state: 'loading';
@@ -569,8 +569,6 @@ export type {UseStackEditState};
  * `loadingStackState.state` is `hasValue`. This is the main state for
  * reading and updating the `CommitStackState`.
  */
-// This is not a recoil selector for flexibility.
-// See https://github.com/facebookexperimental/Recoil/issues/673
 export function useStackEditState() {
   const [state, setState] = useAtom(stackEditState);
   return new UseStackEditState(state, setState);

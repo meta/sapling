@@ -155,7 +155,7 @@ export function useModal(): <T>(config: ModalConfig<T>) => Promise<T | undefined
   return useCallback(
     <T,>(config: ModalConfig<T>) => {
       const deferred = defer<T | undefined>();
-      // The API we provide is typed with T, but our recoil state only knows `unknown`, so we have to cast.
+      // The API we provide is typed with T, but our atom only knows `unknown`, so we have to cast.
       // This is safe because only one modal is visible at a time, so we know the data type we created it with is what we'll get back.
       setModal({
         config: config as ModalConfig<unknown>,
