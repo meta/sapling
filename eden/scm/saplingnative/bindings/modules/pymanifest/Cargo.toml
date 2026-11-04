@@ -8,7 +8,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.104"
 cpython = { version = "0.7.2", features = ["python3-sys"], default-features = false }
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard"] }
+parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
 pypathmatcher = { version = "0.1.0", path = "../pypathmatcher" }
 regex = "1.13.1"
 sapling-cpython-ext = { version = "0.1.0", path = "../../../../lib/cpython-ext" }

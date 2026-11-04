@@ -23,6 +23,6 @@ quote = "1.0.47"
 sapling-tree-pattern-match = { version = "0.2.0", path = "tree-pattern-match" }
 
 [dev-dependencies]
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard"] }
+parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
 tempfile = "3.27.0"
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }

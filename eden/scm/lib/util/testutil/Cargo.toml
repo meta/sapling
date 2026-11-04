@@ -15,4 +15,4 @@ name = "testutil"
 
 [dependencies]
 fail = { version = "0.5.1", features = ["failpoints"] }
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard"] }
+parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }

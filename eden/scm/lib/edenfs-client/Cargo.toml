@@ -17,7 +17,7 @@ name = "edenfs_client"
 anyhow = "1.0.104"
 fbthrift_socket = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 fs-err = "3.3.2"
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard"] }
+parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
 sapling-async-runtime = { version = "0.1.0", path = "../async-runtime" }
 sapling-clientinfo = { version = "0.1.0", path = "../clientinfo" }
 sapling-configmodel = { version = "0.2.0", path = "../config/model" }

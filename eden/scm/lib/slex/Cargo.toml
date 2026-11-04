@@ -22,7 +22,7 @@ path = "benches/executor.rs"
 anyhow = "1.0.104"
 crossfire = "3.1.22"
 num_cpus = "1.16"
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard"] }
+parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
 sapling-async-runtime = { version = "0.1.0", path = "../async-runtime" }
 slex-items = { version = "0.1.0", path = "items" }
 smallvec = { version = "1.16.4", default-features = false }

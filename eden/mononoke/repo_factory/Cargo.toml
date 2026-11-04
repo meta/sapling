@@ -62,7 +62,7 @@ mutable_blobstore = { version = "0.1.0", path = "../repo_attributes/mutable_blob
 mutable_counters = { version = "0.1.0", path = "../repo_attributes/mutable_counters" }
 mutable_renames = { version = "0.1.0", path = "../repo_attributes/mutable_renames" }
 newfilenodes = { version = "0.1.0", path = "../repo_attributes/newfilenodes" }
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard"] }
+parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
 permission_checker = { version = "0.1.0", path = "../common/permission_checker" }
 phases = { version = "0.1.0", path = "../repo_attributes/phases" }
 preloaded_commit_graph_storage = { version = "0.1.0", path = "../repo_attributes/commit_graph/preloaded_commit_graph_storage" }

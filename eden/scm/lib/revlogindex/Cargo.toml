@@ -17,7 +17,7 @@ name = "revlogindex"
 async-trait = "0.1.92"
 bit-vec = "0.10.1"
 byteorder = "1.5"
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard"] }
+parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
 sapling-dag = { version = "0.2.0", path = "../dag" }
 sapling-indexedlog = { version = "0.2.0", path = "../indexedlog" }
 sapling-lz4-pyframe = { version = "0.1.0", path = "../lz4-pyframe" }

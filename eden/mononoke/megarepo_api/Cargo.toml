@@ -38,7 +38,7 @@ metaconfig_types = { version = "0.1.0", path = "../metaconfig/types" }
 mononoke_api = { version = "0.1.0", path = "../mononoke_api" }
 mononoke_app = { version = "0.1.0", path = "../cmdlib/mononoke_app" }
 mononoke_types = { version = "0.1.0", path = "../mononoke_types" }
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard"] }
+parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
 repo_authorization = { version = "0.1.0", path = "../repo_authorization" }
 repo_blobstore = { version = "0.1.0", path = "../repo_attributes/repo_blobstore" }
 repo_derived_data = { version = "0.1.0", path = "../repo_attributes/repo_derived_data" }

@@ -13,7 +13,7 @@ async-trait = "0.1.92"
 commit_graph_types = { version = "0.1.0", path = "../commit_graph_types" }
 context = { version = "0.1.0", path = "../../../servers/slapi/slapi_server/context" }
 mononoke_types = { version = "0.1.0", path = "../../../mononoke_types" }
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard"] }
+parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
 repo_identity = { version = "0.1.0", path = "../../repo_identity" }
 vec1 = { version = "1.12.1", features = ["serde"] }
 

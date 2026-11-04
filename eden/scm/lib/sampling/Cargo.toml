@@ -14,7 +14,7 @@ exclude = ["BUCK"]
 name = "sampling"
 
 [dependencies]
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard"] }
+parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
 sapling-clientinfo = { version = "0.1.0", path = "../clientinfo" }
 sapling-configmodel = { version = "0.2.0", path = "../config/model" }
 serde = { version = "1.0.229", features = ["derive", "rc"] }

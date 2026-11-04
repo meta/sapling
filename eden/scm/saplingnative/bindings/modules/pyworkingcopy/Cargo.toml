@@ -9,7 +9,7 @@ edition = "2024"
 anyhow = "1.0.104"
 cpython = { version = "0.7.2", features = ["python3-sys"], default-features = false }
 fs-err = "3.3.2"
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard"] }
+parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
 pypathmatcher = { version = "0.1.0", path = "../pypathmatcher" }
 pystatus = { version = "0.1.0", path = "../pystatus" }
 pytreestate = { version = "0.1.0", path = "../pytreestate" }

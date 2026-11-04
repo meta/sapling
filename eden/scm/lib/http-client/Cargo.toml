@@ -26,7 +26,7 @@ http = "1.5.0"
 lru-cache = "0.1.2"
 maplit = "1.0"
 openssl = "0.10.80"
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard"] }
+parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
 paste = "1.0.14"
 pin-project = "1.1.13"
 regex = "1.13.1"

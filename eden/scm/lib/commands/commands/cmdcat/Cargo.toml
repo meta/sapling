@@ -15,7 +15,7 @@ anyhow = "1.0.104"
 blob = { version = "0.1.0", path = "../../../blob" }
 cmdutil = { version = "0.1.0", path = "../../cmdutil" }
 filewalk = { version = "0.1.0", path = "../../../filewalk" }
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard"] }
+parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
 sapling-bytescan = { version = "0.1.0", path = "../../../util/bytescan" }
 sapling-clidispatch = { version = "0.1.0", path = "../../../clidispatch" }
 sapling-manifest = { version = "0.1.0", path = "../../../manifest" }

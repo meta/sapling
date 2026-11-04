@@ -15,7 +15,7 @@ name = "walkdetector"
 
 [dependencies]
 coarsetime = "0.1.38"
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard"] }
+parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
 rand = "0.10.3"
 sapling-procinfo = { version = "0.1.0", path = "../procinfo" }
 sapling-types = { version = "0.1.0", path = "../types" }

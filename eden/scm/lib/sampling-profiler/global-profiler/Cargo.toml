@@ -18,7 +18,7 @@ name = "global_profiler"
 [dependencies]
 anyhow = "1.0.104"
 fs-err = "3.3.2"
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard"] }
+parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
 sapling-atexit = { version = "0.1.0", path = "../../util/atexit" }
 sapling-backtrace-python = { version = "0.1.0", path = "../../backtrace-python" }
 sapling-clidispatch = { version = "0.1.0", path = "../../clidispatch" }

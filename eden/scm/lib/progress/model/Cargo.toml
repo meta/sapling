@@ -15,7 +15,7 @@ name = "progress_model"
 
 [dependencies]
 arc-swap = { version = "1.9.3", features = ["weak"] }
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard"] }
+parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
 paste = "1.0.14"
 thread_local = "1.1.10"
 tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }

@@ -15,7 +15,7 @@ name = "control_point"
 
 [dependencies]
 anyhow = "1.0.104"
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard"] }
+parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
 sapling-util = { version = "0.2.0", path = "../util" }
 serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
