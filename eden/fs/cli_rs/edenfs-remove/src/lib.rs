@@ -38,6 +38,8 @@ use edenfs_core::redirect::get_effective_redirections;
 #[cfg(target_os = "linux")]
 use edenfs_core::redirect::redirection_mount_status;
 use edenfs_utils::is_active_eden_mount;
+#[cfg(windows)]
+use edenfs_utils::path_from_bytes;
 use fail::fail_point;
 use tracing::debug;
 use tracing::warn;
@@ -196,7 +198,7 @@ pub async fn remove_checkout_with_event_handler(
         .with_context(|| format!("failed to canonicalize checkout path {}", path.display()))?;
     let client_name = registered_client(instance, &path)?
         .ok_or_else(|| anyhow!("{} is not a registered EdenFS checkout", path.display()))?;
-    let checkout_is_active = is_active_eden_mount(&path);
+    let checkout_is_mounted = is_mounted_checkout(instance, &path).await;
 
     let client_config = instance.config_directory(&client_name).join("config.toml");
     let backing_cleanup = match options.backing_cleanup {
@@ -223,7 +225,7 @@ pub async fn remove_checkout_with_event_handler(
         BackingCleanupPolicy::Preserve => BackingCleanupPolicy::Preserve,
     };
 
-    let redirection_cleanup = redirection_cleanup_policy(checkout_is_active, backing_cleanup);
+    let redirection_cleanup = redirection_cleanup_policy(checkout_is_mounted, backing_cleanup);
     if redirection_cleanup.is_some()
         && let Err(error) = clear_redirection_targets(instance, &client_name).await
     {
@@ -238,7 +240,7 @@ pub async fn remove_checkout_with_event_handler(
         Some(BackingCleanupPolicy::DeleteManaged) => {
             // `.eden-redirections` is checkout content, so only client config redirections
             // can be planned while the checkout is unmounted.
-            if !checkout_is_active {
+            if !checkout_is_mounted {
                 event_handler(RemoveCheckoutEvent::Warning(
                     RemoveCheckoutWarning::RepositoryRedirectionCleanupSkipped {
                         path: path.clone(),
@@ -248,7 +250,7 @@ pub async fn remove_checkout_with_event_handler(
             clean_up_managed_backing(
                 instance,
                 &path,
-                checkout_is_active,
+                checkout_is_mounted,
                 options.auxiliary_process_timeout,
                 &mut event_handler,
             )
@@ -267,7 +269,7 @@ pub async fn remove_checkout_with_event_handler(
         None => {}
     }
 
-    if checkout_is_active {
+    if checkout_is_mounted {
         remove_active_checkout(instance, &path, &client_name, options, &mut event_handler).await
     } else {
         remove_inactive_checkout(instance, &path, &client_name, options, &mut event_handler).await
@@ -275,15 +277,46 @@ pub async fn remove_checkout_with_event_handler(
 }
 
 fn redirection_cleanup_policy(
-    checkout_is_active: bool,
+    checkout_is_mounted: bool,
     backing_cleanup: BackingCleanupPolicy,
 ) -> Option<BackingCleanupPolicy> {
     // A redirection mount can outlive the checkout root, so managed cleanup
     // always tries to unmount redirections before deleting their backing.
-    match (checkout_is_active, backing_cleanup) {
+    match (checkout_is_mounted, backing_cleanup) {
         (_, BackingCleanupPolicy::DeleteManaged) => Some(BackingCleanupPolicy::DeleteManaged),
         (true, BackingCleanupPolicy::Preserve) => Some(BackingCleanupPolicy::Preserve),
         (false, BackingCleanupPolicy::Preserve) => None,
+    }
+}
+
+/// Whether `path` is the root of a mounted checkout.
+#[cfg(not(windows))]
+async fn is_mounted_checkout(_instance: &EdenFsInstance, path: &Path) -> bool {
+    is_active_eden_mount(path)
+}
+
+/// Whether `path` is the root of a mounted checkout. On Windows, `.eden\config` stays in
+/// the folder after the checkout is unmounted, so the daemon is asked as well. If it can't
+/// answer, the metadata decides, as it does on the other platforms.
+#[cfg(windows)]
+async fn is_mounted_checkout(instance: &EdenFsInstance, path: &Path) -> bool {
+    if !is_active_eden_mount(path) {
+        return false;
+    }
+    let path_key = dunce::simplified(path);
+    match instance
+        .daemon()
+        .list_mounts(Some(Duration::from_secs(3)))
+        .await
+    {
+        Ok(mounts) => mounts.iter().any(|mount| {
+            path_from_bytes(&mount.mountPoint)
+                .is_ok_and(|mount_path| dunce::simplified(&mount_path) == path_key)
+        }),
+        Err(error) => {
+            debug!(path = %path.display(), %error, "Could not list mounts, assuming the checkout is mounted");
+            true
+        }
     }
 }
 
@@ -494,7 +527,7 @@ enum BackingDeletionScope {
 async fn clean_up_managed_backing<EventHandler>(
     instance: &EdenFsInstance,
     path: &Path,
-    checkout_is_active: bool,
+    checkout_is_mounted: bool,
     timeout: Duration,
     event_handler: &mut EventHandler,
 ) where
@@ -543,7 +576,7 @@ async fn clean_up_managed_backing<EventHandler>(
         path,
         &checkout,
         &redirections,
-        checkout_is_active,
+        checkout_is_mounted,
         timeout,
         &mut |warning| event_handler(RemoveCheckoutEvent::Warning(warning)),
     )
@@ -578,7 +611,7 @@ async fn clean_up_managed_backing<EventHandler>(
                     )
                 });
             // Bind unmounts go through the daemon, which only serves mounted checkouts.
-            if checkout_is_active {
+            if checkout_is_mounted {
                 unmounted
             } else {
                 unmounted.with_context(|| {
@@ -621,7 +654,7 @@ async fn unmount_managed_redirections(
     path: &Path,
     checkout: &EdenFsCheckout,
     redirections: &[RedirectionCleanup],
-    checkout_is_active: bool,
+    checkout_is_mounted: bool,
     timeout: Duration,
     warning_handler: &mut impl FnMut(RemoveCheckoutWarning),
 ) -> Result<Vec<BackingDeletionScope>> {
@@ -659,7 +692,7 @@ async fn unmount_managed_redirections(
                             cleanup.redirection.repo_path().display()
                         )
                     });
-                if checkout_is_active {
+                if checkout_is_mounted {
                     unmounted?;
                 } else {
                     unmounted.with_context(|| {
