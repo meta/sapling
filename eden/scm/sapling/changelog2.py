@@ -212,7 +212,12 @@ class changelog:
 
     def __contains__(self, rev):
         """filtered version of revlog.__contains__"""
-        return rev is not None and rev in self.torevs(self.dag.all())
+        if rev is None:
+            return False
+        # The Rust set only takes i64 revision numbers; no revision lies outside.
+        if isinstance(rev, int) and not -(1 << 63) <= rev < (1 << 63):
+            return False
+        return rev in self.torevs(self.dag.all())
 
     def __iter__(self):
         """filtered version of revlog.__iter__"""
