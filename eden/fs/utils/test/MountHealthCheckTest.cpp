@@ -61,6 +61,12 @@ TEST(MountHealthCheckTest, statxConfirmsTheMountWithoutTheMountTable) {
   EXPECT_TRUE(progress.mountCheckedByStatx());
 }
 
+TEST(MountHealthCheckTest, noFuseQueueDepthForAnUnknownConnection) {
+  EXPECT_EQ(std::nullopt, readFuseConnectionWaiting(0));
+  // No FUSE connection uses device 0:0xfffff.
+  EXPECT_EQ(std::nullopt, readFuseConnectionWaiting(makedev(0, 0xfffff)));
+}
+
 TEST(MountHealthCheckTest, statxFallsBackToTheMountTableOnAnotherDevice) {
   auto device = rootMountDevice();
   if (!device) {

@@ -376,8 +376,9 @@ folly::dynamic describeProbesHoldingThreads(
 }
 
 /**
- * The checkout's load, as JSON fields: the requests the kernel is waiting on,
- * the oldest one, and whether a checkout or an inode GC is running.
+ * The checkout's load, as JSON fields: the requests EdenFS is working on and
+ * the oldest one, the requests the kernel has queued, and whether a checkout
+ * or an inode GC is running.
  */
 folly::dynamic describeFsChannelLoad(
     EdenMount& mount,
@@ -393,6 +394,10 @@ folly::dynamic describeFsChannelLoad(
     return a.requestStartTime < b.requestStartTime;
   };
   if (auto* fuse = mount.getFuseChannel()) {
+    if (auto waiting =
+            readFuseConnectionWaiting(mount.getHealthCheckDevice())) {
+      detail["fuse_waiting"] = *waiting;
+    }
     auto requests = fuse->getOutstandingRequests();
     detail["outstanding"] = requests.size();
     auto oldest =

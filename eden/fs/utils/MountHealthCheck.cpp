@@ -355,6 +355,29 @@ folly::dynamic describeProbeThread(const MountHealthProbeProgress& progress) {
   return detail;
 }
 
+std::optional<uint64_t> readFuseConnectionWaiting(uint64_t device) {
+#ifdef __linux__
+  if (device == 0) {
+    return std::nullopt;
+  }
+  // FUSE names each connection's directory after its device minor.
+  auto path = folly::to<std::string>(
+      "/sys/fs/fuse/connections/", minor(device), "/waiting");
+  std::string contents;
+  if (!folly::readFile(path.c_str(), contents)) {
+    return std::nullopt;
+  }
+  auto waiting = folly::tryTo<uint64_t>(folly::trimWhitespace(contents));
+  if (!waiting.hasValue()) {
+    return std::nullopt;
+  }
+  return waiting.value();
+#else
+  (void)device;
+  return std::nullopt;
+#endif
+}
+
 folly::dynamic describeSystemPressure() {
   folly::dynamic result = folly::dynamic::object;
 #ifdef __linux__

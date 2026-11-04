@@ -156,6 +156,13 @@ folly::dynamic describeProbeThread(const MountHealthProbeProgress& progress);
  */
 folly::dynamic describeSystemPressure();
 
+/**
+ * The number of requests the kernel has queued or sent to EdenFS on the FUSE
+ * connection of the mount on `device`, from /sys/fs/fuse/connections. Unset if
+ * the connection is unknown or the file cannot be read.
+ */
+std::optional<uint64_t> readFuseConnectionWaiting(uint64_t device);
+
 namespace detail {
 
 /** The run state from /proc/<pid>/task/<tid>/stat. */
