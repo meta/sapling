@@ -168,6 +168,7 @@ export type TrackEventName =
   | 'SubmitSingleCommit'
   | 'AISplitButtonClick'
   | 'SuccessionsDetected'
+  | 'SmartlogTooManyCommits'
   | 'BuggySuccessionDetected'
   | 'SyncDiffMessageMutation'
   | 'ConfirmSyncNewDiffNumber'

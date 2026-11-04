@@ -719,6 +719,7 @@ www/flib/intern/entity/diff/EntPhabricatorDiffSchema.php                        
     it('reports when smartlog finds too many commits to render', async () => {
       const repo = new Repository(repoInfo, ctx);
       const onChange = jest.fn();
+      const trackSpy = jest.spyOn(ctx.tracker, 'track').mockClear();
       repo.subscribeToSmartlogCommitsChanges(onChange);
       mockEjeca([
         [
@@ -739,6 +740,32 @@ www/flib/intern/entity/diff/EntPhabricatorDiffSchema.php                        
           commits: {error: expect.objectContaining({message: ErrorShortMessages.TooManyCommits})},
         }),
       );
+      expect(trackSpy).toHaveBeenCalledWith('SmartlogTooManyCommits', {
+        extras: {numCommits: 160811, visibleCommitDayRange: 14},
+      });
+    });
+
+    it('tracks too many commits once until a fetch no longer has too many commits', async () => {
+      const repo = new Repository(repoInfo, ctx);
+      const trackSpy = jest.spyOn(ctx.tracker, 'track').mockClear();
+      const tooManyCommits: [RegExp, {stdout: string; stderr: string}] = [
+        /^sl log/,
+        {stdout: '', stderr: 'smartlog: too many (2000) commits, not rendering all of them\n'},
+      ];
+      const countTracked = () =>
+        trackSpy.mock.calls.filter(([name]) => name === 'SmartlogTooManyCommits').length;
+
+      mockEjeca([tooManyCommits]);
+      await repo.fetchSmartlogCommits();
+      await repo.fetchSmartlogCommits();
+      expect(countTracked()).toEqual(1);
+
+      mockEjeca([[/^sl log/, {stdout: ''}]]);
+      await repo.fetchSmartlogCommits();
+
+      mockEjeca([tooManyCommits]);
+      await repo.fetchSmartlogCommits();
+      expect(countTracked()).toEqual(2);
     });
 
     it('updates revset when changing date range', async () => {

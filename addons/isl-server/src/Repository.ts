@@ -108,7 +108,7 @@ import {
 } from './utils';
 
 const SMARTLOG_TOO_MANY_COMMITS_WARNING =
-  /^smartlog: too many \(\d+\) commits, not rendering all of them$/m;
+  /^smartlog: too many \((\d+)\) commits, not rendering all of them$/m;
 
 /**
  * This class is responsible for providing information about the working copy
@@ -168,6 +168,8 @@ export class Repository {
   private configRateLimiter = new RateLimiter(1);
 
   private currentVisibleCommitRangeIndex = 0;
+  /** Used to log `SmartlogTooManyCommits` once per occurrence, rather than on every refetch. */
+  private isShowingTooManyCommits = false;
   private visibleCommitRanges: Array<number | undefined> = [
     DEFAULT_DAYS_OF_COMMITS_TO_LOAD,
     60,
@@ -1114,9 +1116,20 @@ export class Repository {
         'LogCommand',
         this.initialConnectionContext,
       );
-      if (SMARTLOG_TOO_MANY_COMMITS_WARNING.test(proc.stderr)) {
+      const tooManyCommitsMatch = SMARTLOG_TOO_MANY_COMMITS_WARNING.exec(proc.stderr);
+      if (tooManyCommitsMatch != null) {
+        if (!this.isShowingTooManyCommits) {
+          this.isShowingTooManyCommits = true;
+          this.initialConnectionContext.tracker.track('SmartlogTooManyCommits', {
+            extras: {
+              numCommits: parseInt(tooManyCommitsMatch[1], 10),
+              visibleCommitDayRange: visibleCommitDayRange ?? null,
+            },
+          });
+        }
         throw new Error(ErrorShortMessages.TooManyCommits);
       }
+      this.isShowingTooManyCommits = false;
       const commits = parseCommitInfoOutput(
         this.initialConnectionContext.logger,
         proc.stdout.trim(),
