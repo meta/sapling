@@ -17,7 +17,7 @@ import {Icon} from 'isl-components/Icon';
 import {Subtle} from 'isl-components/Subtle';
 import {Tag} from 'isl-components/Tag';
 import {Tooltip} from 'isl-components/Tooltip';
-import {useAtomValue, useSetAtom} from 'jotai';
+import {atom, useAtomValue, useSetAtom} from 'jotai';
 import React, {memo, useState} from 'react';
 import {ComparisonType} from 'shared/Comparison';
 import {useContextMenu} from 'shared/ContextMenu';
@@ -161,6 +161,13 @@ function commitLabelForCommit(conflicts: MergeConflicts | undefined, hash: strin
   return null;
 }
 
+const hasUncommittedChangesAtom = atom(get => get(uncommittedChangesWithPreviews).length > 0);
+
+function RepoRelativeCwd() {
+  const cwd = useAtomValue(repoRelativeCwd);
+  return <pre>{cwd}</pre>;
+}
+
 export const Commit = memo(
   ({
     commit,
@@ -173,7 +180,7 @@ export const Commit = memo(
   }) => {
     const isPublic = commit.phase === 'public';
     const isObsoleted = commit.successorInfo != null;
-    const hasUncommittedChanges = (readAtom(uncommittedChangesWithPreviews).length ?? 0) > 0;
+    const hasUncommittedChanges = useAtomValue(hasUncommittedChangesAtom);
 
     const isIrrelevantToCwd = useIsIrrelevantToCwd(commit);
 
@@ -742,7 +749,7 @@ export const Commit = memo(
                       <T
                         replace={{
                           $prefix: <pre>{commit.maxCommonPathPrefix}</pre>,
-                          $cwd: <pre>{readAtom(repoRelativeCwd)}</pre>,
+                          $cwd: <RepoRelativeCwd />,
                         }}>
                         This commit only contains files within: $prefix These are irrelevant to your
                         current working directory: $cwd

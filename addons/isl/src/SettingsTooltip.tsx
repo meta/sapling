@@ -53,7 +53,7 @@ import {debugToolsEnabledState} from './debug/DebugToolsState';
 import {commitInfoLocationAtom, type CommitInfoLocationWithAuto} from './drawerState';
 import {externalMergeToolAtom} from './externalMergeTool';
 import {t, T} from './i18n';
-import {configBackedAtom, readAtom} from './jotaiUtils';
+import {configBackedAtom} from './jotaiUtils';
 import {AutoResolveSettingCheckbox} from './mergeConflicts/state';
 import {SetConfigOperation} from './operations/SetConfigOperation';
 import {useRunOperation} from './operationsState';
@@ -100,6 +100,7 @@ function SettingsDropdown({
   const runOperation = useRunOperation();
   const [showDiffNumber, setShowDiffNumber] = useAtom(showDiffNumberConfig);
   const [showAuthoredDiffs, setShowAuthoredDiffs] = useAtom(showAuthoredDiffsConfig);
+  const branchPRsAreSupported = useAtomValue(branchPRsSupported);
   return (
     <DropdownFields title={<T>Settings</T>} icon="gear" data-testid="settings-dropdown">
       <Button
@@ -186,9 +187,7 @@ function SettingsDropdown({
             ).concat([
               {value: 'ghstack', name: 'sl ghstack (stacked PRs)'},
               {value: 'pr', name: 'sl pr (stacked PRs)'},
-              ...(readAtom(branchPRsSupported)
-                ? [{value: 'push', name: 'sl push (branching PR)'}]
-                : []),
+              ...(branchPRsAreSupported ? [{value: 'push', name: 'sl push (branching PR)'}] : []),
             ])}
             onChange={event => {
               const value = (event as React.FormEvent<HTMLSelectElement>).currentTarget.value as
