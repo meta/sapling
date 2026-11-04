@@ -40,6 +40,15 @@ portablefilenames = ignore
 _OFF_MOUNT_REPO_DIR_NAME = "sl-repo-dir"
 
 
+def off_mount_repo_dir(state_dir: Path) -> Path:
+    """Where a checkout using the off-mount layout keeps its real repo dir.
+
+    The in-mount dot dir is only a symlink to this, so this path stays
+    readable while the checkout is unmounted.
+    """
+    return state_dir / _OFF_MOUNT_REPO_DIR_NAME
+
+
 # Parses the output of `sl config <section>.<key>` where only 0 or 1 value is returned
 def parse_config_output(out: str, is_json: bool = True) -> str:
     # Cover case where `sl config` command failed silently
@@ -166,7 +175,7 @@ def setup_hg_dir(
     checkout_hg_dir = checkout.hg_dot_path
     real_hg_dir = checkout_hg_dir
     if config.off_mount_repo_dir:
-        real_hg_dir = checkout.state_dir / _OFF_MOUNT_REPO_DIR_NAME
+        real_hg_dir = off_mount_repo_dir(checkout.state_dir)
 
     if config.off_mount_repo_dir:
         _setup_off_mount_hg_dir(checkout_hg_dir, real_hg_dir)
