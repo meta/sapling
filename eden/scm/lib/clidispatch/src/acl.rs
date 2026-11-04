@@ -46,6 +46,9 @@ pub fn check_permission_denied_paths(
         });
     }
 
+    // Recorded regardless of `slacl.on-permission-denied`, `ignore` included.
+    let _ = sampling::log!(target: "command_info", slacl_permission_denied = true);
+
     let url_template = config
         .get_or("slacl", "request-access-url-template", String::new)
         .unwrap_or_default();
