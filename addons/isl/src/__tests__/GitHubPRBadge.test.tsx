@@ -249,6 +249,72 @@ describe('GitHubPRBadge', () => {
       });
     });
 
+    describe('commit on its own PR branch', () => {
+      beforeEach(() => {
+        act(() => {
+          simulateCommits({
+            value: [
+              COMMIT('1', 'some public base', '0', {phase: 'public'}),
+              COMMIT('a', 'Commit A', '1', {
+                isDot: true,
+                diffId: '10',
+                remoteBookmarks: ['origin/pr10', 'origin/feature'],
+              }),
+            ],
+          });
+          simulateMessageFromServer({
+            type: 'fetchedDiffSummaries',
+            summaries: {
+              value: new Map<DiffId, DiffSummary>([
+                [
+                  '10',
+                  {
+                    number: '10',
+                    state: PullRequestState.Open,
+                    title: 'PR A',
+                    type: 'github',
+                    url: 'https://github.com/myusername/testrepo/pull/10',
+                    anyUnresolvedComments: false,
+                    commentCount: 0,
+                    commitMessage: 'PR A',
+                    base: '1',
+                    head: 'a',
+                    branchName: 'pr10',
+                  },
+                ],
+                [
+                  '12',
+                  {
+                    number: '12',
+                    state: PullRequestState.Closed,
+                    title: 'Feature PR',
+                    type: 'github',
+                    url: 'https://github.com/myusername/testrepo/pull/12',
+                    anyUnresolvedComments: false,
+                    commentCount: 0,
+                    commitMessage: 'Feature PR',
+                    base: '1',
+                    head: 'a',
+                    branchName: 'feature',
+                  },
+                ],
+              ]),
+            },
+          });
+        });
+      });
+
+      it('renders its own PR badge once', () => {
+        const commitA = screen.getByTestId('commit-a');
+        expect(within(commitA).getByText('origin/pr10')).toBeInTheDocument();
+        expect(within(commitA).queryAllByText('Open')).toHaveLength(1);
+      });
+
+      it('still renders badges for other PR branches', () => {
+        expect(within(screen.getByTestId('commit-a')).queryAllByText('Closed')).toHaveLength(1);
+      });
+    });
+
     describe('after error', () => {
       suppressReactErrorBoundaryErrorMessages();
 
