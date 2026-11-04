@@ -39,6 +39,7 @@ if(NOT EDEN_HAVE_PEXPECT)
     ${CMAKE_CURRENT_SOURCE_DIR}/restart_test.py
     ${CMAKE_CURRENT_SOURCE_DIR}/service_log_test.py
     ${CMAKE_CURRENT_SOURCE_DIR}/stop_test.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/takeover_test.py
   )
 endif()
 
