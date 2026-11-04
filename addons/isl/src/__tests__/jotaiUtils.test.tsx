@@ -518,4 +518,18 @@ describe('localStorageBackedAtom', () => {
       ['isl.focus-mode', true],
     ]);
   });
+
+  it('loads its initial value from persisted state', () => {
+    jest
+      .spyOn(platform, 'getPersistedState')
+      .mockImplementation(
+        <T,>(key: string) => (key === 'isl.drawer-state' ? {stored: 1} : null) as T,
+      );
+    jest.spyOn(platform, 'setPersistedState').mockImplementation(() => {});
+    const stored = localStorageBackedAtom<{stored: number}>('isl.drawer-state', {stored: 0});
+    const unset = localStorageBackedAtom<boolean>('isl.focus-mode', false);
+
+    expect(readAtom(stored)).toEqual({stored: 1});
+    expect(readAtom(unset)).toBe(false);
+  });
 });

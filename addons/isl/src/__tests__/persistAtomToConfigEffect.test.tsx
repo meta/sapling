@@ -75,10 +75,4 @@ describe('persistAtomToLocalStorageEffect', () => {
       }),
     );
   });
-
-  it.skip('loads state on startup', () => {
-    // mock seems to happen too late to capture the getPersistedState call.
-    // but I verified that getPersistedState is called using console log.
-    expect(platform.getPersistedState).toHaveBeenCalledWith('isl.drawer-state');
-  });
 });
