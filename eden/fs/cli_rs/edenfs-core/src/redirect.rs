@@ -327,6 +327,8 @@ enum BackingCleanupAction {
         scratch_root_parent: NoFollowRoot,
         scratch_root_name: PathBuf,
         parent: NoFollowRoot,
+        /// `parent`'s path relative to `scratch_root_parent`.
+        parent_path: PathBuf,
         name: PathBuf,
     },
     #[cfg(target_os = "macos")]
@@ -355,6 +357,7 @@ impl RedirectionBackingCleanupAction {
                 scratch_root_parent,
                 scratch_root_name,
                 parent,
+                parent_path,
                 name,
             } => {
                 match parent.remove_dir_all(&name) {
@@ -372,6 +375,7 @@ impl RedirectionBackingCleanupAction {
                 // Windows can't delete a directory while a handle to it is open, and in the
                 // default scratch layout `parent` is the scratch root.
                 drop(parent);
+                remove_empty_scratch_dirs(&scratch_root_parent, &scratch_root_name, &parent_path);
                 if let Err(error) =
                     remove_unused_scratch_root(&scratch_root_parent, &scratch_root_name)
                     && error.kind() != std::io::ErrorKind::NotFound
@@ -438,6 +442,34 @@ fn remove_unused_scratch_root(
         scratch_root_parent.remove_file(scratch_root_name.join(SCRATCH_README).as_path())?;
     }
     scratch_root_parent.remove_dir(scratch_root_name)
+}
+
+/// Delete the directories between a deleted target and its scratch root, which mkscratch's
+/// mirror style creates, up to the first one that isn't empty.
+fn remove_empty_scratch_dirs(
+    scratch_root_parent: &NoFollowRoot,
+    scratch_root_name: &Path,
+    parent_path: &Path,
+) {
+    let result = parent_path
+        .ancestors()
+        .take_while(|dir| *dir != scratch_root_name)
+        .try_for_each(|dir| {
+            // On Windows, every cleanup action that hasn't run yet holds these directories
+            // open, so deleting one that isn't empty fails with a sharing violation instead.
+            if !scratch_root_parent.list_dir(Some(dir))?.is_empty() {
+                return Err(std::io::ErrorKind::DirectoryNotEmpty.into());
+            }
+            scratch_root_parent.remove_dir(dir)
+        });
+    if let Err(error) = result
+        && error.kind() != std::io::ErrorKind::DirectoryNotEmpty
+    {
+        tracing::warn!(
+            "failed to delete an empty scratch directory under {}: {error}",
+            parent_path.display()
+        );
+    }
 }
 
 /// Remove every entry in `dir` without following symlinks, attempting all of them before
@@ -1784,17 +1816,17 @@ fn scratch_cleanup_action(
     let name = PathBuf::from(
         relative_target
             .file_name()
-            .expect("validated target has a name"),
+            .context("scratch target has no filename")?,
     );
+    let parent_path = relative_target
+        .parent()
+        .context("scratch target has no parent")?
+        .to_path_buf();
     let open_parents = || -> std::io::Result<(NoFollowRoot, NoFollowRoot)> {
         // Only the configured scratch prefix may traverse aliases. Keep the
         // target's real parent open across checkout removal.
         let scratch_root_parent = NoFollowRoot::new(root_parent)?;
-        let parent = scratch_root_parent.open_root(
-            relative_target
-                .parent()
-                .expect("target is below scratch root"),
-        )?;
+        let parent = scratch_root_parent.open_root(parent_path.as_path())?;
         if !parent.symlink_metadata(Some(&name))?.is_dir() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -1819,6 +1851,7 @@ fn scratch_cleanup_action(
             scratch_root_parent,
             scratch_root_name: PathBuf::from(root_name),
             parent,
+            parent_path,
             name,
         },
     }))
@@ -3733,11 +3766,34 @@ mod tests {
         action.execute().expect("scratch cleanup should succeed");
 
         assert!(!target.exists(), "the backing target should be deleted");
-        // FIXME: the empty `edenfs/redirections` and the scratch root should be deleted too,
-        // as they are with the flat layout.
         assert!(
-            scratch.join("edenfs").join("redirections").is_dir(),
-            "the empty mirrored directories are left behind"
+            !scratch.exists(),
+            "the empty mirrored directories and the scratch root should be deleted"
+        );
+    }
+
+    #[test]
+    fn scratch_cleanup_keeps_mirrored_directories_in_use() {
+        let temp_dir = tempdir().expect("temporary directory should be created");
+        let scratch = temp_dir.path().join("scratch");
+        let redirections = scratch.join("edenfs").join("redirections");
+        let target = redirections.join("buck-out");
+        let other = redirections.join("other");
+        std::fs::create_dir_all(&target).expect("backing directory should be created");
+        std::fs::create_dir(&other).expect("another backing directory should be created");
+        std::fs::write(scratch.join(SCRATCH_README), "mkscratch")
+            .expect("README should be created");
+        let action = scratch_cleanup_action(&scratch, target.clone())
+            .expect("scratch target should be safe")
+            .expect("scratch target should exist");
+
+        action.execute().expect("scratch cleanup should succeed");
+
+        assert!(!target.exists(), "the backing target should be deleted");
+        assert!(other.is_dir(), "another redirection's backing should stay");
+        assert!(
+            scratch.join(SCRATCH_README).exists(),
+            "the scratch root stays while another target is in it"
         );
     }
 
