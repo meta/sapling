@@ -136,6 +136,23 @@ describe('Interactive Split', () => {
     await waitFor(() => expectMessageSentToServer({type: 'exportStack', revs: 'e'}));
   });
 
+  it('opens split modal when the server requests it', async () => {
+    act(() => {
+      simulateMessageFromServer({type: 'openSplitViewForCommit', commitHash: 'e'});
+    });
+    await waitFor(() => expectMessageSentToServer({type: 'exportStack', revs: 'e'}));
+    act(() => {
+      simulateMessageFromServer({
+        type: 'exportedStack',
+        revs: 'e',
+        assumeTracked: [],
+        error: undefined,
+        stack: EXPORT_STACK_DATA,
+      });
+    });
+    await waitFor(() => expect(screen.getByTestId('interactive-split-modal')).toBeInTheDocument());
+  });
+
   describe('with loaded stack data', () => {
     beforeEach(async () => {
       fireEvent.click(screen.getByText('Split'));

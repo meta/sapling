@@ -9,9 +9,8 @@ import type {CommitRev} from '../common';
 import type {PartiallySelectedDiffCommit} from '../diffSplitTypes';
 
 import {List} from 'immutable';
-import {getDefaultStore} from 'jotai';
 import serverAPI from '../../ClientToServerAPI';
-import {readAtom, writeAtom} from '../../jotaiUtils';
+import {readAtom, subscribeAtom, writeAtom} from '../../jotaiUtils';
 import {registerDisposable} from '../../utils';
 import {applyDiffSplit} from '../diffSplit';
 import {next} from '../revMath';
@@ -80,19 +79,17 @@ registerDisposable(
   serverAPI,
   serverAPI.onMessageOfType('openSplitViewForCommit', event => {
     // Open the split panel by setting the editing stack intention
-    // Use getDefaultStore().set() directly since editingStackIntentionHashes has a custom write type
-    const store = getDefaultStore();
-    store.set(editingStackIntentionHashes, ['split', new Set([event.commitHash])]);
+    writeAtom(editingStackIntentionHashes, ['split', new Set([event.commitHash])]);
 
     // If commits are provided, wait for the stack to load and then apply the split
     if (event.commits && event.commits.length > 0) {
       const commitsToApply = event.commits;
       let hasApplied = false;
-      const unsubscribe = store.sub(stackEditState, () => {
+      const unsubscribe = subscribeAtom(stackEditState, () => {
         if (hasApplied) {
           return;
         }
-        const state = store.get(stackEditState);
+        const state = readAtom(stackEditState);
         if (state.history.state === 'hasValue' && state.intention === 'split') {
           // Stack is loaded, apply the AI split commits
           hasApplied = true;

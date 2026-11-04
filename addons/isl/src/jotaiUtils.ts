@@ -27,7 +27,7 @@ export type MutAtom<T> = WritableAtom<T, [T | ((prev: T) => T)], void>;
  * The store being used. Do not use this directly. Alternatives are:
  * - use `readAtom` instead of `store.get`.
  * - use `writeAtom` instead of `store.set`.
- * - use `atomWithOnChange` instead of `store.sub`.
+ * - use `atomWithOnChange` or `subscribeAtom` instead of `store.sub`.
  */
 let store = getDefaultStore();
 
@@ -222,8 +222,19 @@ export function readAtom<T>(atom: Atom<T>): T {
   return store.get(atom);
 }
 
-export function writeAtom<T>(atom: MutAtom<T>, value: T | ((prev: T) => T)) {
-  store.set(atom, value);
+export function writeAtom<Value, Args extends Array<unknown>, Result>(
+  atom: WritableAtom<Value, Args, Result>,
+  ...args: Args
+): Result {
+  return store.set(atom, ...args);
+}
+
+/**
+ * Subscribe to changes of an atom. Returns a function to unsubscribe.
+ * Prefer derived atoms or `atomWithOnChange`; this is for one-off listeners.
+ */
+export function subscribeAtom(atom: Atom<unknown>, callback: () => void): () => void {
+  return store.sub(atom, callback);
 }
 
 export function refreshAtom<T>(atom: WritableAtom<T, [], void>) {
