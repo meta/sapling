@@ -96,10 +96,17 @@ class StatxMountHealthCheckTest(MountHealthCheckTestBase):
 @unittest.skipIf(sys.platform != "linux", "exercised on Linux FUSE mounts")
 class HangThresholdMountHealthCheckTest(MountHealthCheckTestBase):
     def mount_config(self) -> List[str]:
-        return super().mount_config() + ['mount-health-check-hang-threshold = "6s"']
+        return super().mount_config() + ['mount-health-check-hang-threshold = "10s"']
 
     def test_probe_past_the_threshold_is_counted_as_hung(self) -> None:
         self.wait_for_counter("healthy")
-        self.delay_next_probe(9)
+        self.delay_next_probe(13)
         self.wait_for_counter("hung")
         self.assertEqual(0, self.counter("timed_out"))
+
+    def test_probe_done_before_the_threshold_is_counted_as_slow(self) -> None:
+        self.wait_for_counter("healthy")
+        self.delay_next_probe(7)
+        self.wait_for_counter("slow")
+        self.assertEqual(0, self.counter("timed_out"))
+        self.assertEqual(0, self.counter("hung"))

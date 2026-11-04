@@ -35,6 +35,9 @@ enum class EdenMountHealthIssueReason {
   DaemonRunningMountCheckNotStarted,
   // The probe ran past `mount:mount-health-check-hang-threshold`.
   DaemonRunningMountHung,
+  // The probe ran past the 5 s timeout but finished before the hang
+  // threshold.
+  DaemonRunningMountSlow,
 };
 
 std::string_view edenMountHealthIssueReasonString(

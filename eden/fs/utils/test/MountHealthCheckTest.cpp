@@ -193,6 +193,10 @@ TEST(MountHealthCheckTest, reasonStringsMatchTelemetryContract) {
       "daemon_running_mount_hung",
       edenMountHealthIssueReasonString(
           EdenMountHealthIssueReason::DaemonRunningMountHung));
+  EXPECT_EQ(
+      "daemon_running_mount_slow",
+      edenMountHealthIssueReasonString(
+          EdenMountHealthIssueReason::DaemonRunningMountSlow));
 }
 
 TEST(MountHealthCheckTest, probeStepNamesMatchTelemetryContract) {

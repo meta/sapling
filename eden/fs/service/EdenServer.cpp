@@ -306,8 +306,10 @@ struct MountHealthIssueLogContext {
       std::string reason,
       std::string error,
       std::string causeDetail = {},
-      std::optional<double> durationS = std::nullopt) const {
-    if (!shouldLogMountHealthIssue(
+      std::optional<double> durationS = std::nullopt,
+      bool deduplicate = true) const {
+    if (deduplicate &&
+        !shouldLogMountHealthIssue(
             emittedMountHealthIssues, mountPath, reason)) {
       return;
     }
@@ -338,6 +340,9 @@ struct MountHealthIssueLogContext {
   // Weak, so that a stuck probe never keeps an unmounted checkout alive.
   std::weak_ptr<EdenMount> mount;
   std::shared_ptr<MountHealthProbeProgress> progress;
+  // With a hang threshold, the detail of a probe that ran past the 5 s
+  // timeout, taken then. Logged if the probe finishes before the threshold.
+  mutable folly::Synchronized<std::string> slowProbeDetail;
 };
 
 using RunningMountHealthChecks = folly::Synchronized<std::unordered_map<
@@ -444,6 +449,26 @@ folly::CPUThreadPoolExecutor* getCgroupFileCacheReclaimThreadPool() {
 }
 #endif
 
+/**
+ * The JSON detail of a probe that ran too long: where it is, where its thread
+ * waits, the checkout's load and the host's pressure.
+ */
+std::string describeStuckProbe(
+    const MountHealthIssueLogContext& logContext,
+    std::chrono::steady_clock::time_point now,
+    const folly::dynamic& extraDetail = folly::dynamic::object) {
+  auto description = describeProbeProgress(*logContext.progress, now);
+  description.update(describeProbeThread(*logContext.progress));
+  if (auto mount = logContext.mount.lock()) {
+    description.update(describeFsChannelLoad(*mount, now));
+  }
+  description.update(describeSystemPressure());
+  description.update(extraDetail);
+  folly::json::serialization_opts sortedKeys;
+  sortedKeys.sort_keys = true;
+  return folly::json::serialize(description, sortedKeys);
+}
+
 void logMountHealthCheckTimeout(
     const MountHealthIssueLogContext& logContext,
     EdenMountHealthIssueReason reason,
@@ -451,16 +476,7 @@ void logMountHealthCheckTimeout(
     const folly::dynamic& extraDetail = folly::dynamic::object) {
   try {
     const auto now = std::chrono::steady_clock::now();
-    auto description = describeProbeProgress(*logContext.progress, now);
-    description.update(describeProbeThread(*logContext.progress));
-    if (auto mount = logContext.mount.lock()) {
-      description.update(describeFsChannelLoad(*mount, now));
-    }
-    description.update(describeSystemPressure());
-    description.update(extraDetail);
-    folly::json::serialization_opts sortedKeys;
-    sortedKeys.sort_keys = true;
-    auto detail = folly::json::serialize(description, sortedKeys);
+    auto detail = describeStuckProbe(logContext, now, extraDetail);
     XLOGF(WARN, "{} for {}: {}", error, logContext.mountPath, detail);
     logContext.log(
         std::string{edenMountHealthIssueReasonString(reason)},
@@ -472,6 +488,33 @@ void logMountHealthCheckTimeout(
     XLOGF(ERR, "EdenFS mount health timeout logging failed: {}", ex.what());
   } catch (...) {
     XLOG(ERR, "EdenFS mount health timeout logging failed");
+  }
+}
+
+/**
+ * Logs a probe that ran past the 5 s timeout and then finished, once per
+ * probe rather than once per issue. `detail` was taken at the timeout.
+ */
+void logSlowMountHealthCheck(
+    const MountHealthIssueLogContext& logContext,
+    std::string detail) {
+  try {
+    const auto duration =
+        std::chrono::steady_clock::now() - logContext.progress->queued();
+    auto error = fmt::format(
+        "EdenFS mount health check took {} ms",
+        std::chrono::duration_cast<std::chrono::milliseconds>(duration)
+            .count());
+    XLOGF(WARN, "{} for {}: {}", error, logContext.mountPath, detail);
+    logContext.log(
+        std::string{edenMountHealthIssueReasonString(
+            EdenMountHealthIssueReason::DaemonRunningMountSlow)},
+        std::move(error),
+        std::move(detail),
+        std::chrono::duration<double>{duration}.count(),
+        /*deduplicate=*/false);
+  } catch (const std::exception& ex) {
+    XLOGF(ERR, "EdenFS mount health slow probe logging failed: {}", ex.what());
   }
 }
 
@@ -535,8 +578,19 @@ void scheduleMountHealthCheckRuntimeTimeout(
                        logContext = std::move(logContext),
                        hangThreshold](auto&&) mutable {
             if (hangThreshold > kMountHealthCheckTimeout) {
-              // A slow probe is not reported until it passes the threshold.
+              // A slow probe is reported when it finishes, or when it passes
+              // the threshold.
               if (!completed->load(std::memory_order_acquire)) {
+                try {
+                  *logContext->slowProbeDetail.wlock() = describeStuckProbe(
+                      *logContext, std::chrono::steady_clock::now());
+                } catch (const std::exception& ex) {
+                  XLOGF(
+                      ERR,
+                      "EdenFS mount health check could not describe a slow "
+                      "probe: {}",
+                      ex.what());
+                }
                 scheduleMountHealthCheckHangTimeout(
                     std::move(completed),
                     std::move(logContext),
@@ -4821,6 +4875,12 @@ void EdenServer::scheduleRunningMountHealthCheck(
             }
             if (logContext->progress->mountCheckedByStatx()) {
               logContext->count(&MountHealthCheckStats::statxMountCheck);
+            }
+            auto slowProbeDetail =
+                std::move(*logContext->slowProbeDetail.wlock());
+            if (!slowProbeDetail.empty()) {
+              logContext->count(&MountHealthCheckStats::slow);
+              logSlowMountHealthCheck(*logContext, std::move(slowProbeDetail));
             }
             if (result.hasException()) {
               XLOGF(
