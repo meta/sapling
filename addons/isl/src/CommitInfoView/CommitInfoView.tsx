@@ -106,8 +106,6 @@ import {DiffStats, PendingDiffStats} from './DiffStats';
 import {FillCommitMessage} from './FillCommitMessage';
 import {CommitTitleByline, getFieldToAutofocus, Section, SmallCapsTitle} from './utils';
 
-import {useFeatureFlagSync} from '../featureFlags';
-import {AICodeReviewStatus} from '../firstPassCodeReview/AICodeReviewStatus';
 import {AICodeReviewUpsell} from '../firstPassCodeReview/AICodeReviewUpsell';
 import {Internal} from '../Internal';
 import {confirmSuggestedEditsForFiles} from '../SuggestedEdits';
@@ -204,9 +202,6 @@ function useFetchActiveDiffDetails(diffId?: string) {
 }
 
 export function CommitInfoDetails({commit}: {commit: CommitInfo}) {
-  const aiFirstPassCodeReviewEnabled = useFeatureFlagSync(
-    Internal.featureFlags?.AIFirstPassCodeReview,
-  );
   const [mode, setMode] = useAtom(commitMode);
   const isCommitMode = mode === 'commit';
   const hashOrHead = isCommitMode ? 'head' : commit.hash;
@@ -483,7 +478,6 @@ export function CommitInfoDetails({commit}: {commit: CommitInfo}) {
             <FoldPreviewActions />
           ) : (
             <>
-              {aiFirstPassCodeReviewEnabled && <AICodeReviewStatus />}
               <ActionsBar
                 commit={commit}
                 latestMessage={parsedFields}

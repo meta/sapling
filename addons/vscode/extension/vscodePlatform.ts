@@ -19,7 +19,6 @@ import type {
 import type {Json} from 'shared/typeUtils';
 
 import {Repository} from 'isl-server/src/Repository';
-import type {CodeReviewIssue} from 'isl/src/firstPassCodeReview/types';
 import {arraysEqual} from 'isl/src/utils';
 import * as pathModule from 'node:path';
 import * as vscode from 'vscode';
@@ -434,34 +433,6 @@ export const getVSCodePlatform = (context: vscode.ExtensionContext): VSCodeServe
           );
           break;
         }
-        case 'platform/runAICodeReviewPlatform': {
-          const {cwd} = message;
-          try {
-            const results = await Internal.runAICodeReview?.(cwd);
-            if (results != null) {
-              const aiReviewCommentGroup = Internal.aiReviewCommentGroup?.();
-              if (aiReviewCommentGroup == null) {
-                break;
-              }
-              aiReviewCommentGroup.clearComments();
-              for (const comment of [...results.values()].flat()) {
-                aiReviewCommentGroup.addComment(
-                  comment.filepath,
-                  comment.startLine,
-                  comment.description,
-                );
-              }
-            }
-          } catch (err) {
-            postMessage({
-              type: 'platform/gotAIReviewComments',
-              comments: {
-                error: err as Error,
-              },
-            });
-          }
-          break;
-        }
         case 'platform/runAICodeReviewChat': {
           const {source, reviewScope, userContext, agentBackend, reviewAndFix} = message;
           await Internal.promptAIAgent?.(
@@ -476,41 +447,6 @@ export const getVSCodePlatform = (context: vscode.ExtensionContext): VSCodeServe
             source === 'commitInfoView'
               ? ActionTriggerType.ISL2CommitInfoView
               : ActionTriggerType.ISL2SmartActions,
-          );
-          break;
-        }
-        case 'platform/subscribeToAIReviewComments': {
-          const aiReviewCommentGroup = Internal.aiReviewCommentGroup?.();
-          if (aiReviewCommentGroup == null) {
-            break;
-          }
-          aiReviewCommentGroup.onDidChangeComments(
-            // Avoids importing FB-specific type
-            // TODO: Should we just import the type?
-            (
-              comments: {
-                comment: {
-                  id: string;
-                  filename: string;
-                  line: number;
-                  html: string;
-                };
-              }[],
-            ) => {
-              postMessage({
-                type: 'platform/gotAIReviewComments',
-                comments: {
-                  value: comments.map((comment): CodeReviewIssue => ({
-                    issueID: comment.comment.id,
-                    filepath: comment.comment.filename,
-                    startLine: comment.comment.line,
-                    endLine: comment.comment.line, // TODO: get actual end line
-                    description: comment.comment.html,
-                    severity: 'medium', // TODO: get severity from comment
-                  })),
-                },
-              });
-            },
           );
           break;
         }

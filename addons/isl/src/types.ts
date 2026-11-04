@@ -19,7 +19,6 @@ import type {Hash} from 'shared/types/common';
 import type {ExportStack, ImportedStack, ImportStack} from 'shared/types/stack';
 import type {TypeaheadKind} from './CommitInfoView/types';
 import type {InternalTypes} from './InternalTypes';
-import type {CodeReviewIssue} from './firstPassCodeReview/types';
 import type {Serializable} from './serialize';
 import type {PartiallySelectedDiffCommit} from './stackEdit/diffSplitTypes';
 
@@ -886,19 +885,12 @@ export type PlatformSpecificClientToServerMessages =
       userContext?: string;
     }
   | {
-      type: 'platform/runAICodeReviewPlatform';
-      cwd: string;
-    }
-  | {
       type: 'platform/runAICodeReviewChat';
       source: 'commitInfoView' | 'smartAction';
       reviewScope: CodeReviewScope;
       userContext?: string;
       agentBackend?: 'devmate' | 'claude';
       reviewAndFix?: boolean;
-    }
-  | {
-      type: 'platform/subscribeToAIReviewComments';
     };
 
 /**
@@ -925,10 +917,6 @@ export type PlatformSpecificServerToClientMessages =
       type: 'platform/vscodeConfigChanged';
       config: string;
       value: Json | undefined;
-    }
-  | {
-      type: 'platform/gotAIReviewComments';
-      comments: Result<CodeReviewIssue[]>;
     }
   | {
       type: 'platform/commitFieldAIStatus';

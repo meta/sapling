@@ -21,7 +21,6 @@ import type {
   ServerToClientMessage,
 } from './types';
 
-import type {CodeReviewIssue} from './firstPassCodeReview/types';
 import {makeBrowserLikePlatformImpl} from './platform/browserPlatformImpl';
 
 export type InitialParamKeys = 'token' | string;
@@ -127,14 +126,6 @@ export interface Platform {
    * With `awaitResponse`, resolves with the agent's final response; otherwise once it is sent.
    */
   promptAgent?(prompt: AgentPrompt): Promise<string | undefined>;
-
-  /** If the platform has a notion of AI code review, methods for listening to them. */
-  aiCodeReview?: {
-    /** listen for new comments so ISL can render them */
-    onDidChangeAIReviewComments(
-      callback: (aiReviewComments: Array<CodeReviewIssue>) => void,
-    ): Disposable;
-  };
 }
 
 declare global {
