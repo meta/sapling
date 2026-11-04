@@ -54,7 +54,6 @@ import {
 import {DiffBadge, DiffFollower, DiffInfo} from './codeReview/DiffBadge';
 import {submitAsDraft} from './codeReview/DraftCheckbox';
 import {SyncStatus, syncStatusAtom} from './codeReview/syncStatus';
-import {getQeFlag} from './featureFlags';
 import {FoldButton, useRunFoldPreview} from './fold';
 import {findPublicBaseAncestor} from './getCommitTree';
 import {t, T} from './i18n';
@@ -1377,10 +1376,7 @@ async function gotoAction(runOperation: ReturnType<typeof useRunOperation>, comm
   const shouldProceed = await runWarningChecks([
     () => maybeWarnAboutRebaseOntoMaster(commit),
     () => maybeWarnAboutOldDestination(commit),
-    async () => {
-      const showRebaseOntoWarm = await getQeFlag('isl_rebase_onto_warm_button');
-      return maybeWarnAboutRebaseOffWarm(commit, {showRebaseOntoWarm});
-    },
+    () => maybeWarnAboutRebaseOffWarm(commit, {showRebaseOntoWarm: true}),
   ]);
 
   if (!shouldProceed) {
