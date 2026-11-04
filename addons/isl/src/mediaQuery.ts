@@ -5,13 +5,21 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+import {registerCleanup} from './utils';
+
 let prefersReducedMotionValue = false;
 
 try {
   const prefersReducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
-  prefersReducedMotionQuery.addEventListener('change', () => {
+  const handleChange = () => {
     prefersReducedMotionValue = prefersReducedMotionQuery.matches;
-  });
+  };
+  prefersReducedMotionQuery.addEventListener('change', handleChange);
+  registerCleanup(
+    prefersReducedMotionQuery,
+    () => prefersReducedMotionQuery.removeEventListener('change', handleChange),
+    import.meta.hot,
+  );
   prefersReducedMotionValue = prefersReducedMotionQuery.matches;
 } catch (_e) {
   // testing-library does not define "window.matchMedia".

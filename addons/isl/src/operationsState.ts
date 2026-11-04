@@ -153,13 +153,6 @@ registerDisposable(
             inlineProgress = undefined;
           }
 
-          const newCommandOutput = [...(currentOperation?.commandOutput ?? [])];
-          if (progress.hash && progress.message) {
-            // also add inline progress message as if it was on stdout,
-            // so you can see it when reading back the final output
-            newCommandOutput.push(`${progress.hash} - ${progress.message}\n`);
-          }
-
           return {
             ...current,
             currentOperation: {

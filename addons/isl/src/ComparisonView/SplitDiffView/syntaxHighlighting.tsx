@@ -55,7 +55,11 @@ function getWorker(): Promise<WorkerApi<SyntaxWorkerRequest, SyntaxWorkerRespons
           .then(r => r.blob())
           .then(b => URL.createObjectURL(b));
 
-        worker = new WorkerApi(new Worker(blobUrl));
+        try {
+          worker = new WorkerApi(new Worker(blobUrl));
+        } finally {
+          URL.revokeObjectURL(blobUrl);
+        }
         // VS Code's webview service worker never answers resource requests from a blob worker,
         // so the worker can't fetch its wasm or grammars itself.
         fetchThroughHost = true;

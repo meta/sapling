@@ -40,25 +40,13 @@ export const webviewPlatform: Platform = {
   },
 };
 
-function b64toFile(b64Data: string, filename: string, sliceSize = 512): File {
+function b64toFile(b64Data: string, filename: string): File {
   const byteCharacters = atob(b64Data);
-  const byteArrays = [];
-
-  for (let offset = 0; offset < byteCharacters.length; offset += sliceSize) {
-    const slice = byteCharacters.slice(offset, offset + sliceSize);
-
-    const byteNumbers = new Array(slice.length);
-    for (let i = 0; i < slice.length; i++) {
-      byteNumbers[i] = slice.charCodeAt(i);
-    }
-
-    const byteArray = new Uint8Array(byteNumbers);
-    byteArrays.push(byteArray);
+  const bytes = new Uint8Array(byteCharacters.length);
+  for (let i = 0; i < byteCharacters.length; i++) {
+    bytes[i] = byteCharacters.charCodeAt(i);
   }
-
-  const blobParts = [new Blob(byteArrays)];
-  const file = new File(blobParts, filename);
-  return file;
+  return new File([bytes], filename);
 }
 
 window.islPlatform = webviewPlatform;
@@ -89,12 +77,12 @@ declare global {
 }
 
 let nextId = 0;
-const callbacks: Array<(response: ExternalWebviewCommandsResponse) => void> = [];
+const callbacks = new Map<number, (response: ExternalWebviewCommandsResponse) => void>();
 window.islWebviewHandleResponse = (response: ExternalWebviewCommandsResponse) => {
-  const cb = callbacks[response.id];
+  const cb = callbacks.get(response.id);
   if (cb) {
     cb(response);
-    delete callbacks[response.id];
+    callbacks.delete(response.id);
   }
 };
 
@@ -118,7 +106,7 @@ function request<K extends ExternalWebviewCommandsInvoke['cmd']>(
     resolve = res;
   });
   external.invoke(JSON.stringify({...json, id}));
-  callbacks[id] = callback;
+  callbacks.set(id, callback);
 
   return promise;
 }

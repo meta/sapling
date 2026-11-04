@@ -462,15 +462,6 @@ registerDisposable(
 );
 registerDisposable(
   isFetchingAdditionalCommits,
-  serverAPI.onMessageOfType('subscriptionResult', e => {
-    if (e.kind === 'smartlogCommits') {
-      writeAtom(isFetchingAdditionalCommits, false);
-    }
-  }),
-  import.meta.hot,
-);
-registerDisposable(
-  isFetchingAdditionalCommits,
   serverAPI.onMessageOfType('beganLoadingMoreCommits', () => {
     writeAtom(isFetchingAdditionalCommits, true);
   }),

@@ -28,11 +28,8 @@ describe('webview platform', () => {
       '{"cmd":"chooseFile","title":"my title","path":"","multi":true,"mediaOnly":true,"id":1}',
     );
 
-    const msg = 'Hello';
-    const msg_b64 = Buffer.from(msg).toString('base64');
-    expect(msg_b64).toEqual('SGVsbG8=');
-    const msg_bytes = Buffer.from(msg);
-    expect(msg_bytes).toEqual(Buffer.from(new Uint8Array([72, 101, 108, 108, 111])));
+    const msg_bytes = new Uint8Array([0x00, 0x48, 0x80, 0xff]);
+    const msg_b64 = Buffer.from(msg_bytes).toString('base64');
     window.islWebviewHandleResponse({
       cmd: 'chooseFile',
       files: [{name: 'file.txt', base64Content: msg_b64}],
@@ -41,6 +38,13 @@ describe('webview platform', () => {
 
     const result = nullthrows(await promise);
     expect(result[0].name).toEqual('file.txt');
-    expect(await result[0].size).toEqual(5);
+    expect(result[0].size).toEqual(msg_bytes.length);
+    const contents = await new Promise<ArrayBuffer>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as ArrayBuffer);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsArrayBuffer(result[0]);
+    });
+    expect(new Uint8Array(contents)).toEqual(msg_bytes);
   });
 });

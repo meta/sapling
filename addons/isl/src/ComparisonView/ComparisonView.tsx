@@ -296,7 +296,7 @@ export default function ComparisonView({
         </EmptyState>
       );
   } else {
-    let files = data.value ?? [];
+    let files = [...(data.value ?? [])];
     if (focusedFile != null) {
       files = files.filter(f => f.newFileName === focusedFile || f.oldFileName === focusedFile);
     }
