@@ -496,7 +496,7 @@ export class CommitStackState extends SelfUpdate<CommitStackRecord> {
         : opts?.goto;
 
     // Figure out the first changed rev.
-    const state = this.useFileContent();
+    const state = this.switchToFileContent();
     const originalState = new CommitStackState(state.originalStack);
     const firstChangedRev = state.stack.findIndex((commit, i) => {
       const originalCommit = originalState.stack.get(i);
@@ -647,7 +647,7 @@ export class CommitStackState extends SelfUpdate<CommitStackRecord> {
    * bottom is immutable (public()).
    */
   analyseAbsorb(): CommitStackState {
-    const stack = this.useFileStack();
+    const stack = this.switchToFileStack();
     const wdirCommitRev = stack.stack.size - 1;
     assert(wdirCommitRev > 0, 'stack cannot be empty');
     let newFileStacks = stack.fileStacks;
@@ -826,7 +826,7 @@ export class CommitStackState extends SelfUpdate<CommitStackRecord> {
     if (!this.hasPendingAbsorb()) {
       return this;
     }
-    return this.useFileContent().set('absorbExtra', ImMap());
+    return this.switchToFileContent().set('absorbExtra', ImMap());
   }
 
   // }}} (absorb related)
@@ -903,7 +903,7 @@ export class CommitStackState extends SelfUpdate<CommitStackRecord> {
     };
 
     // Migrate off 'fileStack' type, since we are going to replace the file stacks.
-    const state = this.useFileContent();
+    const state = this.switchToFileContent();
 
     state.stack.forEach((commit, revNumber) => {
       const rev = revNumber as CommitRev;
@@ -944,9 +944,9 @@ export class CommitStackState extends SelfUpdate<CommitStackRecord> {
 
   /**
    * Build file stacks if it's not present.
-   * This is part of the `useFileStack` implementation detail.
+   * This is part of the `switchToFileStack` implementation detail.
    * It does not ensure the file stack references are actually used for `getFile`.
-   * For public API, use `useFileStack` instead.
+   * For public API, use `switchToFileStack` instead.
    */
   private maybeBuildFileStacks(opts?: BuildFileStackOptions): CommitStackState {
     return this.fileStacks.size === 0 ? this.buildFileStacks(opts) : this;
@@ -956,7 +956,7 @@ export class CommitStackState extends SelfUpdate<CommitStackRecord> {
    * Switch file contents to use FileStack as source of truth.
    * Useful when using FileStack to edit files.
    */
-  useFileStack(): CommitStackState {
+  switchToFileStack(): CommitStackState {
     const state = this.maybeBuildFileStacks();
     return state.updateEachFile((rev, file, path) => {
       if (typeof file.data === 'string') {
@@ -973,7 +973,7 @@ export class CommitStackState extends SelfUpdate<CommitStackRecord> {
    * Switch file contents to use string as source of truth.
    * Useful when rebuilding FileStack.
    */
-  useFileContent(): CommitStackState {
+  switchToFileContent(): CommitStackState {
     return this.updateEachFile((_rev, file) => {
       if (typeof file.data !== 'string' && isUtf8(file)) {
         const data = this.getUtf8Data(file);
@@ -1022,7 +1022,7 @@ export class CommitStackState extends SelfUpdate<CommitStackRecord> {
    * its content to `22` and commit C deleted `z.txt`.
    */
   describeFileStacks(showContent = true): string[] {
-    const state = this.useFileStack();
+    const state = this.switchToFileStack();
     const fileToCommit = state.fileToCommit;
     const stack = state.stack;
     const hasAbsorb = state.hasPendingAbsorb();
@@ -1193,7 +1193,7 @@ export class CommitStackState extends SelfUpdate<CommitStackRecord> {
    */
   calculateDepMap = cachedMethod(this.calculateDepMapImpl, {cache: calculateDepMapCache});
   private calculateDepMapImpl(): Readonly<Map<CommitRev, Set<CommitRev>>> {
-    const state = this.useFileStack();
+    const state = this.switchToFileStack();
     const depMap = new Map<CommitRev, Set<CommitRev>>(state.stack.map(c => [c.rev, new Set()]));
 
     const fileIdxRevToCommitRev = (fileIdx: FileStackIndex, fileRev: FileRev): CommitRev =>
@@ -1385,7 +1385,7 @@ export class CommitStackState extends SelfUpdate<CommitStackRecord> {
    * This should only be called when `canDrop(rev)` returned `true`.
    */
   drop(rev: CommitRev): CommitStackState {
-    let state = this.useFileStack().inner;
+    let state = this.switchToFileStack().inner;
     const commit = nullthrows(state.stack.get(rev));
     commit.files.forEach((file, path) => {
       const fileIdxRev: FileIdx | undefined = state.commitToFile.get(CommitIdx({rev, path}));
@@ -1408,7 +1408,7 @@ export class CommitStackState extends SelfUpdate<CommitStackRecord> {
    */
   insertEmpty(rev: CommitRev, message: string, splitFromRev?: CommitRev): CommitStackState {
     assert(rev <= this.stack.size && rev >= 0, 'rev out of range');
-    const state = this.useFileContent();
+    const state = this.switchToFileContent();
     let newStack;
     const newKey = this.nextKey('insert');
     const originalNodes = splitFromRev == null ? undefined : state.get(splitFromRev)?.originalNodes;
@@ -1491,7 +1491,7 @@ export class CommitStackState extends SelfUpdate<CommitStackRecord> {
    * If `order` is `this.revs()` then no reorder is done.
    */
   canReorder(order: CommitRev[]): boolean {
-    const state = this.useFileStack();
+    const state = this.switchToFileStack();
     if (!state.isStackLinear()) {
       return false;
     }
@@ -1572,7 +1572,7 @@ export class CommitStackState extends SelfUpdate<CommitStackRecord> {
     // [11 (A), 131 (D), 1312 (B), 01312 (C)] to [11 (A), 1312 (B), 01312 (C),
     // 131 (D)]. So after the commit remapping it produces the desired
     // output.
-    let state = this.useFileStack();
+    let state = this.switchToFileStack();
     const newFileStacks = state.fileStacks.map((origFileStack, fileIdx) => {
       let fileStack: FileStackState = origFileStack;
 
@@ -1703,7 +1703,7 @@ export class CommitStackState extends SelfUpdate<CommitStackRecord> {
       bottomFiles,
     });
     const newStack = new CommitStackState(undefined, record);
-    return newStack.buildFileStacks({followRenames}).useFileStack();
+    return newStack.buildFileStacks({followRenames}).switchToFileStack();
   }
 
   /**
@@ -1725,8 +1725,8 @@ export class CommitStackState extends SelfUpdate<CommitStackRecord> {
       'startRev or endRev out of range',
     );
 
-    const contentSubStack = subStack.useFileContent();
-    const state = this.useFileContent();
+    const contentSubStack = subStack.switchToFileContent();
+    const state = this.switchToFileContent();
 
     // Used to detect "unchanged" files in subStack.
     const afterFileMap = new Map(

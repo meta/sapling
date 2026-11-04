@@ -29,7 +29,7 @@ export default function FileStackEditPanel() {
   const stackEdit = useStackEditState();
 
   // File list dropdown.
-  const commitStack = stackEdit.commitStack.useFileStack();
+  const commitStack = stackEdit.commitStack.switchToFileStack();
   const pathFileIdxList: Array<[string, number]> = commitStack.fileStacks
     .map((_f, i): [string, number] => {
       const label = commitStack.getFileStackDescription(i);

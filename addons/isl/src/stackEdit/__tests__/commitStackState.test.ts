@@ -1397,7 +1397,7 @@ describe('CommitStackState', () => {
     });
 
     it('updates getUtf8 with pending absorb edits', () => {
-      const stack1 = new CommitStackState(absorbStack2).useFileStack();
+      const stack1 = new CommitStackState(absorbStack2).switchToFileStack();
       const get = (
         stack: CommitStackState,
         fileIdx: number,
@@ -1419,8 +1419,8 @@ describe('CommitStackState', () => {
     });
 
     it('can apply absorb edits', () => {
-      const beforeStack = new CommitStackState(absorbStack2).useFileStack().analyseAbsorb();
-      expect(beforeStack.useFileStack().describeFileStacks()).toMatchInlineSnapshot(`
+      const beforeStack = new CommitStackState(absorbStack2).switchToFileStack().analyseAbsorb();
+      expect(beforeStack.switchToFileStack().describeFileStacks()).toMatchInlineSnapshot(`
         [
           "0:./a.txt 1:CommitA/a.txt(a1↵a2↵a3↵;absorbed:A1↵a2↵a3↵) 2:CommitC/a.txt(A1↵a2↵a3↵x1↵;absorbed:A1↵a2↵a3↵X1↵)",
           "0:./b.txt 1:CommitB/b.txt(b1↵b2↵b3↵;absorbed:B1↵b2↵b3↵) 2:CommitC/b.txt(B1↵b2↵b3↵y1↵;absorbed:B1↵b2↵b3↵Y1↵)",
@@ -1431,7 +1431,7 @@ describe('CommitStackState', () => {
       const afterStack = beforeStack.applyAbsorbEdits();
       expect(afterStack.hasPendingAbsorb()).toBeFalsy();
       expect(describeAbsorbExtra(afterStack)).toMatchInlineSnapshot(`{}`);
-      expect(afterStack.useFileStack().describeFileStacks()).toMatchInlineSnapshot(`
+      expect(afterStack.switchToFileStack().describeFileStacks()).toMatchInlineSnapshot(`
         [
           "0:./a.txt 1:CommitA/a.txt(A1↵a2↵a3↵) 2:CommitC/a.txt(A1↵a2↵a3↵X1↵) 3:Wdir/a.txt(A1↵a2↵a3↵X1↵)",
           "0:./b.txt 1:CommitB/b.txt(B1↵b2↵b3↵) 2:CommitC/b.txt(B1↵b2↵b3↵Y1↵) 3:Wdir/b.txt(B1↵b2↵b3↵Y1↵)",
