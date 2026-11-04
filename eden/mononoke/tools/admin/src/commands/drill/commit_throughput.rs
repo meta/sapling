@@ -182,6 +182,9 @@ pub async fn commit_throughput(
             let mut files = Vec::new();
             let mut deletions = Vec::new();
             for (path, change) in bonsai.file_changes() {
+                if path.split_dirname().1.as_ref() == b".slacl" {
+                    return anyhow::Ok(None);
+                }
                 if !path_prefixes.is_empty()
                     && !path_prefixes.iter().any(|prefix| prefix.is_prefix_of(path))
                 {
