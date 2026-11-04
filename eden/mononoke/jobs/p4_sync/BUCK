@@ -10,6 +10,7 @@ rust_binary(
     allow_oss_build = False,
     autocargo = {"ignore_rule": True},
     test_deps = [
+        "fbsource//third-party/rust:maplit",
         "//eden/mononoke/common/mononoke_macros:mononoke_macros",
     ],
     deps = [
@@ -23,8 +24,10 @@ rust_binary(
         "//eden/mononoke/cmdlib/mononoke_app:mononoke_app",
         "//eden/mononoke/cmdlib/sharding:executor_lib",
         "//eden/mononoke/cmdlib/sharding_ext:sharding_ext",
+        "//eden/mononoke/common/rust/justknobs_ext:justknobs",
         "//eden/mononoke/metaconfig:metaconfig_types",
         "//eden/mononoke/p4/facebook/p4_source:p4_source",
+        "//eden/mononoke/p4/p4_import:p4_import",
         "//eden/mononoke/repo_attributes/bonsai_git_mapping:bonsai_git_mapping",
         "//eden/mononoke/repo_attributes/bonsai_globalrev_mapping:bonsai_globalrev_mapping",
         "//eden/mononoke/repo_attributes/bonsai_p4_mapping:bonsai_p4_mapping",
@@ -34,5 +37,6 @@ rust_binary(
         "//eden/mononoke/repo_attributes/repo_blobstore:repo_blobstore",
         "//eden/mononoke/repo_attributes/repo_derived_data:repo_derived_data",
         "//eden/mononoke/repo_attributes/repo_identity:repo_identity",
+        "//eden/mononoke/servers/slapi/slapi_server/context:context",
     ],
 )

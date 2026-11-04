@@ -5,13 +5,14 @@
  * GNU General Public License version 2.
  */
 
-//! Perforce -> Mononoke mirror tailer.
-//!
-//! Registers with ShardManager and holds the shards of the repos it has a depot for; nothing
-//! talks to Perforce yet.
+//! Perforce -> Mononoke mirror tailer: for each repo ShardManager assigns it, imports the
+//! depot's new changelists in batches with `p4_import::import_next`.
 
 use std::collections::HashMap;
+use std::num::NonZeroU64;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -57,6 +58,15 @@ struct P4SyncArgs {
     /// says which depot it mirrors.
     #[clap(long = "repo-depot", value_parser = parse_repo_depot)]
     repo_depots: Vec<(String, String)>,
+
+    /// Changelists imported per batch (at least 1)
+    #[clap(long, default_value = "100")]
+    batch_size: NonZeroUsize,
+
+    /// How long to wait before looking for new changelists once a repo is caught up (at
+    /// least 1)
+    #[clap(long, value_parser = parse_secs, default_value = "30")]
+    idle_interval_secs: Duration,
 }
 
 fn parse_repo_depot(arg: &str) -> Result<(String, String)> {
@@ -68,6 +78,12 @@ fn parse_repo_depot(arg: &str) -> Result<(String, String)> {
         "expected <repo>=//<depot>/, got {arg}"
     );
     Ok((repo.to_owned(), depot.to_owned()))
+}
+
+/// Whole seconds, at least 1: a zero wait would poll Perforce in a tight loop.
+fn parse_secs(arg: &str) -> Result<Duration> {
+    let secs: NonZeroU64 = arg.parse()?;
+    Ok(Duration::from_secs(secs.get()))
 }
 
 #[fbinit::main]
@@ -86,8 +102,13 @@ async fn async_main(app: MononokeApp) -> Result<()> {
     let settings = sharded::Settings {
         exit_file: args.exit_file,
         depots,
+        batch_size: args.batch_size,
+        idle_interval: args.idle_interval_secs,
     };
-    sharded::run(app, args.sharded_executor_args, settings).await
+    let p4 = args
+        .p4_args
+        .client(app.environment().scuba_sample_builder.clone())?;
+    sharded::run(app, args.sharded_executor_args, p4, settings).await
 }
 
 #[cfg(test)]
