@@ -36,7 +36,6 @@
     "codegen": "node ./codegen.js"
   },
   "dependencies": {
-    "execa": "5.1.1",
     "fb-watchman": "^2.0.2",
     "isl": "0.1.0",
     "shared": "0.1.0",

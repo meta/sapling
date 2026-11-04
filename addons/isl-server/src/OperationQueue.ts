@@ -15,7 +15,6 @@ import type {ServerSideTracker} from './analytics/serverSideTracker';
 import type {RepositoryContext} from './serverTypes';
 
 import {clearTrackedCache} from 'shared/LRU';
-import {newAbortController} from 'shared/compat';
 import {defer} from 'shared/utils';
 
 /**
@@ -93,7 +92,7 @@ export class OperationQueue {
     };
 
     try {
-      const controller = newAbortController();
+      const controller = new AbortController();
       this.abortController = controller;
       await tracker.operation(
         operation.trackEventName,
