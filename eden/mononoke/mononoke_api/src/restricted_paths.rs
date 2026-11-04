@@ -12,6 +12,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
 use context::CoreContext;
+use mononoke_types::ChangesetId;
 use mononoke_types::NonRootMPath;
 pub use restricted_paths::DenyingRestriction;
 use restricted_paths::PathRestrictionInfo;
@@ -60,6 +61,14 @@ pub struct PathPolicyInfo {
     pub has_access: Option<bool>,
 }
 
+/// A copy source's metadata at its actual revision and path.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PathRestrictionCopySourceInfo {
+    pub commit_id: ChangesetId,
+    pub path: NonRootMPath,
+    pub info: PathPolicyInfo,
+}
+
 /// Literal file sides of a net endpoint difference.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ChangedPathRestrictionSides {
@@ -90,12 +99,14 @@ impl ChangedPathRestrictionSides {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChangedPathRestrictionInfo {
     pub sides: ChangedPathRestrictionSides,
+    pub copy_sources: Vec<PathRestrictionCopySourceInfo>,
 }
 impl ChangedPathRestrictionInfo {
     pub fn content_sides(&self) -> impl Iterator<Item = &PathPolicyInfo> {
         [self.sides.base(), self.sides.target()]
             .into_iter()
             .flatten()
+            .chain(self.copy_sources.iter().map(|source| &source.info))
     }
     pub fn restriction_info(&self) -> impl Iterator<Item = &PathAccessInfo> {
         self.content_sides().flat_map(|side| &side.restrictions)

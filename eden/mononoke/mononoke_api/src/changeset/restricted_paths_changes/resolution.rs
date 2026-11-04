@@ -11,6 +11,7 @@ pub(super) struct Comparison<R: MononokeRepo> {
     pub(super) target: ChangesetContext<R>,
     pub(super) base: Option<ChangesetContext<R>>,
     pub(super) check_permissions: bool,
+    pub(super) bonsai: Option<Arc<BonsaiChangeset>>,
 }
 impl<R: MononokeRepo> Comparison<R> {
     fn base(&self) -> Result<&ChangesetContext<R>, MononokeError> {
@@ -23,6 +24,7 @@ impl<R: MononokeRepo> Comparison<R> {
         change: ChangedPath,
     ) -> Result<(NonRootMPath, ChangedPathRestrictionInfo), MononokeError> {
         let path = NonRootMPath::try_from(change.path().clone())?;
+        let copy_sources = self.ordinary_sources(&change, &path).await?;
         let sides = match change {
             ChangedPath::Added(_) => ChangedPathRestrictionSides::Added(
                 self.target
@@ -45,6 +47,12 @@ impl<R: MononokeRepo> Comparison<R> {
                 ChangedPathRestrictionSides::Changed { base, target }
             }
         };
-        Ok((path, ChangedPathRestrictionInfo { sides }))
+        Ok((
+            path,
+            ChangedPathRestrictionInfo {
+                sides,
+                copy_sources,
+            },
+        ))
     }
 }

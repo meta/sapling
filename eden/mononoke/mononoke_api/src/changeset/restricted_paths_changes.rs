@@ -15,8 +15,11 @@ use futures::stream::StreamExt;
 use futures::stream::TryStreamExt;
 use manifest::Diff;
 use manifest::Entry;
+use manifest::ManifestOps;
 use manifest::ManifestOrderedOps;
 use manifest::PathOrPrefix;
+use mononoke_types::BonsaiChangeset;
+use mononoke_types::FileChange;
 use mononoke_types::MPath;
 use mononoke_types::NonRootMPath;
 use repo_blobstore::RepoBlobstoreRef;
@@ -29,10 +32,12 @@ use crate::restricted_paths::ChangedPathRestrictionSides;
 use crate::restricted_paths::ChangedPathsRestrictionOptions;
 use crate::restricted_paths::PathAccessInfo;
 use crate::restricted_paths::PathPolicyInfo;
+use crate::restricted_paths::PathRestrictionCopySourceInfo;
 use crate::restricted_paths::RestrictedChangeGroup;
 use crate::restricted_paths::RestrictedPathsChangesInfo;
 
 mod resolution;
+mod sources;
 
 const RESTRICTION_LOOKUP_CONCURRENCY: usize = 25;
 
@@ -70,6 +75,14 @@ impl<R: MononokeRepo> ChangesetContext<R> {
                 .first()
                 .map(|id| Self::new(self.repo_ctx().clone(), *id))
         });
+        let bonsai = if base
+            .as_ref()
+            .is_some_and(|base| parents.contains(&base.id()))
+        {
+            Some(Arc::new(self.bonsai_changeset().await?))
+        } else {
+            None
+        };
         let (new_root, old_root) = try_join(self.root_content_manifest_id(), async {
             match &base {
                 Some(base) => base.root_content_manifest_id().await.map(Some),
@@ -119,6 +132,7 @@ impl<R: MononokeRepo> ChangesetContext<R> {
         let comparison = Arc::new(resolution::Comparison {
             target: self.clone(),
             base,
+            bonsai,
             check_permissions,
         });
         Ok(changes
@@ -166,6 +180,46 @@ impl<R: MononokeRepo> ChangesetContext<R> {
             restrictions,
             has_access,
         })
+    }
+
+    async fn restriction_file_copy_source(
+        &self,
+        bonsai: &BonsaiChangeset,
+        path: &NonRootMPath,
+        base: &Self,
+    ) -> Result<Option<(Self, NonRootMPath)>, MononokeError> {
+        let overridden = self
+            .mutable_history
+            .as_ref()
+            .and_then(|history| history.get(&MPath::from(path.clone())));
+        let copy_from = match overridden {
+            Some(history) if history.is_override() => {
+                history.get_copy_from().map(|(id, path)| (id, path.clone()))
+            }
+            _ => match bonsai.file_changes_map().get(path) {
+                Some(FileChange::Change(change)) => change
+                    .copy_from()
+                    .map(|(path, id)| (*id, MPath::from(path.clone()))),
+                _ => None,
+            },
+        };
+        let Some((source_id, source_path)) = copy_from else {
+            return Ok(None);
+        };
+        if source_id != base.id() {
+            return Ok(None);
+        }
+        let root = base.root_content_manifest_id().await?;
+        let store = base.repo_ctx().repo().repo_blobstore().clone();
+        let (destination, source) = try_join(
+            root.find_entry(base.ctx().clone(), store.clone(), MPath::from(path.clone())),
+            root.find_entry(base.ctx().clone(), store, source_path.clone()),
+        )
+        .await?;
+        if destination.is_some() || !matches!(source, Some(Entry::Leaf(_))) {
+            return Ok(None);
+        }
+        Ok(Some((base.clone(), NonRootMPath::try_from(source_path)?)))
     }
 
     /// Group net changed files by full restriction identity and access result.

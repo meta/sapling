@@ -43,6 +43,7 @@ async fn test_restriction_comparison_checks_both_acl_versions(fb: FacebookInit) 
     );
     assert!(base.has_access.is_some());
     assert!(target.has_access.is_some());
+    assert!(file.copy_sources.is_empty());
     let results = comparison_restrictions(&tip, None).await?;
     let mut acls: Vec<_> = results[&NonRootMPath::new("secret/file")?]
         .iter()
@@ -274,6 +275,7 @@ async fn test_restriction_changes_keep_deleted_base_and_unrestricted_target(
             .restrictions
             .is_empty()
     );
+    assert!(full.iter().all(|(_, info)| info.copy_sources.is_empty()));
     Ok(())
 }
 

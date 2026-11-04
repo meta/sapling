@@ -7,10 +7,71 @@
 
 use super::*;
 
+mod copies;
 mod endpoints;
 
 fn rich_restriction_options(check_permissions: bool) -> ChangedPathsRestrictionOptions {
     ChangedPathsRestrictionOptions { check_permissions }
+}
+
+async fn assert_rich_restriction_pages(
+    tip: &ChangesetContext<Repo>,
+    base: Option<&ChangesetContext<Repo>>,
+    check_permissions: bool,
+) -> Result<Vec<(NonRootMPath, ChangedPathRestrictionInfo)>> {
+    let full = tip
+        .changed_paths_restriction_info(base, None, rich_restriction_options(check_permissions))
+        .await?
+        .try_collect::<Vec<_>>()
+        .await?;
+    for limit in [1, 2, 3] {
+        let mut after = None;
+        let mut joined = Vec::new();
+        loop {
+            let mut page = tip
+                .changed_paths_restriction_info(
+                    base,
+                    after.clone(),
+                    rich_restriction_options(check_permissions),
+                )
+                .await?
+                .take(limit + 1)
+                .try_collect::<Vec<_>>()
+                .await?;
+            let has_more = page.len() > limit;
+            page.truncate(limit);
+            if let Some((path, _)) = page.last() {
+                after = Some(MPath::from(path.clone()));
+            }
+            joined.extend(page);
+            if !has_more {
+                break;
+            }
+        }
+        assert_eq!(
+            joined, full,
+            "paging preserves all literal-side and source metadata"
+        );
+    }
+    for (cursor, _) in &full {
+        let suffix = tip
+            .changed_paths_restriction_info(
+                base,
+                Some(MPath::from(cursor.clone())),
+                rich_restriction_options(check_permissions),
+            )
+            .await?
+            .try_collect::<Vec<_>>()
+            .await?;
+        assert_eq!(
+            suffix,
+            full.iter()
+                .filter(|(path, _)| path > cursor)
+                .cloned()
+                .collect::<Vec<_>>()
+        );
+    }
+    Ok(full)
 }
 
 async fn comparison_restrictions(

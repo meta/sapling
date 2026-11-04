@@ -102,6 +102,7 @@ pub use crate::restricted_paths::DenyingRestriction;
 pub use crate::restricted_paths::OmissionCollector;
 pub use crate::restricted_paths::PathAccessInfo;
 pub use crate::restricted_paths::PathPolicyInfo;
+pub use crate::restricted_paths::PathRestrictionCopySourceInfo;
 pub use crate::restricted_paths::RestrictedChangeGroup;
 pub use crate::restricted_paths::RestrictedPathsChangesInfo;
 pub use crate::restricted_paths::RestrictedPathsPolicy;
