@@ -5,7 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-export type Level = 'log' | 'info' | 'warn' | 'error';
+export type Level = 'info' | 'warn' | 'error';
 
 const tzOptions: Intl.DateTimeFormatOptions & {
   // This is an ES2021 feature which is not properly reflected in the types but is available. TODO: update target to ES2021 to fix this.
@@ -36,15 +36,6 @@ export abstract class Logger {
     this.write(level, timeStr, ...args);
   }
 
-  /**
-   * @deprecated use .info instead
-   * TODO: we should just use info everywhere, I don't know the distinction between log and info,
-   * this was just for compatibility with console.log which isn't particularly important.
-   */
-  log(...args: Parameters<typeof console.info>): void {
-    this.writeLog('log', ...args);
-  }
-
   info(...args: Parameters<typeof console.info>): void {
     this.writeLog('info', ...args);
   }
@@ -62,8 +53,6 @@ export abstract class Logger {
 
   levelToString(level: Level): string {
     switch (level) {
-      case 'log':
-        return '  [LOG]';
       case 'info':
         return ' [INFO]';
       case 'warn':
@@ -91,8 +80,6 @@ export class StdoutLogger extends Logger {
 
   levelToString(level: Level): string {
     switch (level) {
-      case 'log':
-        return GREY + '  [LOG]';
       case 'info':
         return GREY + ' [INFO]';
       case 'warn':

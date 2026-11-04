@@ -113,7 +113,7 @@ export class Watchman {
   }
 
   setStatus(status: typeof this.status): void {
-    this.logger.log('Watchman status: ', status);
+    this.logger.info('Watchman status: ', status);
     (this.status as string) = status;
   }
 
@@ -161,7 +161,7 @@ export class Watchman {
       };
       this.setSubscription(subscriptionName, subscription);
       await this.subscribe(watchRoot, subscriptionName, options);
-      this.logger.log('watchman subscription %s established', subscriptionName);
+      this.logger.info('watchman subscription %s established', subscriptionName);
       this.setStatus('healthy');
 
       return subscription;
@@ -184,7 +184,7 @@ export class Watchman {
         this.logger.error(`error unsubscribing watchman subscription ${subscriptionName}: ${err}`);
       });
       this.deleteSubscription(subscriptionName);
-      this.logger.log(`watchman subscription destroyed: ${subscriptionName}`);
+      this.logger.info(`watchman subscription destroyed: ${subscriptionName}`);
     }
   }
 

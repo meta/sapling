@@ -15,21 +15,21 @@ export const platform: ServerPlatform = {
       case 'platform/openFile': {
         // For Obsidian, file opening is handled client-side via postMessage
         // Log for debugging purposes
-        repo?.initialConnectionContext.logger.log(
+        repo?.initialConnectionContext.logger.info(
           'Obsidian platform: openFile request (handled client-side)',
           message.path,
         );
         break;
       }
       case 'platform/openFiles': {
-        repo?.initialConnectionContext.logger.log(
+        repo?.initialConnectionContext.logger.info(
           'Obsidian platform: openFiles request (handled client-side)',
           message.paths,
         );
         break;
       }
       case 'platform/openExternal': {
-        repo?.initialConnectionContext.logger.log(
+        repo?.initialConnectionContext.logger.info(
           'Obsidian platform: openExternal request (handled client-side)',
           message.url,
         );

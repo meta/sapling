@@ -51,7 +51,7 @@ export function makeServerSideTracker(
     (data: TrackDataWithEventName, context: ServerSideContext) => {
       const {logger} = context;
       // log track event, since tracking events can be used as datapoints when reviewing logs
-      logger.log(
+      logger.info(
         '[track]',
         data.eventName,
         data.errorName ?? '',

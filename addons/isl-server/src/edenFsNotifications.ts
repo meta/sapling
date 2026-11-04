@@ -70,7 +70,7 @@ export class EdenFSNotifications {
 
     this.setSubscription(subscriptionName, subscription);
     await internalSubscription.start();
-    this.logger.log(`edenfs subscription started: ${subscriptionName}`);
+    this.logger.info(`edenfs subscription started: ${subscriptionName}`);
     return internalSubscription;
   }
 
@@ -108,7 +108,7 @@ export class EdenFSNotifications {
     if (--subscription.subscriptionCount === 0) {
       subscription.internalSubscription.stop();
       this.deleteSubscription(subscriptionName);
-      this.logger.log(`edenfs subscription destroyed: ${subscriptionName}`);
+      this.logger.info(`edenfs subscription destroyed: ${subscriptionName}`);
     }
   }
 }

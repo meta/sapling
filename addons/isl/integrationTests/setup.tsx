@@ -155,7 +155,7 @@ export async function initRepo(options?: InitRepoOptions) {
 
   testLogger.info('sl cmd: ', cmd);
 
-  testLogger.log('temp repo: ', repoDir);
+  testLogger.info('temp repo: ', repoDir);
   process.chdir(repoDir);
 
   const ctx: RepositoryContext = {
@@ -166,7 +166,7 @@ export async function initRepo(options?: InitRepoOptions) {
   };
 
   async function sl(args: Array<string>, options?: EjecaOptions) {
-    testLogger.log(ctx.cmd, ...args);
+    testLogger.info(ctx.cmd, ...args);
     const result = await runCommand(ctx, args, {
       ...options,
       env: {
@@ -203,11 +203,11 @@ commit(date='now')
 
   await sl(['version'])
     .catch(e => {
-      testLogger.log('err in version', e);
+      testLogger.info('err in version', e);
       return e;
     })
     .then(s => {
-      testLogger.log('sl version: ', s.stdout, s.stderr, s.exitCode);
+      testLogger.info('sl version: ', s.stdout, s.stderr, s.exitCode);
     });
 
   // set up empty repo
@@ -267,7 +267,7 @@ commit(date='now')
   });
 
   const refresh = () => {
-    testLogger.log('refreshing');
+    testLogger.info('refreshing');
     fireEvent.click(screen.getByTestId('refresh-button'));
   };
 
@@ -280,7 +280,7 @@ commit(date='now')
     repoDir,
     sl,
     cleanup: async () => {
-      testLogger.log(' -------- cleaning up -------- ');
+      testLogger.info(' -------- cleaning up -------- ');
       disposeServer();
       disposeClientConnection();
       if (options?.configs != null) {
@@ -291,14 +291,14 @@ commit(date='now')
         setConfigOverrideForTests([], /* override */ true);
       }
       if (!IS_CI) {
-        testLogger.log('removing repo dir');
+        testLogger.info('removing repo dir');
         // Step out of it first. `initRepo` chdir'd in, jest keeps running in this process, and a
         // removed cwd makes every later test file fail to load at all with `uv_cwd`.
         process.chdir(os.tmpdir());
         // rm -rf the temp dir with the repo in it
         // skip on CI because it can cause flakiness, and the job will get cleaned up anyway
         await retry(() => fs.promises.rm(repoDir, {recursive: true, force: true})).catch(() => {
-          testLogger.log('failed to clean up temp dir: ', repoDir);
+          testLogger.info('failed to clean up temp dir: ', repoDir);
         });
       }
     },

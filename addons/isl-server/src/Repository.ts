@@ -832,7 +832,7 @@ export class Repository {
       },
     );
 
-    ctx.logger.log('run operation: ', command, fullArgs.join(' '));
+    ctx.logger.info('run operation: ', command, fullArgs.join(' '));
 
     const commandBlocklist = new Set([
       'debugshell',
@@ -858,7 +858,7 @@ export class Repository {
       onProgress('stderr', data.toString());
     });
     signal.addEventListener('abort', () => {
-      ctx.logger.log('kill operation: ', command, fullArgs.join(' '));
+      ctx.logger.info('kill operation: ', command, fullArgs.join(' '));
     });
     handleAbortSignalOnProcess(execution, signal);
     try {

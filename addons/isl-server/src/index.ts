@@ -70,8 +70,8 @@ export function onClientConnection(connection: ClientConnection): () => void {
   connection.logger = logger;
   const platform = connection?.platform ?? browserServerPlatform;
   const version = connection?.version ?? 'unknown';
-  logger.log(`establish client connection for ${connection.cwd}`);
-  logger.log(`platform '${platform.platformName}', version '${version}'`);
+  logger.info(`establish client connection for ${connection.cwd}`);
+  logger.info(`platform '${platform.platformName}', version '${version}'`);
   void Internal.logInternalInfo?.(logger);
 
   const tracker = makeServerSideTracker(logger, platform, version);

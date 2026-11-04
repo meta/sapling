@@ -666,7 +666,7 @@ export default class ServerToClientAPI {
         break;
       }
       case 'refresh': {
-        logger?.log('refresh requested');
+        logger?.info('refresh requested');
         repo.fetchAndSetRecommendedBookmarks(bookmarks => {
           this.postMessage({
             type: 'fetchedRecommendedBookmarks',
