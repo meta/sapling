@@ -7,6 +7,7 @@
 
 mod dag_items;
 mod errors;
+mod repair;
 mod underived;
 
 use std::collections::HashMap;
@@ -47,6 +48,8 @@ pub use crate::dag_items::DagItemInfo;
 pub use crate::dag_items::DerivationDagItem;
 pub use crate::dag_items::derivation_priority_to_str;
 pub use crate::errors::InternalError;
+pub use crate::repair::RepairOptions;
+pub use crate::repair::RepairResult;
 pub use crate::underived::build_underived_batched_graph;
 
 /// Status of a single dependency: suffix and whether its `needed` node exists.
@@ -180,6 +183,14 @@ pub trait DerivationQueue {
     /// node types. Intended for unwedging a stuck queue — caller should pause
     /// the derivation service first. Aborts on the first Zeus error.
     async fn unsafe_nuke(&self, ctx: &CoreContext) -> Result<NukeStats, InternalError>;
+
+    /// Derive and remove isolated stranded items. Destructive admin operations
+    /// must not overlap this operation. Dependency edges are never repaired.
+    async fn repair(
+        &self,
+        ctx: &CoreContext,
+        options: RepairOptions,
+    ) -> Result<Vec<RepairResult>, InternalError>;
 
     async fn extend_deriving_ttl(
         &self,

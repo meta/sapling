@@ -8,6 +8,7 @@
 mod enqueue;
 mod inspect;
 mod nuke;
+mod repair;
 mod summary;
 mod unsafe_evict;
 
@@ -29,6 +30,7 @@ use metaconfig_types::RepoConfigRef;
 use mononoke_app::MononokeApp;
 use mononoke_app::args::RepoArgs;
 use nuke::NukeArgs;
+use repair::RepairArgs;
 use repo_blobstore::RepoBlobstore;
 use repo_derivation_queues::RepoDerivationQueues;
 use repo_identity::RepoIdentity;
@@ -61,6 +63,8 @@ pub enum DerivationQueueSubcommand {
     Inspect(InspectArgs),
     /// Delete every item in the derivation queue for this (repo, config). WARNING: nukes the entire queue. Pause the derivation service first.
     UnsafeNuke(NukeArgs),
+    /// Derive and remove isolated stranded items (dry run unless --apply).
+    Repair(RepairArgs),
 }
 
 #[facet::container]
@@ -126,6 +130,9 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
         }
         DerivationQueueSubcommand::UnsafeNuke(args) => {
             nuke::nuke(&ctx, &repo, config_name, args).await
+        }
+        DerivationQueueSubcommand::Repair(args) => {
+            repair::repair(&ctx, &repo, config_name, args).await
         }
     }
 }
