@@ -168,8 +168,6 @@ pub struct ImportOptions {
     /// enables them. Keep `ContentManifests` in it: the next batch's copy-source check
     /// reads the base's content manifest, and would otherwise derive it there.
     pub derive: Vec<DerivableType>,
-    /// How many changelist numbers each listing of the depot covers.
-    pub changes_window: u64,
     /// Per changelist, the files printed and stored and the copy sources checked at once.
     /// At least 1.
     pub file_concurrency: usize,
@@ -181,7 +179,6 @@ impl Default for ImportOptions {
     fn default() -> Self {
         Self {
             derive: vec![DerivableType::ContentManifests],
-            changes_window: CHANGES_WINDOW,
             file_concurrency: 16,
             changelist_lookahead: 2,
         }
@@ -562,29 +559,22 @@ pub async fn build_changesets(
     built
 }
 
-/// How many changelist numbers one `ChangeSource::submitted_changes` call covers.
-pub const CHANGES_WINDOW: u64 = 10_000;
-
-/// The first `limit` changelists of the depot after `after`, listed `window` changelist
-/// numbers at a time up to the server's latest, so no listing grows with the depot.
+/// The first `limit` changelists of the depot after `after`, up to the server's latest, in one
+/// listing: a quiet depot on a busy server costs one empty listing, not a walk over every
+/// changelist number the server has issued since.
 pub async fn next_changes(
     source: &impl ChangeSource,
     depot_root: &str,
     after: Option<u64>,
     limit: usize,
-    window: u64,
 ) -> Result<Vec<u64>> {
-    ensure!(window > 0, "the changelist window must not be empty");
     let latest = source.latest_change().await?;
-    let mut changes = Vec::new();
-    let mut from = after.unwrap_or(0);
-    while changes.len() < limit && from < latest {
-        let upto = from.saturating_add(window).min(latest);
-        changes.extend(source.submitted_changes(depot_root, from, upto).await?);
-        from = upto;
+    if limit == 0 || after.is_some_and(|after| after >= latest) {
+        return Ok(Vec::new());
     }
-    changes.truncate(limit);
-    Ok(changes)
+    source
+        .submitted_changes(depot_root, after, latest, limit)
+        .await
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -1103,7 +1093,7 @@ pub async fn import_next(
         check_depot_root(source, depot_root).await?;
         check_resume_continuity(ctx, repo, source, depot_root, bookmark).await?;
         let after = resume_point(ctx, repo, bookmark).await?;
-        next_changes(source, depot_root, after, limit, options.changes_window).await
+        next_changes(source, depot_root, after, limit).await
     }
     .await
     .map_err(|error| {

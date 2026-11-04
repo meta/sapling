@@ -404,9 +404,15 @@ pub trait ChangeSource: Send + Sync {
     /// The server's depots, without its hidden ones. A depot it cannot read is left out.
     async fn depots(&self) -> Result<Vec<Depot>>;
 
-    /// The submitted changelists with files in the depot at `depot_root` (like `//test1/`)
-    /// in `(after, upto]`, oldest first.
-    async fn submitted_changes(&self, depot_root: &str, after: u64, upto: u64) -> Result<Vec<u64>>;
+    /// The first `limit` submitted changelists with files in the depot at `depot_root` (like
+    /// `//test1/`) in `(after, upto]`, oldest first; `after: None` starts at the first.
+    async fn submitted_changes(
+        &self,
+        depot_root: &str,
+        after: Option<u64>,
+        upto: u64,
+        limit: usize,
+    ) -> Result<Vec<u64>>;
 
     async fn describe(&self, change: u64) -> Result<Changelist>;
 

@@ -332,8 +332,8 @@ struct FakeSource {
     latest: Option<u64>,
     /// Each call's method, in order.
     calls: Mutex<Vec<&'static str>>,
-    /// Each `(after, upto]` listed.
-    listed: Mutex<Vec<(u64, u64)>>,
+    /// Each listing's `(after, upto, limit)`.
+    listed: Mutex<Vec<(Option<u64>, u64, usize)>>,
     describes: InFlight,
     prints: InFlight,
     filelogs: InFlight,
@@ -402,22 +402,24 @@ impl ChangeSource for FakeSource {
             .collect())
     }
 
-    /// Every changelist it has in the range, whatever its depot.
+    /// The first `limit` changelists it has in the range, whatever their depot.
     async fn submitted_changes(
         &self,
         _depot_root: &str,
-        after: u64,
+        after: Option<u64>,
         upto: u64,
+        limit: usize,
     ) -> Result<Vec<u64>> {
         self.record("submitted_changes");
-        self.listed.lock().unwrap().push((after, upto));
+        self.listed.lock().unwrap().push((after, upto, limit));
         let mut changes: Vec<_> = self
             .changelists
             .keys()
             .copied()
-            .filter(|change| (after + 1..=upto).contains(change))
+            .filter(|&change| after.is_none_or(|after| change > after) && change <= upto)
             .collect();
         changes.sort();
+        changes.truncate(limit);
         Ok(changes)
     }
 
@@ -1491,53 +1493,51 @@ fn with_changelists(numbers: &[u64]) -> FakeSource {
 }
 
 #[mononoke::fbinit_test]
-async fn test_next_changes_walk_windows_past_sparse_changelists(_fb: FacebookInit) -> Result<()> {
-    let source = with_changelists(&[3, 25, 26, 61]);
+async fn test_next_changes_list_once_up_to_the_latest(_fb: FacebookInit) -> Result<()> {
+    let source = FakeSource {
+        latest: Some(5_000_000),
+        ..with_changelists(&[3, 25, 26, 61])
+    };
 
-    let changes = next_changes(&source, DEPOT, None, 10, 10).await?;
+    let changes = next_changes(&source, DEPOT, None, 10).await?;
 
     assert_eq!(vec![3, 25, 26, 61], changes);
     assert_eq!(
-        vec![
-            (0, 10),
-            (10, 20),
-            (20, 30),
-            (30, 40),
-            (40, 50),
-            (50, 60),
-            (60, 61)
-        ],
-        *source.listed.lock().unwrap()
+        vec![(None, 5_000_000, 10)],
+        *source.listed.lock().unwrap(),
+        "one listing, however far the server's numbers have gone"
     );
     Ok(())
 }
 
 #[mononoke::fbinit_test]
-async fn test_next_changes_stop_at_the_window_that_reaches_the_limit(
-    _fb: FacebookInit,
-) -> Result<()> {
+async fn test_next_changes_keep_the_first_after_the_resume_point(_fb: FacebookInit) -> Result<()> {
     let source = with_changelists(&[3, 4, 5, 12, 25]);
 
-    let changes = next_changes(&source, DEPOT, Some(3), 2, 10).await?;
+    let changes = next_changes(&source, DEPOT, Some(3), 2).await?;
 
     assert_eq!(vec![4, 5], changes);
-    assert_eq!(vec![(3, 13)], *source.listed.lock().unwrap());
+    assert_eq!(vec![(Some(3), 25, 2)], *source.listed.lock().unwrap());
     Ok(())
 }
 
 #[mononoke::fbinit_test]
-async fn test_next_changes_stop_at_the_latest_changelist(_fb: FacebookInit) -> Result<()> {
+async fn test_next_changes_do_not_list_once_caught_up(_fb: FacebookInit) -> Result<()> {
     let source = FakeSource {
         latest: Some(30),
         ..with_changelists(&[3, 25, 26])
     };
 
-    let changes = next_changes(&source, DEPOT, Some(26), 10, 10).await?;
-    let none_after_latest = next_changes(&source, DEPOT, Some(30), 10, 10).await?;
+    let nothing_new = next_changes(&source, DEPOT, Some(26), 10).await?;
+    let caught_up = next_changes(&source, DEPOT, Some(30), 10).await?;
 
-    assert_eq!(Vec::<u64>::new(), changes);
-    assert_eq!(Vec::<u64>::new(), none_after_latest);
-    assert_eq!(vec![(26, 30)], *source.listed.lock().unwrap());
+    assert_eq!(Vec::<u64>::new(), nothing_new);
+    assert_eq!(Vec::<u64>::new(), caught_up);
+    assert_eq!(
+        vec![(Some(26), 30, 10)],
+        *source.listed.lock().unwrap(),
+        "no listing at all once the resume point is the latest"
+    );
     Ok(())
 }
 
@@ -1565,24 +1565,6 @@ async fn test_each_changelist_reports_how_many_files_it_uploaded(fb: FacebookIni
         .collect();
     // 9's deletion has no content to upload.
     assert_eq!(vec![(7, 2), (9, 2)], uploaded);
-    Ok(())
-}
-
-#[mononoke::fbinit_test]
-async fn test_import_next_lists_in_the_configured_window(fb: FacebookInit) -> Result<()> {
-    let ctx = CoreContext::test_mock(fb);
-    let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
-    let master = BookmarkKey::new("master")?;
-    let source = two_changelists();
-    let options = ImportOptions {
-        changes_window: 4,
-        ..Default::default()
-    };
-
-    let batch = import_next(&ctx, &repo, &source, DEPOT, &master, 5, &options).await?;
-
-    assert_eq!(2, batch.changelists.len());
-    assert_eq!(vec![(0, 4), (4, 8), (8, 9)], *source.listed.lock().unwrap());
     Ok(())
 }
 
