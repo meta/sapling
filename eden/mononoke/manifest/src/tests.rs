@@ -55,6 +55,7 @@ pub(crate) use crate::find_intersection_of_diffs;
 use crate::find_intersection_of_diffs_and_parents_pruned;
 
 mod cancellation_tests;
+mod replacement_tests;
 pub mod test_manifest;
 
 use self::test_manifest::TestLeaf;

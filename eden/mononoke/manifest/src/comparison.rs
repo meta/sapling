@@ -200,6 +200,9 @@ where
                         expanded_base_mfs.into_iter().unzip();
 
                     let (replacement_here, replacement_children) = replacements.expand();
+                    let has_descendant_replacements = replacement_here
+                        .as_ref()
+                        .is_some_and(|tree| !tree.subentries.is_empty());
                     if let Some(replacement) = replacement_here.and_then(|tree| tree.value) {
                         parent_values = vec![Some(replacement)];
                     }
@@ -212,10 +215,18 @@ where
                             .iter()
                             .position(|parent_value| parent_value.as_ref() == Some(&value))
                         {
-                            out.push(Ok(ManifestComparison::Same(
-                                Span::Element(prefix.to_element()?, value),
-                                index,
-                            )));
+                            if has_descendant_replacements {
+                                out.push(Ok(ManifestComparison::Changed(
+                                    prefix.to_element()?,
+                                    value,
+                                    parent_values,
+                                )));
+                            } else {
+                                out.push(Ok(ManifestComparison::Same(
+                                    Span::Element(prefix.to_element()?, value),
+                                    index,
+                                )));
+                            }
                         } else if parent_values.is_empty()
                             || parent_values.iter().all(Option::is_none)
                         {

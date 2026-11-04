@@ -395,7 +395,7 @@ where
             }
         };
 
-        if this == other {
+        if this == other && child_replacements.is_empty() {
             return stream::empty().boxed();
         }
 
