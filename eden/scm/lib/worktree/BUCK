@@ -27,6 +27,7 @@ sl_rust_library(
         "fbsource//third-party/rust:tracing",
         "//eden/scm/lib/atomicfile:atomicfile",
         "//eden/scm/lib/config/model:configmodel",
+        "//eden/scm/lib/fsinfo:fsinfo",
         "//eden/scm/lib/gitcompat:gitcompat",
         "//eden/scm/lib/identity:identity",
         "//eden/scm/lib/repo/repo-minimal-info:repo-minimal-info",

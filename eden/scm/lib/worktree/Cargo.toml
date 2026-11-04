@@ -20,6 +20,7 @@ chrono = { version = "0.4.45", features = ["clock", "serde", "std"], default-fea
 fs-err = "3.3.2"
 sapling-atomicfile = { version = "0.2.0", path = "../atomicfile" }
 sapling-configmodel = { version = "0.2.0", path = "../config/model" }
+sapling-fsinfo = { version = "0.1.0", path = "../fsinfo" }
 sapling-gitcompat = { version = "0.1.0", path = "../gitcompat" }
 sapling-identity = { version = "0.1.0", path = "../identity" }
 sapling-repo-minimal-info = { version = "0.1.0", path = "../repo/repo-minimal-info" }

@@ -14,6 +14,7 @@
 //! worktree group information without pulling in command-layer dependencies.
 
 mod backend;
+mod disk;
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -43,6 +44,7 @@ use util::lock::PathLock;
 
 pub use crate::backend::ListedWorktree;
 pub use crate::backend::Worktrees;
+pub use crate::disk::check_disk_space;
 
 // --- Data Model ---
 
