@@ -148,9 +148,13 @@ registerDisposable(
 );
 
 /** Whether `platform.promptAgent` is available. Hosts report this when the connection opens. */
-export function useSupportsAgentPrompts(): boolean {
-  useAtomValue(reconnectingStatus);
+const supportsAgentPromptsAtom = atom(get => {
+  get(reconnectingStatus);
   return platform.supportsAgentPrompts?.() === true;
+});
+
+export function useSupportsAgentPrompts(): boolean {
+  return useAtomValue(supportsAgentPromptsAtom);
 }
 
 export async function forceFetchCommit(revset: string): Promise<CommitInfo> {

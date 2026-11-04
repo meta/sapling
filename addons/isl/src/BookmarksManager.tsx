@@ -96,7 +96,7 @@ function BookmarksManager(_props: {dismiss: () => void}) {
       icon="bookmark"
       data-testid="bookmarks-manager-dropdown">
       <Column className={css.container}>
-        {Internal.RecommendedBookmarkSection?.()}
+        {Internal.RecommendedBookmarkSection != null && <Internal.RecommendedBookmarkSection />}
         <Section
           title={<T>Remote Bookmarks</T>}
           description={<T>Uncheck remote bookmarks you don't use to hide them</T>}>
@@ -234,7 +234,11 @@ function AddStableLocation() {
     <div style={{paddingTop: 'var(--pad)'}}>
       {showingInput ? (
         <div>
-          <Subtle>{Internal.StableLocationAddInformation?.()}</Subtle>
+          <Subtle>
+            {Internal.StableLocationAddInformation != null && (
+              <Internal.StableLocationAddInformation />
+            )}
+          </Subtle>
           <Row>
             <Typeahead
               tokenString={query}
