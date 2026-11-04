@@ -20,7 +20,7 @@ fbthrift_test_if = { version = "0.0.1", path = "cargo_thrift" }
 fbthrift_test_if_clients = { version = "0.0.1", path = "cargo_thrift/clients" }
 fbthrift_test_if_services = { version = "0.0.1", path = "cargo_thrift/services" }
 proptest = "1.12.0"
-rstest = { version = "0.26.1", features = ["async-timeout"], default-features = false }
+rstest = { version = "0.27.0", features = ["async-timeout"], default-features = false }
 serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 test_competing_defaults_if = { version = "0.0.1", path = "cargo_thrift_comdef" }
 test_deprecated_default_enum_min_i32_if = { package = "fbthrift_test_if", version = "0.0.1", path = "cargo_thrift_enummin" }
