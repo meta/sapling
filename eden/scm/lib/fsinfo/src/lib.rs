@@ -18,6 +18,10 @@ use self::freebsd::fstype as fstype_imp;
 use self::linux::fstype as fstype_imp;
 #[cfg(target_os = "macos")]
 use self::macos::fstype as fstype_imp;
+#[cfg(unix)]
+use self::unix::fs_space as fs_space_imp;
+#[cfg(windows)]
+use self::windows::fs_space as fs_space_imp;
 #[cfg(windows)]
 use self::windows::fstype as fstype_imp;
 
@@ -60,6 +64,15 @@ impl fmt::Display for FsType {
     }
 }
 
+/// Space available to the caller on the volume containing a path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FsSpace {
+    /// Bytes available to the caller (including any quota limit).
+    pub available: u64,
+    /// Filesystem capacity on Unix; on Windows, the caller's quota-limited total.
+    pub total: u64,
+}
+
 #[cfg(windows)]
 mod windows {
     use std::os::windows::ffi::OsStrExt;
@@ -69,8 +82,10 @@ mod windows {
     use winapi::shared::minwindef::DWORD;
     use winapi::shared::minwindef::MAX_PATH;
     use winapi::shared::minwindef::ULONG;
+    use winapi::shared::ntdef::ULARGE_INTEGER;
     use winapi::shared::winerror::ERROR_NOT_A_REPARSE_POINT;
     use winapi::um::fileapi::CreateFileW;
+    use winapi::um::fileapi::GetDiskFreeSpaceExW;
     use winapi::um::fileapi::GetVolumeInformationByHandleW;
     use winapi::um::fileapi::OPEN_EXISTING;
     use winapi::um::handleapi::CloseHandle;
@@ -233,6 +248,26 @@ mod windows {
 
         Ok(fstype.into())
     }
+
+    pub fn fs_space(path: &Path) -> Result<FsSpace> {
+        let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+        wide.push(0);
+        // SAFETY: ULARGE_INTEGER is a plain integer union, valid when zeroed.
+        let mut available: ULARGE_INTEGER = unsafe { std::mem::zeroed() };
+        let mut total: ULARGE_INTEGER = unsafe { std::mem::zeroed() };
+        // SAFETY: `wide` is NUL-terminated and both out-pointers are valid for
+        // the duration of the call; the total-free-bytes output is optional.
+        let ok =
+            unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut available, &mut total, null_mut()) };
+        if ok == 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        // SAFETY: the call succeeded, so both unions hold their 64-bit values.
+        Ok(FsSpace {
+            available: unsafe { *available.QuadPart() },
+            total: unsafe { *total.QuadPart() },
+        })
+    }
 }
 
 #[cfg(unix)]
@@ -251,6 +286,29 @@ mod unix {
         } else {
             Err(io::Error::last_os_error().into())
         }
+    }
+
+    // statvfs block counters are u32 on macOS and u64 on Linux.
+    fn block_count<T: Into<u64>>(value: T) -> u64 {
+        value.into()
+    }
+
+    pub(super) fn space_from_statvfs(fs_stat: &libc::statvfs) -> FsSpace {
+        // f_frsize is the unit for block counts; f_bsize is the preferred I/O size.
+        let fragment_size = block_count(fs_stat.f_frsize);
+        FsSpace {
+            available: block_count(fs_stat.f_bavail) * fragment_size,
+            total: block_count(fs_stat.f_blocks) * fragment_size,
+        }
+    }
+
+    pub fn fs_space(path: &Path) -> Result<FsSpace> {
+        let cstr = CString::new(path.as_os_str().as_bytes())?;
+        let mut fs_stat: libc::statvfs = unsafe { zeroed() };
+        if unsafe { libc::statvfs(cstr.as_ptr(), &mut fs_stat) } != 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        Ok(space_from_statvfs(&fs_stat))
     }
 }
 
@@ -478,4 +536,49 @@ pub fn fstype(path: impl AsRef<Path>) -> Result<FsType> {
     };
 
     fstype_imp(path).with_context(|| format!("Cannot determine filesystem type for {path:?}"))
+}
+
+/// Get the available and total space on the volume containing an existing
+/// directory. Callers creating a new path must pass its nearest existing
+/// ancestor instead (as `worktree add` does).
+pub fn fs_space(path: impl AsRef<Path>) -> Result<FsSpace> {
+    let path = path.as_ref();
+    fs_space_imp(path).with_context(|| format!("Cannot determine free space for {path:?}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_fs_space() {
+        let space = fs_space(std::env::temp_dir()).unwrap();
+        assert!(space.total > 0, "the temp directory's volume has a size");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_fs_space_uses_fragment_size() {
+        let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+        stat.f_bsize = 65536;
+        stat.f_frsize = 4096;
+        stat.f_blocks = 100;
+        stat.f_bavail = 25;
+        assert_eq!(
+            unix::space_from_statvfs(&stat),
+            FsSpace {
+                available: 25 * 4096,
+                total: 100 * 4096,
+            }
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_fs_space_matches_statfs_total() {
+        let path = std::env::temp_dir();
+        let space = fs_space(&path).unwrap();
+        let stat = unix::get_statfs(&path).unwrap();
+        assert_eq!(space.total, stat.f_blocks as u64 * stat.f_frsize as u64);
+    }
 }
