@@ -139,6 +139,11 @@ TODO(meyer): Fix debugindexedlogdatastore and debugindexedloghistorystore and ad
 
   $ sl debugstrip -q -r 'draft()'
 
+- Agents don't get the prefetch status line
+  $ rm -rf $CACHEDIR/master
+  $ CODING_AGENT_METADATA=id=test_agent sl pull --config treemanifest.pullprefetchcount=10 --config agent.hide-pull-prefetch-status=true
+  pulling from ssh://user@dummy/master
+
 - Prefetch just the top manifest (but the full one)
   $ rm -rf $CACHEDIR/master
   $ sl pull --config treemanifest.pullprefetchcount=1 --traceback

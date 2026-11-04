@@ -988,10 +988,13 @@ def _postpullprefetch(ui, repo):
         mfnodes = list(c.manifestnode() for c in ctxs)
 
     if mfnodes:
-        if len(mfnodes) == 1:
-            ui.status(_("prefetching tree for %s\n") % short(ctxs[0].node()))
-        else:
-            ui.status(_("prefetching trees for %d commits\n") % len(mfnodes))
+        if not (
+            ui.agent() and ui.configbool("agent", "hide-pull-prefetch-status", True)
+        ):
+            if len(mfnodes) == 1:
+                ui.status(_("prefetching tree for %s\n") % short(ctxs[0].node()))
+            else:
+                ui.status(_("prefetching trees for %d commits\n") % len(mfnodes))
         # Calculate which parents we already have
         ctxnodes = list(ctx.node() for ctx in ctxs)
         parentctxs = repo.set("parents(%ln) - %ln", ctxnodes, ctxnodes)
