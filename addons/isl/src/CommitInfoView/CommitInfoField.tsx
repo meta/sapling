@@ -8,6 +8,7 @@
 import type {JSX, ReactNode} from 'react';
 import type {FieldConfig} from './types';
 
+import {Button} from 'isl-components/Button';
 import {Icon} from 'isl-components/Icon';
 import {extractTokens, TokensList} from 'isl-components/Tokens';
 import {DOCUMENTATION_DELAY, Tooltip} from 'isl-components/Tooltip';
@@ -275,9 +276,9 @@ function ClickToEditField({
 function EditFieldButton({onClick}: {onClick: () => void}) {
   return (
     <Tooltip title="Edit field" delayMs={DOCUMENTATION_DELAY}>
-      <button className="hover-edit-button" onClick={onClick}>
+      <Button icon className="hover-edit-button" onClick={onClick}>
         <Icon icon="edit" />
-      </button>
+      </Button>
     </Tooltip>
   );
 }
@@ -285,9 +286,9 @@ function EditFieldButton({onClick}: {onClick: () => void}) {
 function CopyFromParentButton({onClick}: {onClick: () => void}) {
   return (
     <Tooltip title="Copy from previous commit" delayMs={DOCUMENTATION_DELAY}>
-      <button className="hover-edit-button" onClick={onClick}>
+      <Button icon className="hover-edit-button" onClick={onClick}>
         <Icon icon="clippy" />
-      </button>
+      </Button>
     </Tooltip>
   );
 }

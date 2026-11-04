@@ -43,6 +43,7 @@
   box-sizing: border-box;
   color: var(--foreground);
   cursor: pointer;
+  border-radius: 0;
 }
 
 .commit-suggestions .suggestion:hover {

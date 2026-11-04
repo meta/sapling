@@ -7,6 +7,7 @@
 
 import type {ReactNode} from 'react';
 
+import {Button} from 'isl-components/Button';
 import {tracker} from '../analytics';
 import {T} from '../i18n';
 import {FrecencyStore} from './FrecencyStore';
@@ -56,8 +57,8 @@ export function SuggestedTags({
 
 function Suggestion({children, onClick}: {children: ReactNode; onClick: () => unknown}) {
   return (
-    <button className="suggestion token" onClick={onClick}>
+    <Button className="suggestion token" onClick={onClick}>
       {children}
-    </button>
+    </Button>
   );
 }

@@ -7,6 +7,7 @@
 
 import type {ReactNode} from 'react';
 
+import {Button} from 'isl-components/Button';
 import {Icon} from 'isl-components/Icon';
 import {atom, useAtomValue} from 'jotai';
 import {loadable} from 'jotai/utils';
@@ -155,8 +156,8 @@ export function SuggestedReviewers({
 
 function Suggestion({children, onClick}: {children: ReactNode; onClick: () => unknown}) {
   return (
-    <button className="suggestion token" onClick={onClick}>
+    <Button className="suggestion token" onClick={onClick}>
       {children}
-    </button>
+    </Button>
   );
 }
