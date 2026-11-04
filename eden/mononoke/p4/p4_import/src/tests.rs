@@ -1078,6 +1078,95 @@ async fn test_failed_mapping_write_leaves_the_bookmark(fb: FacebookInit) -> Resu
     Ok(())
 }
 
+/// A context whose Scuba rows go to a file in the returned directory, one JSON object each.
+fn scuba_logging_context(fb: FacebookInit) -> Result<(CoreContext, TempDir)> {
+    let dir = tempfile::tempdir()?;
+    let scuba =
+        MononokeScubaSampleBuilder::with_discard().with_log_file(dir.path().join("scuba"))?;
+    Ok((CoreContext::new_with_scuba(fb, scuba), dir))
+}
+
+/// The rows logged with `log_tag`, their normal and int columns merged.
+fn scuba_rows(dir: &TempDir, log_tag: &str) -> Result<Vec<Value>> {
+    let rows = std::fs::read_to_string(dir.path().join("scuba")).unwrap_or_default();
+    let mut matching = vec![];
+    for line in rows.lines() {
+        let row: Value = serde_json::from_str(line)?;
+        let mut merged = row["int"].as_object().cloned().unwrap_or_default();
+        merged.extend(row["normal"].as_object().cloned().unwrap_or_default());
+        if merged.get("log_tag").and_then(Value::as_str) == Some(log_tag) {
+            matching.push(Value::Object(merged));
+        }
+    }
+    Ok(matching)
+}
+
+#[mononoke::fbinit_test]
+async fn test_build_failure_logs_the_stage_and_the_changelist(fb: FacebookInit) -> Result<()> {
+    let (ctx, dir) = scuba_logging_context(fb)?;
+    let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+    let master = BookmarkKey::new("master")?;
+
+    import_changelists(
+        &ctx,
+        &repo,
+        &two_changelists(),
+        DEPOT,
+        &master,
+        &[7, 8],
+        &ImportOptions::default(),
+    )
+    .await
+    .unwrap_err();
+
+    let rows = scuba_rows(&dir, "P4 batch failed")?;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let row = &rows[0];
+    assert_eq!(row["stage"], "build");
+    assert_eq!(row["first_change"], 7);
+    assert_eq!(row["last_change"], 8);
+    assert_eq!(row["failed_change"], 8);
+    assert_eq!(row["depot_root"], DEPOT);
+    assert_eq!(row["bookmark"], "master");
+    let error = row["error"].as_str().unwrap();
+    assert!(error.contains("building changelist 8"), "{error}");
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_commit_failure_logs_the_stage_and_the_batch(fb: FacebookInit) -> Result<()> {
+    let (ctx, dir) = scuba_logging_context(fb)?;
+    let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+    let master = BookmarkKey::new("master")?;
+    let elsewhere = BonsaiP4MappingEntry::new(ONES_CSID, P4ChangelistId::new(9));
+    repo.bonsai_p4_mapping
+        .bulk_import(&ctx, &[elsewhere])
+        .await?;
+
+    import_changelists(
+        &ctx,
+        &repo,
+        &two_changelists(),
+        DEPOT,
+        &master,
+        &[7, 9],
+        &ImportOptions::default(),
+    )
+    .await
+    .unwrap_err();
+
+    let rows = scuba_rows(&dir, "P4 batch failed")?;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let row = &rows[0];
+    assert_eq!(row["stage"], "commit");
+    assert_eq!(row["batch_changelists"], 2);
+    assert!(row.get("failed_change").is_none(), "{row:?}");
+    let error = row["error"].as_str().unwrap();
+    assert!(error.contains("committing changelists 7..=9"), "{error}");
+    assert!(scuba_rows(&dir, "P4 changelist imported")?.is_empty());
+    Ok(())
+}
+
 const NEW_COMMITS: &str = "new_commits";
 const BOOKMARK_MOVES: &str = "bookmark_moves";
 

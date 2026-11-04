@@ -74,7 +74,13 @@ use repo_update_logger::BookmarkOperation;
 use repo_update_logger::CommitInfo;
 use repo_update_logger::log_bookmark_operation;
 use repo_update_logger::log_new_commits;
+use stats::prelude::*;
 use thiserror::Error;
+
+define_stats! {
+    prefix = "mononoke.p4_import";
+    failed_batches: dynamic_timeseries("failed_batches.{}", (stage: &'static str); Rate, Sum),
+}
 
 /// Stores a file revision's content in the repo's filestore. `size` is the size
 /// Perforce reports for the revision: content of any other length is rejected.
@@ -498,6 +504,12 @@ async fn build_changeset(
     })
 }
 
+/// Context of a changelist's fetch or build error, which names the changelist in a batch's
+/// failure.
+#[derive(Debug, Error)]
+#[error("building changelist {0}")]
+struct BuildingChangelist(u64);
+
 /// The changesets for `changes`, in order, each on top of the one before and the first on
 /// top of `base`. Their contents are stored; the changesets themselves are not. Changelists
 /// are fetched ahead while earlier ones are built, but built one at a time, in order.
@@ -511,7 +523,6 @@ pub async fn build_changesets(
     options: &ImportOptions,
 ) -> Result<Vec<BuiltChangeset>> {
     let concurrency = options.file_concurrency.max(1);
-    let context = |change| format!("building changelist {change}");
     // Room for one fetched changelist waiting for the build, besides those in flight.
     let (mut sender, mut receiver) = mpsc::channel(0);
     let fetch = async move {
@@ -520,7 +531,7 @@ pub async fn build_changesets(
                 .map(|&change| async move {
                     fetch_changelist(ctx, repo, source, depot_root, change, concurrency)
                         .await
-                        .with_context(|| context(change))
+                        .with_context(|| BuildingChangelist(change))
                 })
                 .buffered(options.changelist_lookahead.max(1))
         );
@@ -539,7 +550,7 @@ pub async fn build_changesets(
             let changeset =
                 build_changeset(ctx, repo, depot_root, base, &built, fetched, concurrency)
                     .await
-                    .with_context(|| context(change))?;
+                    .with_context(|| BuildingChangelist(change))?;
             built.push(changeset);
         }
         anyhow::Ok(built)
@@ -782,22 +793,45 @@ pub async fn import_changelists(
     let Some(&last) = changes.last() else {
         return Ok(ImportedBatch::default());
     };
-    ensure!(
-        changes.is_sorted_by(|a, b| a < b),
-        "changelists to import are not in increasing order"
-    );
-    let head = head(ctx, repo, bookmark).await?;
-    if let Some((_, checkpoint)) = head {
+    let batch = Batch {
+        repo: repo.repo_identity().name(),
+        depot_root,
+        bookmark,
+        changes,
+    };
+    let head = async {
         ensure!(
-            changes[0] > checkpoint,
-            "{bookmark} is already at changelist {checkpoint}, but the batch starts at {}",
-            changes[0]
+            changes.is_sorted_by(|a, b| a < b),
+            "changelists to import are not in increasing order"
         );
+        let head = head(ctx, repo, bookmark).await?;
+        if let Some((_, checkpoint)) = head {
+            ensure!(
+                changes[0] > checkpoint,
+                "{bookmark} is already at changelist {checkpoint}, but the batch starts at {}",
+                changes[0]
+            );
+        }
+        anyhow::Ok(head)
     }
+    .await
+    .map_err(|error| batch.failed(ctx, Stage::Prepare, error))?;
+    tracing::info!(
+        "importing changelists {}..={last} ({}) of {depot_root} into {} {bookmark}, after changelist {}; session {}",
+        changes[0],
+        changes.len(),
+        batch.repo,
+        head.map_or_else(
+            || "none".to_owned(),
+            |(_, checkpoint)| checkpoint.to_string()
+        ),
+        ctx.metadata().session_id(),
+    );
     let old = head.map(|(cs_id, _)| cs_id);
     let (build, built) = build_changesets(ctx, repo, source, depot_root, old, changes, options)
         .try_timed()
-        .await?;
+        .await
+        .map_err(|error| batch.failed(ctx, Stage::Build, error))?;
     let (imported, changesets): (Vec<_>, Vec<_>) = built
         .into_iter()
         .map(|built| {
@@ -832,7 +866,9 @@ pub async fn import_changelists(
         .types(&repo.repo_derived_data().active_config().types);
     let (save_and_derive, _) = save_and_derive_batch(ctx, repo, changesets, &derive)
         .try_timed()
-        .await?;
+        .await
+        .with_context(|| format!("saving changelists {}..={last}", changes[0]))
+        .map_err(|error| batch.failed(ctx, Stage::SaveAndDerive, error))?;
 
     let new = imported.last().context("built no changesets")?.cs_id;
     let (commit, ()) = async {
@@ -852,17 +888,92 @@ pub async fn import_changelists(
         anyhow::Ok(())
     }
     .try_timed()
-    .await?;
+    .await
+    .with_context(|| format!("committing changelists {}..={last}", changes[0]))
+    .map_err(|error| batch.failed(ctx, Stage::Commit, error))?;
     log_repo_update(ctx, repo, bookmark, old, new, commit_infos).await;
-    let batch = ImportedBatch {
+    let imported = ImportedBatch {
         changelists: imported,
         build: build.completion_time,
         save_and_derive: save_and_derive.completion_time,
         commit: commit.completion_time,
     };
-    log_imported(ctx, &batch);
-    trace_imported(ctx, depot_root, bookmark, old, new, &batch);
-    Ok(batch)
+    log_imported(ctx, &imported);
+    trace_imported(ctx, depot_root, bookmark, old, new, &imported);
+    Ok(imported)
+}
+
+/// Where a batch failed.
+#[derive(Clone, Copy, Debug)]
+enum Stage {
+    /// Checking the depot and the bookmark, and listing the changelists.
+    Prepare,
+    /// Fetching the changelists from Perforce, storing their contents, building the changesets.
+    Build,
+    SaveAndDerive,
+    Commit,
+}
+
+impl Stage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Stage::Prepare => "prepare",
+            Stage::Build => "build",
+            Stage::SaveAndDerive => "save_and_derive",
+            Stage::Commit => "commit",
+        }
+    }
+}
+
+/// Keeps a row readable when the error quotes a long p4 command or output.
+const MAX_LOGGED_ERROR_CHARS: usize = 4096;
+
+/// A batch as its failure reports it.
+struct Batch<'a> {
+    repo: &'a str,
+    depot_root: &'a str,
+    bookmark: &'a BookmarkKey,
+    changes: &'a [u64],
+}
+
+impl Batch<'_> {
+    /// Logs the failure to the job's log, Scuba and ODS, and returns it. The error names the
+    /// changelist when one failed: fetching and building run one changelist at a time.
+    fn failed(&self, ctx: &CoreContext, stage: Stage, error: anyhow::Error) -> anyhow::Error {
+        STATS::failed_batches.add_value(1, (stage.as_str(),));
+        let failed_change = error.downcast_ref::<BuildingChangelist>().map(|c| c.0);
+        let error_text: String = format!("{error:#}")
+            .chars()
+            .take(MAX_LOGGED_ERROR_CHARS)
+            .collect();
+        let mut scuba = ctx.scuba().clone();
+        scuba
+            .add("repo", self.repo)
+            .add("depot_root", self.depot_root)
+            .add("bookmark", self.bookmark.to_string())
+            .add("stage", stage.as_str())
+            .add("batch_changelists", self.changes.len())
+            .add_opt("first_change", self.changes.first().copied())
+            .add_opt("last_change", self.changes.last().copied())
+            .add_opt("failed_change", failed_change)
+            .add("error", error_text);
+        scuba.log_with_msg("P4 batch failed", None);
+        let range = match (self.changes.first(), self.changes.last()) {
+            (Some(first), Some(last)) => format!(" changelists {first}..={last}"),
+            _ => String::new(),
+        };
+        let at =
+            failed_change.map_or_else(String::new, |change| format!(" at changelist {change}"));
+        tracing::error!(
+            "importing{range} of {} into {} {} failed in {}{at}: {error:#}; session {}",
+            self.depot_root,
+            self.repo,
+            self.bookmark,
+            stage.as_str(),
+            ctx.metadata().session_id(),
+        );
+        error
+    }
 }
 
 const IMPORT_REASON: BookmarkUpdateReason = BookmarkUpdateReason::Blobimport;
@@ -985,10 +1096,22 @@ pub async fn import_next(
     limit: usize,
     options: &ImportOptions,
 ) -> Result<ImportedBatch> {
-    check_depot_root(source, depot_root).await?;
-    check_resume_continuity(ctx, repo, source, depot_root, bookmark).await?;
-    let after = resume_point(ctx, repo, bookmark).await?;
-    let changes = next_changes(source, depot_root, after, limit, options.changes_window).await?;
+    let changes = async {
+        check_depot_root(source, depot_root).await?;
+        check_resume_continuity(ctx, repo, source, depot_root, bookmark).await?;
+        let after = resume_point(ctx, repo, bookmark).await?;
+        next_changes(source, depot_root, after, limit, options.changes_window).await
+    }
+    .await
+    .map_err(|error| {
+        let batch = Batch {
+            repo: repo.repo_identity().name(),
+            depot_root,
+            bookmark,
+            changes: &[],
+        };
+        batch.failed(ctx, Stage::Prepare, error)
+    })?;
     import_changelists(ctx, repo, source, depot_root, bookmark, &changes, options).await
 }
 

@@ -40,8 +40,8 @@ pub enum TransformError {
     },
     #[error("no stored content for {0}")]
     MissingContent(String),
-    #[error("changelist {changelist}'s user {user:?} contains a newline")]
-    NewlineInAuthor { changelist: u64, user: String },
+    #[error("changelist {changelist}'s user contains a newline")]
+    NewlineInAuthor { changelist: u64 },
     #[error("{0:?} contains a newline")]
     NewlineInPath(String),
     #[error("changelist {changelist}'s description doesn't decode from its original bytes")]
@@ -81,7 +81,6 @@ pub fn changeset(
     if changelist.user.contains('\n') {
         return Err(TransformError::NewlineInAuthor {
             changelist: changelist.number,
-            user: changelist.user.clone(),
         });
     }
     let invalid = |source| TransformError::InvalidChangeset {

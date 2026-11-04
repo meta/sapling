@@ -556,7 +556,7 @@ fn test_user_with_a_newline_is_an_error() {
     assert!(
         matches!(
             &result,
-            Err(TransformError::NewlineInAuthor { changelist: 42, .. })
+            Err(TransformError::NewlineInAuthor { changelist: 42 })
         ),
         "{result:?}"
     );
