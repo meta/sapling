@@ -188,6 +188,8 @@ std::string_view edenMountHealthIssueReasonString(
       return "daemon_running_mount_hung";
     case EdenMountHealthIssueReason::DaemonRunningMountSlow:
       return "daemon_running_mount_slow";
+    case EdenMountHealthIssueReason::DaemonRunningMountHangEnded:
+      return "daemon_running_mount_hang_ended";
   }
   return "unknown";
 }

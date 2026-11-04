@@ -38,6 +38,8 @@ enum class EdenMountHealthIssueReason {
   // The probe ran past the 5 s timeout but finished before the hang
   // threshold.
   DaemonRunningMountSlow,
+  // A probe reported as hung finished.
+  DaemonRunningMountHangEnded,
 };
 
 std::string_view edenMountHealthIssueReasonString(

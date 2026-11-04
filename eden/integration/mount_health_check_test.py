@@ -103,6 +103,7 @@ class HangThresholdMountHealthCheckTest(MountHealthCheckTestBase):
         self.delay_next_probe(13)
         self.wait_for_counter("hung")
         self.assertEqual(0, self.counter("timed_out"))
+        self.wait_for_counter("hang_ended")
 
     def test_probe_done_before_the_threshold_is_counted_as_slow(self) -> None:
         self.wait_for_counter("healthy")

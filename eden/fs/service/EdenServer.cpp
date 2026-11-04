@@ -343,6 +343,8 @@ struct MountHealthIssueLogContext {
   // With a hang threshold, the detail of a probe that ran past the 5 s
   // timeout, taken then. Logged if the probe finishes before the threshold.
   mutable folly::Synchronized<std::string> slowProbeDetail;
+  // Set once the probe was reported as hung.
+  mutable std::atomic_bool hung{false};
 };
 
 using RunningMountHealthChecks = folly::Synchronized<std::unordered_map<
@@ -518,6 +520,35 @@ void logSlowMountHealthCheck(
   }
 }
 
+/**
+ * Logs the end of a hang, once per hang, with how long the probe ran and what
+ * it found.
+ */
+void logMountHealthCheckHangEnded(
+    const MountHealthIssueLogContext& logContext,
+    std::string_view result) {
+  try {
+    const auto duration =
+        std::chrono::steady_clock::now() - logContext.progress->queued();
+    const auto durationMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
+    auto error = fmt::format(
+        "EdenFS mount health check hang ended after {} ms", durationMs);
+    auto detail = folly::toJson(
+        folly::dynamic::object("result", result)("probe_ms", durationMs));
+    XLOGF(WARN, "{} for {}: {}", error, logContext.mountPath, detail);
+    logContext.log(
+        std::string{edenMountHealthIssueReasonString(
+            EdenMountHealthIssueReason::DaemonRunningMountHangEnded)},
+        std::move(error),
+        std::move(detail),
+        std::chrono::duration<double>{duration}.count(),
+        /*deduplicate=*/false);
+  } catch (const std::exception& ex) {
+    XLOGF(ERR, "EdenFS mount health hang end logging failed: {}", ex.what());
+  }
+}
+
 void scheduleMountHealthCheckStartTimeout(
     std::shared_ptr<std::atomic_bool> started,
     std::shared_ptr<std::atomic_bool> completed,
@@ -557,6 +588,9 @@ void scheduleMountHealthCheckHangTimeout(
           std::chrono::duration_cast<folly::HighResDuration>(delay))
           .deferValue([completed = std::move(completed),
                        logContext = std::move(logContext)](auto&&) {
+            // Set before claiming the probe, so a result that loses the race
+            // sees it.
+            logContext->hung.store(true, std::memory_order_release);
             if (completed->exchange(true)) {
               return;
             }
@@ -4870,17 +4904,33 @@ void EdenServer::scheduleRunningMountHealthCheck(
                 edenMount->setHealthCheckDevice(device);
               }
             }
-            if (alreadyCompleted) {
+            // A hung probe's late result is still handled, so that a
+            // healthy one clears the hung report.
+            const bool hangEnded = alreadyCompleted &&
+                logContext->hung.load(std::memory_order_acquire);
+            if (alreadyCompleted && !hangEnded) {
               return;
             }
-            if (logContext->progress->mountCheckedByStatx()) {
-              logContext->count(&MountHealthCheckStats::statxMountCheck);
-            }
-            auto slowProbeDetail =
-                std::move(*logContext->slowProbeDetail.wlock());
-            if (!slowProbeDetail.empty()) {
-              logContext->count(&MountHealthCheckStats::slow);
-              logSlowMountHealthCheck(*logContext, std::move(slowProbeDetail));
+            if (hangEnded) {
+              logContext->count(&MountHealthCheckStats::hangEnded);
+              std::string_view outcome = "healthy";
+              if (result.hasException()) {
+                outcome = "error";
+              } else if (result->has_value()) {
+                outcome = edenMountHealthIssueReasonString((*result)->reason);
+              }
+              logMountHealthCheckHangEnded(*logContext, outcome);
+            } else {
+              if (logContext->progress->mountCheckedByStatx()) {
+                logContext->count(&MountHealthCheckStats::statxMountCheck);
+              }
+              auto slowProbeDetail =
+                  std::move(*logContext->slowProbeDetail.wlock());
+              if (!slowProbeDetail.empty()) {
+                logContext->count(&MountHealthCheckStats::slow);
+                logSlowMountHealthCheck(
+                    *logContext, std::move(slowProbeDetail));
+              }
             }
             if (result.hasException()) {
               XLOGF(
