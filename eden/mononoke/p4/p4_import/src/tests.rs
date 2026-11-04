@@ -5,6 +5,7 @@
  * GNU General Public License version 2.
  */
 
+use std::collections::BTreeSet;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -12,16 +13,22 @@ use std::task::Poll;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
+use bonsai_git_mapping::BonsaiGitMapping;
+use bonsai_globalrev_mapping::BonsaiGlobalrevMapping;
 use bonsai_p4_mapping::AddP4MappingErrorKind;
 use bookmarks::Bookmarks;
 use commit_graph::CommitGraph;
 use commit_graph::CommitGraphWriter;
+use context::SessionContainer;
 use fbinit::FacebookInit;
 use filestore::FilestoreConfig;
 use futures::StreamExt;
 use futures::stream;
 use futures::stream::BoxStream;
 use metaconfig_types::FilestoreParams;
+use metaconfig_types::LoggingDestination;
+use metaconfig_types::RepoConfig;
+use metaconfig_types::UpdateLoggingConfig;
 use mononoke_macros::mononoke;
 use mononoke_types::BonsaiChangesetMut;
 use mononoke_types::FileChange;
@@ -38,6 +45,10 @@ use p4_types::IntegrationHow;
 use repo_blobstore::RepoBlobstore;
 use repo_derived_data::RepoDerivedData;
 use repo_identity::RepoIdentity;
+use scribe_ext::Scribe;
+use scuba_ext::MononokeScubaSampleBuilder;
+use serde_json::Value;
+use tempfile::TempDir;
 use test_repo_factory::TestRepoFactory;
 use unodes::RootUnodeManifestId;
 
@@ -45,6 +56,10 @@ use super::*;
 
 #[facet::container]
 struct TestRepo {
+    #[facet]
+    bonsai_git_mapping: dyn BonsaiGitMapping,
+    #[facet]
+    bonsai_globalrev_mapping: dyn BonsaiGlobalrevMapping,
     #[facet]
     bonsai_p4_mapping: dyn BonsaiP4Mapping,
     #[facet]
@@ -57,6 +72,8 @@ struct TestRepo {
     filestore_config: FilestoreConfig,
     #[facet]
     repo_blobstore: RepoBlobstore,
+    #[facet]
+    repo_config: RepoConfig,
     #[facet]
     repo_derived_data: RepoDerivedData,
     #[facet]
@@ -1058,6 +1075,135 @@ async fn test_failed_mapping_write_leaves_the_bookmark(fb: FacebookInit) -> Resu
     );
     assert_eq!(None, bookmark_target(&ctx, &repo, &master).await?);
     assert_eq!(None, mapped(&ctx, &repo, 7).await?);
+    Ok(())
+}
+
+const NEW_COMMITS: &str = "new_commits";
+const BOOKMARK_MOVES: &str = "bookmark_moves";
+
+/// A repo whose update logs go to Scribe, and a context whose Scribe writes each category
+/// to a file in the returned directory.
+async fn logging_repo(fb: FacebookInit) -> Result<(TestRepo, CoreContext, TempDir)> {
+    let scribe = |category: &str| {
+        Some(LoggingDestination::Scribe {
+            scribe_category: category.to_owned(),
+        })
+    };
+    let repo = TestRepoFactory::new(fb)?
+        .with_config_override(|config| {
+            config.update_logging_config = UpdateLoggingConfig {
+                new_commit_logging_destination: scribe(NEW_COMMITS),
+                bookmark_logging_destination: scribe(BOOKMARK_MOVES),
+                git_content_refs_logging_destination: None,
+            }
+        })
+        .build()
+        .await?;
+    let dir = tempfile::tempdir()?;
+    let ctx = SessionContainer::new_with_defaults(fb).new_context_with_scribe(
+        MononokeScubaSampleBuilder::with_discard(),
+        Scribe::new_to_file(dir.path().to_owned()),
+    );
+    Ok((repo, ctx, dir))
+}
+
+fn logged(dir: &TempDir, category: &str) -> Result<Vec<Value>> {
+    let path = dir.path().join(category);
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+    std::fs::read_to_string(path)?
+        .lines()
+        .map(|line| Ok(serde_json::from_str(line)?))
+        .collect()
+}
+
+#[mononoke::fbinit_test]
+async fn test_each_batch_logs_its_changesets_and_the_bookmark_move(fb: FacebookInit) -> Result<()> {
+    let (repo, ctx, dir) = logging_repo(fb).await?;
+    let master = BookmarkKey::new("master")?;
+    let source = two_changelists()
+        .with_changelist(11, &[("//test1/a.txt", 3, Action::Edit, Some(b"three\n"))]);
+    let options = ImportOptions::default();
+
+    let first = import_changelists(&ctx, &repo, &source, DEPOT, &master, &[7, 9], &options)
+        .await?
+        .changelists;
+    let second = import_changelists(&ctx, &repo, &source, DEPOT, &master, &[11], &options)
+        .await?
+        .changelists;
+
+    let ids: Vec<_> = first
+        .iter()
+        .chain(&second)
+        .map(|i| i.cs_id.to_string())
+        .collect();
+    let commits = logged(&dir, NEW_COMMITS)?;
+    assert_eq!(3, commits.len());
+    // A batch's commits are logged concurrently, so in no particular order.
+    let first_batch: BTreeSet<_> = commits[..2]
+        .iter()
+        .map(|row| row["changeset_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids[..2].iter().map(String::as_str).collect::<BTreeSet<_>>(),
+        first_batch
+    );
+    assert_eq!(ids[2], commits[2]["changeset_id"].as_str().unwrap());
+    for row in &commits {
+        assert_eq!("master", row["bookmark"]);
+        assert_eq!(true, row["is_public"]);
+    }
+
+    let moves = logged(&dir, BOOKMARK_MOVES)?;
+    let summary: Vec<_> = moves
+        .iter()
+        .map(|row| {
+            (
+                row["operation"].as_str().unwrap(),
+                row["old_bookmark_value"].as_str(),
+                row["new_bookmark_value"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        vec![
+            ("create", None, ids[1].as_str()),
+            ("update", Some(ids[1].as_str()), ids[2].as_str()),
+        ],
+        summary
+    );
+    for row in &moves {
+        assert_eq!("master", row["bookmark_name"]);
+        assert_eq!("pull_default", row["bookmark_kind"]);
+        assert_eq!("blobimport", row["update_reason"]);
+    }
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_batch_that_does_not_commit_logs_nothing(fb: FacebookInit) -> Result<()> {
+    let (repo, ctx, dir) = logging_repo(fb).await?;
+    let master = BookmarkKey::new("master")?;
+    let elsewhere = BonsaiP4MappingEntry::new(ONES_CSID, P4ChangelistId::new(9));
+    repo.bonsai_p4_mapping
+        .bulk_import(&ctx, &[elsewhere])
+        .await?;
+
+    import_changelists(
+        &ctx,
+        &repo,
+        &two_changelists(),
+        DEPOT,
+        &master,
+        &[7, 9],
+        &ImportOptions::default(),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(logged(&dir, NEW_COMMITS)?.is_empty());
+    assert!(logged(&dir, BOOKMARK_MOVES)?.is_empty());
     Ok(())
 }
 

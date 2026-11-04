@@ -17,11 +17,14 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::ensure;
 use blobstore::Loadable;
+use bonsai_git_mapping::BonsaiGitMappingRef;
+use bonsai_globalrev_mapping::BonsaiGlobalrevMappingRef;
 use bonsai_p4_mapping::BonsaiP4Mapping;
 use bonsai_p4_mapping::BonsaiP4MappingArc;
 use bonsai_p4_mapping::BonsaiP4MappingEntry;
 use bonsai_p4_mapping::BonsaiP4MappingRef;
 use bookmarks::BookmarkKey;
+use bookmarks::BookmarkKind;
 use bookmarks::BookmarkTransactionError;
 use bookmarks::BookmarkTransactionHook;
 use bookmarks::BookmarkUpdateReason;
@@ -47,6 +50,7 @@ use import_common::BackfillDerivation;
 use import_common::save_and_derive_batch;
 use manifest::Entry;
 use manifest::ManifestOps;
+use metaconfig_types::RepoConfigRef;
 use mononoke_types::BonsaiChangeset;
 use mononoke_types::ChangesetId;
 use mononoke_types::ContentId;
@@ -65,6 +69,11 @@ use p4_types::FileRevision;
 use repo_blobstore::RepoBlobstoreRef;
 use repo_derived_data::RepoDerivedDataRef;
 use repo_identity::RepoIdentityRef;
+use repo_update_logger::BookmarkInfo;
+use repo_update_logger::BookmarkOperation;
+use repo_update_logger::CommitInfo;
+use repo_update_logger::log_bookmark_operation;
+use repo_update_logger::log_new_commits;
 use thiserror::Error;
 
 /// Stores a file revision's content in the repo's filestore. `size` is the size
@@ -739,7 +748,8 @@ pub async fn resume_point(
 /// `options` say, and returns their changesets. The batch must start after the
 /// `resume_point`, so nothing is imported twice. `depot_root` must pass `check_depot_root`
 /// and the bookmark `check_resume_continuity`, as `import_next` makes sure. Logs a row
-/// per changelist to the context's Scuba table.
+/// per changelist to the context's Scuba table and, once the bookmark has moved, the
+/// changesets and the move to the repo's update logs (`log_repo_update`).
 ///
 /// A changelist has no parent field, unlike a git commit: its parent is whatever the
 /// bookmark points at, so the bookmark is the only record of where the import is. That is
@@ -750,11 +760,14 @@ pub async fn import_changelists(
     ctx: &CoreContext,
     repo: &(
          impl BookmarksRef
+         + BonsaiGitMappingRef
+         + BonsaiGlobalrevMappingRef
          + BonsaiP4MappingArc
          + CommitGraphRef
          + CommitGraphWriterRef
          + FilestoreConfigRef
          + RepoBlobstoreRef
+         + RepoConfigRef
          + RepoDerivedDataRef
          + RepoIdentityRef
          + Send
@@ -801,6 +814,20 @@ pub async fn import_changelists(
             (imported, built.changeset)
         })
         .unzip();
+    // Each `CommitInfo` holds up to 10k paths; `log_new_commits` ignores them without a destination.
+    let commit_infos = if repo
+        .repo_config()
+        .update_logging_config
+        .new_commit_logging_destination
+        .is_some()
+    {
+        changesets
+            .iter()
+            .map(|bcs| CommitInfo::new(bcs, None))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let derive = BackfillDerivation::OnlySpecificTypes(options.derive.clone())
         .types(&repo.repo_derived_data().active_config().types);
     let (save_and_derive, _) = save_and_derive_batch(ctx, repo, changesets, &derive)
@@ -811,8 +838,8 @@ pub async fn import_changelists(
     let (commit, ()) = async {
         let mut txn = repo.bookmarks().create_transaction(ctx.clone());
         match old {
-            None => txn.create(bookmark, new, BookmarkUpdateReason::Blobimport)?,
-            Some(old) => txn.update(bookmark, new, old, BookmarkUpdateReason::Blobimport)?,
+            None => txn.create(bookmark, new, IMPORT_REASON)?,
+            Some(old) => txn.update(bookmark, new, old, IMPORT_REASON)?,
         }
         let mapping = mapping_txn_hook(repo.bonsai_p4_mapping_arc(), &imported);
         // Hooks run before the bookmark's compare-and-swap, so a concurrent import of the same
@@ -826,6 +853,7 @@ pub async fn import_changelists(
     }
     .try_timed()
     .await?;
+    log_repo_update(ctx, repo, bookmark, old, new, commit_infos).await;
     let batch = ImportedBatch {
         changelists: imported,
         build: build.completion_time,
@@ -834,6 +862,41 @@ pub async fn import_changelists(
     };
     log_imported(ctx, &batch);
     Ok(batch)
+}
+
+const IMPORT_REASON: BookmarkUpdateReason = BookmarkUpdateReason::Blobimport;
+
+/// Feeds the repo's new-commit and bookmark logs, which the bookmark transaction doesn't
+/// write: bookmarks_movement does it for pushes, but the import moves the bookmark itself.
+/// Like there, failures only reach Scuba: the move has already committed.
+async fn log_repo_update(
+    ctx: &CoreContext,
+    repo: &(
+         impl BonsaiGitMappingRef
+         + BonsaiGlobalrevMappingRef
+         + CommitGraphRef
+         + RepoConfigRef
+         + RepoIdentityRef
+     ),
+    bookmark: &BookmarkKey,
+    old: Option<ChangesetId>,
+    new: ChangesetId,
+    commit_infos: Vec<CommitInfo>,
+) {
+    // `create` makes a pull-default bookmark, and `update` keeps the kind.
+    let kind = BookmarkKind::PullDefaultPublishing;
+    log_new_commits(ctx, repo, Some((bookmark, kind)), commit_infos).await;
+    let operation = match old {
+        None => BookmarkOperation::Create(new),
+        Some(old) => BookmarkOperation::Update(old, new),
+    };
+    let info = BookmarkInfo {
+        bookmark_name: bookmark.clone(),
+        bookmark_kind: kind,
+        operation,
+        reason: IMPORT_REASON,
+    };
+    log_bookmark_operation(ctx, repo, &info).await;
 }
 
 fn log_imported(ctx: &CoreContext, batch: &ImportedBatch) {
@@ -866,11 +929,14 @@ pub async fn import_next(
     ctx: &CoreContext,
     repo: &(
          impl BookmarksRef
+         + BonsaiGitMappingRef
+         + BonsaiGlobalrevMappingRef
          + BonsaiP4MappingArc
          + CommitGraphRef
          + CommitGraphWriterRef
          + FilestoreConfigRef
          + RepoBlobstoreRef
+         + RepoConfigRef
          + RepoDerivedDataRef
          + RepoIdentityRef
          + Send
