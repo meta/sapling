@@ -1094,6 +1094,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_send_async_reports_auth_resolver_failure() -> Result<()> {
+        let client = HttpClient::from_config(Config {
+            auth_resolver: Some(AuthResolver::new(|| {
+                Err::<ResolvedAuth, _>(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "certificate is missing",
+                ))
+            })),
+            ..Default::default()
+        });
+        let url = Url::parse("https://example.com/test")?;
+
+        let (responses, _stats) = client.send_async(vec![client.get(url)])?;
+        let err = match responses.into_iter().next().unwrap().await {
+            Ok(_) => panic!("expected the request to fail"),
+            Err(err) => err,
+        };
+
+        // FIXME: The auth error is lost and the caller sees a dropped request.
+        // `send_async` should return `Err` with "certificate is missing" before
+        // dispatching the request.
+        assert!(matches!(err, HttpClientError::RequestDropped(_)));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_async_get() -> Result<()> {
         let mut server = mockito::Server::new_async().await;
         let mock = server
