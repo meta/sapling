@@ -32,6 +32,7 @@ repo_derived_data = { version = "0.1.0", path = "../../repo_attributes/repo_deri
 repo_identity = { version = "0.1.0", path = "../../repo_attributes/repo_identity" }
 repo_update_logger = { version = "0.1.0", path = "../../features/repo_update_logger" }
 thiserror = "2.0.21"
+tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [dev-dependencies]
 async-trait = "0.1.92"

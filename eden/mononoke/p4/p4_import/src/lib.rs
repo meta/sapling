@@ -861,6 +861,7 @@ pub async fn import_changelists(
         commit: commit.completion_time,
     };
     log_imported(ctx, &batch);
+    trace_imported(ctx, depot_root, bookmark, old, new, &batch);
     Ok(batch)
 }
 
@@ -920,6 +921,42 @@ fn log_imported(ctx: &CoreContext, batch: &ImportedBatch) {
             .add("batch_commit_us", micros(batch.commit));
         scuba.log_with_msg("P4 changelist imported", None);
     }
+}
+
+/// For the job's log: one line per batch, a line per changelist at debug. Numbers and ids
+/// only; paths and descriptions stay in Scuba, behind its ACL.
+fn trace_imported(
+    ctx: &CoreContext,
+    depot_root: &str,
+    bookmark: &BookmarkKey,
+    old: Option<ChangesetId>,
+    new: ChangesetId,
+    batch: &ImportedBatch,
+) {
+    for imported in &batch.changelists {
+        tracing::debug!(
+            "changelist {} -> {}: {} file changes, {} uploaded in {:?}",
+            imported.change,
+            imported.cs_id,
+            imported.file_changes,
+            imported.timings.uploaded_files,
+            imported.timings.upload,
+        );
+    }
+    let (Some(first), Some(last)) = (batch.changelists.first(), batch.changelists.last()) else {
+        return;
+    };
+    let old = old.map_or_else(|| "nothing".to_owned(), |old| old.to_string());
+    tracing::info!(
+        "imported changelists {}..={} ({}) of {depot_root}: {bookmark} {old} -> {new}; build {:?}, save+derive {:?}, commit {:?}; session {}",
+        first.change,
+        last.change,
+        batch.changelists.len(),
+        batch.build,
+        batch.save_and_derive,
+        batch.commit,
+        ctx.metadata().session_id(),
+    );
 }
 
 /// Imports the first `limit` changelists of the depot after the bookmark's `resume_point`,

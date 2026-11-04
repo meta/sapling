@@ -24,6 +24,7 @@ rust_library(
         "fbsource//third-party/rust:bytes",
         "fbsource//third-party/rust:futures",
         "fbsource//third-party/rust:thiserror",
+        "fbsource//third-party/rust:tracing",
         "//common/rust/shed/futures_stats:futures_stats",
         "//eden/mononoke/blobstore:blobstore",
         "//eden/mononoke/derived_data/content_manifest_derivation:content_manifest_derivation",
