@@ -3398,11 +3398,6 @@
   dependencies:
     "@rolldown/pluginutils" "1.0.0-rc.7"
 
-"@vscode/codicons@^0.0.39":
-  version "0.0.39"
-  resolved "https://registry.yarnpkg.com/@vscode/codicons/-/codicons-0.0.39.tgz#00985c0bb66f0baaf889ed6eaa2b82b9c0821bf2"
-  integrity sha512-gO09UZrOBONyzI8LWPRsCahnmUR16hkRQCJOSJzX8L4dC5aa6YGP4nS+gh5oSekMlM8LFJXMAgqBMGGiktdRJw==
-
 "@vscode/codicons@^0.0.45":
   version "0.0.45"
   resolved "https://registry.yarnpkg.com/@vscode/codicons/-/codicons-0.0.45.tgz#e5d0531d3c8d0ba26e7b9175ae2e0e579cc73d4f"

@@ -16,7 +16,6 @@
   },
   "dependencies": {
     "@types/diff": "^5.0.2",
-    "@vscode/codicons": "^0.0.39",
     "diff-sequences": "^29.4.3",
     "diff": "^5.0.0",
     "fast-deep-equal": "^3.1.3",
