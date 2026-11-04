@@ -374,7 +374,10 @@ function RenderTooltipOnto({
   effectivePlacement = position.autoPlacement ?? placement;
   // The tooltip may end up overflowing off the screen, since it's rendered absolutely.
   // We can push it back as needed with an additional offset.
-  const viewportAdjust = getViewportAdjustedDelta(effectivePlacement, position, renderedDimensions);
+  const viewportAdjust = getViewportAdjustedDelta(effectivePlacement, position, {
+    width: renderedDimensions.width,
+    height: Math.min(renderedDimensions.height, position.maxHeight ?? Infinity),
+  });
 
   const style: React.CSSProperties = {
     animationDelay: delayMs ? `${delayMs}ms` : undefined,
@@ -392,9 +395,8 @@ function RenderTooltipOnto({
   style.maxWidth = viewportDimensions.width - 2 * pad;
   style.boxSizing = 'border-box';
   const contentStyle: React.CSSProperties = {overflowY: 'auto'};
-  const availableHeight = viewportDimensions.height - (position.top + viewportAdjust.top) - 3 * pad;
-  if (availableHeight > 0) {
-    contentStyle.maxHeight = Math.max(availableHeight - 2 * pad, 0);
+  if (position.maxHeight != null) {
+    contentStyle.maxHeight = Math.max(position.maxHeight - renderedDimensions.chromeHeight, 0);
   }
 
   // Use a portal so the tooltip element is rendered into the global list of tooltips,
@@ -432,6 +434,8 @@ type OffsetPlacement = {
   top: number;
   left: number;
   autoPlacement?: Placement;
+  /** Max border-box height of the tooltip, set when it would not otherwise fit in the viewport. */
+  maxHeight?: number;
 };
 
 /**
@@ -517,6 +521,34 @@ function offsetsForPlacement(
     }
     break;
   }
+
+  const viewportPadding = 5;
+  if (currentPlacement === 'top' || currentPlacement === 'bottom') {
+    const roomAbove = tooltipCreatorRect.top - padding - viewportPadding;
+    const roomBelow =
+      viewportDimensions.height -
+      (tooltipCreatorRect.top + tooltipCreatorRect.height + padding) -
+      viewportPadding;
+    if (tooltipDimensions.height > roomAbove && tooltipDimensions.height > roomBelow) {
+      // Fits on neither side: use the side with more room, and make the content scroll.
+      currentPlacement = roomAbove > roomBelow ? 'top' : 'bottom';
+      const maxHeight = Math.max(currentPlacement === 'top' ? roomAbove : roomBelow, 0);
+      result = {
+        top:
+          currentPlacement === 'top'
+            ? tooltipCreatorRect.top - padding - maxHeight
+            : tooltipCreatorRect.top + tooltipCreatorRect.height + padding,
+        left: result.left,
+        maxHeight,
+      };
+    }
+  } else {
+    const maxHeight = Math.max(viewportDimensions.height - 2 * viewportPadding, 0);
+    if (tooltipDimensions.height > maxHeight) {
+      result.maxHeight = maxHeight;
+    }
+  }
+
   // Set autoPlacement if we chose a different placement.
   if (currentPlacement !== placement) {
     result.autoPlacement = currentPlacement;
@@ -568,7 +600,7 @@ function getViewportAdjustedDelta(
 }
 
 function useRenderedDimensions(ref: React.MutableRefObject<HTMLDivElement | null>, deps: unknown) {
-  const [dimensions, setDimensions] = useState({width: 0, height: 0});
+  const [dimensions, setDimensions] = useState({width: 0, height: 0, chromeHeight: 0});
 
   useLayoutEffect(() => {
     const target = ref.current;
@@ -576,22 +608,44 @@ function useRenderedDimensions(ref: React.MutableRefObject<HTMLDivElement | null
       return;
     }
 
+    const observer = new ResizeObserver(() => updateDimensions());
+    const observedChildren = new Set<Element>();
+
     const updateDimensions = () => {
-      setDimensions({
+      const content = target.querySelector<HTMLElement>(':scope > .tooltip-content');
+      // Report the natural height, including any part of the content scrolled out of view,
+      // so that capping the content's height does not feed back into placement.
+      const hiddenContentHeight =
+        content == null ? 0 : Math.max(content.scrollHeight - content.clientHeight, 0);
+      const next = {
         width: target.offsetWidth,
-        height: target.offsetHeight,
-      });
+        height: target.offsetHeight + hiddenContentHeight,
+        chromeHeight: content == null ? 0 : target.offsetHeight - content.offsetHeight,
+      };
+      setDimensions(prev =>
+        prev.width === next.width &&
+        prev.height === next.height &&
+        prev.chromeHeight === next.chromeHeight
+          ? prev
+          : next,
+      );
+      // While the content is height-capped, it can change size without resizing the tooltip.
+      const children = new Set(Array.from(content?.children ?? []));
+      for (const child of observedChildren) {
+        if (!children.has(child)) {
+          observer.unobserve(child);
+          observedChildren.delete(child);
+        }
+      }
+      for (const child of children) {
+        if (!observedChildren.has(child)) {
+          observer.observe(child);
+          observedChildren.add(child);
+        }
+      }
     };
 
     updateDimensions();
-
-    const observer = new ResizeObserver(entries => {
-      entries.forEach(entry => {
-        if (entry.target === target) {
-          updateDimensions();
-        }
-      });
-    });
 
     // Children might resize without re-rendering the tooltip.
     // Observe that and trigger re-positioning.
