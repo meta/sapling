@@ -13,6 +13,9 @@ use anyhow::Result;
 use clap::Parser;
 use commit_id_types::CommitIdArgs;
 use scs_client_raw::thrift;
+
+#[cfg(test)]
+mod compact;
 use serde::Serialize;
 
 use super::PathRestrictionInfo;
