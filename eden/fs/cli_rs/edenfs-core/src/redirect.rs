@@ -3716,6 +3716,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn scratch_cleanup_deletes_mirrored_scratch_directories() {
+        // mkscratch's mirror style, which Windows uses, nests a redirection's backing under
+        // `edenfs/redirections` instead of flattening its name.
+        let temp_dir = tempdir().expect("temporary directory should be created");
+        let scratch = temp_dir.path().join("scratch");
+        let target = scratch.join("edenfs").join("redirections").join("buck-out");
+        std::fs::create_dir_all(&target).expect("backing directory should be created");
+        std::fs::write(scratch.join(SCRATCH_README), "mkscratch")
+            .expect("README should be created");
+        let action = scratch_cleanup_action(&scratch, target.clone())
+            .expect("scratch target should be safe")
+            .expect("scratch target should exist");
+
+        action.execute().expect("scratch cleanup should succeed");
+
+        assert!(!target.exists(), "the backing target should be deleted");
+        // FIXME: the empty `edenfs/redirections` and the scratch root should be deleted too,
+        // as they are with the flat layout.
+        assert!(
+            scratch.join("edenfs").join("redirections").is_dir(),
+            "the empty mirrored directories are left behind"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn scratch_contents_cleanup_keeps_target_and_does_not_follow_symlinks() {
