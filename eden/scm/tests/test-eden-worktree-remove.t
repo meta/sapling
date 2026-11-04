@@ -498,3 +498,27 @@ the Windows failure when smaller layouts didn't.)
   [1]
   $ sl worktree list
   this worktree is not part of a group
+
+test worktree remove - unmounts an added redirection on Windows
+
+#if windows
+  $ cd $TESTTMP
+  $ newclientrepo redirection_repo
+  $ touch file.txt
+  $ sl commit -qAm init
+  $ sl worktree add $TESTTMP/with_redirection
+  created linked worktree at $TESTTMP/with_redirection
+  $ eden redirect add --mount $TESTTMP/with_redirection out bind
+FIXME: EdenFS refuses to delete the symlink of a redirection listed in the
+checkout's redirection-targets, so removal can't unmount it and only empties its
+backing. Removal should unmount it and delete the backing without an error.
+  $ sl worktree remove $TESTTMP/with_redirection -y --force
+  Unmounting redirections...
+  Error unmounting redirections for *with_redirection: failed to unmount redirection out: Failed to remove symlink *out: * (os error 1359) (glob)
+  Deleting redirection backing storage: *out... (glob)
+  Unmounting checkout...
+  Deleting EdenFS checkout state...
+  removed $TESTTMP/with_redirection
+  $ test -d $TESTTMP/with_redirection
+  [1]
+#endif
