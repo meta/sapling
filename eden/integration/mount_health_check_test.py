@@ -16,9 +16,7 @@ from eden.fs.service.eden.thrift_types import FaultDefinition
 from .lib import testcase
 
 
-@testcase.eden_repo_test(run_on_nfs=False, run_coroutines=False, run_io_uring=False)
-@unittest.skipIf(sys.platform != "linux", "exercised on Linux FUSE mounts")
-class MountHealthCheckTest(testcase.EdenRepoTest):
+class MountHealthCheckTestBase(testcase.EdenRepoTest):
     git_test_supported = False
     enable_fault_injection = True
 
@@ -26,11 +24,12 @@ class MountHealthCheckTest(testcase.EdenRepoTest):
         self.repo.write_file("hello", "hola\n")
         self.repo.commit("Initial commit.")
 
+    def mount_config(self) -> List[str]:
+        return ['mount-health-check-interval = "1s"']
+
     def edenfs_extra_config(self) -> Optional[Dict[str, List[str]]]:
         configs = dict(super().edenfs_extra_config() or {})
-        configs["mount"] = list(configs.get("mount", [])) + [
-            'mount-health-check-interval = "1s"'
-        ]
+        configs["mount"] = list(configs.get("mount", [])) + self.mount_config()
         return configs
 
     def counter(self, name: str) -> float:
@@ -50,6 +49,10 @@ class MountHealthCheckTest(testcase.EdenRepoTest):
                 )
             )
 
+
+@testcase.eden_repo_test(run_on_nfs=False, run_coroutines=False, run_io_uring=False)
+@unittest.skipIf(sys.platform != "linux", "exercised on Linux FUSE mounts")
+class MountHealthCheckTest(MountHealthCheckTestBase):
     def test_healthy_mount_is_counted(self) -> None:
         self.wait_for_counter("healthy")
         self.assertGreater(self.counter("probes"), 0)
@@ -72,3 +75,18 @@ class MountHealthCheckTest(testcase.EdenRepoTest):
         for mount in stuck:
             self.delay_next_probe(8, mount)
         self.wait_for_counter("not_started")
+
+
+@testcase.eden_repo_test(run_on_nfs=False, run_coroutines=False, run_io_uring=False)
+@unittest.skipIf(sys.platform != "linux", "exercised on Linux FUSE mounts")
+class StatxMountHealthCheckTest(MountHealthCheckTestBase):
+    def mount_config(self) -> List[str]:
+        return super().mount_config() + ["mount-health-check-statx = true"]
+
+    def test_mount_is_confirmed_with_statx(self) -> None:
+        # The device is recorded at mount time, so even the first probe skips
+        # the mount table.
+        self.wait_for_counter("healthy")
+        healthy = self.counter("healthy")
+        self.assertGreaterEqual(self.counter("statx_mount_check"), healthy)
+        self.assertEqual(0, self.counter("issue"))

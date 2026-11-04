@@ -10,6 +10,16 @@
 #include <folly/portability/GTest.h>
 #include <folly/system/ThreadId.h>
 
+#ifdef __linux__
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
+
+#ifndef STATX_ATTR_MOUNT_ROOT
+#define STATX_ATTR_MOUNT_ROOT 0x00002000
+#endif
+#endif
+
 namespace facebook::eden {
 namespace {
 
@@ -24,6 +34,56 @@ TEST(MountHealthCheckTest, reportsMissingKernelMountForNonEdenMount) {
       EdenMountHealthIssueReason::DaemonRunningKernelMountMissing,
       issue->reason);
   EXPECT_EQ(MountHealthProbeStep::MountTable, progress.step());
+}
+
+std::optional<uint64_t> rootMountDevice() {
+  struct statx stx{};
+  if (statx(AT_FDCWD, "/", AT_SYMLINK_NOFOLLOW, STATX_BASIC_STATS, &stx) != 0 ||
+      !(stx.stx_attributes & STATX_ATTR_MOUNT_ROOT)) {
+    return std::nullopt;
+  }
+  return makedev(stx.stx_dev_major, stx.stx_dev_minor);
+}
+
+TEST(MountHealthCheckTest, statxConfirmsTheMountWithoutTheMountTable) {
+  auto device = rootMountDevice();
+  if (!device) {
+    GTEST_SKIP() << "/ is not a mount root";
+  }
+  MountHealthProbeProgress progress{std::chrono::steady_clock::now()};
+  // `/` is mounted on the known device, so the check goes on to `/.eden`.
+  auto issue = checkRunningEdenMountHealth(
+      "/", &progress, {.useStatx = true, .knownDevice = *device});
+
+  ASSERT_TRUE(issue.has_value());
+  EXPECT_EQ(
+      EdenMountHealthIssueReason::DaemonRunningDotEdenMissing, issue->reason);
+  EXPECT_TRUE(progress.mountCheckedByStatx());
+}
+
+TEST(MountHealthCheckTest, statxFallsBackToTheMountTableOnAnotherDevice) {
+  auto device = rootMountDevice();
+  if (!device) {
+    GTEST_SKIP() << "/ is not a mount root";
+  }
+  MountHealthProbeProgress progress{std::chrono::steady_clock::now()};
+  auto issue = checkRunningEdenMountHealth(
+      "/", &progress, {.useStatx = true, .knownDevice = *device + 1});
+
+  ASSERT_TRUE(issue.has_value());
+  EXPECT_EQ(
+      EdenMountHealthIssueReason::DaemonRunningKernelMountMissing,
+      issue->reason);
+  EXPECT_FALSE(progress.mountCheckedByStatx());
+}
+
+TEST(MountHealthCheckTest, mountRootDeviceIsOnlySetForAMountRoot) {
+  auto device = rootMountDevice();
+  if (!device) {
+    GTEST_SKIP() << "/ is not a mount root";
+  }
+  EXPECT_EQ(device, mountRootDevice("/"));
+  EXPECT_EQ(std::nullopt, mountRootDevice("/proc/self/fd"));
 }
 #endif
 
@@ -129,6 +189,8 @@ TEST(MountHealthCheckTest, probeStepNamesMatchTelemetryContract) {
   EXPECT_EQ("queued", mountHealthProbeStepName(MountHealthProbeStep::Queued));
   EXPECT_EQ(
       "starting", mountHealthProbeStepName(MountHealthProbeStep::Starting));
+  EXPECT_EQ(
+      "stat_root", mountHealthProbeStepName(MountHealthProbeStep::StatRoot));
   EXPECT_EQ(
       "mount_table",
       mountHealthProbeStepName(MountHealthProbeStep::MountTable));

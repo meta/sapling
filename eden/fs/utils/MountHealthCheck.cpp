@@ -23,8 +23,16 @@
 #include <folly/system/ThreadId.h>
 
 #ifdef __linux__
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
+
 #include "eden/common/utils/FSDetect.h"
 #include "eden/fs/utils/MountInfoTable.h"
+
+#ifndef STATX_ATTR_MOUNT_ROOT
+#define STATX_ATTR_MOUNT_ROOT 0x00002000
+#endif
 #endif
 
 namespace facebook::eden {
@@ -67,7 +75,8 @@ std::optional<EdenMountHealthCheckIssue> issueForPathAccessError(
 }
 
 std::optional<bool> hasEdenMountInKernelMountTable(
-    const std::string& mountPath) {
+    const std::string& mountPath,
+    MountHealthProbeProgress* progress) {
 #ifdef __linux__
   MountInfoOptions options;
   options.includeMountSource = true;
@@ -87,9 +96,17 @@ std::optional<bool> hasEdenMountInKernelMountTable(
   if (!mountInfo.has_value()) {
     return false;
   }
-  return is_edenfs_mount(mountInfo->mountSource, mountInfo->fsType);
+  if (!is_edenfs_mount(mountInfo->mountSource, mountInfo->fsType)) {
+    return false;
+  }
+  if (progress) {
+    progress->recordDevice(
+        makedev(mountInfo->devMajor, mountInfo->devMinor), /*byStatx=*/false);
+  }
+  return true;
 #else
   (void)mountPath;
+  (void)progress;
   return true;
 #endif
 }
@@ -126,6 +143,28 @@ std::string makeExpectedMissingPath(const std::string& mountPath) {
 
 } // namespace
 
+std::optional<uint64_t> mountRootDevice(const std::string& path) {
+#ifdef __linux__
+  struct statx stx{};
+  if (statx(
+          AT_FDCWD,
+          path.c_str(),
+          AT_SYMLINK_NOFOLLOW | AT_STATX_DONT_SYNC,
+          0,
+          &stx) != 0) {
+    return std::nullopt;
+  }
+  if (!(stx.stx_attributes_mask & STATX_ATTR_MOUNT_ROOT) ||
+      !(stx.stx_attributes & STATX_ATTR_MOUNT_ROOT)) {
+    return std::nullopt;
+  }
+  return makedev(stx.stx_dev_major, stx.stx_dev_minor);
+#else
+  (void)path;
+  return std::nullopt;
+#endif
+}
+
 std::string_view edenMountHealthIssueReasonString(
     EdenMountHealthIssueReason reason) {
   switch (reason) {
@@ -155,6 +194,8 @@ std::string_view mountHealthProbeStepName(MountHealthProbeStep step) {
       return "queued";
     case MountHealthProbeStep::Starting:
       return "starting";
+    case MountHealthProbeStep::StatRoot:
+      return "stat_root";
     case MountHealthProbeStep::MountTable:
       return "mount_table";
     case MountHealthProbeStep::StatDotEden:
@@ -341,19 +382,31 @@ folly::dynamic describeSystemPressure() {
 
 std::optional<EdenMountHealthCheckIssue> checkRunningEdenMountHealth(
     const std::string& mountPath,
-    MountHealthProbeProgress* progress) {
+    MountHealthProbeProgress* progress,
+    MountHealthCheckOptions options) {
   auto enter = [progress](MountHealthProbeStep step) {
     if (progress) {
       progress->enter(step);
     }
   };
 
-  enter(MountHealthProbeStep::MountTable);
-  auto hasKernelMount = hasEdenMountInKernelMountTable(mountPath);
-  if (hasKernelMount.has_value() && !hasKernelMount.value()) {
-    return EdenMountHealthCheckIssue{
-        EdenMountHealthIssueReason::DaemonRunningKernelMountMissing,
-        "EdenFS mount is missing from the kernel mount table"};
+  bool mountedByStatx = false;
+  if (options.useStatx && options.knownDevice != 0) {
+    enter(MountHealthProbeStep::StatRoot);
+    mountedByStatx = mountRootDevice(mountPath) == options.knownDevice;
+    if (mountedByStatx && progress) {
+      progress->recordDevice(options.knownDevice, /*byStatx=*/true);
+    }
+  }
+  // Anything else, including a missing mount, is decided by the mount table.
+  if (!mountedByStatx) {
+    enter(MountHealthProbeStep::MountTable);
+    auto hasKernelMount = hasEdenMountInKernelMountTable(mountPath, progress);
+    if (hasKernelMount.has_value() && !hasKernelMount.value()) {
+      return EdenMountHealthCheckIssue{
+          EdenMountHealthIssueReason::DaemonRunningKernelMountMissing,
+          "EdenFS mount is missing from the kernel mount table"};
+    }
   }
   // If the mount table lookup failed, keep going. The path probes below can
   // still identify a disconnected, missing, or hanging Eden mount.

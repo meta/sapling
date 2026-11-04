@@ -46,6 +46,7 @@ struct EdenMountHealthCheckIssue {
 enum class MountHealthProbeStep : uint8_t {
   Queued,
   Starting,
+  StatRoot,
   MountTable,
   StatDotEden,
   LookupChild,
@@ -92,12 +93,34 @@ class MountHealthProbeProgress {
   /** The probe thread's total CPU wait when the probe started, if known. */
   std::optional<std::chrono::nanoseconds> startRunQueueWait() const;
 
+  /** The EdenFS mount's device, once the probe found it, or 0. */
+  uint64_t device() const {
+    return device_.load(std::memory_order_acquire);
+  }
+  /** Whether statx(2) confirmed the mount, so the mount table was not read. */
+  bool mountCheckedByStatx() const {
+    return mountCheckedByStatx_.load(std::memory_order_acquire);
+  }
+  void recordDevice(uint64_t device, bool byStatx) {
+    device_.store(device, std::memory_order_release);
+    mountCheckedByStatx_.store(byStatx, std::memory_order_release);
+  }
+
  private:
   const Clock::time_point queued_;
   std::atomic<int64_t> startRunQueueWaitNs_{-1};
   std::atomic<Clock::rep> startedTicks_{0};
   std::atomic<uint64_t> threadId_{0};
+  std::atomic<uint64_t> device_{0};
+  std::atomic<bool> mountCheckedByStatx_{false};
   folly::Synchronized<CurrentStep, std::mutex> step_;
+};
+
+struct MountHealthCheckOptions {
+  /** See `mount:mount-health-check-statx`. */
+  bool useStatx{false};
+  /** The EdenFS mount's device from an earlier probe, or 0 if unknown. */
+  uint64_t knownDevice{0};
 };
 
 /**
@@ -150,11 +173,19 @@ std::optional<std::chrono::nanoseconds> parseSchedstatRunQueueWait(
 
 } // namespace detail
 
+/**
+ * The device of the filesystem mounted at `path`, from statx(2) without
+ * syncing attributes, so FUSE sends no request. Unset if `path` is not a mount
+ * root, or the kernel cannot tell. Linux only.
+ */
+std::optional<uint64_t> mountRootDevice(const std::string& path);
+
 // Checks a daemon-reported RUNNING mount against the kernel mount table and
 // lightweight .eden path probes. Returns an issue only when the mount is
 // clearly missing, disconnected, timing out, or returning path access errors.
 std::optional<EdenMountHealthCheckIssue> checkRunningEdenMountHealth(
     const std::string& mountPath,
-    MountHealthProbeProgress* progress = nullptr);
+    MountHealthProbeProgress* progress = nullptr,
+    MountHealthCheckOptions options = {});
 
 } // namespace facebook::eden

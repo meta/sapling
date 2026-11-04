@@ -1199,6 +1199,17 @@ class EdenMount : public std::enable_shared_from_this<EdenMount> {
   std::optional<RunningInodeGC> getRunningInodeGC() const;
 
   /**
+   * The kernel device of this mount, as last seen by the mount health check,
+   * or 0 if not seen yet.
+   */
+  uint64_t getHealthCheckDevice() const {
+    return healthCheckDevice_.load(std::memory_order_relaxed);
+  }
+  void setHealthCheckDevice(uint64_t device) {
+    healthCheckDevice_.store(device, std::memory_order_relaxed);
+  }
+
+  /**
    * Count a tree-load failure in the active GC run, cancelling it and backing
    * off pressure-based GC when the configured failure limit is reached.
    */
@@ -1617,6 +1628,8 @@ class EdenMount : public std::enable_shared_from_this<EdenMount> {
    * running again. See isPressureGcBackedOff().
    */
   std::atomic<bool> pressureGcBackoff_{false};
+
+  std::atomic<uint64_t> healthCheckDevice_{0};
 };
 
 /**

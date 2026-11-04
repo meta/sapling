@@ -930,6 +930,17 @@ class EdenConfig : private ConfigSettingManager {
       this};
 
   /**
+   * Have the mount health check confirm that a checkout is still mounted with
+   * statx(2) on its root, which takes no mount-namespace lock, instead of
+   * reading the kernel mount table. It falls back to the mount table when the
+   * mount's device is not known yet or does not match. Linux only.
+   */
+  ConfigSetting<bool> mountHealthCheckStatx{
+      "mount:mount-health-check-statx",
+      false,
+      this};
+
+  /**
    * The soong build system used in AOSP loves to crawls the entirety of the
    * repository, including the .eden directory. In doing so, it infinitely
    * recurse into the this-dir.

@@ -2749,6 +2749,12 @@ ImmediateFuture<std::shared_ptr<EdenMount>> EdenServer::mount(
             .thenValue([edenMount, doTakeover = doTakeover, this](
                            folly::Unit) mutable {
               registerStats(edenMount);
+              // The checkout root is this mount's root now, so the health
+              // check can confirm it with statx from its first probe.
+              if (auto device =
+                      mountRootDevice(edenMount->getPath().asString())) {
+                edenMount->setHealthCheckDevice(*device);
+              }
 
               // Now that we've started the workers, arrange to call
               // mountFinished once the pool is torn down.
@@ -4721,6 +4727,13 @@ void EdenServer::scheduleRunningMountHealthCheck(
       ? std::weak_ptr<ServerState>{serverState_}
       : std::weak_ptr<ServerState>{};
 
+  MountHealthCheckOptions options;
+  options.useStatx =
+      serverState_->getEdenConfig()->mountHealthCheckStatx.getValue();
+  if (auto edenMount = logContext->mount.lock()) {
+    options.knownDevice = edenMount->getHealthCheckDevice();
+  }
+
   // Run the potentially blocking filesystem probe on a dedicated pool. The
   // runtime timeout is armed after the worker starts so executor queue delay
   // and a hung EdenFS mount can be reported separately.
@@ -4729,6 +4742,7 @@ void EdenServer::scheduleRunningMountHealthCheck(
       [started,
        completed,
        logContext,
+       options,
        serverState = std::move(faultInjectionState)]() {
         started->store(true, std::memory_order_release);
         if (completed->load(std::memory_order_acquire)) {
@@ -4741,8 +4755,8 @@ void EdenServer::scheduleRunningMountHealthCheck(
           state->getFaultInjector().check(
               "mountHealthCheck", logContext->mountPath);
         }
-        auto issue =
-            checkRunningEdenMountHealth(logContext->mountPath, &progress);
+        auto issue = checkRunningEdenMountHealth(
+            logContext->mountPath, &progress, options);
         progress.enter(MountHealthProbeStep::Done);
         return issue;
       })
@@ -4757,8 +4771,16 @@ void EdenServer::scheduleRunningMountHealthCheck(
               auto runningChecks = runningMountHealthChecks->wlock();
               runningChecks->erase(logContext->mountPath);
             }
+            if (auto device = logContext->progress->device()) {
+              if (auto edenMount = logContext->mount.lock()) {
+                edenMount->setHealthCheckDevice(device);
+              }
+            }
             if (alreadyCompleted) {
               return;
+            }
+            if (logContext->progress->mountCheckedByStatx()) {
+              logContext->count(&MountHealthCheckStats::statxMountCheck);
             }
             if (result.hasException()) {
               XLOGF(
