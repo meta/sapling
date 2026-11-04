@@ -7,6 +7,8 @@ rust_binary(
     srcs = glob([
         "src/**/*.rs",
     ]),
+    allow_oss_build = False,
+    autocargo = {"ignore_rule": True},
     deps = [
         "fbsource//third-party/rust:anyhow",
         "fbsource//third-party/rust:async-trait",
@@ -19,6 +21,7 @@ rust_binary(
         "//eden/mononoke/cmdlib/sharding:executor_lib",
         "//eden/mononoke/cmdlib/sharding_ext:sharding_ext",
         "//eden/mononoke/metaconfig:metaconfig_types",
+        "//eden/mononoke/p4/facebook/p4_source:p4_source",
         "//eden/mononoke/repo_attributes/repo_identity:repo_identity",
     ],
 )

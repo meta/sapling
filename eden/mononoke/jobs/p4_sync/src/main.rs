@@ -24,6 +24,7 @@ use mononoke_app::args::RepoFilterAppExtension;
 use mononoke_app::args::TLSArgs;
 use mononoke_app::monitoring::AliveService;
 use mononoke_app::monitoring::MonitoringAppExtension;
+use p4_source::P4Args;
 use repo_identity::RepoIdentity;
 
 mod sharded;
@@ -48,26 +49,6 @@ struct P4SyncArgs {
 
     #[clap(flatten, next_help_heading = "PERFORCE OPTIONS")]
     p4_args: P4Args,
-}
-
-// Flag names are the contract with the `mononoke_p4_sync_job` Tupperware spec.
-#[derive(Parser)]
-struct P4Args {
-    /// Path to the `p4` client binary
-    #[clap(long)]
-    p4_binary: PathBuf,
-
-    /// Perforce server address, as `P4PORT` (e.g. `ssl6:host:1818`)
-    #[clap(long)]
-    p4_port: String,
-
-    /// Perforce user to connect as
-    #[clap(long)]
-    p4_user: String,
-
-    /// File containing the Perforce password for `--p4-user`
-    #[clap(long)]
-    p4_password_file: PathBuf,
 }
 
 #[facet::container]
