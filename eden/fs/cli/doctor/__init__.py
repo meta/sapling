@@ -751,7 +751,8 @@ class CheckoutConfigUnreadable(Problem):
             f"{checkout.path} is configured, but EdenFS cannot mount it because "
             f"its checkout config could not be read:\n{ex}\n"
             "EdenFS skips this checkout on startup, so it will stay unmounted.",
-            remediation=get_reclone_msg(str(checkout.path)),
+            remediation=f"To remove it, run: `eden rm {checkout.path}`\n"
+            "Then clone it again if you still need it.",
         )
 
 

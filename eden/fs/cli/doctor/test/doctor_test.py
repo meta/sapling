@@ -1314,7 +1314,7 @@ Would remount {mounts[1]}
             out,
         )
         self.assertIn(f"{checkout.state_dir / 'config.toml'} does not exist", out)
-        self.assertIn("To recover, you will need to remove and reclone the repo.", out)
+        self.assertIn(f"To remove it, run: `eden rm {checkout.path}`", out)
         self.assertNotIn("unexpected error", out)
         self.assertNotIn("AssertionError", out)
         self.assertNotIn("Would remount", out)
