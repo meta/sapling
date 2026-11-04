@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::io::Write;
+use std::iter;
 
 use anyhow::Result;
 use futures::future;
@@ -39,7 +40,7 @@ pub(super) struct ChangesOutput {
 
 /// Changed paths whose references index their own policy and source tables.
 #[derive(Serialize)]
-struct ComparedPaths {
+pub(super) struct ComparedPaths {
     changed_paths: Vec<String>,
     authorized_paths: Vec<String>,
     compact: CompactOutput,
@@ -281,20 +282,118 @@ where
 
 impl ChangesOutput {
     fn new(paths: ComparedPaths) -> Self {
-        let total = paths.changed_paths.len();
+        let counts = Counts::default().add(&paths);
         Self {
-            are_restricted: path_coverage_to_string(coverage(
-                paths.compact.restriction_roots.len(),
-                total,
-                thrift::PathCoverage::NONE,
-            )),
-            has_access: path_coverage_to_string(coverage(
-                paths.authorized_paths.len(),
-                total,
-                thrift::PathCoverage::ALL,
-            )),
+            are_restricted: counts.are_restricted(),
+            has_access: counts.has_access(),
             paths,
         }
+    }
+}
+
+/// The path counts that determine a comparison's verdicts.
+#[derive(Clone, Copy, Default)]
+struct Counts {
+    changed: usize,
+    restricted: usize,
+    authorized: usize,
+}
+
+impl Counts {
+    fn add(self, paths: &ComparedPaths) -> Self {
+        Self {
+            changed: self.changed + paths.changed_paths.len(),
+            restricted: self.restricted + paths.compact.restriction_roots.len(),
+            authorized: self.authorized + paths.authorized_paths.len(),
+        }
+    }
+
+    fn are_restricted(self) -> String {
+        path_coverage_to_string(coverage(
+            self.restricted,
+            self.changed,
+            thrift::PathCoverage::NONE,
+        ))
+    }
+
+    fn has_access(self) -> String {
+        path_coverage_to_string(coverage(
+            self.authorized,
+            self.changed,
+            thrift::PathCoverage::ALL,
+        ))
+    }
+
+    fn summary(self) -> Summary {
+        Summary {
+            are_restricted: self.are_restricted(),
+            has_access: self.has_access(),
+            changed_path_count: self.changed,
+        }
+    }
+}
+
+/// Version of the `--stream` JSON lines.
+const STREAM_VERSION: u32 = 1;
+
+/// The verdicts of a complete comparison.
+#[derive(Serialize)]
+pub(super) struct Summary {
+    are_restricted: String,
+    has_access: String,
+    changed_path_count: usize,
+}
+
+/// One `--stream` line. Only a summary, which follows the page that
+/// completes the comparison, certifies that every changed path was emitted.
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum StreamFrame {
+    Page(ComparedPaths),
+    Summary(Summary),
+}
+
+#[derive(Serialize)]
+struct VersionedFrame<'a> {
+    version: u32,
+    complete: bool,
+    #[serde(flatten)]
+    frame: &'a StreamFrame,
+}
+
+/// Emits each validated page, with its own canonical tables, once it is
+/// checked; after the page that completes the comparison, emits the summary.
+/// An error ends the stream without a summary.
+pub(super) fn stream_frames<F, Fut>(limit: i64, fetch: F) -> impl Stream<Item = Result<StreamFrame>>
+where
+    F: FnMut(Option<String>) -> Fut,
+    Fut: Future<Output = Result<thrift::CommitRestrictedPathsChangesResponse>>,
+{
+    let mut counts = Counts::default();
+    validated_pages(limit, fetch)
+        .map_ok(move |page| {
+            let complete = page.continuation().is_none();
+            let paths = page.into_paths();
+            counts = counts.add(&paths);
+            let summary = complete.then(|| StreamFrame::Summary(counts.summary()));
+            stream::iter(
+                iter::once(StreamFrame::Page(paths))
+                    .chain(summary)
+                    .map(anyhow::Ok),
+            )
+        })
+        .try_flatten()
+}
+
+impl Render for StreamFrame {
+    type Args = ();
+    fn render_json(&self, _: &(), w: &mut dyn Write) -> Result<()> {
+        let frame = VersionedFrame {
+            version: STREAM_VERSION,
+            complete: matches!(self, Self::Summary(_)),
+            frame: self,
+        };
+        Ok(serde_json::to_writer(w, &frame)?)
     }
 }
 

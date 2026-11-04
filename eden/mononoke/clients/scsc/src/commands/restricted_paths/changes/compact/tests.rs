@@ -8,6 +8,8 @@
 use anyhow::Context;
 use anyhow::Result;
 use mononoke_macros::mononoke;
+use serde_json::Value;
+use serde_json::json;
 
 use super::*;
 
@@ -28,6 +30,27 @@ fn serial(pages: Vec<Response>) -> impl FnMut(Option<String>) -> future::Ready<R
 
 async fn complete_pages(pages: Vec<Response>, limit: i64) -> Result<ChangesOutput> {
     complete(limit, serial(pages)).await
+}
+
+/// Renders `--stream` output as `--json` does, returning the lines written
+/// before any error, and the error.
+async fn stream_pages(pages: Vec<Response>, limit: i64) -> (Vec<Value>, Result<()>) {
+    let mut out = Vec::new();
+    let result = stream_frames(limit, serial(pages))
+        .try_for_each(|frame| {
+            future::ready(
+                frame
+                    .render_json(&(), &mut out)
+                    .and_then(|()| Ok(writeln!(out)?)),
+            )
+        })
+        .await;
+    let lines = String::from_utf8(out)
+        .expect("JSON is UTF-8")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("each line is one JSON value"))
+        .collect();
+    (lines, result)
 }
 
 fn checked(root: &str, allowed: bool) -> thrift::CheckedPathRestrictionPolicy {
@@ -198,8 +221,8 @@ async fn access_is_interned_without_merging_distinct_checked_results() -> Result
     Ok(())
 }
 
-#[mononoke::test]
-async fn sparse_only_policy_does_not_deny_actual_content() -> Result<()> {
+/// A page whose only policy protects the base side of a sparse change.
+fn sparse_only_page() -> Response {
     let mut p = page(&["public/file"], vec![checked("secret", false)], &[], None);
     p.compact
         .as_mut()
@@ -213,7 +236,12 @@ async fn sparse_only_policy_does_not_deny_actual_content() -> Result<()> {
                 ..Default::default()
             },
         );
-    let output = complete_pages(vec![p], 1).await?;
+    p
+}
+
+#[mononoke::test]
+async fn sparse_only_policy_does_not_deny_actual_content() -> Result<()> {
+    let output = complete_pages(vec![sparse_only_page()], 1).await?;
     assert!(output.paths.compact.restriction_roots.is_empty());
     assert_eq!(output.has_access, "all");
     assert_eq!(output.paths.authorized_paths, vec!["public/file"]);
@@ -393,4 +421,102 @@ fn validated_page_has_canonical_page_local_tables() -> Result<()> {
     );
     assert_eq!(tables.restriction_roots["b"], vec![PolicyIndex(0)]);
     Ok(())
+}
+
+#[mononoke::test]
+async fn stream_emits_page_local_tables_then_one_completion() -> Result<()> {
+    let (lines, result) = stream_pages(two_source_pages(), 1).await;
+    result?;
+    assert_eq!(lines.len(), 3, "two pages, then the completion line");
+    for (line, (path, root, prefix)) in lines
+        .iter()
+        .zip([("d1/file", "a", "d1"), ("d2/file", "b", "d2")])
+    {
+        assert_eq!(line["version"], 1);
+        assert_eq!(line["complete"], false, "a page never completes the stream");
+        let page = &line["page"];
+        assert_eq!(page["changed_paths"], json!([path]));
+        let tables = &page["compact"];
+        assert_eq!(
+            tables["policies"][0]["path"], root,
+            "each page has its own policy table"
+        );
+        assert_eq!(tables["restriction_roots"][path], json!([0]));
+        assert_eq!(tables["subtree_sources"][0]["destination_prefix"], prefix);
+        assert_eq!(
+            tables["permission_changes"][path]["subtree_source"]["subtree_source_index"],
+            0
+        );
+    }
+    assert_eq!(
+        lines[2],
+        json!({
+            "version": 1,
+            "complete": true,
+            "summary": {"are_restricted": "all", "has_access": "some", "changed_path_count": 2}
+        }),
+        "both paths are restricted; only d2/file is accessible"
+    );
+    Ok(())
+}
+
+#[mononoke::test]
+async fn stream_continues_through_empty_and_short_pages() -> Result<()> {
+    let pages = vec![
+        page(&[], vec![], &[], Some("a")),
+        page(&["b"], vec![], &[], Some("b")),
+        page(&[], vec![], &[], None),
+    ];
+    let (lines, result) = stream_pages(pages, 3).await;
+    result?;
+    let complete: Vec<_> = lines.iter().map(|line| &line["complete"]).collect();
+    assert_eq!(complete, [false, false, false, true]);
+    assert_eq!(
+        lines[3]["summary"],
+        json!({"are_restricted": "none", "has_access": "all", "changed_path_count": 1})
+    );
+    Ok(())
+}
+
+#[mononoke::test]
+async fn stream_keeps_source_only_policies_out_of_verdicts() -> Result<()> {
+    let (lines, result) = stream_pages(vec![sparse_only_page()], 1).await;
+    result?;
+    let tables = &lines[0]["page"]["compact"];
+    assert_eq!(tables["policies"][0]["has_access"], false);
+    assert_eq!(
+        tables["permission_changes"]["public/file"]["base"]["restrictions"],
+        json!([0])
+    );
+    assert_eq!(
+        lines[1]["summary"],
+        json!({"are_restricted": "none", "has_access": "all", "changed_path_count": 1})
+    );
+    Ok(())
+}
+
+#[mononoke::test]
+async fn invalid_first_page_emits_nothing() {
+    let mut malformed = two_source_pages();
+    malformed[0].compact = None;
+    let oversized = vec![page(&["a", "b"], vec![], &[], None)];
+    for pages in [malformed, oversized] {
+        let (lines, result) = stream_pages(pages, 1).await;
+        assert!(result.is_err());
+        assert!(lines.is_empty(), "no line precedes validation");
+    }
+}
+
+#[mononoke::test]
+async fn late_stream_failure_emits_no_completion() {
+    let mut malformed = two_source_pages();
+    malformed[1].checked_both_sides = None;
+    let mut unavailable = two_source_pages();
+    unavailable.truncate(1);
+    for pages in [malformed, unavailable] {
+        let (lines, result) = stream_pages(pages, 1).await;
+        assert!(result.is_err(), "a late failure fails the command");
+        assert_eq!(lines.len(), 1, "only the validated first page is emitted");
+        assert_eq!(lines[0]["complete"], false);
+    }
 }

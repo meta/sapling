@@ -5,7 +5,7 @@
  * GNU General Public License version 2.
  */
 
-//! Complete compact restriction comparisons, with immutable endpoints across pages.
+//! Compact restriction comparisons, fetched page by page from immutable endpoints.
 
 use anyhow::Result;
 use anyhow::bail;
@@ -18,6 +18,7 @@ use crate::ScscApp;
 use crate::args::commit_id::resolve_commit_ids;
 use crate::args::repo::RepoArgs;
 use crate::errors::SelectionErrorExt;
+use crate::render::OutputFormat;
 
 mod compact;
 
@@ -27,10 +28,17 @@ pub(super) struct ChangesArgs {
     repo_args: RepoArgs,
     #[clap(flatten)]
     commit_ids_args: CommitIdsArgs,
-    /// Maximum paths per request; every page is consumed before rendering.
+    /// Maximum paths per request. Without --stream, every page is consumed
+    /// before rendering.
     #[clap(long, default_value_t = thrift::COMMIT_RESTRICTED_PATHS_CHANGES_MAX_LIMIT,
         value_parser = clap::value_parser!(i64).range(1..=thrift::COMMIT_RESTRICTED_PATHS_CHANGES_MAX_LIMIT))]
     page_size: i64,
+    /// Emit one JSON line per validated page, with page-local policy and
+    /// source tables, then a line with `"complete": true` and the verdicts.
+    /// Requires --json. Without that final line the output is incomplete,
+    /// and a failure after some pages still exits non-zero.
+    #[clap(long)]
+    stream: bool,
 }
 
 fn comparison_commits(
@@ -61,6 +69,10 @@ fn comparison_params(
 }
 
 pub(super) async fn run(app: ScscApp, args: ChangesArgs) -> Result<()> {
+    ensure!(
+        !args.stream || matches!(app.target, OutputFormat::Json),
+        "--stream requires --json"
+    );
     let repo = args.repo_args.clone().into_repo_specifier();
     let commit_ids = args.commit_ids_args.into_commit_ids();
     ensure!(
@@ -83,6 +95,12 @@ pub(super) async fn run(app: ScscApp, args: ChangesArgs) -> Result<()> {
             .await
             .map_err(|error| error.handle_selection_error(repo))
     };
+    if args.stream {
+        return app
+            .target
+            .render(&(), compact::stream_frames(page_size, fetch))
+            .await;
+    }
     let output = compact::complete(page_size, fetch).await?;
     app.target.render_one(&(), output).await
 }
