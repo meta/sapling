@@ -27,7 +27,7 @@ from eden.fs.cli import (
     util as util_mod,
     version,
 )
-from eden.fs.cli.config import EdenInstance
+from eden.fs.cli.config import CLIENTS_DIR, CONFIG_JSON, EdenInstance
 from eden.fs.cli.doctor.util import (
     CheckoutInfo,
     format_approx_duration,
@@ -276,7 +276,9 @@ class EdenDoctorChecker:
             self.tracker.add_problem(problem)
 
     def run_edenfs_not_healthy_checks(self) -> None:
-        configured_mounts = self.instance.get_mount_paths()
+        # None means the list could not be read, so whether EdenFS is in use
+        # is unknown: skip the checks that depend on it.
+        configured_mounts = self._get_configured_mount_paths()
         if configured_mounts:
             if not self.fast and not is_asic():
                 # Run network checks without a backing repo
@@ -293,7 +295,7 @@ class EdenDoctorChecker:
                     raise RuntimeError("Failed to check network for mount") from ex
 
             self.tracker.add_problem(EdenfsNotHealthy(self.instance, self.out))
-        else:
+        elif configured_mounts is not None:
             self.tracker.using_edenfs = False
             return
 
@@ -303,13 +305,22 @@ class EdenDoctorChecker:
             )
             check_filesystems.check_disk_usage(
                 self.tracker,
-                list(configured_mounts),
+                configured_mounts or [],
                 self.instance,
                 fs_util=self.fs_util,
             )
 
     def _get_checkouts_info(self) -> Dict[Path, CheckoutInfo]:
         return get_checkouts_info(self.instance)
+
+    def _get_configured_mount_paths(self) -> Optional[List[str]]:
+        try:
+            return list(self.instance.get_mount_paths())
+        except Exception as ex:
+            self.tracker.add_problem(
+                ConfiguredCheckoutsUnreadable(self.instance.state_dir, ex)
+            )
+            return None
 
     def check_privhelper(self) -> None:
         try:
@@ -369,7 +380,7 @@ class EdenDoctorChecker:
             )
             check_filesystems.check_disk_usage(
                 self.tracker,
-                list(self.instance.get_mount_paths()),
+                self._get_configured_mount_paths() or [],
                 self.instance,
                 fs_util=self.fs_util,
             )
@@ -885,6 +896,19 @@ class EdenCheckoutInfosCorruption(Problem):
         super().__init__(
             f"Encountered errors reading Eden's checkout info for the following checkouts:\n{ex}",
             remediation=remediation,
+        )
+
+
+class ConfiguredCheckoutsUnreadable(Problem):
+    def __init__(self, state_dir: Path, ex: Exception) -> None:
+        super().__init__(
+            "Could not read the list of configured EdenFS checkouts",
+            remediation=(
+                f"Make sure {state_dir / CONFIG_JSON} can be read and holds a JSON "
+                "object that maps each checkout path to the name of its directory "
+                f"in {state_dir / CLIENTS_DIR}."
+            ),
+            exception=ex,
         )
 
 
