@@ -897,8 +897,8 @@ pub async fn import_changelists(
 }
 
 /// Where a batch failed.
-#[derive(Clone, Copy, Debug)]
-enum Stage {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stage {
     /// Checking the depot and the bookmark, and listing the changelists.
     Prepare,
     /// Fetching the changelists from Perforce, storing their contents, building the changesets.
@@ -918,6 +918,15 @@ impl Stage {
     }
 }
 
+#[derive(Debug, Error)]
+#[error("failed in {}", .0.as_str())]
+struct FailedIn(Stage);
+
+/// The stage an `import_next` error came from.
+pub fn failed_stage(error: &anyhow::Error) -> Option<Stage> {
+    error.downcast_ref::<FailedIn>().map(|failed| failed.0)
+}
+
 /// Keeps a row readable when the error quotes a long p4 command or output.
 const MAX_LOGGED_ERROR_CHARS: usize = 4096;
 
@@ -930,8 +939,9 @@ struct Batch<'a> {
 }
 
 impl Batch<'_> {
-    /// Logs the failure to the job's log, Scuba and ODS, and returns it. The error names the
-    /// changelist when one failed: fetching and building run one changelist at a time.
+    /// Logs the failure to the job's log, Scuba and ODS, and returns it with its stage (see
+    /// `failed_stage`). The error names the changelist when one failed: fetching and building
+    /// run one changelist at a time.
     fn failed(&self, ctx: &CoreContext, stage: Stage, error: anyhow::Error) -> anyhow::Error {
         STATS::failed_batches.add_value(1, (stage.as_str(),));
         let failed_change = error.downcast_ref::<BuildingChangelist>().map(|c| c.0);
@@ -965,7 +975,7 @@ impl Batch<'_> {
             stage.as_str(),
             ctx.metadata().session_id(),
         );
-        error
+        error.context(FailedIn(stage))
     }
 }
 

@@ -14,6 +14,7 @@ use maplit::hashmap;
 use mononoke_macros::mononoke;
 
 use super::*;
+use crate::sharded::BatchSize;
 use crate::sharded::import_enabled;
 use crate::sharded::retry_delay;
 
@@ -71,4 +72,45 @@ fn test_import_follows_the_enabled_knob() {
     };
     assert!(with_just_knobs(knob(true), || import_enabled("p4/test1")));
     assert!(!with_just_knobs(knob(false), || import_enabled("p4/test1")));
+}
+
+#[mononoke::test]
+fn test_batch_size_halves_on_failure_and_doubles_back() {
+    let mut size = BatchSize::new(NonZeroUsize::new(100).unwrap());
+    let mut sizes = vec![size.get()];
+    for _ in 0..8 {
+        size.failed();
+        sizes.push(size.get());
+    }
+    assert_eq!(sizes, [100, 50, 25, 12, 6, 3, 1, 1, 1]);
+
+    let mut sizes = vec![];
+    for _ in 0..8 {
+        size.succeeded();
+        sizes.push(size.get());
+    }
+    assert_eq!(sizes, [2, 4, 8, 16, 32, 64, 100, 100]);
+}
+
+#[mononoke::test]
+fn test_stuck_after_failing_alone_three_times_in_a_row() {
+    let mut size = BatchSize::new(NonZeroUsize::new(4).unwrap());
+    // 4 -> 2 -> 1: halving, not yet alone.
+    size.failed();
+    size.failed();
+    assert_eq!(size.get(), 1);
+    assert!(!size.stuck());
+    size.failed();
+    size.failed();
+    assert!(!size.stuck());
+    size.failed();
+    assert!(size.stuck());
+
+    // A success clears it, and the count starts again.
+    size.succeeded();
+    assert!(!size.stuck());
+    size.failed();
+    size.failed();
+    size.failed();
+    assert!(!size.stuck());
 }

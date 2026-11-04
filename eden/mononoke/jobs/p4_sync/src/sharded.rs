@@ -23,6 +23,7 @@ use context::CoreContext;
 use executor_lib::RepoShardedProcess;
 use executor_lib::RepoShardedProcessExecutor;
 use executor_lib::args::ShardedExecutorArgs;
+use fbinit::FacebookInit;
 use mononoke_app::MononokeApp;
 use mononoke_app::args::RepoArgs;
 use p4_import::ImportOptions;
@@ -30,6 +31,8 @@ use p4_source::P4Cli;
 use p4_source::P4CliSource;
 use repo_identity::RepoIdentityRef;
 use sharding_ext::RepoShard;
+use stats::define_stats;
+use stats::prelude::DynamicSingletonCounter;
 use tokio::sync::Notify;
 
 use crate::Repo;
@@ -41,6 +44,14 @@ const BOOKMARK: &str = "master";
 const ENABLED_JUST_KNOB: &str = "scm/mononoke:p4_sync_enabled";
 /// Well under `SM_CLEANUP_TIMEOUT_SECS`, so a stop or the exit file is seen in time.
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
+/// Failed batches of a single changelist in a row before the repo counts as stuck.
+const STUCK_AFTER: u32 = 3;
+
+define_stats! {
+    prefix = "mononoke.p4_sync";
+    // 1 while the repo is stuck on a changelist it can't import, for alerts.
+    stuck: dynamic_singleton_counter("stuck.{}", (repo: String)),
+}
 
 pub(crate) struct Settings {
     pub(crate) exit_file: PathBuf,
@@ -53,6 +64,59 @@ pub(crate) struct Settings {
 pub(crate) fn retry_delay(failures: u32) -> Duration {
     let doublings = failures.saturating_sub(1).min(16);
     (Duration::from_secs(5) * 2u32.pow(doublings)).min(MAX_RETRY_DELAY)
+}
+
+/// Halved on each failed batch, down to 1, so a changelist that can't be imported ends up in
+/// a batch of its own once the ones before it are imported; doubled on each success, back up
+/// to `--batch-size`. Failures before any changelist is fetched (the prepare stage, e.g. p4
+/// unreachable) leave it alone.
+pub(crate) struct BatchSize {
+    full: usize,
+    current: usize,
+    failed_alone: u32,
+}
+
+impl BatchSize {
+    pub(crate) fn new(full: NonZeroUsize) -> Self {
+        Self {
+            full: full.get(),
+            current: full.get(),
+            failed_alone: 0,
+        }
+    }
+
+    pub(crate) fn get(&self) -> usize {
+        self.current
+    }
+
+    pub(crate) fn succeeded(&mut self) {
+        self.current = self.current.saturating_mul(2).min(self.full);
+        self.failed_alone = 0;
+    }
+
+    pub(crate) fn failed(&mut self) {
+        if self.current == 1 {
+            self.failed_alone += 1;
+        }
+        self.current = (self.current / 2).max(1);
+    }
+
+    /// The next changelist has failed `STUCK_AFTER` times in a row on its own.
+    pub(crate) fn stuck(&self) -> bool {
+        self.failed_alone >= STUCK_AFTER
+    }
+}
+
+/// Clears the repo's `stuck` gauge however its loop ends, a panic or a dropped future included.
+struct ClearStuckOnDrop {
+    fb: FacebookInit,
+    repo_name: String,
+}
+
+impl Drop for ClearStuckOnDrop {
+    fn drop(&mut self) {
+        STATS::stuck.set_value(self.fb, 0, (self.repo_name.clone(),));
+    }
 }
 
 /// What a shard's loop is doing, logged once each time it changes.
@@ -162,6 +226,11 @@ impl RepoShardedProcessExecutor for P4SyncProcessExecutor {
 
         let mut state = None;
         let mut failures = 0;
+        let mut batch_size = BatchSize::new(self.settings.batch_size);
+        let _clear_stuck = ClearStuckOnDrop {
+            fb: self.app.fb,
+            repo_name: repo_name.to_owned(),
+        };
         while !self.should_stop() {
             let Some(depot) = &self.depot else {
                 log_state(&mut state, State::NoDepot, || {
@@ -186,10 +255,22 @@ impl RepoShardedProcessExecutor for P4SyncProcessExecutor {
                 &source,
                 depot,
                 &bookmark,
-                self.settings.batch_size.get(),
+                batch_size.get(),
                 &options,
             )
             .await;
+            match &result {
+                Ok(_) => batch_size.succeeded(),
+                Err(error) if p4_import::failed_stage(error) != Some(p4_import::Stage::Prepare) => {
+                    batch_size.failed()
+                }
+                Err(_) => {}
+            }
+            STATS::stuck.set_value(
+                self.app.fb,
+                batch_size.stuck() as i64,
+                (repo_name.to_owned(),),
+            );
             match result {
                 Ok(batch) if batch.changelists.is_empty() => {
                     failures = 0;
@@ -211,10 +292,16 @@ impl RepoShardedProcessExecutor for P4SyncProcessExecutor {
                 Err(_) => {
                     failures += 1;
                     let delay = retry_delay(failures);
-                    tracing::warn!(
-                        "{repo_name}: {failures} failed batches of {depot} in a row, retrying with {} changelists in {delay:?}",
-                        self.settings.batch_size
-                    );
+                    if batch_size.stuck() {
+                        tracing::error!(
+                            "{repo_name}: stuck on the changelist of {depot} after {bookmark}, {failures} failed batches in a row; retrying it alone in {delay:?}"
+                        );
+                    } else {
+                        tracing::warn!(
+                            "{repo_name}: {failures} failed batches of {depot} in a row, retrying with {} changelists in {delay:?}",
+                            batch_size.get()
+                        );
+                    }
                     state = None;
                     self.wait(delay).await;
                 }

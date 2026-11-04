@@ -1019,7 +1019,7 @@ async fn test_batch_not_after_the_checkpoint_is_rejected(fb: FacebookInit) -> Re
         .await
         .unwrap_err();
         assert!(
-            error.to_string().contains("already at changelist 9"),
+            format!("{error:#}").contains("already at changelist 9"),
             "{error:?}"
         );
     }
@@ -1035,7 +1035,7 @@ async fn test_batch_not_after_the_checkpoint_is_rejected(fb: FacebookInit) -> Re
     .await
     .unwrap_err();
     assert!(
-        error.to_string().contains("not in increasing order"),
+        format!("{error:#}").contains("not in increasing order"),
         "{error:?}"
     );
     assert_eq!(head, bookmark_target(&ctx, &repo, &master).await?);
@@ -1166,6 +1166,42 @@ async fn test_commit_failure_logs_the_stage_and_the_batch(fb: FacebookInit) -> R
     let error = row["error"].as_str().unwrap();
     assert!(error.contains("committing changelists 7..=9"), "{error}");
     assert!(scuba_rows(&dir, "P4 changelist imported")?.is_empty());
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_prepare_failure_has_the_prepare_stage(fb: FacebookInit) -> Result<()> {
+    let error = import_next_from(fb, &two_changelists(), "//tset1/")
+        .await
+        .unwrap_err();
+
+    assert_eq!(failed_stage(&error), Some(Stage::Prepare), "{error:?}");
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_build_failure_has_the_build_stage(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+    let master = BookmarkKey::new("master")?;
+
+    let error = import_changelists(
+        &ctx,
+        &repo,
+        &two_changelists(),
+        DEPOT,
+        &master,
+        &[7, 8],
+        &ImportOptions::default(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(failed_stage(&error), Some(Stage::Build), "{error:?}");
+    assert!(
+        error.downcast_ref::<BuildingChangelist>().is_some(),
+        "{error:?}"
+    );
     Ok(())
 }
 
@@ -1706,7 +1742,7 @@ async fn test_rule_resume_must_continue_the_same_depot(fb: FacebookInit) -> Resu
     assert_eq!(Some(&expected), error.downcast_ref(), "{error:?}");
     assert_eq!(
         "master was imported from another depot: changelist 7 has no files in //other/",
-        error.to_string()
+        error.root_cause().to_string()
     );
     assert_eq!(vec!["depots", "describe"], calls(&source));
     assert_eq!(head, bookmark_target(&ctx, &repo, &master).await?);
@@ -1726,7 +1762,7 @@ async fn test_rule_resume_must_continue_the_same_depot(fb: FacebookInit) -> Resu
     assert_eq!(Some(&expected), error.downcast_ref(), "{error:?}");
     assert_eq!(
         "changelist 7 on this server doesn't match what master recorded",
-        error.to_string()
+        error.root_cause().to_string()
     );
     assert_eq!(vec!["depots", "describe"], calls(&other_server));
     assert_eq!(head, bookmark_target(&ctx, &repo, &master).await?);
@@ -1770,7 +1806,7 @@ async fn test_rule_first_import_needs_a_repo_without_mappings(fb: FacebookInit) 
     assert_eq!(Some(&expected), error.downcast_ref(), "{error:?}");
     assert_eq!(
         "the repo has p4 mappings up to changelist 7 but no main: refusing a first import",
-        error.to_string()
+        error.root_cause().to_string()
     );
     assert_eq!(vec!["depots"], calls(&source));
     assert_eq!(None, bookmark_target(&ctx, &repo, &main).await?);
