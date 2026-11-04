@@ -25,6 +25,7 @@ rust_binary(
         "fbsource//third-party/rust:anyhow",
         "fbsource//third-party/rust:clap",
         "fbsource//third-party/rust:fail",
+        "fbsource//third-party/rust:libc",
         "fbsource//third-party/rust:tempfile",
         "fbsource//third-party/rust:tracing",
         "fbsource//third-party/rust:tracing-subscriber",
@@ -40,6 +41,22 @@ rust_binary(
         "ovr_config//os:windows": [
             "//eden/fs/cli_rs/edenfs-utils:edenfs-utils",
         ],
+    }),
+)
+
+python_unittest(
+    name = "test_exit",
+    srcs = ["tests/test_exit.py"],
+    env = {"EDENFSCTL": "$(location :edenfsctl)"},
+    labels = ci.labels(
+        ci.linux(),
+        ci.linux(ci.aarch64()),
+        ci.mac(ci.aarch64()),
+    ),
+    network_access = select({
+        "DEFAULT": network_access_utils.NETWORK_ACCESS_ALL,
+        "ovr_config//os:linux": network_access_utils.NETWORK_ACCESS_NONE,
+        "ovr_config//os:macos": network_access_utils.NETWORK_ACCESS_LOOPBACK,
     }),
 )
 

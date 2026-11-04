@@ -5,6 +5,7 @@
  * GNU General Public License version 2.
  */
 
+use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
@@ -206,14 +207,13 @@ fn wrapper_main(telemetry_sample: &mut CliUsageSample) -> Result<i32> {
             // and exit with the same exit code that Python exits with for parse failures.
             Err(e) if e.kind() == clap::error::ErrorKind::UnknownArgument => {
                 e.print().ok();
-                finish();
-                std::process::exit(PYTHON_EDENFSCTL_EX_USAGE)
+                exit_process(PYTHON_EDENFSCTL_EX_USAGE)
             }
             // Some other error occurred during parsing. Let's exit like normal
             // since we can't confirm it was due to an invalid command/arg.
             Err(e) => {
-                finish();
-                e.exit()
+                e.print().ok();
+                exit_process(e.exit_code())
             }
         }
     } else if std::env::var("EDENFSCTL_SKIP_RUST").is_ok() {
@@ -275,8 +275,8 @@ fn wrapper_main(telemetry_sample: &mut CliUsageSample) -> Result<i32> {
                     || e.kind() == clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
                 {
                     if should_use_rust_help(std::env::args(), &None, &None).unwrap_or(false) {
-                        finish();
-                        e.exit()
+                        e.print().ok();
+                        exit_process(e.exit_code())
                     } else {
                         fallback(Some(&e), telemetry_sample)
                     }
@@ -349,6 +349,27 @@ fn finish() {
     art_cli_lite_rs::finish_process();
 }
 
+/// Leaves the process without the exit-time teardown that `exit(3)` runs.
+///
+/// The atexit handlers of this binary destroy the C++ singletons (folly), whose
+/// shutdown timer aborts when the host cannot create a thread, and whose
+/// teardown races with the threads this CLI never joins: the use-case config
+/// refresh in `edenfs_client::use_case` and the fbagent connection. Telemetry
+/// and tracing are flushed before this point, so nothing is lost by skipping
+/// the handlers.
+fn exit_process(code: i32) -> ! {
+    finish();
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    // SAFETY: both are plain C calls with no pointer arguments other than the
+    // NULL that tells `fflush` to flush every open stream; `_exit` does not
+    // return, so no Rust code observes the state left behind.
+    unsafe {
+        libc::fflush(std::ptr::null_mut());
+        libc::_exit(code)
+    }
+}
+
 #[cfg(fbcode_build)]
 fn trace() {
     art_cli_lite_rs::trace_cli_for_process("cli.edenfsctl");
@@ -361,7 +382,7 @@ fn trace() {
 }
 
 #[fbinit::main]
-fn main(_fb: FacebookInit) -> Result<()> {
+fn main(_fb: FacebookInit) {
     #[cfg(fbcode_build)]
     trace();
     // NOTE: if you are considering passing `FacebookInit` down, you may want to check
@@ -396,11 +417,12 @@ fn main(_fb: FacebookInit) -> Result<()> {
     }
 
     match code {
-        Ok(code) => {
-            finish();
-            std::process::exit(code)
+        Ok(code) => exit_process(code),
+        Err(e) => {
+            // The text Rust prints for an `Err` returned from `main`.
+            eprintln!("Error: {e:?}");
+            exit_process(1)
         }
-        Err(e) => Err(e),
     }
 }
 

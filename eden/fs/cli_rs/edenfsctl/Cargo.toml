@@ -13,6 +13,7 @@ clap = { version = "4.6.2", features = ["derive", "env", "string", "unicode", "w
 edenfs-commands = { version = "0.1.0", path = "../edenfs-commands" }
 fail = { version = "0.5.1", features = ["failpoints"] }
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
+libc = "0.2.186"
 sapling-http-client = { version = "0.1.0", path = "../../../scm/lib/http-client" }
 sapling-testutil = { version = "0.1.0", path = "../../../scm/lib/util/testutil" }
 tempfile = "3.27.0"
