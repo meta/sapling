@@ -68,6 +68,7 @@ use metaconfig_types::MetadataLoggerConfig;
 use metaconfig_types::ModernSyncChannelConfig;
 use metaconfig_types::ModernSyncConfig;
 use metaconfig_types::MononokeCasSyncConfig;
+use metaconfig_types::P4SourceConfig;
 use metaconfig_types::PathRestrictionMetadata;
 use metaconfig_types::PushParams;
 use metaconfig_types::PushrebaseFlags;
@@ -141,6 +142,7 @@ use repos::RawMetadataCacheConfig;
 use repos::RawMetadataCacheUpdateMode;
 use repos::RawMetadataLoggerConfig;
 use repos::RawModernSyncConfig;
+use repos::RawP4SourceConfig;
 use repos::RawPathRestrictionMetadata;
 use repos::RawPushParams;
 use repos::RawPushrebaseParams;
@@ -1430,6 +1432,32 @@ impl Convert for RawGitConfigs {
             fetch_message,
             git_bundle_uri,
             preloaded_cgdm_blobstore_key,
+        })
+    }
+}
+
+impl Convert for RawP4SourceConfig {
+    type Output = P4SourceConfig;
+
+    fn convert(self) -> Result<Self::Output> {
+        // A depot root, `//name/`: the importer appends `...` to it.
+        let name = self
+            .depot
+            .strip_prefix("//")
+            .and_then(|rest| rest.strip_suffix('/'))
+            .filter(|name| !name.is_empty() && !name.contains('/'));
+        ensure!(
+            name.is_some(),
+            "p4_source.depot must be a depot root of the form //name/, got {:?}",
+            self.depot
+        );
+        ensure!(
+            !self.server_alias.is_empty(),
+            "p4_source.server_alias must not be empty"
+        );
+        Ok(P4SourceConfig {
+            server_alias: self.server_alias,
+            depot: self.depot,
         })
     }
 }

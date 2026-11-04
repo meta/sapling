@@ -302,6 +302,9 @@ pub struct RepoConfig {
     pub remote_diff_config: Option<RemoteDiffConfig>,
     /// Configuration for commit rate limiting.
     pub commit_rate_limit_config: Option<CommitRateLimitConfig>,
+    /// The Perforce depot this repo mirrors; set only on repos under
+    /// `repos/p4/`.
+    pub p4_source: Option<P4SourceConfig>,
     /// Version of the per-repo config snapshot this config was parsed from
     /// (the last content-changing parse); `None` unless loaded via a
     /// per-repo config handle.
@@ -2463,6 +2466,17 @@ pub struct GitConfigs {
     pub git_bundle_uri: Option<GitBundleURIConfig>,
     /// Blobstore key for the preloaded CGDM blob
     pub preloaded_cgdm_blobstore_key: Option<String>,
+}
+
+/// The Perforce depot a `repos/p4/` mirror imports from: one repo mirrors one
+/// depot of one server.
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+pub struct P4SourceConfig {
+    /// The server, as the p4_sync job names it in `--p4-server-alias`
+    /// (e.g. `test1`), not a P4PORT.
+    pub server_alias: String,
+    /// The depot root as a depot path, `//name/`.
+    pub depot: String,
 }
 
 /// Configuration for x repo syncs

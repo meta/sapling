@@ -315,6 +315,7 @@ fn build_repo_config(
         restricted_paths_config,
         remote_diff_config,
         commit_rate_limit_config,
+        p4_source,
         ..
     } = raw_repo_config;
 
@@ -423,6 +424,7 @@ fn build_repo_config(
     let commit_rate_limit_config = commit_rate_limit_config
         .map(|config| config.convert())
         .transpose()?;
+    let p4_source = p4_source.convert()?;
 
     Ok(RepoConfig {
         enabled: metadata.enabled,
@@ -481,6 +483,7 @@ fn build_repo_config(
         restricted_paths_config,
         remote_diff_config,
         commit_rate_limit_config,
+        p4_source,
         // Populated by the versioned ConfigHandle load path, never at parse time.
         config_version: None,
         config_mutation_id: None,
@@ -701,6 +704,7 @@ mod test {
     use metaconfig_types::MetadataLoggerConfig;
     use metaconfig_types::MultiplexId;
     use metaconfig_types::MultiplexedStoreType;
+    use metaconfig_types::P4SourceConfig;
     use metaconfig_types::PushParams;
     use metaconfig_types::PushrebaseFlags;
     use metaconfig_types::PushrebaseParams;
@@ -1705,6 +1709,7 @@ mod test {
                 restricted_paths_config: RestrictedPathsConfig::default(),
                 remote_diff_config: None,
                 commit_rate_limit_config: None,
+                p4_source: None,
                 config_version: None,
                 config_mutation_id: None,
             },
@@ -1794,6 +1799,7 @@ mod test {
                 restricted_paths_config: RestrictedPathsConfig::default(),
                 remote_diff_config: None,
                 commit_rate_limit_config: None,
+                p4_source: None,
                 config_version: None,
                 config_mutation_id: None,
             },
@@ -3127,5 +3133,81 @@ mod test {
             result.is_err(),
             "RepoSpec with no repo_config should fail (missing storage_config)"
         );
+    }
+
+    fn p4_repo_spec(depot: &str) -> repos::RepoSpec {
+        use repos::RawCommitIdentityScheme;
+        use repos::RawP4SourceConfig;
+        use repos::RepoSpec;
+
+        RepoSpec {
+            repo_id: 200001,
+            repo_name: "p4/test1/swarm_playground".to_string(),
+            hipster_acl: "repos/p4/test1/swarm_playground".to_string(),
+            enabled: true,
+            readonly: true,
+            default_commit_identity_scheme: RawCommitIdentityScheme::BONSAI,
+            tiers: vec!["p4_sync".to_string()],
+            repo_config: Some(RawRepoConfig {
+                storage_config: Some("test_storage".to_string()),
+                p4_source: Some(RawP4SourceConfig {
+                    server_alias: "test1".to_string(),
+                    depot: depot.to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[mononoke::test]
+    fn test_parse_repo_spec_p4_source() {
+        let named_storage = hashmap! {
+            "test_storage".to_string() => test_raw_storage_config(),
+        };
+
+        let result = parse_repo_spec(
+            p4_repo_spec("//swarm_playground/"),
+            "p4_sync",
+            &named_storage,
+        )
+        .expect("parse should succeed");
+        assert_eq!(
+            result.p4_source,
+            Some(P4SourceConfig {
+                server_alias: "test1".to_string(),
+                depot: "//swarm_playground/".to_string(),
+            })
+        );
+
+        // A repo spec without the block parses to None, not an error.
+        let mut no_p4 = p4_repo_spec("//swarm_playground/");
+        no_p4.repo_config.as_mut().unwrap().p4_source = None;
+        let result =
+            parse_repo_spec(no_p4, "p4_sync", &named_storage).expect("parse should succeed");
+        assert_eq!(result.p4_source, None);
+    }
+
+    #[mononoke::test]
+    fn test_parse_repo_spec_p4_source_rejects_bad_depot() {
+        let named_storage = hashmap! {
+            "test_storage".to_string() => test_raw_storage_config(),
+        };
+
+        for depot in [
+            "swarm_playground",
+            "//swarm_playground",
+            "/swarm_playground/",
+            "//swarm_playground/...",
+            "//swarm_playground/sub/",
+            "///",
+            "",
+        ] {
+            let result = parse_repo_spec(p4_repo_spec(depot), "p4_sync", &named_storage);
+            assert!(
+                result.is_err(),
+                "depot {depot:?} is not a depot root and must be rejected"
+            );
+        }
     }
 }
