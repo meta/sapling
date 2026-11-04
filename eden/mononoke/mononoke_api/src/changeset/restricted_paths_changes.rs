@@ -31,6 +31,7 @@ use crate::restricted_paths::ChangedPathRestrictionInfo;
 use crate::restricted_paths::ChangedPathRestrictionSides;
 use crate::restricted_paths::ChangedPathsRestrictionOptions;
 use crate::restricted_paths::PathAccessInfo;
+use crate::restricted_paths::PathPermissionChangeInfo;
 use crate::restricted_paths::PathPolicyInfo;
 use crate::restricted_paths::PathRestrictionCopySourceInfo;
 use crate::restricted_paths::RestrictedChangeGroup;
@@ -68,7 +69,10 @@ impl<R: MononokeRepo> ChangesetContext<R> {
         BoxStream<'static, Result<(NonRootMPath, ChangedPathRestrictionInfo), MononokeError>>,
         MononokeError,
     > {
-        let ChangedPathsRestrictionOptions { check_permissions } = options;
+        let ChangedPathsRestrictionOptions {
+            check_permissions,
+            include_permission_changes,
+        } = options;
         let parents = self.parents().await?;
         let base = base.cloned().or_else(|| {
             parents
@@ -134,6 +138,7 @@ impl<R: MononokeRepo> ChangesetContext<R> {
             base,
             bonsai,
             check_permissions,
+            include_permission_changes,
         });
         Ok(changes
             .map_ok(move |change| {
@@ -234,7 +239,10 @@ impl<R: MononokeRepo> ChangesetContext<R> {
             .changed_paths_restriction_info(
                 None,
                 None,
-                ChangedPathsRestrictionOptions { check_permissions },
+                ChangedPathsRestrictionOptions {
+                    check_permissions,
+                    include_permission_changes: false,
+                },
             )
             .await?
             .try_fold(

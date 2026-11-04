@@ -12,6 +12,7 @@ pub(super) struct Comparison<R: MononokeRepo> {
     pub(super) base: Option<ChangesetContext<R>>,
     pub(super) check_permissions: bool,
     pub(super) bonsai: Option<Arc<BonsaiChangeset>>,
+    pub(super) include_permission_changes: bool,
 }
 impl<R: MononokeRepo> Comparison<R> {
     fn base(&self) -> Result<&ChangesetContext<R>, MononokeError> {
@@ -47,11 +48,41 @@ impl<R: MononokeRepo> Comparison<R> {
                 ChangedPathRestrictionSides::Changed { base, target }
             }
         };
+        let permission_change = if self.include_permission_changes {
+            let (base, target) = match &sides {
+                ChangedPathRestrictionSides::Added(target) => {
+                    let base = match &self.base {
+                        Some(base) => {
+                            base.restriction_side_info(&path, self.check_permissions)
+                                .await?
+                        }
+                        None => PathPolicyInfo {
+                            restrictions: Vec::new(),
+                            has_access: self.check_permissions.then_some(true),
+                        },
+                    };
+                    (base, target.clone())
+                }
+                ChangedPathRestrictionSides::Removed(base) => (
+                    base.clone(),
+                    self.target
+                        .restriction_side_info(&path, self.check_permissions)
+                        .await?,
+                ),
+                ChangedPathRestrictionSides::Changed { base, target } => {
+                    (base.clone(), target.clone())
+                }
+            };
+            PathPermissionChangeInfo::between(base, target, &copy_sources)
+        } else {
+            None
+        };
         Ok((
             path,
             ChangedPathRestrictionInfo {
                 sides,
                 copy_sources,
+                permission_change,
             },
         ))
     }

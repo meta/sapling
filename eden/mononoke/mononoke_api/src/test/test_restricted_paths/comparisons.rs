@@ -9,9 +9,13 @@ use super::*;
 
 mod copies;
 mod endpoints;
+mod policies;
 
 fn rich_restriction_options(check_permissions: bool) -> ChangedPathsRestrictionOptions {
-    ChangedPathsRestrictionOptions { check_permissions }
+    ChangedPathsRestrictionOptions {
+        check_permissions,
+        include_permission_changes: true,
+    }
 }
 
 async fn assert_rich_restriction_pages(

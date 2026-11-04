@@ -50,6 +50,8 @@ impl PathAccessInfo {
 pub struct ChangedPathsRestrictionOptions {
     /// Populate complete-side and per-restriction access results.
     pub check_permissions: bool,
+    /// Compare effective policies, including paths without a file on one side.
+    pub include_permission_changes: bool,
 }
 
 /// Effective restrictions and access at a path, independent of file existence.
@@ -95,11 +97,42 @@ impl ChangedPathRestrictionSides {
     }
 }
 
+/// An effective policy change, independent of endpoint file existence.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PathPermissionChangeInfo {
+    pub base: PathPolicyInfo,
+    pub target: PathPolicyInfo,
+    pub copy_sources: Vec<PathRestrictionCopySourceInfo>,
+}
+impl PathPermissionChangeInfo {
+    pub fn between(
+        base: PathPolicyInfo,
+        target: PathPolicyInfo,
+        sources: &[PathRestrictionCopySourceInfo],
+    ) -> Option<Self> {
+        let copy_sources: Vec<_> = sources
+            .iter()
+            .filter(|source| source.info != target)
+            .cloned()
+            .collect();
+        if base == target && copy_sources.is_empty() {
+            None
+        } else {
+            Some(Self {
+                base,
+                target,
+                copy_sources,
+            })
+        }
+    }
+}
+
 /// Restrictions protecting actual changed-file content.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChangedPathRestrictionInfo {
     pub sides: ChangedPathRestrictionSides,
     pub copy_sources: Vec<PathRestrictionCopySourceInfo>,
+    pub permission_change: Option<PathPermissionChangeInfo>,
 }
 impl ChangedPathRestrictionInfo {
     pub fn content_sides(&self) -> impl Iterator<Item = &PathPolicyInfo> {
