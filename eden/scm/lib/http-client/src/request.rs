@@ -1104,18 +1104,19 @@ mod tests {
             })),
             ..Default::default()
         });
+
+        let (responses, stats) = client.send_async(Vec::new())?;
+        assert!(responses.is_empty());
+        assert_eq!(stats.await?, crate::Stats::default());
+
         let url = Url::parse("https://example.com/test")?;
 
-        let (responses, _stats) = client.send_async(vec![client.get(url)])?;
-        let err = match responses.into_iter().next().unwrap().await {
-            Ok(_) => panic!("expected the request to fail"),
+        let err = match client.send_async(vec![client.get(url)]) {
+            Ok(_) => panic!("expected send_async to fail"),
             Err(err) => err,
         };
 
-        // FIXME: The auth error is lost and the caller sees a dropped request.
-        // `send_async` should return `Err` with "certificate is missing" before
-        // dispatching the request.
-        assert!(matches!(err, HttpClientError::RequestDropped(_)));
+        assert_eq!(err.to_string(), "certificate is missing");
         Ok(())
     }
 

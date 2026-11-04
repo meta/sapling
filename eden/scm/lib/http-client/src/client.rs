@@ -282,6 +282,9 @@ impl HttpClient {
             responses.push(response);
         }
 
+        if !stream_requests.is_empty() {
+            self.resolve_auth()?;
+        }
         let stats = self.dispatcher.dispatch(client, stream_requests)?;
 
         Ok((responses, stats))
@@ -290,6 +293,7 @@ impl HttpClient {
     /// Async version of `send` for a single request.
     pub fn send_async_single(&self, request: Request) -> Result<ResponseFuture, HttpClientError> {
         crate::check_not_shutting_down()?;
+        self.resolve_auth()?;
         let client = self.worker_client();
         let (request, response) = self.prepare_async_request(request);
         let stats = self.dispatcher.dispatch(client, vec![request])?;
@@ -301,6 +305,14 @@ impl HttpClient {
             }
         }
         .boxed())
+    }
+
+    /// Resolve auth before dispatching so auth errors reach the caller directly.
+    fn resolve_auth(&self) -> Result<(), HttpClientError> {
+        if let Some(auth_resolver) = &self.config.auth_resolver {
+            auth_resolver.resolve()?;
+        }
+        Ok(())
     }
 
     fn prepare_async_request(&self, req: Request) -> (StreamRequest, ResponseFuture) {
