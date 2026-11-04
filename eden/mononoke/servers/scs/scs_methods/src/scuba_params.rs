@@ -588,7 +588,22 @@ impl AddScubaParams for thrift::CommitPathInfoParams {}
 
 impl AddScubaParams for thrift::CommitRestrictedPathsAccessParams {}
 impl AddScubaParams for thrift::CommitFindRestrictedPathsParams {}
-impl AddScubaParams for thrift::CommitRestrictedPathsChangesParams {}
+impl AddScubaParams for thrift::CommitRestrictedPathsChangesParams {
+    fn add_scuba_params(&self, scuba: &mut MononokeScubaSampleBuilder) {
+        if let Some(other_commit_id) = self.other_commit_id.as_ref() {
+            scuba.add("other_commit", other_commit_id.to_string());
+        }
+        if let Some(format) = self.format {
+            scuba.add("param_restriction_format", format.to_string());
+        }
+        if let Some(ordered) = &self.ordered_params {
+            scuba.add("param_limit", ordered.limit);
+            if let Some(after_path) = &ordered.after_path {
+                scuba.add("param_after_path", after_path.as_str());
+            }
+        }
+    }
+}
 
 impl AddScubaParams for thrift::RepoInfoParams {}
 

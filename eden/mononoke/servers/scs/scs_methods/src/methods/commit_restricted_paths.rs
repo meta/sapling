@@ -11,6 +11,7 @@ use std::collections::BTreeSet;
 use anyhow::Context;
 use anyhow::Result;
 use futures::StreamExt;
+use futures::TryStreamExt;
 use futures::stream::BoxStream;
 use mononoke_api::MononokeError;
 use mononoke_api::PathAccessInfo;
@@ -21,7 +22,6 @@ use mononoke_types::NonRootMPath;
 use mononoke_types::path::MPath;
 use source_control as thrift;
 
-#[cfg(test)]
 pub(crate) mod compact;
 const COMPARISON_KNOB: &str = "scm/mononoke:enable_scs_restricted_paths_changes_comparison";
 
@@ -162,31 +162,83 @@ pub(crate) async fn restricted_paths_access_impl(
     })
 }
 
-#[cfg(test)]
-fn retain_comparison_page(
-    results: &mut Vec<(NonRootMPath, ChangedPathRestrictionInfo)>,
-    limit: Option<usize>,
-) -> Option<String> {
-    let limit = limit.filter(|limit| results.len() > *limit)?;
-    results.truncate(limit);
-    results.last().map(|(path, _)| path.to_string())
+#[derive(Clone, Copy)]
+pub(crate) enum RestrictionComparisonFormat {
+    Legacy,
+    Compact,
 }
 
-pub(crate) fn changes_restriction_results_into_response(
-    results: Vec<(NonRootMPath, ChangedPathRestrictionInfo)>,
-) -> thrift::CommitRestrictedPathsChangesResponse {
-    let mut response = comparison_common_response(&results);
-    response.restriction_roots = results
-        .iter()
-        .filter_map(|(path, info)| {
-            let roots: BTreeSet<_> = info
-                .restriction_info()
-                .map(path_restriction_root_into_response)
-                .collect();
-            (!roots.is_empty()).then(|| (path.to_string(), roots.into_iter().collect()))
+pub(crate) fn restriction_comparison_format(
+    format: Option<thrift::CommitRestrictedPathsChangesFormat>,
+) -> Result<RestrictionComparisonFormat, scs_errors::ServiceError> {
+    match format {
+        None => Ok(RestrictionComparisonFormat::Legacy),
+        Some(thrift::CommitRestrictedPathsChangesFormat::COMPACT) => {
+            Ok(RestrictionComparisonFormat::Compact)
+        }
+        Some(_) => {
+            Err(scs_errors::invalid_request("unsupported restriction comparison format").into())
+        }
+    }
+}
+
+pub(crate) enum RestrictionComparisonRequest {
+    Legacy,
+    Compact {
+        base: Option<thrift::CommitId>,
+        page: RestrictionComparisonPageParams,
+    },
+}
+
+pub(crate) fn restriction_comparison_request(
+    params: thrift::CommitRestrictedPathsChangesParams,
+) -> Result<RestrictionComparisonRequest, scs_errors::ServiceError> {
+    match restriction_comparison_format(params.format)? {
+        RestrictionComparisonFormat::Legacy => {
+            if params.other_commit_id.is_some() || params.ordered_params.is_some() {
+                return Err(scs_errors::invalid_request(
+                    "explicit bases and paging require COMPACT",
+                )
+                .into());
+            }
+            Ok(RestrictionComparisonRequest::Legacy)
+        }
+        RestrictionComparisonFormat::Compact => {
+            let page = restriction_comparison_page_params(params.ordered_params)?
+                .ok_or_else(|| scs_errors::invalid_request("COMPACT requires ordered_params"))?;
+            Ok(RestrictionComparisonRequest::Compact {
+                base: params.other_commit_id,
+                page,
+            })
+        }
+    }
+}
+
+pub(crate) struct RestrictionComparisonPageParams {
+    pub(crate) limit: usize,
+    pub(crate) after_path: Option<MPath>,
+}
+
+pub(crate) fn restriction_comparison_page_params(
+    ordered: Option<thrift::CommitRestrictedPathsChangesOrderedParams>,
+) -> Result<Option<RestrictionComparisonPageParams>, scs_errors::ServiceError> {
+    ordered
+        .map(|ordered| {
+            let limit = crate::from_request::check_range_and_convert(
+                "limit",
+                ordered.limit,
+                1..=thrift::COMMIT_RESTRICTED_PATHS_CHANGES_MAX_LIMIT,
+            )?;
+            let after_path = ordered
+                .after_path
+                .map(MPath::new)
+                .transpose()
+                .map_err(|error| {
+                    scs_errors::invalid_request(format!("invalid after_path: {error}"))
+                })?;
+            Ok(RestrictionComparisonPageParams { limit, after_path })
         })
-        .collect();
-    response
+        .transpose()
 }
 
 /// Unchecked side results are not evidence of access.
@@ -195,35 +247,100 @@ fn has_access_to_content(info: &ChangedPathRestrictionInfo) -> bool {
         .all(|side| side.has_access == Some(true))
 }
 
-fn comparison_common_response(
-    results: &[(NonRootMPath, ChangedPathRestrictionInfo)],
-) -> thrift::CommitRestrictedPathsChangesResponse {
-    let mut is_restricted = Vec::with_capacity(results.len());
-    let mut has_access = Vec::with_capacity(results.len());
-    let mut changed_paths = Vec::with_capacity(results.len());
-    let mut authorized_paths = Vec::new();
-    for (path, info) in results {
-        let path = path.to_string();
-        is_restricted.push(info.restriction_info().next().is_some());
-        let access = has_access_to_content(info);
-        has_access.push(access);
-        if access {
-            authorized_paths.push(path.clone());
+#[derive(Default)]
+struct ComparisonResponseBuilder {
+    response: thrift::CommitRestrictedPathsChangesResponse,
+    restricted: usize,
+}
+
+impl ComparisonResponseBuilder {
+    fn add(&mut self, path: &NonRootMPath, info: &ChangedPathRestrictionInfo) {
+        self.restricted += usize::from(info.restriction_info().next().is_some());
+        if has_access_to_content(info) {
+            self.response.authorized_paths.push(path.to_string());
         }
-        changed_paths.push(path);
+        self.response.changed_paths.push(path.to_string());
     }
-    thrift::CommitRestrictedPathsChangesResponse {
-        are_restricted: compute_path_coverage(is_restricted),
-        has_access: if changed_paths.is_empty() {
-            thrift::PathCoverage::ALL
-        } else {
-            compute_path_coverage(has_access)
-        },
-        authorized_paths,
-        changed_paths,
-        checked_both_sides: Some(true),
-        ..Default::default()
+
+    fn finish(mut self) -> thrift::CommitRestrictedPathsChangesResponse {
+        let total = self.response.changed_paths.len();
+        self.response.are_restricted =
+            coverage_count(self.restricted, total, thrift::PathCoverage::NONE);
+        self.response.has_access = coverage_count(
+            self.response.authorized_paths.len(),
+            total,
+            thrift::PathCoverage::ALL,
+        );
+        self.response.checked_both_sides = Some(true);
+        self.response
     }
+}
+
+fn coverage_count(
+    matched: usize,
+    total: usize,
+    empty: thrift::PathCoverage,
+) -> thrift::PathCoverage {
+    if total == 0 {
+        empty
+    } else if matched == 0 {
+        thrift::PathCoverage::NONE
+    } else if matched == total {
+        thrift::PathCoverage::ALL
+    } else {
+        thrift::PathCoverage::SOME
+    }
+}
+
+#[derive(Default)]
+struct LegacyResponseBuilder {
+    common: ComparisonResponseBuilder,
+}
+
+impl LegacyResponseBuilder {
+    fn add(&mut self, path: &NonRootMPath, info: &ChangedPathRestrictionInfo) {
+        let roots: BTreeSet<_> = info
+            .restriction_info()
+            .map(path_restriction_root_into_response)
+            .collect();
+        if !roots.is_empty() {
+            self.common
+                .response
+                .restriction_roots
+                .insert(path.to_string(), roots.into_iter().collect());
+        }
+        self.common.add(path, info);
+    }
+
+    fn finish(self) -> thrift::CommitRestrictedPathsChangesResponse {
+        self.common.finish()
+    }
+}
+
+pub(crate) async fn legacy_comparison_response(
+    stream: BoxStream<'static, Result<(NonRootMPath, ChangedPathRestrictionInfo), MononokeError>>,
+) -> Result<thrift::CommitRestrictedPathsChangesResponse, scs_errors::ServiceError> {
+    let response = stream
+        .try_fold(
+            LegacyResponseBuilder::default(),
+            |mut response, (path, info)| async move {
+                response.add(&path, &info);
+                Ok(response)
+            },
+        )
+        .await?;
+    Ok(response.finish())
+}
+
+#[cfg(test)]
+fn changes_restriction_results_into_response(
+    results: Vec<(NonRootMPath, ChangedPathRestrictionInfo)>,
+) -> thrift::CommitRestrictedPathsChangesResponse {
+    let mut response = LegacyResponseBuilder::default();
+    for (path, info) in results {
+        response.add(&path, &info);
+    }
+    response.finish()
 }
 
 fn path_restriction_root_into_response(info: &PathAccessInfo) -> thrift::PathRestrictionRoot {
@@ -333,6 +450,7 @@ mod tests {
     use mononoke_api::RepoContext;
     use mononoke_api::changeset::ChangesetContext;
     use mononoke_macros::mononoke;
+    use mononoke_types::ChangesetId;
     use mononoke_types::RepositoryId;
     use permission_checker::AclProvider;
     use permission_checker::AlwaysMember;
@@ -356,6 +474,7 @@ mod tests {
     use super::*;
 
     mod content_sides;
+    mod conversion;
     mod lookup_modes;
     #[cfg(fbcode_build)]
     mod rollback;

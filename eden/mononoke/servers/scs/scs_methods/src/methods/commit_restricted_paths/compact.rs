@@ -13,6 +13,8 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::ensure;
 use dedupmap::DedupMap;
+use futures::TryStreamExt;
+use futures::stream::BoxStream;
 use mononoke_api::ChangedPathRestrictionInfo;
 use mononoke_api::MononokeError;
 use mononoke_api::PathAccessInfo;
@@ -168,48 +170,88 @@ fn check_access(info: &PathPolicyInfo) -> Result<()> {
     Ok(())
 }
 
-/// Tables are response-local. Interning while emitting references ensures that
-/// every definition is used, without assuming access is immutable during a read.
-fn encode(
-    results: &[(NonRootMPath, ChangedPathRestrictionInfo)],
-) -> Result<thrift::CommitRestrictedPathsChangesCompact> {
-    let mut table = PolicyTable::default();
-    let mut restriction_roots = BTreeMap::new();
-    let mut permission_changes = BTreeMap::new();
-    for (path, info) in results {
+/// Holds only retained wire entries and their response-local dictionaries.
+#[derive(Default)]
+struct ResponseBuilder {
+    common: super::ComparisonResponseBuilder,
+    table: PolicyTable,
+    restriction_roots: BTreeMap<String, Vec<i32>>,
+    permission_changes: BTreeMap<String, thrift::PathPermissionChangeInfoCompact>,
+}
+
+impl ResponseBuilder {
+    fn add(&mut self, path: &NonRootMPath, info: &ChangedPathRestrictionInfo) -> Result<()> {
         for content in info.content_sides() {
             check_access(content)?;
         }
         let roots = info
             .restriction_info()
-            .map(|restriction| table.index(restriction))
+            .map(|restriction| self.table.index(restriction))
             .collect::<Result<BTreeSet<_>>>()?;
         if !roots.is_empty() {
-            restriction_roots.insert(path.to_string(), roots.into_iter().collect());
+            self.restriction_roots
+                .insert(path.to_string(), roots.into_iter().collect());
         }
         if let Some(change) = &info.permission_change
-            && let Some(change) = table.permission_change(change)?
+            && let Some(change) = self.table.permission_change(change)?
         {
-            permission_changes.insert(path.to_string(), change);
+            self.permission_changes.insert(path.to_string(), change);
         }
+        self.common.add(path, info);
+        Ok(())
     }
-    Ok(thrift::CommitRestrictedPathsChangesCompact {
-        policies: table.policies.into_items(),
-        restriction_roots,
-        permission_changes,
-        subtree_sources: table.subtree_sources.into_items(),
-        ..Default::default()
-    })
+
+    fn finish(self, has_more: bool) -> thrift::CommitRestrictedPathsChangesResponse {
+        let mut response = self.common.finish();
+        response.last_path = has_more.then(|| {
+            response
+                .changed_paths
+                .last()
+                .expect("a retained page has a boundary")
+                .clone()
+        });
+        response.compact = Some(thrift::CommitRestrictedPathsChangesCompact {
+            policies: self.table.policies.into_items(),
+            subtree_sources: self.table.subtree_sources.into_items(),
+            restriction_roots: self.restriction_roots,
+            permission_changes: self.permission_changes,
+            ..Default::default()
+        });
+        response
+    }
 }
 
-pub(crate) fn into_response(
-    mut results: Vec<(NonRootMPath, ChangedPathRestrictionInfo)>,
-    limit: Option<usize>,
+pub(crate) async fn from_stream(
+    mut stream: BoxStream<
+        'static,
+        Result<(NonRootMPath, ChangedPathRestrictionInfo), MononokeError>,
+    >,
+    limit: usize,
 ) -> Result<thrift::CommitRestrictedPathsChangesResponse, scs_errors::ServiceError> {
-    let last_path = super::retain_comparison_page(&mut results, limit);
-    let compact = encode(&results).map_err(MononokeError::from)?;
-    let mut response = super::comparison_common_response(&results);
-    response.compact = Some(compact);
-    response.last_path = last_path;
-    Ok(response)
+    if limit == 0 {
+        return Err(
+            MononokeError::InvalidRequest("compact page limit must be positive".into()).into(),
+        );
+    }
+    let mut response = ResponseBuilder::default();
+    for _ in 0..limit {
+        let Some((path, info)) = stream.try_next().await? else {
+            return Ok(response.finish(false));
+        };
+        response.add(&path, &info).map_err(MononokeError::from)?;
+    }
+    // Lookahead proves continuation but never enters the tables or aggregates.
+    let has_more = stream.try_next().await?.is_some();
+    Ok(response.finish(has_more))
+}
+
+#[cfg(test)]
+fn encode(
+    results: &[(NonRootMPath, ChangedPathRestrictionInfo)],
+) -> Result<thrift::CommitRestrictedPathsChangesCompact> {
+    let mut response = ResponseBuilder::default();
+    for (path, info) in results {
+        response.add(path, info)?;
+    }
+    Ok(response.finish(false).compact.expect("compact response"))
 }

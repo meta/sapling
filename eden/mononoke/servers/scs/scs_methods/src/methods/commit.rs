@@ -16,6 +16,7 @@ use borrowed::borrowed;
 use bytes::Bytes;
 use cloned::cloned;
 use context::CoreContext;
+use futures::FutureExt;
 use futures::pin_mut;
 use futures::stream;
 use futures::stream::BoxStream;
@@ -2043,36 +2044,48 @@ impl SourceControlServiceImpl {
             }
             return commit_restricted_paths::bonsai_changes_response(&changeset).await;
         }
-        if params.format.is_some()
-            || params.ordered_params.is_some()
-            || params.other_commit_id.is_some()
-        {
-            return Err(scs_errors::invalid_request(
-                "compact comparison requests are not supported by this handler",
-            )
-            .into());
-        }
-        let (_, changeset) = self.repo_changeset(ctx, &commit).await?;
+        let request = commit_restricted_paths::restriction_comparison_request(params)?;
+        let (base_id, page) = match request {
+            commit_restricted_paths::RestrictionComparisonRequest::Legacy => (None, None),
+            commit_restricted_paths::RestrictionComparisonRequest::Compact { base, page } => {
+                (base, Some(page))
+            }
+        };
+        let compact = page.is_some();
+        let (changeset, base) = match base_id.as_ref() {
+            Some(id) => {
+                let (changeset, other) = self.repo_changeset_pair(ctx, &commit, id).await?;
+                (changeset, Some(other))
+            }
+            None => {
+                let (_, changeset) = self.repo_changeset(ctx, &commit).await?;
+                (changeset, None)
+            }
+        };
         if commit_restricted_paths::use_mock_api(changeset.repo_ctx().name())? {
             return Err(scs_errors::not_implemented(
-                "commit_restricted_paths_changes is not mocked yet".to_owned(),
+                "commit_restricted_paths_changes is not mocked yet".to_string(),
             )
             .into());
         }
-        let results = changeset
+
+        let after_path = page.as_ref().and_then(|page| page.after_path.clone());
+        let stream = changeset
             .changed_paths_restriction_info(
-                None,
-                None,
+                base.as_ref(),
+                after_path,
                 ChangedPathsRestrictionOptions {
                     check_permissions: true,
-                    include_permission_changes: false,
-                    include_subtree_source_changes: false,
+                    include_permission_changes: compact,
+                    include_subtree_source_changes: compact,
                 },
             )
-            .await?
-            .try_collect::<Vec<_>>()
+            .boxed()
             .await?;
-        Ok(commit_restricted_paths::changes_restriction_results_into_response(results))
+        match page {
+            Some(page) => commit_restricted_paths::compact::from_stream(stream, page.limit).await,
+            None => commit_restricted_paths::legacy_comparison_response(stream).await,
+        }
     }
 }
 

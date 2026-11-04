@@ -8,6 +8,8 @@
 use std::str::FromStr;
 
 use anyhow::Result;
+use futures::StreamExt;
+use futures::stream;
 use mononoke_api::ChangedPathRestrictionSides;
 use mononoke_api::PathPermissionChangeInfo;
 use mononoke_api::PathRestrictionCopySourceInfo;
@@ -224,7 +226,7 @@ fn ordinary_and_subtree_sources_have_distinct_encodings() -> Result<()> {
 }
 
 #[mononoke::test]
-fn hypothetical_source_policy_is_not_an_actual_content_requirement() -> Result<()> {
+async fn hypothetical_source_policy_is_not_an_actual_content_requirement() -> Result<()> {
     let target = unrestricted();
     let delta = PathPermissionChangeInfo::between(
         unrestricted(),
@@ -238,8 +240,12 @@ fn hypothetical_source_policy_is_not_an_actual_content_requirement() -> Result<(
         subtree_source: None,
         permission_change: delta,
     };
-    let response = into_response(vec![(NonRootMPath::new("public/file")?, info)], None)
-        .expect("valid response");
+    let response = from_stream(
+        stream::iter(vec![Ok((NonRootMPath::new("public/file")?, info))]).boxed(),
+        1,
+    )
+    .await
+    .expect("valid response");
     assert_eq!(response.has_access, thrift::PathCoverage::ALL);
     assert_eq!(response.authorized_paths, vec!["public/file"]);
     let compact = response.compact.expect("compact");
@@ -250,7 +256,7 @@ fn hypothetical_source_policy_is_not_an_actual_content_requirement() -> Result<(
 }
 
 #[mononoke::test]
-fn source_only_deletion_keeps_actual_source_restrictions() -> Result<()> {
+async fn source_only_deletion_keeps_actual_source_restrictions() -> Result<()> {
     let source = subtree(restricted("REPO_REGION:source", false)?)?;
     let info = ChangedPathRestrictionInfo {
         sides: ChangedPathRestrictionSides::SourceOnly(source.clone()),
@@ -263,8 +269,12 @@ fn source_only_deletion_keeps_actual_source_restrictions() -> Result<()> {
             Some(source),
         ),
     };
-    let response = into_response(vec![(NonRootMPath::new("public/deleted")?, info)], None)
-        .expect("valid response");
+    let response = from_stream(
+        stream::iter(vec![Ok((NonRootMPath::new("public/deleted")?, info))]).boxed(),
+        1,
+    )
+    .await
+    .expect("valid response");
     assert_eq!(response.has_access, thrift::PathCoverage::NONE);
     assert!(response.authorized_paths.is_empty());
     assert_eq!(
@@ -275,7 +285,7 @@ fn source_only_deletion_keeps_actual_source_restrictions() -> Result<()> {
 }
 
 #[mononoke::test]
-fn lookahead_does_not_intern_policy_or_source_rows() -> Result<()> {
+async fn lookahead_does_not_intern_policy_or_source_rows() -> Result<()> {
     let first = modified(unrestricted(), unrestricted());
     let source = subtree(restricted("REPO_REGION:tail", false)?)?;
     let tail = ChangedPathRestrictionInfo {
@@ -289,18 +299,93 @@ fn lookahead_does_not_intern_policy_or_source_rows() -> Result<()> {
             Some(source),
         ),
     };
-    let response = into_response(
-        vec![
-            (NonRootMPath::new("a/file")?, first),
-            (NonRootMPath::new("public/tail")?, tail),
-        ],
-        Some(1),
+    let response = from_stream(
+        stream::iter(vec![
+            Ok((NonRootMPath::new("a/file")?, first)),
+            Ok((NonRootMPath::new("public/tail")?, tail)),
+            Err(MononokeError::InvalidRequest("beyond lookahead".into())),
+        ])
+        .boxed(),
+        1,
     )
+    .await
     .expect("valid response");
     assert_eq!(response.last_path.as_deref(), Some("a/file"));
     let compact = response.compact.expect("compact");
     assert!(compact.policies.is_empty());
     assert!(compact.subtree_sources.is_empty());
+    Ok(())
+}
+
+#[mononoke::test]
+async fn streaming_responses_fail_on_retained_or_lookahead_errors() -> Result<()> {
+    for limit in [1, 2] {
+        let first = modified(unrestricted(), unrestricted());
+        let response = from_stream(
+            stream::iter(vec![
+                Ok((NonRootMPath::new("a/file")?, first)),
+                Err(MononokeError::InvalidRequest("comparison failed".into())),
+            ])
+            .boxed(),
+            limit,
+        )
+        .await;
+        assert!(response.is_err());
+    }
+    let legacy = super::super::legacy_comparison_response(
+        stream::iter(vec![
+            Ok((
+                NonRootMPath::new("a/file")?,
+                modified(unrestricted(), unrestricted()),
+            )),
+            Err(MononokeError::InvalidRequest("comparison failed".into())),
+        ])
+        .boxed(),
+    )
+    .await;
+    assert!(legacy.is_err());
+    Ok(())
+}
+
+#[mononoke::test]
+async fn streaming_responses_keep_empty_and_mixed_coverage() -> Result<()> {
+    assert!(from_stream(stream::empty().boxed(), 0).await.is_err());
+    let empty = from_stream(stream::empty().boxed(), 1)
+        .await
+        .expect("empty compact");
+    assert_eq!(empty.are_restricted, thrift::PathCoverage::NONE);
+    assert_eq!(empty.has_access, thrift::PathCoverage::ALL);
+    assert!(empty.last_path.is_none());
+    assert!(empty.compact.expect("empty envelope").policies.is_empty());
+    let results = vec![
+        (
+            NonRootMPath::new("public/file")?,
+            modified(unrestricted(), unrestricted()),
+        ),
+        (
+            NonRootMPath::new("secret/file")?,
+            modified(restricted("REPO_REGION:old", false)?, unrestricted()),
+        ),
+    ];
+    let compact = from_stream(stream::iter(results.clone().into_iter().map(Ok)).boxed(), 2)
+        .await
+        .expect("compact");
+    let legacy =
+        super::super::legacy_comparison_response(stream::iter(results.into_iter().map(Ok)).boxed())
+            .await
+            .expect("legacy");
+    assert_eq!(compact.are_restricted, thrift::PathCoverage::SOME);
+    assert_eq!(compact.has_access, thrift::PathCoverage::SOME);
+    assert_eq!(compact.authorized_paths, vec!["public/file"]);
+    assert!(compact.last_path.is_none());
+    assert_eq!(compact.changed_paths, legacy.changed_paths);
+    assert_eq!(compact.authorized_paths, legacy.authorized_paths);
+    assert_eq!(compact.are_restricted, legacy.are_restricted);
+    assert_eq!(compact.has_access, legacy.has_access);
+    assert_eq!(
+        legacy.restriction_roots["secret/file"][0].acls,
+        vec!["REPO_REGION:old"]
+    );
     Ok(())
 }
 
