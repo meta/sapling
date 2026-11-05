@@ -10,7 +10,7 @@ license = "GPLv2+"
 [dependencies]
 ansi_term = "0.12"
 anyhow = "1.0.104"
-async-tar = "0.5.1"
+async-tar = "0.6.1"
 async-trait = "0.1.92"
 auto_impl = "1.4.0"
 base_app = { version = "0.1.0", path = "../../cmdlib/base_app" }
