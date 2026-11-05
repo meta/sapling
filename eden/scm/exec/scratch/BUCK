@@ -47,10 +47,10 @@ sl_rust_binary(
     ] + select({
         "DEFAULT": [],
         "ovr_config//os:linux": [
-            "fbsource//third-party/rust:libc",
+            "fbsource//third-party/rust:nix",
         ],
         "ovr_config//os:macos": [
-            "fbsource//third-party/rust:libc",
+            "fbsource//third-party/rust:nix",
         ],
     }),
 )

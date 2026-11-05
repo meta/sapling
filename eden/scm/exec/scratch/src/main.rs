@@ -25,13 +25,19 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use anyhow::bail;
-#[cfg(unix)]
-use anyhow::ensure;
 use anyhow::format_err;
 use clap::Arg;
 use clap::Command;
 use mkscratch::hashencode;
 use mkscratch::zzencode;
+#[cfg(unix)]
+use nix::unistd::Uid;
+#[cfg(unix)]
+use nix::unistd::User;
+#[cfg(unix)]
+use nix::unistd::chown;
+#[cfg(unix)]
+use nix::unistd::geteuid;
 use serde::Deserialize;
 
 /// Configuration for scratch space style. This decides whether the directory
@@ -91,26 +97,29 @@ struct Config {
 }
 
 /// Returns the home directory of the user as a string.
-/// Will panic if it cannot be resolved, or cannot be represented
-/// as UTF-8.
-fn home_dir() -> String {
-    let home = dirs::home_dir().expect("resolved HOME dir");
-    home.to_str()
-        .unwrap_or_else(|| panic!("HOME dir {home:?} was not representable as UTF-8"))
-        .into()
+fn home_dir() -> Result<String> {
+    let home = dirs::home_dir().ok_or_else(|| format_err!("unable to resolve HOME dir"))?;
+    home.into_os_string()
+        .into_string()
+        .map_err(|home| format_err!("HOME dir {home:?} was not representable as UTF-8"))
 }
 
 #[cfg(unix)]
 fn lookup_home_dir_for_user(user: &str) -> Result<String> {
-    let pw = PasswordEntry::by_name(user)?;
-    Ok(pw.home_dir)
+    let pw = User::from_name(user)
+        .map_err(|err| format_err!("getpwnam({user}) failed: {err}"))?
+        .ok_or_else(|| format_err!("getpwnam({user}) found no user"))?;
+    pw.dir
+        .into_os_string()
+        .into_string()
+        .map_err(|home| format_err!("home dir {home:?} of {user} was not representable as UTF-8"))
 }
 
 /// This is technically wrong for windows, but is at least
 /// wrong in a backwards compatible way
 #[cfg(windows)]
 fn lookup_home_dir_for_user(_user: &str) -> Result<String> {
-    Ok(home_dir())
+    home_dir()
 }
 
 impl Config {
@@ -158,7 +167,7 @@ impl Config {
             Some("/etc/scratch.toml".into()),
             #[cfg(windows)]
             Some("C:/ProgramData/facebook/scratch.toml".into()),
-            Some(format!("{}/.scratch.toml", home_dir())),
+            Some(format!("{}/.scratch.toml", home_dir()?)),
             std::env::var("SCRATCH_CONFIG_PATH").ok(),
         ];
         for path in config_files.iter().filter_map(Option::as_ref) {
@@ -180,17 +189,16 @@ impl Config {
     /// is acting on another user's repository, and `None` otherwise.
     fn template_for_path(
         &self,
-        path: &Path,
+        path: &str,
         owner: &str,
         owner_home_for_root: Option<&str>,
-    ) -> String {
+    ) -> Result<String> {
         // First, let's see if we have an override for this path
-        let path_str = path.to_str().expect("path must be UTF-8");
-        if let Some(over) = self.overrides.get(path_str) {
-            return over.clone();
+        if let Some(over) = self.overrides.get(path) {
+            return Ok(over.clone());
         }
         match &self.template {
-            Some(s) => s.clone(),
+            Some(s) => Ok(s.clone()),
             None => {
                 // This is a little bit of a hack; ideally we'd
                 // configure this in chef, but don't have bandwidth
@@ -201,7 +209,7 @@ impl Config {
                 let local = format!("/data/users/{owner}");
                 if let Ok(meta) = fs::metadata(&local) {
                     if meta.is_dir() {
-                        return format!("{local}/scratch");
+                        return Ok(format!("{local}/scratch"));
                     }
                 }
                 // Root's own home is unreachable for the repo owner, and
@@ -210,11 +218,11 @@ impl Config {
                 // home and hand it over; skip homes that do not exist.
                 if let Some(home) = owner_home_for_root {
                     if fs::metadata(home).is_ok_and(|meta| meta.is_dir()) {
-                        return format!("{home}/.scratch");
+                        return Ok(format!("{home}/.scratch"));
                     }
                 }
                 // Otherwise use their home dir
-                format!("{}/.scratch", home_dir())
+                Ok(format!("{}/.scratch", home_dir()?))
             }
         }
     }
@@ -313,62 +321,6 @@ fn locate_repo_root(path: &Path) -> Result<Option<&Path>> {
     Ok(None)
 }
 
-#[cfg(unix)]
-struct PasswordEntry {
-    unixname: String,
-    home_dir: String,
-    uid: u32,
-    gid: u32,
-}
-
-#[cfg(unix)]
-impl PasswordEntry {
-    fn maybe_string(cstr: *const libc::c_char, context: &str) -> Result<String> {
-        if cstr.is_null() {
-            bail!(context.to_string());
-        } else {
-            let cstr = unsafe { std::ffi::CStr::from_ptr(cstr) };
-            cstr.to_str().map_err(|e| e.into()).map(|x| x.to_owned())
-        }
-    }
-
-    fn from_password(pwent: *const libc::passwd) -> Result<Self> {
-        ensure!(!pwent.is_null(), "password ptr is null");
-        let pw = unsafe { &*pwent };
-        Ok(Self {
-            unixname: Self::maybe_string(pw.pw_name, "pw_name is null")?,
-            home_dir: Self::maybe_string(pw.pw_dir, "pw_dir is null")?,
-            uid: pw.pw_uid,
-            gid: pw.pw_gid,
-        })
-    }
-
-    /// Lookup a PasswordEntry for a uid.
-    /// Not thread safe.
-    pub fn by_uid(uid: u32) -> Result<Self> {
-        let pw = unsafe { libc::getpwuid(uid) };
-        if pw.is_null() {
-            let err = std::io::Error::last_os_error();
-            bail!("getpwuid({uid}) failed: {err}");
-        }
-        Self::from_password(pw)
-    }
-
-    /// Lookup a PasswordEntry for a unix username.
-    /// Not thread safe.
-    pub fn by_name(unixname: &str) -> Result<Self> {
-        let user_cstr = std::ffi::CString::new(unixname.to_string())?;
-
-        let pw = unsafe { libc::getpwnam(user_cstr.as_ptr()) };
-        if pw.is_null() {
-            let err = std::io::Error::last_os_error();
-            bail!("getpwnam({unixname}) failed: {err}");
-        }
-
-        Self::from_password(pw)
-    }
-}
-
 /// Given a path, return the unix name of the owner of that path.
 /// If we cannot stat the path, raise an error.
 #[cfg(unix)]
@@ -376,16 +328,18 @@ fn get_file_owner(path: &Path) -> Result<String> {
     let meta = fs::metadata(path)
         .map_err(|e| format_err!("unable to get metadata for {}: {}", path.display(), e))?;
     let uid = meta.uid();
-    let pw = PasswordEntry::by_uid(uid)?;
+    let pw = User::from_uid(Uid::from_raw(uid))
+        .map_err(|err| format_err!("getpwuid({uid}) failed: {err}"))?
+        .ok_or_else(|| format_err!("getpwuid({uid}) found no user"))?;
 
-    Ok(pw.unixname)
+    Ok(pw.name)
 }
 
 /// Returns `repo_owner_home` when root is acting on a repository owned by
 /// another user, typically through sudo.
 #[cfg(unix)]
 fn repo_owner_home_for_root(path: &Path, repo_owner_home: &str) -> Result<Option<String>> {
-    if unsafe { libc::geteuid() } != 0 {
+    if !geteuid().is_root() {
         return Ok(None);
     }
     let meta = fs::metadata(path)
@@ -400,24 +354,16 @@ fn repo_owner_home_for_root(_path: &Path, _repo_owner_home: &str) -> Result<Opti
 
 #[cfg(unix)]
 fn set_file_owner(path: &Path, owner: &str) -> Result<()> {
-    use std::ffi::CString;
-
-    let is_root = unsafe { libc::geteuid() } == 0;
-
-    if !is_root {
+    if !geteuid().is_root() {
         // Can't change the ownership, so stick with who we are
         return Ok(());
     }
 
-    let pw = PasswordEntry::by_name(owner)?;
+    let pw = User::from_name(owner)
+        .map_err(|err| format_err!("getpwnam({owner}) failed: {err}"))?
+        .ok_or_else(|| format_err!("getpwnam({owner}) found no user"))?;
 
-    let path_cstr =
-        CString::new(path.to_str().ok_or_else(|| {
-            format_err!("path {} cannot be represented as String", path.display())
-        })?)?;
-    let result = unsafe { libc::chown(path_cstr.as_ptr(), pw.uid, pw.gid) };
-    if result != 0 {
-        let err = std::io::Error::last_os_error();
+    if let Err(err) = chown(path, Some(pw.uid), Some(pw.gid)) {
         bail!(
             "Failed to chown({}, {} (uid={}, gid={})): {}",
             path.display(),
@@ -451,13 +397,17 @@ fn get_file_owner(_path: &Path) -> Result<String> {
 /// repository path.  This is the function that performs expansion of
 /// the $USER and $HOME placeholder tokens in the configured template.
 fn scratch_root(config: &Config, path: &Path, encoder: &dyn Fn(&str) -> String) -> Result<PathBuf> {
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| format_err!("{path:?} cannot be converted to utf8"))?;
     let repo_owner = get_file_owner(path)?;
     let repo_owner_home = lookup_home_dir_for_user(&repo_owner)?;
     let owner_home_for_root = repo_owner_home_for_root(path, &repo_owner_home)?;
-    let template = config.template_for_path(path, &repo_owner, owner_home_for_root.as_deref());
+    let template =
+        config.template_for_path(path_str, &repo_owner, owner_home_for_root.as_deref())?;
 
     let user = get_current_user();
-    let home = home_dir();
+    let home = home_dir()?;
 
     let mut root = PathBuf::from(
         template
@@ -467,10 +417,7 @@ fn scratch_root(config: &Config, path: &Path, encoder: &dyn Fn(&str) -> String) 
             .replace("$HOME", &home),
     );
 
-    root.push(encoder(
-        path.to_str()
-            .ok_or(format_err!("{path:?} cannot be converted to utf8"))?,
-    ));
+    root.push(encoder(path_str));
     Ok(root)
 }
 
@@ -551,13 +498,11 @@ fn path_command(
     let repo_root = locate_repo_root(&path)?.unwrap_or(&path);
 
     // Get the base scratch path for this repo
-    let mut result = scratch_root(config, repo_root, encoder)?;
-    if !no_create {
-        readme_in_scratch_path(&result)?;
-    }
+    let scratch_root = scratch_root(config, repo_root, encoder)?;
     let repo_owner = get_file_owner(repo_root)?;
 
     // If they asked for a subdir, compute it
+    let mut result = scratch_root.clone();
     if let Some(subdir) = subdir {
         if watchable {
             result.push("watchable");
@@ -575,6 +520,7 @@ fn path_command(
     }
 
     if !no_create {
+        readme_in_scratch_path(&scratch_root)?;
         let mut ancestors = result.ancestors().collect::<Vec<_>>();
         ancestors.reverse();
         for ancestor in ancestors.iter() {
@@ -598,12 +544,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_template_uses_repo_owner_home_for_root() {
+    fn default_template_uses_repo_owner_home_for_root() -> Result<()> {
         let temp_dir = tempfile::tempdir().expect("temporary directory should be created");
         let repo = temp_dir.path().join("repo");
         let owner_home = temp_dir.path().join("owner-home");
         fs::create_dir(&repo).expect("repository directory should be created");
         fs::create_dir(&owner_home).expect("owner home should be created");
+        let repo = repo.to_str().expect("repository path should be UTF-8");
         let owner_home = owner_home.to_str().expect("owner home should be UTF-8");
         let missing_home = temp_dir.path().join("missing-home");
         let missing_home = missing_home.to_str().expect("missing home should be UTF-8");
@@ -612,17 +559,18 @@ mod tests {
         let config = Config::default();
 
         assert_eq!(
-            config.template_for_path(&repo, owner, Some(owner_home)),
+            config.template_for_path(repo, owner, Some(owner_home))?,
             format!("{owner_home}/.scratch")
         );
         assert_eq!(
-            config.template_for_path(&repo, owner, Some(missing_home)),
-            format!("{}/.scratch", home_dir())
+            config.template_for_path(repo, owner, Some(missing_home))?,
+            format!("{}/.scratch", home_dir()?)
         );
         assert_eq!(
-            config.template_for_path(&repo, owner, None),
-            format!("{}/.scratch", home_dir())
+            config.template_for_path(repo, owner, None)?,
+            format!("{}/.scratch", home_dir()?)
         );
+        Ok(())
     }
 
     #[test]

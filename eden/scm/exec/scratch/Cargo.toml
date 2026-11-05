@@ -20,7 +20,7 @@ toml = { version = "1.1.8", features = ["preserve_order"] }
 tempfile = "3.27.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2.186"
+nix = { version = "0.31.3", features = ["dir", "event", "hostname", "inotify", "ioctl", "mman", "mount", "net", "poll", "ptrace", "reboot", "resource", "sched", "signal", "term", "time", "user", "zerocopy"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-libc = "0.2.186"
+nix = { version = "0.31.3", features = ["dir", "event", "hostname", "inotify", "ioctl", "mman", "mount", "net", "poll", "ptrace", "reboot", "resource", "sched", "signal", "term", "time", "user", "zerocopy"] }
