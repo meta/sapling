@@ -1,9 +1,6 @@
 
 #require eden
 
-sections that inject edenfsctl failures switch to the subprocess removal path
-explicitly; everything else exercises the default in-process path
-
 setup backing repo with linked worktrees
 
   $ newclientrepo myrepo
@@ -97,8 +94,7 @@ test worktree remove - multiple paths in one command
   $ sl worktree list
   this worktree is not part of a group
 
-#if no-windows
-test worktree remove - multiple paths preserves partial progress after eden remove failure
+test worktree remove - multiple paths preserves partial progress after a removal failure
 
   $ cd $TESTTMP
   $ newclientrepo multipath_partial_repo
@@ -109,33 +105,15 @@ test worktree remove - multiple paths preserves partial progress after eden remo
   created linked worktree at $TESTTMP/multipath_ok
   $ sl worktree add $TESTTMP/multipath_z_fail
   created linked worktree at $TESTTMP/multipath_z_fail
-  $ original_eden_command="$(sl config edenfs.command)"
-  $ cat > $TESTTMP/failing_eden_multipath <<EOF
-  > #!/bin/sh
-  > set -eu
-  > original='$original_eden_command'
-  > is_remove=0
-  > last=
-  > for arg in "\$@"; do
-  >   if [ "\$arg" = "remove" ]; then
-  >     is_remove=1
-  >   fi
-  >   last="\$arg"
-  > done
-  > if [ "\$is_remove" = "1" ] && [ "\$last" = "$TESTTMP/multipath_z_fail" ]; then
-  >   echo "injected eden remove failure for \$last" >&2
-  >   exit 1
-  > fi
-  > exec "\$original" "\$@"
-  > EOF
-  $ chmod +x $TESTTMP/failing_eden_multipath
-  $ setconfig edenfs.command=$TESTTMP/failing_eden_multipath
-  $ setconfig worktree.direct-eden-removal=false
-  $ sl worktree remove $TESTTMP/multipath_ok $TESTTMP/multipath_z_fail -y
+  $ FAILPOINTS='remove:clean_mount_point=1*off->return' sl worktree remove $TESTTMP/multipath_ok $TESTTMP/multipath_z_fail -y
+  Unmounting checkout...
+  Deleting EdenFS checkout state...
   removed $TESTTMP/multipath_ok
-  failed to remove $TESTTMP/multipath_z_fail: eden remove failed for $TESTTMP/multipath_z_fail: injected eden remove failure for $TESTTMP/multipath_z_fail
+  Unmounting checkout...
+  Deleting EdenFS checkout state...
+  failed to remove $TESTTMP/multipath_z_fail: direct EdenFS removal failed for $TESTTMP?multipath_z_fail: failpoint: expected failure (glob)
   removed 1 of 2 worktrees; 1 failed
-  abort: eden remove failed for $TESTTMP/multipath_z_fail: injected eden remove failure for $TESTTMP/multipath_z_fail
+  abort: direct EdenFS removal failed for $TESTTMP?multipath_z_fail: failpoint: expected failure (glob)
   [255]
   $ test -d $TESTTMP/multipath_ok
   [1]
@@ -144,7 +122,6 @@ test worktree remove - multiple paths preserves partial progress after eden remo
   * main    $TESTTMP/multipath_partial_repo
     linked  $TESTTMP/multipath_z_fail
   $ cd $TESTTMP/myrepo
-#endif
 
 test worktree remove - duplicate paths are deduplicated
 
@@ -268,8 +245,7 @@ test worktree remove - names the target when this checkout has no linked worktre
   abort: cannot remove $TESTTMP/linked1: $TESTTMP/myrepo has no linked worktrees
   [255]
 
-#if no-windows
-test worktree remove --all preserves partial progress after eden remove failure
+test worktree remove --all preserves partial progress after a removal failure
 
   $ cd $TESTTMP
   $ newclientrepo partial_progress_repo
@@ -280,33 +256,15 @@ test worktree remove --all preserves partial progress after eden remove failure
   created linked worktree at $TESTTMP/remove_all_fail
   $ sl worktree add $TESTTMP/remove_all_ok
   created linked worktree at $TESTTMP/remove_all_ok
-  $ original_eden_command="$(sl config edenfs.command)"
-  $ cat > $TESTTMP/failing_eden <<EOF
-  > #!/bin/sh
-  > set -eu
-  > original='$original_eden_command'
-  > is_remove=0
-  > last=
-  > for arg in "\$@"; do
-  >   if [ "\$arg" = "remove" ]; then
-  >     is_remove=1
-  >   fi
-  >   last="\$arg"
-  > done
-  > if [ "\$is_remove" = "1" ] && [ "\$last" = "$TESTTMP/remove_all_fail" ]; then
-  >   echo "injected eden remove failure for \$last" >&2
-  >   exit 1
-  > fi
-  > exec "\$original" "\$@"
-  > EOF
-  $ chmod +x $TESTTMP/failing_eden
-  $ setconfig edenfs.command=$TESTTMP/failing_eden
-  $ setconfig worktree.direct-eden-removal=false
-  $ sl worktree remove --all -y
-  failed to remove $TESTTMP/remove_all_fail: eden remove failed for $TESTTMP/remove_all_fail: injected eden remove failure for $TESTTMP/remove_all_fail
+  $ FAILPOINTS='remove:clean_mount_point=1*return->off' sl worktree remove --all -y
+  Unmounting checkout...
+  Deleting EdenFS checkout state...
+  failed to remove $TESTTMP/remove_all_fail: direct EdenFS removal failed for $TESTTMP?remove_all_fail: failpoint: expected failure (glob)
+  Unmounting checkout...
+  Deleting EdenFS checkout state...
   removed $TESTTMP/remove_all_ok
   removed 1 of 2 worktrees; 1 failed
-  abort: eden remove failed for $TESTTMP/remove_all_fail: injected eden remove failure for $TESTTMP/remove_all_fail
+  abort: direct EdenFS removal failed for $TESTTMP?remove_all_fail: failpoint: expected failure (glob)
   [255]
   $ test -d $TESTTMP/remove_all_fail
   $ test -d $TESTTMP/remove_all_ok
@@ -314,7 +272,6 @@ test worktree remove --all preserves partial progress after eden remove failure
   $ sl worktree list
   * main    $TESTTMP/partial_progress_repo
     linked  $TESTTMP/remove_all_fail
-#endif
 
 test worktree remove - pre-worktree-remove hook fires with correct env vars
 
