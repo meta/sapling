@@ -51,9 +51,13 @@ Pull works with no edenapi.url.
   $ hg log -r master_bookmark -T '{node}\n'
   80521a640a0c8f51dcc128c2658b224d595840ac
 
-An explicit edenapi.url wins over the path.
-  $ hg debugapi -e url --config edenapi.url=https://localhost:$MONONOKE_SOCKET/edenapi/
+An explicit edenapi.url wins over the path. The slapi.url_host_mismatch
+counter records when it names a different server.
+  $ hg debugapi -e url --config edenapi.url=https://localhost:$MONONOKE_SOCKET/edenapi/ --config devel.print-metrics=slapi.
   "https://localhost:$LOCAL_PORT/edenapi/"
+  $ hg debugapi -e url --config edenapi.url=https://other.example.com/edenapi/ --config devel.print-metrics=slapi.
+  "https://other.example.com/edenapi/"
+  slapi.url_host_mismatch: 1
 
 experimental.slapi-url-from-path=false turns the derivation off. Without
 edenapi.url the repo then has no SLAPI client, which its lazy commit graph needs.

@@ -125,6 +125,18 @@ impl<'a> Builder<'a> {
         Ok(None)
     }
 
+    /// `edenapi.url`, when it names a different host or port than `path_url`.
+    fn config_url_differing_from(&self, path_url: &Url) -> Option<Url> {
+        let config_url = Url::parse(&self.config.get_nonempty("edenapi", "url")?).ok()?;
+        let server = |url: &Url| {
+            (
+                url.host_str().map(str::to_owned),
+                url.port_or_known_default(),
+            )
+        };
+        (server(&config_url) != server(path_url)).then_some(config_url)
+    }
+
     /// Build the client.
     pub fn build(self) -> Result<Arc<dyn SaplingRemoteApi>, SaplingRemoteApiError> {
         {
@@ -136,6 +148,13 @@ impl<'a> Builder<'a> {
                 }
             }
         }
+        if let Some(path_url) = &self.path_server_url
+            && let Some(config_url) = self.config_url_differing_from(path_url)
+        {
+            tracing::debug!(%path_url, edenapi_url = %config_url, "SLAPI server from the remote path differs from edenapi.url");
+            hg_metrics::max_counter("slapi.url_host_mismatch", 1);
+        }
+
         let mut builder = match self.resolved_server_url()? {
             Some(server_url) => HttpClientBuilder::from_config_with_url(self.config, server_url)?,
             None => HttpClientBuilder::from_config(self.config)?,
@@ -980,6 +999,71 @@ mod tests {
             ],
             Some("mononoke://example.com/repo")
         ));
+    }
+
+    #[test]
+    fn test_config_url_differing_from_path() {
+        let off_path = |config_url: Option<&str>, path: &str| {
+            let config = match config_url {
+                Some(url) => config_from(&[("edenapi.url", url)]),
+                None => config_from(&[]),
+            };
+            let repo_url = RepoUrl::from_str(&config, path).unwrap();
+            let builder = Builder::from_config(&config)
+                .unwrap()
+                .repo_url(&repo_url)
+                .unwrap();
+            let path_url = builder.path_server_url.as_ref()?;
+            builder
+                .config_url_differing_from(path_url)
+                .map(String::from)
+        };
+
+        assert_eq!(
+            off_path(
+                Some("https://other.example.com/edenapi/"),
+                "mononoke://example.com/repo"
+            ),
+            Some("https://other.example.com/edenapi/".to_string()),
+            "different hosts"
+        );
+        assert_eq!(
+            off_path(
+                Some("https://example.com:8443/edenapi/"),
+                "mononoke://example.com/repo"
+            ),
+            Some("https://example.com:8443/edenapi/".to_string()),
+            "different ports"
+        );
+        assert_eq!(
+            off_path(
+                Some("https://example.com/edenapi/"),
+                "mononoke://example.com:443/repo"
+            ),
+            None,
+            "same host, and 443 is the default HTTPS port"
+        );
+        assert_eq!(
+            off_path(
+                Some("https://EXAMPLE.com/edenapi/"),
+                "mononoke://example.com/repo"
+            ),
+            None,
+            "host names compare case-insensitively"
+        );
+        assert_eq!(
+            off_path(None, "mononoke://example.com/repo"),
+            None,
+            "no edenapi.url"
+        );
+        assert_eq!(
+            off_path(
+                Some("https://other.example.com/edenapi/"),
+                "ssh://user@example.com/repo"
+            ),
+            None,
+            "non-mononoke paths name no SLAPI server"
+        );
     }
 
     #[test]
