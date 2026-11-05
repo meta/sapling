@@ -45,20 +45,11 @@ pub type OnceSlapi = OnceLock<(LazyCapabilities, Arc<dyn SaplingRemoteApi>)>;
 pub(crate) fn force_construct_eden_api(
     config: &dyn configmodel::Config,
     once_slapi: &OnceSlapi,
-    repo_url: Option<RepoUrl>,
 ) -> Result<(LazyCapabilities, Arc<dyn SaplingRemoteApi>), SaplingRemoteApiError> {
     let (caps, eden_api) = once_slapi.get_or_try_init(
         || -> Result<(LazyCapabilities, Arc<dyn SaplingRemoteApi>), SaplingRemoteApiError> {
             tracing::trace!(target: "repo::eden_api", "creating edenapi");
-            let mut builder = Builder::from_config(config)?;
-            if let Some(path) = repo_url {
-                if path.is_sapling_git() {
-                    if let Ok(url) = path.into_https_url() {
-                        builder = builder.server_url(Some(url));
-                    }
-                }
-            }
-            let eden_api = builder.build()?;
+            let eden_api = Builder::from_config(config)?.build()?;
             tracing::info!(url = eden_api.url(), "SaplingRemoteApi built");
             Ok((LazyCapabilities::default(), eden_api))
         },
@@ -89,7 +80,7 @@ pub(crate) fn optional_eden_api_from_config(
             // EagerRepo URLs (test:, eager: file path, dummyssh).
             if EagerRepo::url_to_dir(&path).is_some() {
                 tracing::trace!(target: "repo::eden_api", "using EagerRepo at {}", &path);
-                let (caps, edenapi) = force_construct_eden_api(config, once_slapi, Some(path))?;
+                let (caps, edenapi) = force_construct_eden_api(config, once_slapi)?;
                 return Ok(Some((caps, edenapi)));
             }
             // Legacy tests are incompatible with SaplingRemoteAPI.
@@ -116,8 +107,7 @@ pub(crate) fn optional_eden_api_from_config(
             }
 
             tracing::trace!(target: "repo::eden_api", "proceeding with path {}, reponame {:?}", path, config.get("remotefilelog", "reponame"));
-            let (supported_capabilities, edenapi) =
-                force_construct_eden_api(config, once_slapi, Some(path))?;
+            let (supported_capabilities, edenapi) = force_construct_eden_api(config, once_slapi)?;
 
             Ok(Some((supported_capabilities, edenapi)))
         }

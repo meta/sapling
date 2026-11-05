@@ -131,25 +131,6 @@ impl RepoUrl {
         self.url.as_str()
     }
 
-    /// Whether the repo is a Sapling Git repo hosted in Mononoke.
-    pub fn is_sapling_git(&self) -> bool {
-        self.scheme() == "mononoke" && self.path().starts_with("slapigit/")
-    }
-
-    /// Convert the Repo URL into an HTTPs URL for Mononoke repos.
-    pub fn into_https_url(self) -> Result<Url> {
-        match self.scheme() {
-            "mononoke" => {
-                let mut url = self.url.clone();
-                url.set_scheme("https")
-                    .map_err(|_| anyhow::anyhow!("Error setting scheme for URL"))?;
-                Ok(url)
-            }
-            "https" => Ok(self.url),
-            _ => Err(anyhow::anyhow!("Repo URL is not a Mononoke or HTTPS URL")),
-        }
-    }
-
     pub fn supports_slapi(&self) -> bool {
         matches!(self.scheme(), "mononoke" | "eager" | "test")
     }
