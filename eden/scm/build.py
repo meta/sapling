@@ -464,6 +464,9 @@ def cargo_env(args):
         env["OPENSSL_DIR"] = str(openssl)
         env.pop("OPENSSL_STATIC", None)
     env["RUSTFLAGS"] = (env.get("RUSTFLAGS", "") + " -Anon_local_definitions").strip()
+    # Allow nightly features (smallvec specialization, once_cell_try) on stable Rust.
+    # Required for `make oss` / cargo oss builds. Buck builds use nightly toolchain internally.
+    env.setdefault("RUSTC_BOOTSTRAP", "1")
     set_windows_python_path(env, args.python)
     return env
 
