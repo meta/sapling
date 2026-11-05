@@ -35,11 +35,6 @@ class ParentCommit {
   bool isCheckoutInProgress() const;
 
   /**
-   * Returns the pid of the process currently doing a checkout.
-   */
-  std::optional<pid_t> getInProgressPid() const;
-
-  /**
    * Since the parent commit might contain multiple RootId, allows choosing
    * which one should be preferred.
    *

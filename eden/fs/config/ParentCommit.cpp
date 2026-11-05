@@ -14,21 +14,6 @@ bool ParentCommit::isCheckoutInProgress() const {
   return std::holds_alternative<ParentCommit::CheckoutInProgress>(state_);
 }
 
-std::optional<pid_t> ParentCommit::getInProgressPid() const {
-  return std::visit(
-      [](auto&& state) -> std::optional<pid_t> {
-        using StateType = std::decay_t<decltype(state)>;
-        if constexpr (std::is_same_v<
-                          StateType,
-                          WorkingCopyParentAndCheckedOutRevision>) {
-          return std::nullopt;
-        } else {
-          return state.pid;
-        }
-      },
-      state_);
-}
-
 std::optional<RootId> ParentCommit::getLastCheckoutId(
     RootIdPreference preference) const {
   return std::visit(

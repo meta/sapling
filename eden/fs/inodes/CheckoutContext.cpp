@@ -8,7 +8,6 @@
 #include "eden/fs/inodes/CheckoutContext.h"
 
 #include <folly/logging/xlog.h>
-#include <folly/system/Pid.h>
 #include <optional>
 
 #include "eden/fs/config/CheckoutConfig.h"
@@ -137,16 +136,11 @@ folly::coro::now_task<vector<CheckoutConflict>> CheckoutContext::co_flush() {
 }
 
 void CheckoutContext::finalizeBeforeFlush(const RootId& newSnapshot) {
-  auto config = mount_->getCheckoutConfig();
-
-  auto parentCommit = config->getParentCommit();
-  auto optPid = parentCommit.getInProgressPid();
-  if (optPid.has_value() && optPid.value() == folly::get_cached_pid()) {
-    XCHECK_EQ(
-        parentCommit.getLastCheckoutId(ParentCommit::RootIdPreference::To)
-            .value(),
-        newSnapshot);
-    config->setCheckedOutCommit(newSnapshot);
+  // Only start() of a checkout that is not a dry run writes the in-progress
+  // marker. A dry run must leave the marker of an earlier interrupted checkout
+  // in place.
+  if (!isDryRun()) {
+    mount_->getCheckoutConfig()->setCheckedOutCommit(newSnapshot);
   }
 
   std::shared_ptr<MiniTracer> tracer = fetchContext_->getTimeTracer();

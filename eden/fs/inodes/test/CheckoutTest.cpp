@@ -2448,17 +2448,20 @@ TEST_P(CheckoutTest, dryRunAfterInterruptedCheckoutKeepsInProgressMarker) {
   // Sapling sends a DRY_RUN before resuming the interrupted checkout.
   EXPECT_NO_THROW(checkoutTo2(CheckoutMode::DRY_RUN));
   EXPECT_TRUE(testMount.getEdenMount()->isCheckoutInProgress());
-  // FIXME: The DRY_RUN should leave the in-progress marker on disk, so this
-  // should be EXPECT_TRUE.
+  EXPECT_TRUE(testMount.getEdenMount()
+                  ->getCheckoutConfig()
+                  ->getParentCommit()
+                  .isCheckoutInProgress());
+
+  testMount.remount();
+  EXPECT_TRUE(testMount.getEdenMount()->isCheckoutInProgress());
+
+  EXPECT_NO_THROW(checkoutTo2(CheckoutMode::NORMAL));
+  EXPECT_FALSE(testMount.getEdenMount()->isCheckoutInProgress());
   EXPECT_FALSE(testMount.getEdenMount()
                    ->getCheckoutConfig()
                    ->getParentCommit()
                    .isCheckoutInProgress());
-
-  testMount.remount();
-  // FIXME: The mount should still be interrupted after a remount, so this
-  // should be EXPECT_TRUE.
-  EXPECT_FALSE(testMount.getEdenMount()->isCheckoutInProgress());
 }
 
 TEST_P(CheckoutTest, overlappingCheckoutInhibitorsBlockInodeGC) {
