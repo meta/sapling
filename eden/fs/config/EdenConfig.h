@@ -881,14 +881,6 @@ class EdenConfig : private ConfigSettingManager {
       this};
 
   /**
-   * Deprecated no-op retained for compatibility with existing configs.
-   */
-  ConfigSetting<std::chrono::nanoseconds> pressureBasedGcCollapseGrace{
-      "mount:pressure-gc-collapse-grace",
-      std::chrono::seconds{5},
-      this};
-
-  /**
    * Keep the inode-number-ordered index that readdir builds for a directory
    * across the requests of one listing, instead of rebuilding it for every
    * request. The index is dropped once the listing ends or the directory
@@ -1056,15 +1048,6 @@ class EdenConfig : private ConfigSettingManager {
       "fuse:request-timeout",
       std::chrono::minutes(1),
       this};
-
-  /**
-   * The maximum number of concurrent requests allowed into userspace from the
-   * kernel. This corresponds to fuse_init_out::max_background. The
-   * documentation this applies to only readaheads and async direct IO, but
-   * empirically we have observed the number of concurrent requests is limited
-   * to 12 (FUSE_DEFAULT_MAX_BACKGROUND) unless this is set high.
-   */
-  ConfigSetting<uint32_t> maximumFuseRequests{"fuse:max-requests", 1000, this};
 
   /**
    * The string we use in the vfs type when mounting the fuse mount. Others will
@@ -1558,17 +1541,6 @@ class EdenConfig : private ConfigSettingManager {
   // [prjfs]
 
   /**
-   * The maximum time duration allowed for a ProjectedFS callback. If a request
-   * exceeds this amount of time, the request will fail to avoid blocking
-   * forever. A notification will also be shown to alert the user of the
-   * timeout.
-   */
-  ConfigSetting<std::chrono::nanoseconds> prjfsRequestTimeout{
-      "prjfs:request-timeout",
-      std::chrono::minutes(1),
-      this};
-
-  /**
    * Enable ProjectedFS's negative path caching to reduce the number of
    * requests non existent files.
    * Only applicable on Windows
@@ -1688,13 +1660,6 @@ class EdenConfig : private ConfigSettingManager {
    * (getScmStatusV2) call
    */
   ConfigSetting<bool> enforceParents{"hg:enforce-parents", true, this};
-
-  /**
-   * Controls whether EdenFS reads blob metadata directly from hg
-   *
-   * TODO: Delete once this config is no longer written.
-   */
-  ConfigSetting<bool> useAuxMetadata{"hg:use-aux-metadata", true, this};
 
   /**
    * Controls whether EdenFS will attempt to fetch aux metadata or always
@@ -2148,14 +2113,6 @@ class EdenConfig : private ConfigSettingManager {
       this};
 
   /**
-   * Controls whether EdenFS symlinks are enabled on Windows.
-   */
-  ConfigSetting<bool> windowsSymlinksEnabled{
-      "experimental:windows-symlinks",
-      folly::kIsWindows,
-      this};
-
-  /**
    * When true, checkout removes stale overlay directory data in the background
    * GC thread instead of synchronously on the checkout thread.
    */
@@ -2417,11 +2374,6 @@ class EdenConfig : private ConfigSettingManager {
       "notifications:notify-eden-ready",
       false,
       this};
-
-  // [log]
-
-  ConfigSetting<uint64_t> maxLogFileSize{"log:max-file-size", 50000000, this};
-  ConfigSetting<uint64_t> maxRotatedLogFiles{"log:num-rotated-logs", 3, this};
 
   // [prefetch-profiles]
 
@@ -2802,14 +2754,6 @@ class EdenConfig : private ConfigSettingManager {
   ConfigSetting<std::vector<std::string>> doctorIgnoredProblemClassNames{
       "doctor:ignored-problem-class-names",
       {},
-      this};
-
-  /**
-   * Whether edenfsctl doctor should check for Kerberos certificate issues.
-   */
-  ConfigSetting<bool> doctorEnableKerberosCheck{
-      "doctor:enable-kerberos-check",
-      false,
       this};
 
   /**

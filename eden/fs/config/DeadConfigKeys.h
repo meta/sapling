@@ -30,6 +30,7 @@ inline constexpr std::string_view kDeadConfigKeys[] = {
     "coroutines:enable-phase5",
     "coroutines:enable-phase6",
     "coroutines:enable-phase11",
+    "doctor:enable-kerberos-check",
     "experimental:batch-checkout-dir-mutations",
     "experimental:enable-nfs-crawl-detection",
     "experimental:filteredfs-optimize-unfiltered",
@@ -39,9 +40,15 @@ inline constexpr std::string_view kDeadConfigKeys[] = {
     "experimental:prefetch-optimizations-v2",
     "experimental:propagate-checkout-errors",
     "experimental:skip-checkout-child-overlay-writes",
+    "experimental:windows-symlinks",
+    "fuse:max-requests",
     "glob:allowed-suffix-queries",
     "glob:use-edenapi-suffix-query",
+    "hg:use-aux-metadata",
+    "log:max-file-size",
+    "log:num-rotated-logs",
     "mount:accidental-unmount-recovery-interval",
+    "mount:pressure-gc-collapse-grace",
     "mount:readdir-prefetch",
     "nfs:access-rate-limit-count",
     "nfs:access-rate-limit-window-seconds",
@@ -62,6 +69,7 @@ inline constexpr std::string_view kDeadConfigKeys[] = {
     "overlay:unsafe-in-memory-overlay",
     "predictive-prefetch-profiles:size",
     "prefetch-profiles:predictive-prefetching-enabled",
+    "prjfs:request-timeout",
     "store:max-tree-prefetches",
     "telemetry:enable-obc-on-eden",
     "telemetry:enable-xplatlogger-cli-usage",
@@ -84,6 +92,23 @@ inline bool isDeadConfigKey(std::string_view section, std::string_view key) {
     }
   }
   return false;
+}
+
+/**
+ * True when a config section consists only of dead keys. A section loses its
+ * last live setting the same way a key does, and a config file that still has
+ * it should be ignored quietly rather than reported as an unknown section.
+ */
+template <typename Keys>
+inline bool isDeadConfigSection(std::string_view section, const Keys& keys) {
+  bool any = false;
+  for (const auto& key : keys) {
+    if (!isDeadConfigKey(section, key)) {
+      return false;
+    }
+    any = true;
+  }
+  return any;
 }
 
 } // namespace facebook::eden

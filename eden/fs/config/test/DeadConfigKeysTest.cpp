@@ -9,6 +9,9 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
+#include <vector>
+
 namespace facebook::eden {
 
 TEST(DeadConfigKeysTest, matchesExactSectionAndKey) {
@@ -32,6 +35,14 @@ TEST(DeadConfigKeysTest, doesNotMatchPartialOrShiftedKeys) {
   EXPECT_FALSE(isDeadConfigKey("core", "edenDirectory"));
   // The section/key split must line up with the ':' in the dead key.
   EXPECT_FALSE(isDeadConfigKey("coroutines:enable", "phase1"));
+}
+
+TEST(DeadConfigKeysTest, sectionIsDeadOnlyWhenEveryKeyIs) {
+  using Keys = std::vector<std::string>;
+  EXPECT_TRUE(
+      isDeadConfigSection("log", Keys{"max-file-size", "num-rotated-logs"}));
+  EXPECT_FALSE(isDeadConfigSection("log", Keys{"max-file-size", "level"}));
+  EXPECT_FALSE(isDeadConfigSection("log", Keys{}));
 }
 
 } // namespace facebook::eden

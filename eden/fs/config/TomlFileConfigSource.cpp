@@ -14,6 +14,8 @@
 #include <folly/MapUtil.h>
 
 #include <map>
+#include <string_view>
+#include <vector>
 
 #include "eden/fs/config/ConfigSetting.h"
 #include "eden/fs/config/DeadConfigKeys.h"
@@ -121,6 +123,20 @@ std::optional<std::string> valueAsString(const cpptoml::base& value) {
 
   return std::nullopt;
 }
+
+bool isDeadSection(
+    std::string_view sectionName,
+    const std::shared_ptr<cpptoml::base>& section) {
+  auto table = section->as_table();
+  if (!table) {
+    return false;
+  }
+  std::vector<std::string_view> keys;
+  for (const auto& [key, value] : *table) {
+    keys.push_back(key);
+  }
+  return isDeadConfigSection(sectionName, keys);
+}
 } // namespace
 
 void TomlFileConfigSource::parseAndApply(
@@ -151,11 +167,13 @@ void TomlFileConfigSource::parseAndApply(
   for (const auto& [sectionName, section] : *configRoot) {
     auto* configMapEntry = folly::get_ptr(map, sectionName);
     if (!configMapEntry) {
-      XLOGF(
-          WARNING,
-          "Ignoring unknown section in eden config: {}, key: {}",
-          path_,
-          sectionName);
+      if (!isDeadSection(sectionName, section)) {
+        XLOGF(
+            WARNING,
+            "Ignoring unknown section in eden config: {}, key: {}",
+            path_,
+            sectionName);
+      }
       continue;
     }
     // Load section
