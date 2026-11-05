@@ -210,11 +210,9 @@ class DiskUsageTest(testcase.EdenRepoTest):
             encoding="utf-8",
         )
 
-        # FIXME: du should exit 0, warn about the broken checkout, delete the
-        # healthy checkout's orphan, and keep the broken checkout's scratch.
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn(f"Failed to find checkout for {broken_mount}", result.stderr)
-        self.assertTrue(healthy_orphan.exists())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"Run `eden rm {broken_mount}`", result.stderr)
+        self.assertFalse(healthy_orphan.exists())
         self.assertTrue(broken_target.exists())
 
     # Materialized files tests

@@ -2617,6 +2617,16 @@ pub mod scratch {
         Ok(orphaned_redirections)
     }
 
+    /// The scratch directory that holds the redirection targets of the
+    /// checkout at `checkout_path`.
+    pub fn checkout_scratch_dir(checkout_path: &Path) -> Result<PathBuf> {
+        Ok(Redirection::resolve_scratch_path(
+            checkout_path,
+            None,
+            true,
+        )?)
+    }
+
     pub fn get_orphaned_redirection_targets(
         existing_redirections: &BTreeSet<PathBuf>,
     ) -> Result<Vec<PathBuf>> {

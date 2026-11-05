@@ -827,7 +827,7 @@ impl fmt::Display for EdenFsCheckout {
     }
 }
 
-fn has_missing_checkout_state(error: &EdenFsError) -> bool {
+pub fn has_missing_checkout_state(error: &EdenFsError) -> bool {
     match error {
         EdenFsError::IOError(err) => err.kind() == ErrorKind::NotFound,
         EdenFsError::Other(err) => err

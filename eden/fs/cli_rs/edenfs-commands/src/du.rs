@@ -35,6 +35,7 @@ use comfy_table::Table;
 use dialoguer::Confirm;
 use edenfs_client::checkout::EdenFsCheckout;
 use edenfs_client::checkout::find_checkout;
+use edenfs_client::checkout::has_missing_checkout_state;
 use edenfs_client::instance::EdenFsInstance;
 use edenfs_client::redirect;
 use edenfs_client::redirect::get_effective_redirections;
@@ -526,14 +527,52 @@ fn get_redirections(
 }
 
 /// Get all the checkous associated with the passed in mounts.
-fn get_checkouts(mounts: &[PathBuf], instance: &EdenFsInstance) -> Result<Vec<EdenFsCheckout>> {
-    mounts
+///
+/// With `skip_missing_state`, mounts whose checkout state is missing, as an
+/// interrupted or concurrent `eden rm` leaves them, are warned about and
+/// returned separately instead of failing the whole command.
+fn get_checkouts(
+    mounts: &[PathBuf],
+    instance: &EdenFsInstance,
+    skip_missing_state: bool,
+) -> Result<(Vec<EdenFsCheckout>, Vec<PathBuf>)> {
+    let mut checkouts = Vec::new();
+    let mut skipped_mounts = Vec::new();
+    for mount in mounts {
+        match find_checkout(instance, mount) {
+            Ok(checkout) => checkouts.push(checkout),
+            Err(error) if skip_missing_state && has_missing_checkout_state(&error) => {
+                eprintln!(
+                    "Warning: skipping {}: {error}. Run `eden rm {}` to remove it.",
+                    mount.display(),
+                    mount.display()
+                );
+                skipped_mounts.push(mount.clone());
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("Failed to find checkout for {}", mount.display()));
+            }
+        }
+    }
+    Ok((checkouts, skipped_mounts))
+}
+
+/// Drop the orphaned redirection candidates under the scratch directories of
+/// `skipped_mounts`. Their redirections are unknown, so their targets are
+/// kept until the checkout is removed.
+fn exclude_skipped_scratch(
+    orphaned: Vec<PathBuf>,
+    skipped_mounts: &[PathBuf],
+) -> Result<Vec<PathBuf>> {
+    let skipped_scratch_dirs = skipped_mounts
         .iter()
-        .map(|mount| {
-            find_checkout(instance, mount)
-                .with_context(|| format!("Failed to find checkout for {}", mount.display()))
-        })
-        .collect::<Result<_, anyhow::Error>>()
+        .map(|mount| redirect::scratch::checkout_scratch_dir(mount))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(orphaned
+        .into_iter()
+        .filter(|path| !skipped_scratch_dirs.iter().any(|dir| path.starts_with(dir)))
+        .collect())
 }
 
 /// Get all the fsck directories for the passed in checkouts.
@@ -739,8 +778,8 @@ impl crate::Subcommand for DiskUsageCmd {
         let mounts = self
             .get_mounts(instance)
             .context("Failed to get EdenFS mounts")?;
-        let checkouts =
-            get_checkouts(&mounts, instance).context("Failed to get EdenFS checkouts")?;
+        let (checkouts, skipped_mounts) = get_checkouts(&mounts, instance, self.mounts.is_empty())
+            .context("Failed to get EdenFS checkouts")?;
         let backing_repos = get_backing_repos(&checkouts);
         let (redirections, buck_redirections) =
             get_redirections(&checkouts).context("Failed to get EdenFS redirections")?;
@@ -749,7 +788,9 @@ impl crate::Subcommand for DiskUsageCmd {
         // `--clean`/`--deep-clean` still run their other cleanups and report the
         // scan failure at the end.
         let (orphaned_redirections, orphan_scan_error) =
-            match redirect::scratch::get_orphaned_redirection_targets(&redirect_targets) {
+            match redirect::scratch::get_orphaned_redirection_targets(&redirect_targets)
+                .and_then(|orphaned| exclude_skipped_scratch(orphaned, &skipped_mounts))
+            {
                 Ok(orphaned) => (orphaned, None),
                 Err(error) if self.clean_orphaned => {
                     return Err(error.context("Failed to find orphaned redirections for cleanup"));
@@ -869,7 +910,7 @@ impl crate::Subcommand for DiskUsageCmd {
             // PRINT MOUNTS
             if !self.fast {
                 write_title("Mounts");
-                for path in &mounts {
+                for path in mounts.iter().filter(|path| !skipped_mounts.contains(path)) {
                     println!("{}", path.display());
                 }
                 write_failed_to_check_files_message(&mount_failed_file_checks);
