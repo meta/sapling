@@ -19,6 +19,7 @@ use bookmarks::BookmarksRef;
 use bookmarks::Freshness;
 use bookmarks_movement::BookmarkKindRestrictions::AnyKind;
 use bookmarks_movement::PushrebaseOutcome;
+use bytes::Bytes;
 use context::CoreContext;
 use fbinit::FacebookInit;
 use futures::FutureExt;
@@ -721,5 +722,35 @@ async fn land_stack_validation_of_merge(fb: FacebookInit) -> Result<()> {
         }
         assert_eq!(trunk(&repo).await?, cs["D"], "setting {setting}");
     }
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn land_stack_swaps_second_parent_base(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let (repo, cs) = init_branches_repo(&ctx).await?;
+    let merge = new_commit(&repo, vec![cs["F2"], cs["D"]], "M").await?;
+    let e = new_commit(&repo, vec![cs["D"]], "E").await?;
+    set_bookmark(&repo, "trunk", e).await?;
+    let pushvars = HashMap::from([("MAINLINE_PARENT_FIRST".to_string(), Bytes::from("true"))]);
+
+    let outcome = repo
+        .land_stack(
+            "trunk",
+            merge,
+            cs["D"],
+            Some(&pushvars),
+            AnyKind,
+            User,
+            false,
+        )
+        .await?;
+
+    // The merge is rebased with trunk as its first parent; F2 stays its
+    // second parent.
+    let mapping = rebased(&outcome);
+    assert_eq!(mapping.keys().copied().collect::<Vec<_>>(), vec![merge]);
+    assert_eq!(trunk(&repo).await?, mapping[&merge]);
+    assert_eq!(parents(&repo, mapping[&merge]).await?, vec![e, cs["F2"]]);
     Ok(())
 }

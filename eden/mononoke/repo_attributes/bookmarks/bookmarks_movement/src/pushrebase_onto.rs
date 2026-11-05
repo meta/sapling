@@ -16,6 +16,7 @@ use context::CoreContext;
 use hooks::CrossRepoPushSource;
 use hooks::HookManager;
 use metaconfig_types::LAND_INSTANCE_ID_PUSHVAR_KEY;
+use metaconfig_types::MAINLINE_PARENT_FIRST_PUSHVAR_KEY;
 use metaconfig_types::MERGE_TAKE_INCOMING_PUSHVAR_KEY;
 use metaconfig_types::MergeResolutionOverride;
 use metaconfig_types::PHAB_DIFF_ID_PUSHVAR_KEY;
@@ -77,6 +78,9 @@ pub fn pushrebase_flags(
         .and_then(|p| p.get(PHAB_DIFF_ID_PUSHVAR_KEY))
         .and_then(|b| std::str::from_utf8(b.as_ref()).ok())
         .map(str::to_owned);
+    flags.mainline_parent_first = pushvars
+        .and_then(|p| p.get(MAINLINE_PARENT_FIRST_PUSHVAR_KEY))
+        .is_some_and(|b| matches!(b.as_ref(), b"true" | b"1"));
     flags
 }
 

@@ -1541,6 +1541,7 @@ mod test {
                         merge_resolution_override: MergeResolutionOverride::UseJk,
                         land_instance_id: None,
                         phab_diff_id: None,
+                        mainline_parent_first: false,
                     },
                     block_merges: false,
                     emit_obsmarkers: false,

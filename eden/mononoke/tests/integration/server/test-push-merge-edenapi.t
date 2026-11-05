@@ -115,8 +115,8 @@ both are rebased; G lands as it is.
   6b5b49bbe33e F
 
 A merge of master into a branch has master as its second parent, so its merge
-base with master, which the stack is rebased from, is a second parent. That is
-forbidden:
+base with master, which the stack is rebased from, is a second parent. Without
+the `MAINLINE_PARENT_FIRST` pushvar, that is forbidden:
   $ commit J $A
   $ commit MJ $J master_bookmark
   $ push --to master_bookmark
@@ -125,17 +125,75 @@ forbidden:
   abort: Server error: invalid request: Pushrebase failed: Forbid pushrebase because root (6cc3000aa704180b569389da47d03ec7f31c55e1) is not a p1 of master_bookmark bookmark
   [255]
 
---no-rebase moves the bookmark to a merge:
+With it, the merge lands with master as its first parent, so master's
+first-parent history stays linear, and with the `parents_swapped` extra. Master
+has not moved since the merge, so apart from the order of the parents, the
+extra is all that distinguishes the landed merge from the pushed one. J lands
+as it is.
+  $ push --to master_bookmark --pushvars MAINLINE_PARENT_FIRST=true
+  pushing rev c67d4217bb93 to destination https://localhost:$LOCAL_PORT/edenapi/ bookmark master_bookmark
+  pushrebasing stack (6cc3000aa704, c67d4217bb93] (1 commit) to remote bookmark master_bookmark
+  sending hello command
+  updated remote bookmark master_bookmark to 3b2dcb2db901
+  $ hg log -r "p1(master_bookmark) + p2(master_bookmark)" -T '{desc} [{phase}]\n'
+  MFG [public]
+  J [public]
+  $ hg log -r master_bookmark -T '{desc} parents_swapped={get(extras, "parents_swapped")}\n'
+  MJ parents_swapped=1
+  $ hg log -r "predecessors(master_bookmark)" --hidden -T '{node|short} {desc}\n'
+  3b2dcb2db901 MJ
+  c67d4217bb93 MJ
+
+The same when master has moved on since the merge:
+  $ commit J2 $A
+  $ commit MJ2 $J2 master_bookmark
+  $ commit U master_bookmark
+  $ hg push -q --to master_bookmark
+  $ hg up -q $MJ2
+  $ push --to master_bookmark --pushvars MAINLINE_PARENT_FIRST=true
+  pushing rev 34c524605bc9 to destination https://localhost:$LOCAL_PORT/edenapi/ bookmark master_bookmark
+  pushrebasing stack (3b2dcb2db901, 34c524605bc9] (1 commit) to remote bookmark master_bookmark
+  sending hello command
+  updated remote bookmark master_bookmark to 9d20f60bfe52
+  $ hg log -r "p1(master_bookmark) + p2(master_bookmark)" -T '{desc} [{phase}]\n'
+  U [public]
+  J2 [public]
+  $ hg log -r master_bookmark -T '{desc} parents_swapped={get(extras, "parents_swapped")}\n'
+  MJ2 parents_swapped=1
+  $ hg log -r "predecessors(master_bookmark)" --hidden -T '{node|short} {desc}\n'
+  9d20f60bfe52 MJ2
+  34c524605bc9 MJ2
+
+A merge of a commit on master into an older branch descends from master through
+its second parent too: its merge base with master is the commit's parent.
+Pushrebase does not reject it, but without the pushvar the older branch would
+be the landed merge's first parent. With it, the commit on master is:
+  $ commit Y $B
+  $ commit Z master_bookmark
+  $ commit MYZ $Y $Z
+  $ push --to master_bookmark --pushvars MAINLINE_PARENT_FIRST=true
+  pushing rev d75c4b51f5ef to destination https://localhost:$LOCAL_PORT/edenapi/ bookmark master_bookmark
+  pushrebasing stack (9d20f60bfe52, d75c4b51f5ef] (2 commits) to remote bookmark master_bookmark
+  sending hello command
+  updated remote bookmark master_bookmark to 187d815a6f75
+  $ hg log -r "p1(master_bookmark) + p2(master_bookmark)" -T '{desc} [{phase}]\n'
+  Z [public]
+  Y [public]
+  $ hg log -r master_bookmark -T '{desc} parents_swapped={get(extras, "parents_swapped")}\n'
+  MYZ parents_swapped=1
+
+--no-rebase moves the bookmark to a merge, which lands as pushed, even with
+master as its second parent:
   $ commit K $A
-  $ commit MK master_bookmark $K
+  $ commit MK $K master_bookmark
   $ push --to master_bookmark --no-rebase
-  pushing rev 526a0bdaf212 to destination https://localhost:$LOCAL_PORT/edenapi/ bookmark master_bookmark
-  moving remote bookmark master_bookmark from 6cc3000aa704 to 526a0bdaf212
-  $ log master_bookmark
-  @    MK [public] remote/master_bookmark
-  ├─╮
-  │ │
-  ~ ~
+  pushing rev 8464f175bd69 to destination https://localhost:$LOCAL_PORT/edenapi/ bookmark master_bookmark
+  moving remote bookmark master_bookmark from 187d815a6f75 to 8464f175bd69
+  $ hg log -r "p1(master_bookmark) + p2(master_bookmark)" -T '{desc}\n'
+  K
+  MYZ
+  $ hg log -r master_bookmark -T '{desc} parents_swapped={get(extras, "parents_swapped")}\n'
+  MK parents_swapped=
 
 A stack on a public branch other than master would rebase that branch's public
 commits, so the client refuses to push it:
@@ -154,7 +212,7 @@ commits, so the client refuses to push it:
   $ commit MN master_bookmark $N
   $ hg bookmark foo
   $ push -B foo
-  pushing rev e9bbc201c7e6 to destination https://localhost:$LOCAL_PORT/edenapi/ bookmark foo
+  pushing rev 31d8a25dafb3 to destination https://localhost:$LOCAL_PORT/edenapi/ bookmark foo
   creating remote bookmark foo
   $ log foo
   @    MN [public] remote/foo
@@ -172,7 +230,7 @@ pushed over the wire protocol, except with --no-rebase, which only SLAPI does.
   $ push --to master_bookmark --config experimental.edenapi-push-merges=false
   fallback reason: merge commit is not supported by EdenApi push yet
   sending hello command
-  pushing rev 575a01b25bcd to destination mono:repo bookmark master_bookmark
+  pushing rev 602757f05542 to destination mono:repo bookmark master_bookmark
   sending unbundle command
   updating bookmark master_bookmark
   $ commit Q $A

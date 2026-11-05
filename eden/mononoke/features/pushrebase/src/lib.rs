@@ -187,6 +187,13 @@ pub const MUTATION_KEYS: &[&str] = &["mutpred", "mutuser", "mutdate", "mutop", "
 
 pub const FAIL_PUSHREBASE_EXTRA: &str = "failpushrebase";
 
+/// Hg extra, with value `1`, on a merge that pushrebase rebased with its
+/// parents reordered (see `PushrebaseFlags::mainline_parent_first`).
+/// The Mercurial changeset hash does not depend on the order of the parents,
+/// so without it a reordered merge that is otherwise unchanged would have the
+/// same hash as the pushed one.
+pub const PARENTS_SWAPPED_EXTRA: &str = "parents_swapped";
+
 #[derive(Debug, Error)]
 pub enum PushrebaseInternalError {
     #[error("Bonsai not found for hg changeset: {0}")]
@@ -205,6 +212,8 @@ pub enum PushrebaseInternalError {
     P2RootRebaseForbidden(HgChangesetId, BookmarkKey),
     #[error("Unexpected file conflicts when adding new file changes to {0}")]
     NewFileChangesConflict(ChangesetId),
+    #[error("Cannot reorder the parents of {0}: it already has the parents_swapped extra")]
+    ParentsAlreadySwapped(ChangesetId),
     #[error("Merge resolution was performed in a previous attempt but lost on retry")]
     MergeResolutionLostOnRetry,
 }
@@ -2470,7 +2479,7 @@ async fn find_closest_ancestor_root(
     let index = roots
         .get(&id)
         .expect("closest root should be one of the candidate roots");
-    if config.forbid_p2_root_rebases && *index != ChildIndex(0) {
+    if config.forbid_p2_root_rebases && !config.mainline_parent_first && *index != ChildIndex(0) {
         ctx.scuba().clone().log_with_msg(
             "pushrebase_p2_root_rejected",
             Some(format!(
@@ -3811,6 +3820,7 @@ async fn create_rebased_changesets_with(
             &rebased_set_ids,
             hooks,
             overrides_ref,
+            config.mainline_parent_first,
         )
         .await?;
         let timestamp = Timestamp::from(*bcs_new.author_date());
@@ -3890,17 +3900,40 @@ async fn rebase_changeset(
     rebased_set: &HashSet<ChangesetId>,
     hooks: &mut [Box<dyn PushrebaseCommitHook>],
     merged_file_overrides: Option<&Vec<(NonRootMPath, FileChange)>>,
+    mainline_parent_first: bool,
 ) -> Result<BonsaiChangeset> {
     let orig_cs_id = bcs.get_changeset_id();
     let new_file_changes =
         generate_additional_bonsai_file_changes(ctx, &bcs, root, onto, repo, rebased_set).await?;
     let mut bcs = bcs.into_mut();
 
+    // With `mainline_parent_first`, a merge whose first parent is not rebased
+    // takes its mainline parent, the first of its parents that is rebased or
+    // is the root, as its first parent, keeping the order of the others, and
+    // is marked with `PARENTS_SWAPPED_EXTRA`. A bonsai merge's file changes do
+    // not depend on the order of its parents.
+    let swap_index = bcs
+        .parents
+        .iter()
+        .position(|p| p == root || rebased_set.contains(p))
+        .filter(|index| mainline_parent_first && *index > 0);
     bcs.parents = bcs
         .parents
         .into_iter()
         .map(|p| remapping.get(&p).map(|(cs, _)| cs).cloned().unwrap_or(p))
         .collect();
+    if let Some(index) = swap_index {
+        // The marker must make the hash differ from the pushed commit's.
+        if bcs.hg_extra.contains_key(PARENTS_SWAPPED_EXTRA) {
+            return Err(PushrebaseInternalError::ParentsAlreadySwapped(orig_cs_id).into());
+        }
+        bcs.parents[..=index].rotate_right(1);
+        bcs.hg_extra
+            .insert(PARENTS_SWAPPED_EXTRA.to_string(), b"1".to_vec());
+        ctx.scuba()
+            .clone()
+            .log_with_msg("pushrebase_parents_swapped", Some(orig_cs_id.to_string()));
+    }
 
     match timestamp {
         Some(timestamp) => {

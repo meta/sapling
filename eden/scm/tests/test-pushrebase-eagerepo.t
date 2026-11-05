@@ -167,7 +167,8 @@ With the config off, the push takes the wireproto path:
   searching for changes
   updating bookmark master
 
-A merge whose merge base with master is its second parent is rejected:
+A merge whose merge base with master is its second parent (master, which has
+not moved since the merge) is rejected unless the push asks for the swap:
   $ sl go -q 2bb9d20e471c
   $ echo h > h && sl ci -qAm "add h"
   $ sl merge -q master && sl ci -qm "merge master into h"
@@ -182,6 +183,22 @@ A merge whose merge base with master is its second parent is rejected:
   pushrebasing stack (d2e8ce43bc11, e4679e1f76e7] (1 commit) to remote bookmark master
   abort: Server error: Forbid pushrebase because root (d2e8ce43bc1195a2122adb1527d30617d61c135d) is not a p1 of master bookmark
   [255]
+
+With the swap, the merge lands with master as its first parent and the
+`parents_swapped` extra, and replaces the pushed merge:
+  $ sl push --to master --pushvars MAINLINE_PARENT_FIRST=true
+  pushing rev e4679e1f76e7 to destination eager:$TESTTMP/server bookmark master
+  pushrebasing stack (d2e8ce43bc11, e4679e1f76e7] (1 commit) to remote bookmark master
+  0 files updated, 0 files merged, 0 files removed, 0 files unresolved
+  updated remote bookmark master to ebde518be45d
+  $ sl log -r 'p1(.) + p2(.)' -T '{desc}\n'
+  merge g
+  add h
+  $ sl log -r . -T '{extras % "{extra}\n"}' | grep parents_swapped
+  parents_swapped=1
+  $ sl log -r 'predecessors(.)' -T '{node|short} {desc}\n' --hidden
+  ebde518be45d merge master into h
+  e4679e1f76e7 merge master into h
 
 A stack on a public branch other than the destination would rebase that
 branch's public commits, so the client refuses to push it:
@@ -208,13 +225,13 @@ head, as when master has moved back since the client last saw it:
   $ sl push -q -r 'master^' --to master --force
   $ cd ../client4
   $ sl push --to master --config push.use_local_bookmark_value=true
-  pushing rev c04342ce0bbc to destination eager:$TESTTMP/server bookmark master
+  pushing rev 0be08e3c1a88 to destination eager:$TESTTMP/server bookmark master
   edenapi: queue 1 commit for upload
   edenapi: queue 1 file for upload
   edenapi: uploaded 1 file
   edenapi: queue 1 tree for upload
   edenapi: uploaded 1 tree
   edenapi: uploaded 1 changeset
-  pushrebasing stack (d2e8ce43bc11, c04342ce0bbc] (1 commit) to remote bookmark master
-  abort: Server error: bookmark 'master' has moved incompatibly with this push: the merge base of 'master' and c04342ce0bbc576bef6d905a86d38845585b18e7 is 981e6d97f297a8cb41c26cfe8115dc5874048929, but the push is based on d2e8ce43bc1195a2122adb1527d30617d61c135d. Pull and retry
+  pushrebasing stack (ebde518be45d, 0be08e3c1a88] (1 commit) to remote bookmark master
+  abort: Server error: bookmark 'master' has moved incompatibly with this push: the merge base of 'master' and 0be08e3c1a882833f7a230cfd5b881fc801cf134 is d2e8ce43bc1195a2122adb1527d30617d61c135d, but the push is based on ebde518be45de607b97fbd35a189f67184b04f3e. Pull and retry
   [255]

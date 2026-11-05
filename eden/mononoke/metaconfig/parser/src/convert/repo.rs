@@ -517,6 +517,7 @@ impl Convert for RawPushrebaseParams {
                 merge_resolution_override: MergeResolutionOverride::UseJk, // request-scoped, not loaded from config
                 land_instance_id: None, // request-scoped, not loaded from config
                 phab_diff_id: None,     // request-scoped, not loaded from config
+                mainline_parent_first: false, // request-scoped, not loaded from config
             },
             block_merges: self.block_merges.unwrap_or(default.block_merges),
             emit_obsmarkers: self.emit_obsmarkers.unwrap_or(default.emit_obsmarkers),

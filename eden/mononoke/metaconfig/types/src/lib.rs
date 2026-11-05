@@ -1118,6 +1118,14 @@ pub struct PushrebaseFlags {
     pub land_instance_id: Option<String>,
     /// Per-request Phabricator diff FBID (`PHAB_DIFF_ID` pushvar); stamped on Scuba for per-diff attribution (join key back to Landcastle/Phabricator datasets). Observability only.
     pub phab_diff_id: Option<String>,
+    /// Per-request (`MAINLINE_PARENT_FIRST` pushvar). The mainline parent of
+    /// a rebased merge is the parent that leads to the destination bookmark:
+    /// the one through which it descends from the rebase root. With this
+    /// flag, pushrebase makes it the merge's first parent, so the bookmark's
+    /// first-parent history stays linear, and marks a merge whose parents it
+    /// reorders with pushrebase's `PARENTS_SWAPPED_EXTRA`. A rebase root that
+    /// is not a first parent is then allowed despite `forbid_p2_root_rebases`.
+    pub mainline_parent_first: bool,
 }
 
 /// Pushvar key for the Sandcastle land instance id (see `PushrebaseFlags::land_instance_id`).
@@ -1141,6 +1149,10 @@ pub fn merge_take_incoming_from_pushvar_value(raw: Option<&[u8]>) -> bool {
         Some(b"true" | b"1")
     )
 }
+
+/// Pushvar key that sets `PushrebaseFlags::mainline_parent_first`
+/// when its value is `true` or `1`.
+pub const MAINLINE_PARENT_FIRST_PUSHVAR_KEY: &str = "MAINLINE_PARENT_FIRST";
 
 /// Per-request override for the `pushrebase_enable_merge_resolution` JustKnob.
 ///
@@ -1266,6 +1278,7 @@ impl Default for PushrebaseFlags {
             merge_resolution_override: MergeResolutionOverride::UseJk,
             land_instance_id: None,
             phab_diff_id: None,
+            mainline_parent_first: false,
         }
     }
 }
