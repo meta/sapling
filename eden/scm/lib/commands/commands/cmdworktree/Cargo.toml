@@ -45,5 +45,5 @@ tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [features]
 default = []
-eden = ["sapling-clone/eden", "sapling-edenfs-client"]
-fb = ["edenfs-core", "edenfs-remove", "sapling-async-runtime"]
+direct-removal = ["edenfs-core", "edenfs-remove", "sapling-async-runtime"]
+eden = ["direct-removal", "sapling-clone/eden", "sapling-edenfs-client"]

@@ -17,7 +17,7 @@ use configmodel::Text;
 use repo::repo::Repo;
 use types::HgId;
 
-#[cfg(feature = "fb")]
+#[cfg(feature = "direct-removal")]
 use super::direct::run_direct_eden_remove;
 use super::resolve_target;
 use crate::WorktreeOpts;
@@ -116,7 +116,9 @@ impl PreparedAdd<'_> {
 fn run_eden_remove(logger: &TermLogger, repo: &Repo, path: &Path) -> Result<bool> {
     if repo
         .config()
-        .get_or("worktree", "direct-eden-removal", || cfg!(feature = "fb"))?
+        .get_or("worktree", "direct-eden-removal", || {
+            cfg!(feature = "direct-removal")
+        })?
     {
         run_direct_eden_remove(logger, repo, path)
     } else if path.exists() {
@@ -127,7 +129,7 @@ fn run_eden_remove(logger: &TermLogger, repo: &Repo, path: &Path) -> Result<bool
     }
 }
 
-#[cfg(not(feature = "fb"))]
+#[cfg(not(feature = "direct-removal"))]
 fn run_direct_eden_remove(_logger: &TermLogger, _repo: &Repo, _path: &Path) -> Result<bool> {
     clidispatch::abort!("worktree.direct-eden-removal is not supported in this build");
 }

@@ -47,7 +47,6 @@ sl_rust_library(
                     "cmddebugrefreshconfig/fb",
                     "cmdpy/fb",
                     "cmdversion/fb",
-                    "cmdworktree/fb",
                     "sapling-identity/fb",
                     "sapling-indexedlog/metrics",
                 ],

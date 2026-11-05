@@ -5,7 +5,7 @@
  * GNU General Public License version 2.
  */
 
-#[cfg(all(feature = "eden", feature = "fb"))]
+#[cfg(all(feature = "eden", feature = "direct-removal"))]
 mod direct;
 #[cfg(feature = "eden")]
 mod eden;
