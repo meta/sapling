@@ -411,6 +411,26 @@ class RemoveTest(RemoveTestBase):
 
     @parameterized.expand(
         [
+            ("python", {"EDENFSCTL_SKIP_RUST": "1"}),
+        ]
+    )
+    def test_remove_of_a_non_checkout_exits_ex_noinput(
+        self, impl: str, env: dict
+    ) -> None:
+        inside = os.path.join(self.mount, "adir")
+        for path in [os.path.join(self.tmp_dir, "missing"), inside, str(self.tmp_dir)]:
+            result = self.eden.run_unchecked(
+                "remove", "--yes", path, env=env, capture_output=True, text=True
+            )
+            self.assertEqual(
+                66,
+                result.returncode,
+                f"eden remove ({impl}) {path} should exit EX_NOINPUT. stderr={result.stderr}",
+            )
+        self.assertTrue(os.path.isdir(inside), "the checkout must be untouched")
+
+    @parameterized.expand(
+        [
             ("rust", {"EDENFSCTL_ONLY_RUST": "1"}),
             ("python", {"EDENFSCTL_SKIP_RUST": "1"}),
         ]

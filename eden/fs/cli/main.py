@@ -247,6 +247,12 @@ except AttributeError:  # On a non-unix system
 # from the os library, let's just define it here.
 EX_USAGE: int = 64
 
+# `eden rm` was asked to remove something that is not an EdenFS checkout: a
+# path that does not exist, a plain file or directory, or a path inside a
+# checkout. Nothing is wrong with EdenFS, so this is not reported as a failure
+# of it. Defined here, like EX_USAGE, so the value is the same on every platform.
+EX_NOINPUT: int = 66
+
 
 # We have different mitigations on different platforms due to cmd differences
 def _get_unmount_timeout_suggestions(path: str) -> str:
@@ -1951,9 +1957,34 @@ def remove_checkout_impl(
     return result
 
 
+# Values of the `failure_kind` field of the `rm` telemetry sample. `user_error`
+# means `eden rm` was asked to remove something that is not an EdenFS checkout;
+# the other kinds name the removal step that failed.
+FAILURE_KIND_USER_ERROR = "user_error"
+FAILURE_KIND_LOOKUP = "lookup"
+FAILURE_KIND_AUX_PROCESSES = "aux_processes"
+FAILURE_KIND_UNMOUNT = "unmount"
+FAILURE_KIND_DESTROY = "destroy"
+FAILURE_KIND_CLEANUP = "cleanup"
+
+
 def _is_registered_checkout(path: str, configured_mounts: List[str]) -> bool:
     """True when config.json lists `path`, as given or with its links resolved."""
     return path in configured_mounts or os.path.realpath(path) in configured_mounts
+
+
+def _path_is_missing(path: str) -> bool:
+    """True only when nothing exists at `path`: no entry, or a parent that is a
+    plain file. `os.path.exists` is also False for a stale mount left by a dead
+    daemon (`stat` fails with ENOTCONN); that is an EdenFS failure the later
+    lookup reports, not a caller error."""
+    try:
+        os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return True
+    except OSError:
+        return False
+    return False
 
 
 # Types of removal
@@ -2090,6 +2121,24 @@ class RemoveCmd(Subcmd):
         )
         return RemoveType.ACTIVE_UNREGISTERED
 
+    def _fail(
+        self,
+        telemetry_sample: TelemetrySample,
+        kind: str,
+        msg: str,
+        exit_code: int = 1,
+    ) -> int:
+        """Record a failed removal in telemetry, print it, and return the exit code.
+
+        `exit_code` is a column of the Hive copy of the telemetry table, so the
+        DSU pipeline can tell a caller error (EX_NOINPUT) from a failed
+        removal; `failure_kind` names the step for the Scuba table."""
+        telemetry_sample.fail(msg.strip())
+        telemetry_sample.add_string("failure_kind", kind)
+        telemetry_sample.add_int("exit_code", exit_code)
+        print_stderr(msg)
+        return exit_code
+
     def delete_file_with_confirmation(self, path: str) -> int:
         prompt = f"""\
 Warning: the following is a file, not a directory or an EdenFS mount: {path}
@@ -2118,17 +2167,20 @@ Do you still want to delete {path}?"""
                     if args.prompt and sys.stdin.isatty():
                         return self.delete_file_with_confirmation(path)
                     else:
-                        print(
+                        return self._fail(
+                            telemetry_sample,
+                            FAILURE_KIND_USER_ERROR,
                             f"error: {path} exists but it's a file; remove it manually.",
-                            file=sys.stderr,
+                            EX_NOINPUT,
                         )
-                        return 1
 
-                if not os.path.exists(path):
-                    msg = f"error: {path} is neither an EdenFS mount nor an existing directory"
-                    telemetry_sample.fail(msg)
-                    print(msg, file=sys.stderr)
-                    return 1
+                if _path_is_missing(path):
+                    return self._fail(
+                        telemetry_sample,
+                        FAILURE_KIND_USER_ERROR,
+                        f"error: {path} is neither an EdenFS mount nor an existing directory",
+                        EX_NOINPUT,
+                    )
                 try:
                     mount_path = util.get_eden_mount_name(path)
                     remove_type = RemoveType.ACTIVE_MOUNT
@@ -2158,10 +2210,11 @@ Do you still want to delete {path}?"""
                                     fs_mod.new().rmdir(path, args.preserve_mount_point)
                                 except Exception as ex:
                                     if sys.platform != "win32":
-                                        msg = f"Error: cannot remove contents of {path}: {ex}"
-                                        telemetry_sample.fail(msg)
-                                        print(msg)
-                                        return 1
+                                        return self._fail(
+                                            telemetry_sample,
+                                            FAILURE_KIND_CLEANUP,
+                                            f"Error: cannot remove contents of {path}: {ex}",
+                                        )
                                     else:
                                         winhr = WinFileHandlerReleaser(instance)
                                         maybe_succeeded = winhr.try_release(path)
@@ -2172,29 +2225,41 @@ Do you still want to delete {path}?"""
                                                     path, args.preserve_mount_point
                                                 )
                                             else:
-                                                return 1
+                                                return self._fail(
+                                                    telemetry_sample,
+                                                    FAILURE_KIND_CLEANUP,
+                                                    f"Error: cannot remove contents of {path}: {ex}",
+                                                )
                                         except Exception as ex:
-                                            msg = f"Error: cannot remove contents of {path} even after trying to kill processes holding resources: {ex}"
-                                            telemetry_sample.fail(msg)
-                                            print(msg)
-                                            return 1
+                                            return self._fail(
+                                                telemetry_sample,
+                                                FAILURE_KIND_CLEANUP,
+                                                f"Error: cannot remove contents of {path} even after trying to kill processes holding resources: {ex}",
+                                            )
                         else:
                             # We can't ask the user what their true intentions are,
                             # so let's fail by default.
-                            print(f"error: {ex}")
-                            return 1
+                            return self._fail(
+                                telemetry_sample,
+                                FAILURE_KIND_USER_ERROR,
+                                f"error: {ex}",
+                                EX_NOINPUT,
+                            )
 
                 except Exception as ex:
-                    msg = f"error: cannot determine mount point for {path}: {ex}"
-                    telemetry_sample.fail(msg)
-                    print(msg)
-                    return 1
+                    return self._fail(
+                        telemetry_sample,
+                        FAILURE_KIND_LOOKUP,
+                        f"error: cannot determine mount point for {path}: {ex}",
+                    )
 
                 if os.path.realpath(mount_path) != os.path.realpath(path):
-                    msg = f"error: {path} is not the root of checkout {mount_path}, not deleting"
-                    telemetry_sample.fail(msg)
-                    print(msg)
-                    return 1
+                    return self._fail(
+                        telemetry_sample,
+                        FAILURE_KIND_USER_ERROR,
+                        f"error: {path} is not the root of checkout {mount_path}, not deleting",
+                        EX_NOINPUT,
+                    )
                 if remove_type != RemoveType.NON_EDEN:
                     mounts.append((mount_path, remove_type))
 
@@ -2229,13 +2294,12 @@ Do you still want to delete {path}?"""
                         mount_instance, mount
                     )
                     if registered_type is None:
-                        msg = (
+                        return self._fail(
+                            telemetry_sample,
+                            FAILURE_KIND_LOOKUP,
                             f"error: EdenFS does not report {mount} as a mounted "
-                            "checkout; its .eden links may be stale"
+                            "checkout; its .eden links may be stale",
                         )
-                        telemetry_sample.fail(msg)
-                        print_stderr(msg)
-                        return 1
                     remove_type = registered_type
 
                 result = remove_checkout_impl(
@@ -2260,17 +2324,17 @@ Do you still want to delete {path}?"""
 
                 # Handle aux process error (log but continue)
                 if result.aux_process_error:
-                    msg = f"error stopping auxiliary processes {mount}: {result.aux_process_error}"
-                    telemetry_sample.fail(msg)
-                    print_stderr(msg)
-                    exit_code = 1
+                    exit_code = self._fail(
+                        telemetry_sample,
+                        FAILURE_KIND_AUX_PROCESSES,
+                        f"error stopping auxiliary processes {mount}: {result.aux_process_error}",
+                    )
                     # We intentionally fall through here - unmount may still work
 
                 # Handle unmount error (return early with suggestions)
                 if result.unmount_error:
                     msg = f"error unmounting {mount}: {result.unmount_error}"
-                    telemetry_sample.fail(msg)
-                    print_stderr(f"\n{msg}\n\n")
+                    self._fail(telemetry_sample, FAILURE_KIND_UNMOUNT, f"\n{msg}\n")
                     print_stderr(
                         f"For unmount timeouts, you can try:\n{_get_unmount_timeout_suggestions(mount)}"
                     )
@@ -2278,24 +2342,25 @@ Do you still want to delete {path}?"""
 
                 # Handle destroy error
                 if result.destroy_error:
-                    msg = f"error deleting configuration for {mount}: {result.destroy_error}"
-                    telemetry_sample.fail(msg)
-                    print_stderr(msg)
-                    exit_code = 1
+                    exit_code = self._fail(
+                        telemetry_sample,
+                        FAILURE_KIND_DESTROY,
+                        f"error deleting configuration for {mount}: {result.destroy_error}",
+                    )
                     # pyre-fixme[6]: Pyre doesn't narrow Optional type after if guard
                     self.optional_traceback(result.destroy_error, args.debug)
                 else:
                     # Handle cleanup errors if destroy succeeded
                     if result.cleanup_error:
                         msg = f"error cleaning up mount {mount}: {result.cleanup_error}"
-                        telemetry_sample.fail(msg)
                         if (
                             isinstance(result.cleanup_error, OSError)
                             and result.cleanup_error.errno == errno.ENOTEMPTY
                         ):
                             msg += "\nPlease remove the entries and re-run eden rm."
-                        print_stderr(msg)
-                        exit_code = 1
+                        exit_code = self._fail(
+                            telemetry_sample, FAILURE_KIND_CLEANUP, msg
+                        )
                         # pyre-fixme[6]: Pyre doesn't narrow Optional type after if guard
                         self.optional_traceback(result.cleanup_error, args.debug)
 

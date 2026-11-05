@@ -7,6 +7,7 @@
 # pyre-strict
 
 import argparse
+import errno
 import json
 import os
 import unittest
@@ -869,6 +870,93 @@ class ListTest(unittest.TestCase):
 """,
             json_out.getvalue(),
         )
+
+
+class PathIsMissingTest(unittest.TestCase, TemporaryDirectoryMixin):
+    def test_only_a_missing_path_is_missing(self) -> None:
+        tmp = Path(self.make_temporary_directory())
+        (tmp / "file").write_text("")
+        self.assertTrue(main_mod._path_is_missing(str(tmp / "missing")))
+        self.assertTrue(main_mod._path_is_missing(str(tmp / "file" / "subdir")))
+        self.assertFalse(main_mod._path_is_missing(str(tmp)))
+        self.assertFalse(main_mod._path_is_missing(str(tmp / "file")))
+        with patch(
+            "eden.fs.cli.main.os.stat", side_effect=OSError(errno.ENOTCONN, "stale")
+        ):
+            self.assertFalse(main_mod._path_is_missing(str(tmp / "stale-mount")))
+
+
+class RemoveCallerErrorTest(unittest.TestCase, TemporaryDirectoryMixin):
+    """`eden rm` on something that is not a checkout exits EX_NOINPUT and
+    records a `user_error` failure, so the DSU pipeline can tell it from an
+    EdenFS failure."""
+
+    def run_remove(self, path: str) -> tuple[int, telemetry.TestTelemetryLogger]:
+        tmp = Path(self.make_temporary_directory())
+        state_dir = tmp / ".eden"
+        state_dir.mkdir()
+        (state_dir / "config.json").write_text(json.dumps({}))
+        instance = config_mod.EdenInstance(state_dir, tmp / "etc", tmp / "home")
+        telemetry_logger = telemetry.TestTelemetryLogger()
+        telemetry_logger.samples = []
+        instance._telemetry_logger = telemetry_logger
+        args = main_mod.create_parser().parse_args(["rm", "-y", path])
+        with patch.object(main_mod, "get_eden_instance", return_value=instance):
+            exit_code = main_mod.RemoveCmd(argparse.ArgumentParser()).run(args)
+        return exit_code, telemetry_logger
+
+    def test_missing_path(self) -> None:
+        tmp = Path(self.make_temporary_directory())
+        exit_code, telemetry_logger = self.run_remove(str(tmp / "missing"))
+
+        self.assertEqual(main_mod.EX_NOINPUT, exit_code)
+        self.assertEqual(1, len(telemetry_logger.samples))
+        sample = telemetry_logger.samples[0]
+        self.assertEqual(0, sample.ints["success"])
+        self.assertEqual(main_mod.EX_NOINPUT, sample.ints["exit_code"])
+        self.assertEqual(
+            main_mod.FAILURE_KIND_USER_ERROR, sample.strings["failure_kind"]
+        )
+        self.assertIn("neither an EdenFS mount", sample.strings["error"])
+
+    def test_directory_with_content(self) -> None:
+        tmp = Path(self.make_temporary_directory())
+        (tmp / "notes.txt").write_text("keep me")
+        exit_code, telemetry_logger = self.run_remove(str(tmp))
+
+        self.assertEqual(main_mod.EX_NOINPUT, exit_code)
+        self.assertTrue((tmp / "notes.txt").exists())
+        sample = telemetry_logger.samples[0]
+        self.assertEqual(0, sample.ints["success"])
+        self.assertEqual(main_mod.EX_NOINPUT, sample.ints["exit_code"])
+        self.assertEqual(
+            main_mod.FAILURE_KIND_USER_ERROR, sample.strings["failure_kind"]
+        )
+
+    def test_plain_file(self) -> None:
+        tmp = Path(self.make_temporary_directory())
+        (tmp / "file").write_text("")
+        exit_code, telemetry_logger = self.run_remove(str(tmp / "file"))
+
+        self.assertEqual(main_mod.EX_NOINPUT, exit_code)
+        self.assertTrue((tmp / "file").exists())
+        self.assertEqual(
+            main_mod.FAILURE_KIND_USER_ERROR,
+            telemetry_logger.samples[0].strings["failure_kind"],
+        )
+
+    def test_path_under_a_plain_file(self) -> None:
+        tmp = Path(self.make_temporary_directory())
+        (tmp / "file").write_text("")
+        exit_code, telemetry_logger = self.run_remove(str(tmp / "file" / "subdir"))
+
+        self.assertEqual(main_mod.EX_NOINPUT, exit_code)
+        self.assertTrue((tmp / "file").exists())
+        sample = telemetry_logger.samples[0]
+        self.assertEqual(
+            main_mod.FAILURE_KIND_USER_ERROR, sample.strings["failure_kind"]
+        )
+        self.assertIn("neither an EdenFS mount", sample.strings["error"])
 
 
 class ClonePrecheckTest(unittest.TestCase, TemporaryDirectoryMixin):
