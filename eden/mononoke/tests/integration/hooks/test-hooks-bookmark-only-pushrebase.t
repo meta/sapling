@@ -182,8 +182,8 @@ The server side bookmark value can be stable due to data derivation, let's worka
   5
 
 attempt to pushrebase onto a completely unrelated commit (no common ancestor), with an
-ancestor that fails the hook. There is nothing to rebase from, so the push is rejected
-before the hook runs, with or without the hook bypass
+ancestor that fails the hook. The client finds no merge base to rebase from, so it
+aborts before the hook runs, with or without the hook bypass
   $ hg up -q $Z
   $ hg push -r . --to master_bookmark --pushvar NON_FAST_FORWARD=true
   pushing rev * to destination https://localhost:$LOCAL_PORT/edenapi/ bookmark master_bookmark (glob)
@@ -193,14 +193,14 @@ before the hook runs, with or without the hook bypass
   edenapi: queue 2 trees for upload
   edenapi: uploaded 2 trees
   edenapi: uploaded 2 changesets
-  pushrebasing stack (*, *] (2 commits) to remote bookmark master_bookmark (glob)
-  abort: Server error: invalid request: cannot land * onto 'master_bookmark': they have no common ancestor (glob)
+  abort: cannot pushrebase * onto remote bookmark master_bookmark: they have no common ancestor (glob)
+  (rebase the stack onto master_bookmark first)
   [255]
 
   $ hg push -r . --to master_bookmark --pushvar NON_FAST_FORWARD=true --pushvar ALLOW_LARGE_FILES=true
   pushing rev * to destination https://localhost:$LOCAL_PORT/edenapi/ bookmark master_bookmark (glob)
-  pushrebasing stack (*, *] (2 commits) to remote bookmark master_bookmark (glob)
-  abort: Server error: invalid request: cannot land * onto 'master_bookmark': they have no common ancestor (glob)
+  abort: cannot pushrebase * onto remote bookmark master_bookmark: they have no common ancestor (glob)
+  (rebase the stack onto master_bookmark first)
   [255]
 however, we can create a new bookmark there, bypassing the hook
   $ hg push -r . --to newbookmark --create --pushvar ALLOW_LARGE_FILES=true

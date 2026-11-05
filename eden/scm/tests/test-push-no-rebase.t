@@ -80,10 +80,28 @@ So does --force:
   pushing rev be0ef73c17ad to destination eager:$TESTTMP/repo1_server bookmark other
   creating remote bookmark other
 
-Merge commits are not supported:
+Merge commits are pushed only with `experimental.edenapi-push-merges` on:
   $ sl push -r $M --to master --no-rebase
   abort: merge commit is not supported by EdenApi push yet
   [255]
+  $ sl push -r $M --to master --no-rebase --config experimental.edenapi-push-merges=true
+  pushing rev e28fb9c96eb2 to destination eager:$TESTTMP/repo1_server bookmark master
+  edenapi: queue 1 commit for upload
+  edenapi: queue 0 files for upload
+  edenapi: queue 1 tree for upload
+  edenapi: uploaded 1 tree
+  edenapi: uploaded 1 changeset
+  moving remote bookmark master from 26805aba1e60 to e28fb9c96eb2
+  $ log
+  o    e28fb9c96eb2 M public remote/master
+  ├─╮
+  │ o  be0ef73c17ad D public remote/other
+  │ │
+  o │  26805aba1e60 C public
+  ├─╯
+  o  112478962961 B public
+  │
+  o  426bada5c675 A public
 
 --no-rebase, like --rebase, needs a destination bookmark:
   $ sl push -r $C --no-rebase

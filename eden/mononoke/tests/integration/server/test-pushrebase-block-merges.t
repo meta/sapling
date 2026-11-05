@@ -62,6 +62,24 @@ Try to push merge commit
   o  A [public;rev=*;20ca2a4749a4] (glob)
   $
 
+With `experimental.edenapi-push-merges` on, the push goes through SLAPI, and the
+rejection is a clean abort:
+  $ hg push -r . --to master_bookmark --config experimental.edenapi-push-merges=true
+  pushing rev 540b69c58d33 to destination https://localhost:$LOCAL_PORT/edenapi/ bookmark master_bookmark
+  edenapi: queue 3 commits for upload
+  edenapi: queue 2 files for upload
+  edenapi: uploaded 2 files
+  edenapi: queue 3 trees for upload
+  edenapi: uploaded 3 trees
+  edenapi: uploaded 3 changesets
+  pushrebasing stack (20ca2a4749a4, 540b69c58d33] (3 commits) to remote bookmark master_bookmark
+  abort: Server error: invalid request: Pushrebase blocked because it contains a merge commit.
+  If you need this for a specific use case please contact
+  the Source Control team at https://fburl.com/27qnuyl2
+  [255]
+
+Otherwise the push goes over the wire protocol, where the rejection is
+unchanged:
   $ hg push -r . --to master_bookmark
   fallback reason: merge commit is not supported by EdenApi push yet
   pushing rev 540b69c58d33 to destination mono:repo bookmark master_bookmark

@@ -981,10 +981,11 @@ disable_interngraph_notification=true
 """
     )
 
+    forbid_p2_root_rebases = "true" if env.getenv("FORBID_P2_ROOT_REBASES") else "false"
     append_config(
-        """
+        f"""
 [pushrebase]
-forbid_p2_root_rebases=false
+forbid_p2_root_rebases={forbid_p2_root_rebases}
 """
     )
 
