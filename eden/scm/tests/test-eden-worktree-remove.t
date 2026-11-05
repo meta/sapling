@@ -564,17 +564,16 @@ test worktree remove - a failed folder deletion can be retried
   Deleting EdenFS checkout state...
   abort: direct EdenFS removal failed for $TESTTMP?delete_fails: failpoint: expected failure (glob)
   [255]
-FIXME: EdenFS forgets the checkout before it deletes the folder, so nothing can
-remove the folder that is left. The checkout should stay registered until its
-folder is gone, and the retry should remove it. (On Windows, `.eden\config` is
-still in the folder, so edenfs-remove refuses instead of `sl`.)
+The checkout stays registered until its folder is gone, so the retry removes it.
   $ sl worktree remove $TESTTMP/delete_fails -y --force
-  abort: refusing to delete $TESTTMP?delete_fails: it is not a registered EdenFS checkout (glob) (no-windows !)
-  abort: direct EdenFS removal failed for $TESTTMP?delete_fails: $TESTTMP?delete_fails is not a registered EdenFS checkout (glob) (windows !)
-  [255]
+  Cannot inspect repository-configured redirections while *delete_fails is unmounted. Their backing storage may remain. APFS volumes left behind require manual cleanup. (glob) (osx !)
+  Cannot inspect repository-configured redirections while *delete_fails is unmounted. Their backing storage may remain. Run `eden du --clean-orphaned` to reclaim leftover backing storage. (glob) (no-osx !)
+  Deleting EdenFS checkout state...
+  removed $TESTTMP/delete_fails
+  $ test -d $TESTTMP/delete_fails
+  [1]
   $ sl worktree list
-    linked  $TESTTMP?delete_fails (glob)
-  * main    $TESTTMP?delete_fails_repo (glob)
+  this worktree is not part of a group
 
 test worktree remove - unmounts an added redirection on Windows
 

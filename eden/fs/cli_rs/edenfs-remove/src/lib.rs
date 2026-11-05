@@ -915,17 +915,18 @@ async fn remove_inactive_checkout(
     event_handler: &mut impl FnMut(RemoveCheckoutEvent),
 ) -> Result<()> {
     event_handler(RemoveCheckoutEvent::DeletingCheckoutState);
-    remove_client_config_dir(instance, path, client_name)?;
-    instance
-        .remove_path_from_directory_map(path)
-        .with_context(|| format!("failed to remove {} from config json file", path.display()))?;
-
     if !options.preserve_mount_point {
         fail_point!("remove:clean_mount_point", |_| {
             Err(anyhow!("failpoint: expected failure"))
         });
         clean_mount_point(path)?;
     }
+    remove_client_config_dir(instance, path, client_name)?;
+    // Forget the checkout last, so that failing to delete the folder or the client directory
+    // leaves a registered checkout that a retry removes.
+    instance
+        .remove_path_from_directory_map(path)
+        .with_context(|| format!("failed to remove {} from config json file", path.display()))?;
     validate_removal_completion(instance, path, options.preserve_mount_point).await
 }
 
@@ -1514,6 +1515,64 @@ mod tests {
         remove_client_config_dir(&instance, temp_dir.path(), "test")
             .expect("a retry removes the rest of the client directory");
         assert!(!client_dir.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn retry_removes_checkout_whose_folder_deletion_failed() {
+        let temp_dir = tempdir().expect("temporary directory");
+        let root = temp_dir
+            .path()
+            .canonicalize()
+            .expect("temporary directory path");
+        let config_dir = root.join("eden");
+        let checkout = root.join("checkout");
+        let client_dir = config_dir.join("clients/test-client");
+        let locked_dir = checkout.join("locked");
+        fs::create_dir_all(&locked_dir).expect("locked directory");
+        fs::create_dir_all(&client_dir).expect("client directory");
+        fs::write(locked_dir.join("file"), b"").expect("locked file");
+        fs::write(client_dir.join("config.toml"), b"").expect("client config");
+        let mounts = BTreeMap::from([(checkout.clone(), "test-client".to_owned())]);
+        fs::write(
+            config_dir.join("config.json"),
+            serde_json::to_vec(&mounts).expect("directory map"),
+        )
+        .expect("write directory map");
+        let instance = EdenFsInstance::with_daemon(
+            config_dir.clone(),
+            config_dir,
+            None,
+            Arc::new(DisconnectedDaemon),
+        );
+        fs::set_permissions(&locked_dir, Permissions::from_mode(0o500)).expect("lock directory");
+
+        let result = remove_checkout(&instance, &checkout, RemoveCheckoutOptions::default()).await;
+
+        fs::set_permissions(&locked_dir, Permissions::from_mode(0o700)).expect("unlock directory");
+        result.expect_err("a locked directory in the folder must fail the removal");
+        assert_eq!(
+            instance.get_configured_mounts_map().expect("directory map"),
+            mounts,
+            "the checkout must stay registered until its folder is deleted"
+        );
+        assert!(
+            client_dir.join("config.toml").exists(),
+            "the client directory must stay until the folder is deleted"
+        );
+
+        remove_checkout(&instance, &checkout, RemoveCheckoutOptions::default())
+            .await
+            .expect("a retry must remove the checkout");
+
+        assert!(!checkout.exists());
+        assert!(!client_dir.exists());
+        assert!(
+            instance
+                .get_configured_mounts_map()
+                .expect("directory map")
+                .is_empty()
+        );
     }
 
     #[test]
