@@ -1709,9 +1709,12 @@ impl BookmarksCoordinator {
             return Ok(());
         };
 
+        let cached_kind = self
+            .bookmarks
+            .with_read(|cache| cache.get(&key).map(|state| state.kind));
         let state = self
             .repo
-            .warm_from_notification(ctx, &notification, &self.warmers)
+            .warm_from_notification(ctx, &notification, &self.warmers, cached_kind)
             .await?;
         let notification_outcome = if state.is_some() {
             "updated"

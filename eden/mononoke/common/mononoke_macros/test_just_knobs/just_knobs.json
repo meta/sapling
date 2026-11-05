@@ -123,6 +123,7 @@
     "scm/mononoke:mononoke_log_draft_acl_failures": false,
     "scm/mononoke:remote_diff": true,
     "scm/mononoke:wbc_update_by_scribe_tailer": false,
+    "scm/mononoke:wbc_event_router_use_notification_payload": false,
     "scm/mononoke:remote_diff_unary": false,
     "scm/mononoke:remote_commit_compare": true,
     "scm/mononoke:request_log_enabled": false,
