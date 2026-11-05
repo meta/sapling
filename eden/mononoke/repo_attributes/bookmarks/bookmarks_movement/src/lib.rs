@@ -186,6 +186,14 @@ pub enum BookmarkMovementError {
     #[error("Pushrebase failed: {0}")]
     PushrebaseError(#[source] PushrebaseError),
 
+    /// The repo's `block_merges` config forbids pushrebasing merge commits.
+    #[error(
+        "Pushrebase blocked because it contains a merge commit.\n\
+        If you need this for a specific use case please contact\n\
+        the Source Control team at https://fburl.com/27qnuyl2"
+    )]
+    MergesBlocked,
+
     #[error(transparent)]
     PushrebaseHooksError(#[from] PushrebaseHooksError),
 
