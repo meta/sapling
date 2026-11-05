@@ -499,10 +499,6 @@ mock! {
         fn getActiveRequests(
             &self,
         ) -> BoxFuture<'static, Result<GetActiveRequestsResponse, GetActiveRequestsError>>;
-
-        fn debugLogError(
-            &self,
-        ) -> BoxFuture<'static, Result<bool, DebugLogErrorError>>;
     }
 
     #[allow(non_snake_case)]
