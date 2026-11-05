@@ -2101,6 +2101,12 @@ UnixSocket::Message PrivHelperServer::processMessage(
     case PrivHelperConn::REQ_SET_LOG_FILE:
       return processSetLogFileMsg(cursor, request);
     case PrivHelperConn::REQ_UNMOUNT_BIND:
+#ifdef __APPLE__
+      if (!disablePrivHelperHardening()) {
+        folly::throwSystemErrorExplicit(
+            ENOTSUP, "bind unmounts are not supported on macOS");
+      }
+#endif
       return processBindUnMountMsg(cursor);
     case PrivHelperConn::REQ_SET_DAEMON_TIMEOUT:
     case PrivHelperConn::REQ_SET_USE_EDENFS:

@@ -995,6 +995,30 @@ TEST_F(PrivHelperRawProtocolTest, legacyMacFuseConfigRequestsAreNoOps) {
       PrivHelperConn::REQ_SET_USE_EDENFS, useEdenFsResponse);
 }
 
+#ifdef __APPLE__
+TEST_F(
+    PrivHelperRawProtocolTest,
+    bindUnmountIsUnsupportedEvenForRegisteredPaths) {
+  auto dir = makeTempDir();
+  const auto path = dir.path().string();
+  auto response = client_->sendAndRecv(
+      PrivHelperConn::serializeTakeoverStartupRequest(1, path, {}));
+  PrivHelperConn::parseEmptyResponse(
+      PrivHelperConn::REQ_TAKEOVER_STARTUP, response);
+  server_.setFuseUnmountResult(path).setValue();
+
+  for (const auto& suffix : {"/buck-out", "/../victim"}) {
+    response = client_->sendAndRecv(
+        PrivHelperConn::serializeBindUnMountRequest(2, path + suffix));
+    EXPECT_THROW_RE(
+        PrivHelperConn::parseEmptyResponse(
+            PrivHelperConn::REQ_UNMOUNT_BIND, response),
+        std::system_error,
+        "bind unmounts are not supported on macOS");
+  }
+}
+#endif
+
 TEST_F(PrivHelperTest, nfsFstypeOverrideCanBeTurnedOff) {
   EXPECT_TRUE(server_.nfsFstypeOverrideEnabled());
   client_->setNfsFstypeOverride(false).get(1s);
