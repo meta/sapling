@@ -838,9 +838,8 @@ TreeInode::loadChild(
   auto& entry = iter->second;
   folly::Promise<InodePtr> promise;
   auto returnFuture = promise.getSemiFuture();
+  bool startLoad = startLoadingChild(name, entry, promise);
   auto childNumber = entry.getInodeNumber();
-  bool startLoad = getInodeMap()->startLoadingChildIfNotLoading(
-      this, name, childNumber, entry.getInitialMode(), std::move(promise));
   if (startLoad) {
     // The inode is not already being loaded.  We have to start
     // loading it now.
@@ -6793,6 +6792,84 @@ void TreeInode::saveOverlayPostCheckout(
   }
 }
 
+bool TreeInode::startLoadingChild(
+    PathComponentPiece name,
+    DirEntry& entry,
+    folly::Promise<InodePtr>& promise) {
+  try {
+    auto result = getInodeMap()->startLoadingChildIfNotLoading(
+        this, name, entry.getInodeNumber(), entry.getInitialMode(), promise);
+#ifndef _WIN32
+    if (result == InodeMap::ChildLoadResult::Conflict &&
+        getOverlay()->usesOnlineFsck()) {
+      // A torn rename can leave A/x and B/y pointing to inode 123. After A/x
+      // is loaded, give conflicting B/y a fresh inode: deleting B/y must not
+      // delete A/x's data. Unseen aliases still follow normal deletion; after
+      // deleting A/x, a later load of B/y may find its payload missing.
+      auto oldNumber = entry.getInodeNumber();
+      auto newNumber = getOverlay()->allocateInodeNumber();
+      auto mode = entry.getInitialMode();
+      auto acl = entry.aclRootState();
+      if (entry.isMaterialized()) {
+        if (entry.isDirectory()) {
+          getOverlay()->saveOverlayDir(
+              newNumber,
+              DirContents{getMount()->getCheckoutConfig()->getCaseSensitive()});
+        } else {
+          getOverlay()->createOverlayFile(newNumber, folly::ByteRange{});
+        }
+      }
+
+      // SCM content can be loaded normally under the new inode number.
+      auto replacement = entry.isMaterialized()
+          ? DirEntry{mode, newNumber, acl}
+          : DirEntry{mode, newNumber, entry.getObjectId(), acl};
+      auto original = std::move(entry);
+      entry = std::move(replacement);
+
+      // Assigning through the entry reference does not mutate the PathMap's
+      // count, but the cached readdir index contains the old inode number.
+      readdirIndex_.wlock()->reset();
+
+      // Only an unloaded entry's number changes, so no runtime inode location
+      // needs the rename lock. Persist the binding before publishing the inode.
+      const auto& contents = contents_.unsafeGetUnlocked();
+      try {
+        getMount()->getServerState()->getFaultInjector().check(
+            "recoverConflictingBindingSaveOverlay", name);
+        saveOverlayDir(contents.entries, contents.isMaterialized());
+      } catch (...) {
+        // A retry must repair and persist the binding again before loading it.
+        entry = std::move(original);
+        throw;
+      }
+      getMount()->getStats()->increment(&OverlayStats::onlineFsckInodeRecovery);
+      XLOGF(
+          WARN,
+          "Recovered conflicting overlay entry {}/{}: inode {} -> {}",
+          getNodeId(),
+          name,
+          oldNumber,
+          newNumber);
+      result = getInodeMap()->startLoadingChildIfNotLoading(
+          this, name, newNumber, mode, promise);
+    }
+#endif
+    if (result == InodeMap::ChildLoadResult::Conflict) {
+      throw std::system_error{
+          EIO,
+          std::generic_category(),
+          fmt::format(
+              "conflicting inode reference to inode {}",
+              entry.getInodeNumber())};
+    }
+    return result == InodeMap::ChildLoadResult::Started;
+  } catch (const std::exception&) {
+    promise.setException(folly::exception_wrapper{std::current_exception()});
+    return false;
+  }
+}
+
 ImmediateFuture<InodePtr> TreeInode::loadChildLocked(
     PathComponentPiece name,
     DirEntry& entry,
@@ -6801,13 +6878,11 @@ ImmediateFuture<InodePtr> TreeInode::loadChildLocked(
   XDCHECK(!entry.getInode());
 
   auto [promise, future] = folly::makePromiseContract<InodePtr>();
-  auto childNumber = entry.getInodeNumber();
 
   bool startLoad;
   {
     auto span = fetchContext->createSpan("startLoadingChildIfNotLoading");
-    startLoad = getInodeMap()->startLoadingChildIfNotLoading(
-        this, name, childNumber, entry.getInitialMode(), std::move(promise));
+    startLoad = startLoadingChild(name, entry, promise);
   }
   if (startLoad) {
     auto loadFuture = startLoadingInodeNoThrow(entry, name, fetchContext, true);

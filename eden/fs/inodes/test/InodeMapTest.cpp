@@ -138,31 +138,154 @@ TEST(InodeMap, rejectsConflictingConcurrentChildLoad) {
 
   folly::Promise<InodePtr> firstPromise;
   auto firstFuture = firstPromise.getSemiFuture();
-  EXPECT_TRUE(inodeMap->startLoadingChildIfNotLoading(
-      parent.get(),
-      "first"_pc,
-      child,
-      S_IFREG | 0644,
-      std::move(firstPromise)));
+  EXPECT_EQ(
+      InodeMap::ChildLoadResult::Started,
+      inodeMap->startLoadingChildIfNotLoading(
+          parent.get(), "first"_pc, child, S_IFREG | 0644, firstPromise));
 
   folly::Promise<InodePtr> conflictingPromise;
   auto conflictingFuture = conflictingPromise.getSemiFuture();
-  EXPECT_FALSE(inodeMap->startLoadingChildIfNotLoading(
-      parent.get(),
-      "second"_pc,
-      child,
-      S_IFREG | 0644,
-      std::move(conflictingPromise)));
-  EXPECT_THROW_RE(
-      std::move(conflictingFuture).get(),
-      std::system_error,
-      "conflicting inode reference to inode 1234");
+  EXPECT_EQ(
+      InodeMap::ChildLoadResult::Conflict,
+      inodeMap->startLoadingChildIfNotLoading(
+          parent.get(),
+          "second"_pc,
+          child,
+          S_IFREG | 0644,
+          conflictingPromise));
+  EXPECT_FALSE(conflictingFuture.isReady());
 
   inodeMap->inodeLoadFailed(
       child,
       folly::make_exception_wrapper<std::runtime_error>("stop test load"));
   EXPECT_THROW(std::move(firstFuture).get(), std::runtime_error);
 }
+
+TEST(InodeMap, repairsConflictingBindingWithoutJoiningOtherLoad) {
+  if (folly::kIsWindows) {
+    GTEST_SKIP() << "online fsck is only supported by the Legacy Unix overlay";
+  }
+  FakeTreeBuilder builder;
+  builder.setFiles({{"A/f", "f"}, {"B/g", "g"}});
+  TestMount testMount{
+      true, kPathMapDefaultCaseSensitive, nullptr, [](EdenConfig& config) {
+        config.overlayOnlineFsck.setValue(true, ConfigSourceType::CommandLine);
+      }};
+  testMount.initialize(builder);
+  auto* inodeMap = testMount.getEdenMount()->getInodeMap();
+  auto root = testMount.getEdenMount()->getRootInode();
+  auto number = root->getChildInodeNumber("A"_pc);
+  {
+    auto contents = root->getContentsUnchecked().wlock();
+    auto& entry = contents->entries.find("B"_pc)->second;
+    entry = DirEntry{
+        entry.getInitialMode(),
+        number,
+        entry.getObjectId(),
+        entry.aclRootState()};
+  }
+  folly::Promise<InodePtr> firstPromise;
+  auto firstFuture = firstPromise.getSemiFuture();
+  ASSERT_EQ(
+      InodeMap::ChildLoadResult::Started,
+      inodeMap->startLoadingChildIfNotLoading(
+          root.get(), "A"_pc, number, S_IFDIR | 0755, firstPromise));
+
+  auto child = testMount.getTreeInode("B");
+  EXPECT_NE(number, child->getNodeId());
+  EXPECT_EQ(
+      std::vector<PathComponent>{PathComponent{"g"}}, child->getChildNames());
+  EXPECT_FALSE(firstFuture.isReady());
+  inodeMap->inodeLoadFailed(
+      number,
+      folly::make_exception_wrapper<std::runtime_error>("stop first load"));
+  EXPECT_THROW_RE(
+      std::move(firstFuture).get(), std::runtime_error, "stop first load");
+}
+
+TEST(InodeMap, failedConflictRepairRestoresBindingBeforeRetry) {
+  if (folly::kIsWindows) {
+    GTEST_SKIP() << "online fsck is only supported by the Legacy Unix overlay";
+  }
+  FakeTreeBuilder builder;
+  builder.setFiles({{"A", "original"}, {"B", "other"}});
+  TestMount mount{
+      builder,
+      true,
+      true,
+      kPathMapDefaultCaseSensitive,
+      nullptr,
+      [](EdenConfig& config) {
+        config.overlayOnlineFsck.setValue(true, ConfigSourceType::CommandLine);
+      }};
+  auto original = mount.overwriteFile("A", "original");
+  auto root = mount.getEdenMount()->getRootInode();
+  auto overlay = mount.getEdenMount()->getOverlay();
+  const auto number = original->getNodeId();
+  {
+    auto contents = root->getContentsUnchecked().wlock();
+    contents->entries.find("B"_pc)->second = DirEntry{S_IFREG | 0644, number};
+    overlay->saveOverlayDir(root->getNodeId(), contents->entries);
+  }
+  mount.getServerState()->getFaultInjector().injectError(
+      "recoverConflictingBindingSaveOverlay",
+      "B",
+      std::system_error{ENOSPC, std::generic_category(), "parent save failed"},
+      1);
+  EXPECT_THROW_RE(mount.readFile("B"), std::system_error, "parent save failed");
+  EXPECT_EQ(number, root->getChildInodeNumber("B"_pc));
+  EXPECT_EQ(
+      number,
+      overlay->loadOverlayDir(root->getNodeId())
+          .find("B"_pc)
+          ->second.getInodeNumber());
+
+  EXPECT_EQ("", mount.readFile("B"));
+  EXPECT_NE(number, root->getChildInodeNumber("B"_pc));
+  mount.overwriteFile("B", "new contents");
+  original.reset();
+  root.reset();
+  mount.remount();
+  EXPECT_EQ("new contents", mount.readFile("B"));
+  EXPECT_EQ("original", mount.readFile("A"));
+}
+
+#ifndef _WIN32
+TEST(InodeMap, repairedMaterializedSymlinkCanBeRemovedButNotFollowed) {
+  FakeTreeBuilder builder;
+  builder.setFile("B", "other");
+  TestMount mount{
+      builder,
+      true,
+      true,
+      kPathMapDefaultCaseSensitive,
+      nullptr,
+      [](EdenConfig& config) {
+        config.overlayOnlineFsck.setValue(true, ConfigSourceType::CommandLine);
+      }};
+  mount.addSymlink("A", "original-target");
+  auto original = mount.getFileInode("A");
+  auto root = mount.getEdenMount()->getRootInode();
+  const auto number = original->getNodeId();
+  {
+    auto contents = root->getContentsUnchecked().wlock();
+    contents->entries.find("B"_pc)->second = DirEntry{S_IFLNK | 0777, number};
+    mount.getEdenMount()->getOverlay()->saveOverlayDir(
+        root->getNodeId(), contents->entries);
+  }
+  auto repaired = mount.getFileInode("B");
+  EXPECT_NE(number, repaired->getNodeId());
+  EXPECT_THROW_RE(
+      repaired->readlink(ObjectFetchContext::getNullContext()).get(),
+      std::system_error,
+      "empty symlink target");
+  EXPECT_NO_THROW(mount.deleteFile("B"));
+  EXPECT_THROW(root->getChildInodeNumber("B"_pc), std::system_error);
+  EXPECT_EQ(
+      "original-target",
+      original->readlink(ObjectFetchContext::getNullContext()).get());
+}
+#endif
 
 #ifdef __linux__
 TEST(InodeMap, forgetMultipleReferencesFromLoadedInode) {

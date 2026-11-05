@@ -694,7 +694,15 @@ ImmediateFuture<std::string> FileInode::readlink(
   }
 
   // The symlink contents are simply the file contents!
-  return readAll(fetchContext, cacheHint);
+  return readAll(fetchContext, cacheHint)
+      .thenValue([self = inodePtrFromThis()](std::string target) {
+        // Conflict recovery leaves an empty target so the link can be removed.
+        // Linux can interpret an empty target as its parent during traversal.
+        if (target.empty()) {
+          throw InodeError(EIO, self, "empty symlink target");
+        }
+        return target;
+      });
 }
 #endif // !_WIN32
 

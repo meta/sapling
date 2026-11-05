@@ -372,25 +372,28 @@ class InodeMap {
   // The following public APIs should only be used by TreeInode
   /////////////////////////////////////////////////////////////////////////
 
+  enum class ChildLoadResult { Started, Pending, Conflict };
+
   /**
    * startLoadingChildIfNotLoading() should only be called by TreeInode.
    *
    * startLoadingChildIfNotLoading() will be called when TreeInode wants to load
    * one of its child entries that already has an allocated inode number.  It
-   * returns true if the TreeInode should start loading the inode now, or false
-   * if the inode is already being loaded or the entry conflicts with another
-   * reference to this inode (in which case the promise receives EIO).
-   * If it will return true, the function
+   * returns Started if the TreeInode should start loading the inode now,
+   * Pending if it is already being loaded, or Conflict if the entry conflicts
+   * with another reference to this inode. On Conflict the promise is untouched,
+   * so the caller can repair the entry and retry or fulfill it with an error.
+   * If it will return Started, the function
    * publishes an event to tracebus marking the start of the inode load and
    * attaches an initial promise to the inode to resolve when the load ends.
    *
    * An inode number that is already loaded under another directory entry is
-   * not loaded a second time: the promise fails with EIO and the function
-   * returns false. Two entries share a number only when the overlay is
+   * not loaded a second time: the function returns Conflict. Two entries
+   * share a number only when the overlay is
    * damaged, for example by a rename that was interrupted after its first
    * write.
    *
-   * If startLoadingChildIfNotLoading() returns true, the TreeInode will then
+   * If startLoadingChildIfNotLoading() returns Started, the TreeInode will then
    * continue loading the child inode.  It must then call inodeLoadComplete() or
    * inodeLoadFailed() when it finishes loading the inode.
    *
@@ -402,29 +405,27 @@ class InodeMap {
    * @param childInode The inode number of the child.
    * @param mode The st_mode of the child.
    * @param promise A promise to fulfill when this inode is finished loading.
-   *   The InodeMap is responsible for fulfilling this promise.
+   *   The InodeMap takes ownership unless it returns Conflict.
    *
-   * @return Returns true if the TreeInode should continue loading this child
-   *   inode, or false if this child was already being loaded or was rejected.
+   * @return Whether to start loading, wait for an existing load, or handle a
+   *   conflicting binding.
    */
-  bool startLoadingChildIfNotLoading(
+  ChildLoadResult startLoadingChildIfNotLoading(
       TreeInode* parent,
       PathComponentPiece name,
       InodeNumber childInode,
       mode_t mode,
-      folly::Promise<InodePtr> promise);
+      folly::Promise<InodePtr>& promise);
 
   /**
-   * Fail a load that startLoadingChildIfNotLoading() refused because the inode
-   * number is already loaded under another directory entry, and report the
-   * two paths.
+   * Report the two paths when startLoadingChildIfNotLoading() finds an inode
+   * number already loaded under another directory entry.
    */
-  void failLoadOfDuplicateEntry(
+  void reportDuplicateEntry(
       TreeInode* parent,
       PathComponentPiece name,
       InodeNumber childInode,
-      const std::string& loadedAs,
-      folly::Promise<InodePtr> promise);
+      const std::string& loadedAs);
 
   /**
    * inodeLoadComplete() should only be called by TreeInode.

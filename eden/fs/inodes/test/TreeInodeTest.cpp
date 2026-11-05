@@ -624,6 +624,51 @@ TEST_P(TreeInodeTestBase, readdirIndexIsRebuiltAfterRenameOverAnEntry) {
   EXPECT_EQ(2, getReaddirIndexCounters(mount).cached - before.cached);
 }
 
+TEST_P(TreeInodeTestBase, readdirIndexIsRebuiltAfterConflictRepair) {
+  FakeTreeBuilder builder;
+  const auto names = manyNames();
+  for (const auto& name : names) {
+    builder.setFile("dir/" + name, "");
+  }
+  builder.setFile("original", "original");
+  TestMount mount{
+      builder,
+      true,
+      true,
+      kPathMapDefaultCaseSensitive,
+      nullptr,
+      [](EdenConfig& config) {
+        config.overlayOnlineFsck.setValue(true, ConfigSourceType::CommandLine);
+      }};
+  maybeEnableCoroutines(mount);
+  auto original = mount.getFileInode("original");
+  auto dir = mount.getTreeInode("dir");
+  const auto& repaired = names.back();
+  {
+    auto contents = dir->getContentsUnchecked().wlock();
+    auto& entry = contents->entries.find(PathComponentPiece{repaired})->second;
+    entry = DirEntry{
+        entry.getInitialMode(),
+        original->getNodeId(),
+        entry.getObjectId(),
+        entry.aclRootState()};
+  }
+  const auto before = getReaddirIndexCounters(mount);
+  auto firstPage =
+      dir->fuseReaddir(
+             FuseDirList{4096}, 0, ObjectFetchContext::getNullContext())
+          .extract();
+  ASSERT_FALSE(firstPage.empty());
+  EXPECT_EQ(1, getReaddirIndexCounters(mount).cached - before.cached);
+
+  auto child = mount.getFileInode("dir/" + repaired);
+  EXPECT_NE(original->getNodeId(), child->getNodeId());
+  std::map<std::string, unsigned> seen;
+  listToEnd(dir, firstPage.back().offset, seen);
+  EXPECT_EQ(1u, seen[repaired]);
+  EXPECT_EQ(2, getReaddirIndexCounters(mount).cached - before.cached);
+}
+
 TEST_P(TreeInodeTestBase, readdirIndexIsDroppedByInodeGc) {
   FakeTreeBuilder builder;
   const auto names = manyNames();

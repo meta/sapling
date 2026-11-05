@@ -66,7 +66,11 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from eden.fs.cli.util import EdenStartError
-from eden.fs.service.eden.thrift_types import MountState
+from eden.fs.service.eden.thrift_types import (
+    MountState,
+    RemoveRecursivelyParams,
+    SyncBehavior,
+)
 from eden.integration.lib import testcase
 
 # Mirrors FsInodeCatalog::kHeaderLength.
@@ -412,15 +416,15 @@ base_root_inode      | a s/ s/f             | unchanged          | dir       | o
 base_zero_inode      | a s/ s/f             | unchanged          | dir       | orphan                  | b:ENOENT  | ok          | ok
 base_bad_name        | a s/ s/f             | unchanged          | dir       | orphan                  | b:ENOENT  | ok          | ok
 base_dup_name        | a s/ s/f             | unchanged          | dir       | orphan                  | b:ENOENT  | ok          | ok
-base_dup_inode       | a b:EIO s/ s/f       | unchanged          | -         | hardlink,orphan         | ok        | a:EIO       | -
+base_dup_inode       | a b:"" s/ s/f        | unchanged          | -         | orphan                  | ok        | ok          | ok
 base_self_ref        | a s/ s/f             | unchanged          | dir       | orphan                  | b:ENOENT  | ok          | ok
 base_unknown_field   | a b s/ s/f           | unchanged          | dir       | -                       | ok        | ok          | ok
 base_trailing        | a b s/ s/f           | unchanged          | dir       | -                       | ok        | ok          | ok
 base_negative_inode  | a s/ s/f             | unchanged          | dir       | orphan                  | b:ENOENT  | ok          | ok
 base_no_stop         | a b s/ s/f           | unchanged          | dir       | -                       | ok        | ok          | ok
 base_truncated       | a                    | unchanged          | dir       | orphan                  | b:ENOENT  | ok          | ok
-base_cycle_x         | a b s/ s/f s/p:EIO   | unchanged          | -         | hardlink                | ok        | s/p:EIO     | -
-base_mode_conflict_x | a b s/ s/f s/g:EIO   | unchanged          | -         | hardlink                | ok        | ok          | ok
+base_cycle_x         | a b s/ s/f s/p/      | unchanged          | -         | -                       | ok        | ok          | ok
+base_mode_conflict_x | a b s/ s/f s/g/      | unchanged          | -         | -                       | ok        | ok          | ok
 wal_bad_mode         | a b s/ s/f           | unchanged          | dir,wal   | -                       | ok        | ok          | ok
 wal_big_inode        | a b s/ s/f           | unchanged          | dir,wal   | -                       | ok        | ok          | ok
 wal_shadow_big_inode | a s/ s/f             | unchanged          | dir,wal   | orphan                  | b:ENOENT  | ok          | ok
@@ -430,7 +434,7 @@ wal_negative_inode   | a b s/ s/f           | unchanged          | dir,wal   | -
 wal_bad_name         | a s/ s/f             | unchanged          | dir,wal   | orphan                  | b:ENOENT  | ok          | ok
 wal_rename_crash     | b c:"a" s/ s/f       | unchanged          | -         | -                       | ok        | ok          | ok
 wal_rename_crash_rev | 0:"a" b s/ s/f       | unchanged          | -         | -                       | ok        | ok          | ok
-wal_rename_crash_x   | a b s/ s/f s/g:EIO   | unchanged          | -         | hardlink                | ok        | ok          | ok
+wal_rename_crash_x   | a b s/ s/f s/g:""    | unchanged          | -         | -                       | ok        | ok          | ok
 wal_self_ref         | a b s/ s/f           | unchanged          | dir,wal   | -                       | ok        | ok          | ok
 wal_torn             | b s/ s/f             | unchanged          | dir,wal   | orphan                  | ok        | ok          | ok
 wal_torn_len         | b s/ s/f             | unchanged          | dir,wal   | orphan                  | ok        | ok          | ok
@@ -731,6 +735,35 @@ class OverlayCorruptionTestBase(testcase.HgRepoTestMixin, testcase.EdenRepoTest)
         self.eden.shutdown()
         self.assertNotEqual(overflow, int(reservation.readlink().name))
 
+    async def test_remove_recursively_unloaded_subtree(self) -> None:
+        root = self.mount_path / "disk_only"
+        path = root / "s"
+        path.mkdir(parents=True)
+        (path / "f").write_text("f")
+        inode = os.lstat(path).st_ino
+        ctx = Ctx(
+            self.eden.overlay_dir_for_mount(self.mount_path),
+            {".": inode},
+            _BIG_INODE,
+        )
+
+        # Restart so removeRecursively sees the child subtree only on disk.
+        self.eden.shutdown()
+        self._start(self.mount_path)
+        async with self.get_async_thrift_client() as client:
+            await client.removeRecursively(
+                RemoveRecursivelyParams(
+                    mountPoint=os.fsencode(self.mount_path),
+                    path=b"disk_only",
+                    sync=SyncBehavior(),
+                )
+            )
+        self.eden.shutdown()
+
+        fsck = self._fsck(self.mount_path, {"disk_only": ctx})["disk_only"]
+        self.assertFalse(ctx.path(inode).exists())
+        self.assertEqual("-", fsck)
+
 
 @testcase.eden_nfs_repo_test(run_io_uring=False)
 class UnreadableRuntimeInodeTest(testcase.HgRepoTestMixin, testcase.EdenRepoTest):
@@ -768,6 +801,99 @@ class OnlineFsckOffTest(OverlayCorruptionTestBase):
 class OnlineFsckOnTest(OverlayCorruptionTestBase):
     online_fsck: bool = True
     expected: str = EXPECTED_ONLINE_FSCK_ON
+
+    def _make_aliased_subtrees(self) -> Tuple[pathlib.Path, pathlib.Path, Ctx]:
+        source = self.mount_path / "A" / "x"
+        alias = self.mount_path / "B" / "y"
+        source.mkdir(parents=True)
+        (source / "f").write_text("contents")
+        alias.mkdir(parents=True)
+        source_inode = os.lstat(source).st_ino
+        parent_inode = os.lstat(alias.parent).st_ino
+        ctx = Ctx(
+            self.eden.overlay_dir_for_mount(self.mount_path),
+            {".": parent_inode, "x": source_inode},
+            _BIG_INODE,
+        )
+        self.eden.shutdown()
+        ctx.write_dir(_encode_dir([("y", _DIR, source_inode)]))
+        self._start(self.mount_path)
+        return source, alias, ctx
+
+    async def test_remove_unseen_alias_reclaims_payload(self) -> None:
+        source, alias, ctx = self._make_aliased_subtrees()
+        # Neither x nor y has been loaded since the restart. Normal removal
+        # may reclaim their shared payload; y will subsequently load as empty.
+        async with self.get_async_thrift_client() as client:
+            await client.removeRecursively(
+                RemoveRecursivelyParams(
+                    mountPoint=os.fsencode(self.mount_path),
+                    path=b"A",
+                    sync=SyncBehavior(),
+                )
+            )
+        self.eden.shutdown()
+        self.assertFalse(ctx.path(ctx.ino["x"]).exists())
+        self._start(self.mount_path)
+        self.assertFalse(source.exists())
+        self.assertEqual([], os.listdir(alias))
+        alias.rmdir()
+
+    def test_remove_recovered_alias_preserves_loaded_subtree(self) -> None:
+        source, alias, ctx = self._make_aliased_subtrees()
+        self.assertEqual("contents", (source / "f").read_text())
+        # Loading y after x detects the conflict. Its empty replacement must
+        # have its own inode so removing y cannot remove x's backing data.
+        self.assertEqual([], os.listdir(alias))
+        self.assertNotEqual(ctx.ino["x"], os.lstat(alias).st_ino)
+        self.eden.shutdown()
+        self._start(self.mount_path)
+        # Read y first: the repaired binding must survive unloading/restart,
+        # rather than making the next lookup choose a different owner of x.
+        self.assertEqual([], os.listdir(alias))
+        alias.rmdir()
+        self.assertEqual("contents", (source / "f").read_text())
+
+    def test_repaired_symlink_is_removable_without_redirecting_traversal(self) -> None:
+        source = self.mount_path / "A" / "x"
+        alias = self.mount_path / "B" / "y"
+        source.parent.mkdir()
+        alias.parent.mkdir()
+        source.symlink_to("original-target")
+        alias.symlink_to("other-target")
+        victim = alias.parent / "victim"
+        victim.write_text("contents")
+        source_inode = os.lstat(source).st_ino
+        ctx = Ctx(
+            self.eden.overlay_dir_for_mount(self.mount_path),
+            {".": os.lstat(alias.parent).st_ino},
+            _BIG_INODE,
+        )
+        victim_inode = os.lstat(victim).st_ino
+        self.eden.shutdown()
+        ctx.write_dir(
+            _encode_dir(
+                [
+                    ("y", stat.S_IFLNK | 0o777, source_inode),
+                    ("victim", _REG, victim_inode),
+                ]
+            )
+        )
+        self._start(self.mount_path)
+        self.assertEqual("original-target", os.readlink(source))
+        self.assertNotEqual(source_inode, os.lstat(alias).st_ino)
+        self.eden.shutdown()
+        self._start(self.mount_path)
+
+        with self.assertRaises(OSError) as read_error:
+            os.readlink(alias)
+        self.assertEqual(errno.EIO, read_error.exception.errno)
+        with self.assertRaises(OSError) as unlink_error:
+            (alias / "victim").unlink()
+        self.assertEqual(errno.EIO, unlink_error.exception.errno)
+        self.assertEqual("contents", victim.read_text())
+        alias.unlink()
+        self.assertEqual("original-target", os.readlink(source))
 
 
 # Keep the shared base class out of unittest discovery

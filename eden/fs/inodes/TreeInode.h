@@ -1317,8 +1317,17 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
   [[nodiscard]] static int checkPreRemove(const FileInode& child);
 
   /**
+   * Claim a child load, repairing a conflicting binding when online fsck is
+   * enabled. Must be called with the contents_ write lock held.
+   */
+  bool startLoadingChild(
+      PathComponentPiece name,
+      DirEntry& entry,
+      folly::Promise<InodePtr>& promise);
+
+  /**
    * This helper function starts loading a currently unloaded child inode.
-   * Must be called with the contents_ lock held.
+   * Must be called with the contents_ write lock held.
    * name must use the canonical spelling from the DirEntry key, which may
    * differ from the source-control spelling on case-insensitive mounts.
    */

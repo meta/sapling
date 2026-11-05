@@ -22,7 +22,6 @@
 #include "eden/fs/config/ReloadableConfig.h"
 #include "eden/fs/inodes/EdenMount.h"
 #include "eden/fs/inodes/FileInode.h"
-#include "eden/fs/inodes/InodeError.h"
 #include "eden/fs/inodes/Overlay.h"
 #include "eden/fs/inodes/ParentInodeInfo.h"
 #include "eden/fs/inodes/ServerState.h"
@@ -1393,12 +1392,12 @@ optional<InodeMap::UnloadedInode> InodeMap::updateOverlayForUnload(
   }
 }
 
-bool InodeMap::startLoadingChildIfNotLoading(
+InodeMap::ChildLoadResult InodeMap::startLoadingChildIfNotLoading(
     TreeInode* parent,
     PathComponentPiece name,
     InodeNumber childInode,
     mode_t mode,
-    folly::Promise<InodePtr> promise) {
+    folly::Promise<InodePtr>& promise) {
   bool isFirstPromise;
   std::optional<InodeTraceEvent> startLoadEvent;
   {
@@ -1407,9 +1406,8 @@ bool InodeMap::startLoadingChildIfNotLoading(
         loaded != data->loadedInodes_.end()) {
       auto loadedAs = loaded->second->getLogPath();
       data.unlock();
-      failLoadOfDuplicateEntry(
-          parent, name, childInode, loadedAs, std::move(promise));
-      return false;
+      reportDuplicateEntry(parent, name, childInode, loadedAs);
+      return ChildLoadResult::Conflict;
     }
     UnloadedInode* unloadedData{nullptr};
     auto iter = data->unloadedInodes_.find(childInode);
@@ -1420,14 +1418,7 @@ bool InodeMap::startLoadingChildIfNotLoading(
     // do not attach the second entry to that inode or its load promises.
     if (iter != data->unloadedInodes_.end() &&
         !iter->second.matchesLinkedChild(parent->getNodeId(), name, mode)) {
-      data.unlock();
-      promise.setException(
-          folly::make_exception_wrapper<std::system_error>(
-              EIO,
-              std::generic_category(),
-              fmt::format(
-                  "conflicting inode reference to inode {}", childInode)));
-      return false;
+      return ChildLoadResult::Conflict;
     }
     if (iter == data->unloadedInodes_.end()) {
       InodeNumber parentNumber = parent->getNodeId();
@@ -1461,15 +1452,14 @@ bool InodeMap::startLoadingChildIfNotLoading(
   // If this is the very first promise then tell the caller they need
   // to start the load operation.  Otherwise someone else (whoever added the
   // first promise) has already started loading the inode.
-  return isFirstPromise;
+  return isFirstPromise ? ChildLoadResult::Started : ChildLoadResult::Pending;
 }
 
-void InodeMap::failLoadOfDuplicateEntry(
+void InodeMap::reportDuplicateEntry(
     TreeInode* parent,
     PathComponentPiece name,
     InodeNumber childInode,
-    const std::string& loadedAs,
-    folly::Promise<InodePtr> promise) {
+    const std::string& loadedAs) {
   auto message = fmt::format(
       "inode {} is already loaded as {}; refusing to load it again as {}/{}",
       childInode,
@@ -1484,8 +1474,6 @@ void InodeMap::failLoadOfDuplicateEntry(
     XLOGF(ERR, "{}", message);
   }
   stats_->increment(&InodeMapStats::lookupInodeError);
-  promise.setException(InodeError(
-      EIO, TreeInodePtr::newPtrFromExisting(parent), name, std::move(message)));
 }
 
 void InodeMap::inodeCreated(const InodePtr& inode) {

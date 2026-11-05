@@ -2016,6 +2016,31 @@ TEST(OverlayWalLifecycleTest, recursiveRemoveDoesNotLeaveOrphanWal) {
   bundle.overlay->close();
 }
 
+TEST(OverlayWalLifecycleTest, onlineFsckReclaimsDiskOnlyDirectory) {
+  folly::test::TemporaryDirectory tmp("eden_online_fsck_gc");
+  auto dir = canonicalPath(tmp.path().string());
+  auto bundle = makeWalLifecycleOverlay(
+      dir,
+      kPathMapDefaultCaseSensitive,
+      0,
+      /*cacheWalFiles=*/true,
+      /*useWal=*/true,
+      /*writeWalV2=*/false,
+      /*onlineFsck=*/true);
+  ASSERT_NE(nullptr, bundle.store);
+
+  auto parent = bundle.overlay->allocateInodeNumber();
+  bundle.overlay->saveOverlayDir(
+      parent, DirContents{kPathMapDefaultCaseSensitive});
+  ASSERT_TRUE(bundle.overlay->hasOverlayDir(parent));
+
+  bundle.overlay->recursivelyRemoveOverlayDir(parent);
+  bundle.overlay->flushPendingAsync().get();
+  EXPECT_FALSE(bundle.overlay->hasOverlayDir(parent));
+
+  bundle.overlay->close();
+}
+
 TEST(OverlayWalLifecycleTest, clearOnDirWithoutWalIsNoOp) {
   folly::test::TemporaryDirectory tmp("eden_wal_lifecycle");
   auto dir = canonicalPath(tmp.path().string());
