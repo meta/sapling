@@ -328,9 +328,23 @@ impl Config {
         // If the path is not a repo then we use the provided path.
         let repo_root = locate_repo_root(&path)?.unwrap_or(&path);
 
+        self.resolve_repo_root(repo_root, repo_root, subdir, watchable, encoder)
+    }
+
+    /// Computes the scratch location of the repository at `repo_root`, a
+    /// canonical path, without reading `repo_root`, so it needn't exist.
+    /// The repository's owner is the owner of `owner_path` instead.
+    pub fn resolve_repo_root(
+        &self,
+        repo_root: &Path,
+        owner_path: &Path,
+        subdir: Option<&Path>,
+        watchable: bool,
+        encoder: &dyn Fn(&str) -> String,
+    ) -> Result<ScratchPath> {
         // Get the base scratch path for this repo
-        let scratch_root = scratch_root(self, repo_root, encoder)?;
-        let repo_owner = get_file_owner(repo_root)?;
+        let scratch_root = scratch_root(self, repo_root, owner_path, encoder)?;
+        let repo_owner = get_file_owner(owner_path)?;
 
         // If they asked for a subdir, compute it
         let mut result = scratch_root.clone();
@@ -420,15 +434,21 @@ fn get_file_owner(_path: &Path) -> Result<String> {
 }
 
 /// Resolves the root directory to use as the scratch space for a given
-/// repository path.  This is the function that performs expansion of
-/// the $USER and $HOME placeholder tokens in the configured template.
-fn scratch_root(config: &Config, path: &Path, encoder: &dyn Fn(&str) -> String) -> Result<PathBuf> {
+/// repository path, owned by the owner of `owner_path`.  This is the function
+/// that performs expansion of the $USER and $HOME placeholder tokens in the
+/// configured template.
+fn scratch_root(
+    config: &Config,
+    path: &Path,
+    owner_path: &Path,
+    encoder: &dyn Fn(&str) -> String,
+) -> Result<PathBuf> {
     let path_str = path
         .to_str()
         .ok_or_else(|| format_err!("{path:?} cannot be converted to utf8"))?;
-    let repo_owner = get_file_owner(path)?;
+    let repo_owner = get_file_owner(owner_path)?;
     let repo_owner_home = lookup_home_dir_for_user(&repo_owner)?;
-    let owner_home_for_root = repo_owner_home_for_root(path, &repo_owner_home)?;
+    let owner_home_for_root = repo_owner_home_for_root(owner_path, &repo_owner_home)?;
     let template =
         config.template_for_path(path_str, &repo_owner, owner_home_for_root.as_deref())?;
 
@@ -556,7 +576,7 @@ mod test {
             template: Some(scratch_base.display().to_string()),
             ..Config::default()
         };
-        let scratch_namespace = scratch_root(&flat, &repo, &zzencode)?;
+        let scratch_namespace = scratch_root(&flat, &repo, &repo, &zzencode)?;
         fs::create_dir_all(&scratch_namespace)?;
 
         // A path inside the repository resolves within the repository's namespace.
@@ -582,6 +602,49 @@ mod test {
             0,
             "resolving must not create directories or a README"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_repo_root_does_not_need_the_root() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let base = fs::canonicalize(temp_dir.path())?;
+        let parent_repo = base.join("parent-repo");
+        let checkout = parent_repo.join("checkout");
+        let owner_path = base.join("client-state");
+        let scratch_base = base.join("scratch");
+        fs::create_dir_all(parent_repo.join(".git"))?;
+        fs::create_dir(&owner_path)?;
+        let owner = get_file_owner(&owner_path)?;
+        let config = Config {
+            template: Some(scratch_base.join("$REPO_OWNER_USER").display().to_string()),
+            ..Config::default()
+        };
+        let subdir = Path::new("edenfs/redirections");
+
+        let missing =
+            config.resolve_repo_root(&checkout, &owner_path, Some(subdir), false, &zzencode)?;
+        let namespace = scratch_base.join(&owner).join(zzencode(
+            checkout.to_str().expect("checkout path should be UTF-8"),
+        ));
+        assert_eq!(
+            missing.scratch_root, namespace,
+            "a missing root should keep its own namespace instead of its parent repository's"
+        );
+        assert_eq!(missing.path, namespace.join("edenfsZredirections"));
+        assert_eq!(missing.repo_owner, owner);
+        assert!(!checkout.exists(), "resolving must not create the root");
+        assert!(
+            !scratch_base.exists(),
+            "resolving must not create scratch directories"
+        );
+
+        // Once the root exists, normal resolution finds the same location.
+        fs::create_dir_all(checkout.join(".git"))?;
+        let present = config.resolve(Some(&checkout), Some(subdir), false, &zzencode)?;
+        assert_eq!(present.scratch_root, missing.scratch_root);
+        assert_eq!(present.path, missing.path);
+        assert_eq!(present.repo_owner, missing.repo_owner);
         Ok(())
     }
 }
