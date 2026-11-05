@@ -4,7 +4,7 @@ sidebar_position: 23
 
 ## log
 <!--
-  @generated SignedSource<<103c367178d5d8e3c8cd3d2bea86fdad>>
+  @generated SignedSource<<f4d8290da6c472a39ced38a1d19d6d52>>
   Run `./scripts/generate-command-markdown.py` to regenerate.
 -->
 
@@ -15,9 +15,16 @@ Print the revision history of the specified files or the entire
 project.
 
 If no revision range is specified, the default revision range is the
-current commit and all of its ancestors (`::.`). The experimental
-`--mutation` option changes this default to the current commit and its
-mutation predecessors (`predecessors(.)`).
+current commit and all of its ancestors (`::.`).
+
+The `--mutation` option links the revisions by mutation (amend,
+rebase, fold, split and other rewrites) rather than by parent, and shows
+patches and `--stat` against the commit each one was created from. Its
+default revision range is the mutation history of the current commit
+(`mutationhistory(.)`); use `-r &#x27;mutationhistory(REV)&#x27;` for another
+commit&#x27;s, or `sl sl -t REV`. Commits that are not shown are skipped,
+with a dashed line over them; `--show-missing` also shows the commits
+not available locally.
 
 File history is shown without following the rename or copy
 history of files. To follow file history across renames and
@@ -33,11 +40,10 @@ full commit message are shown.
 With the `--graph` option, revisions are shown as an ASCII art
 graph with the most recent commit at the top. The graph nodes
 are depicted as follows: **o** is a commit, **@** is a working
-directory parent, **x** is obsolete, and **+** represents a fork
-where the commit from the lines below is a parent of the **o**
-merge on the same line. Paths in the graph are represented with
-**|**, **/** and so forth. **:** in place of a **|** indicates
-one or more revisions in a path are omitted.
+directory parent, **x** is obsolete, and **v** is obsolete and diverged
+(it was replaced by more than one visible version). Paths in the graph
+are represented with **|**, **/** and so forth. **:** in place of a
+**|** indicates one or more revisions in a path are omitted.
 
 Use the `-L/--line-range FILE,M:N` option to follow the
 history of lines from **M** to **N** in FILE. With the `-p/--
@@ -165,6 +171,8 @@ Returns 0 on success.
 | | `--stat`| | output diffstat-style summary of changes|
 | `-G`| `--graph`| | show the revision DAG|
 | `-T`| `--template`| | display with template|
+| `-t`| `--mutation`| `false`| link the revisions by mutation instead of by parent|
+| | `--show-missing`| `false`| with --mutation, show commits not available locally|
 | `-I`| `--include`| | include files matching the given patterns|
 | `-X`| `--exclude`| | exclude files matching the given patterns|
 | | `--all`| | shows all changesets in the repo|

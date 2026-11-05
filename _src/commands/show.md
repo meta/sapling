@@ -4,7 +4,7 @@ sidebar_position: 37
 
 ## show
 <!--
-  @generated SignedSource<<41a030799ac6ee8480059a8b65d6a242>>
+  @generated SignedSource<<e44ce6a5cdc70a345ccce0dc82bbdef4>>
   Run `./scripts/generate-command-markdown.py` to regenerate.
 -->
 
@@ -36,6 +36,7 @@ if called without a `REV`, `sl log -vp -r . [OPTION]...` Use
 | `-g`| `--git`| | use git extended diff format|
 | `-U`| `--unified`| `3`| number of lines of diff context to show|
 | `-r`| `--rev`| | show the specified revision|
+| `-t`| `--mutation`| `false`| diff against the mutation predecessor|
 | `-w`| `--ignore-all-space`| | ignore white space when comparing lines|
 | `-b`| `--ignore-space-change`| | ignore changes in the amount of white space|
 | `-B`| `--ignore-blank-lines`| | ignore changes whose lines are all blank|
