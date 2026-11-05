@@ -437,6 +437,39 @@ class RemoveTest(RemoveTestBase):
             ("python", {"EDENFSCTL_SKIP_RUST": "1"}),
         ]
     )
+    def test_remove_unmounted_checkout(self, impl: str, env: dict) -> None:
+        mount_path = pathlib.Path(self.mount)
+        self.eden.unmount(mount_path)
+
+        result = self.eden.run_unchecked(
+            "remove",
+            "--yes",
+            self.mount,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        if sys.platform == "win32" and impl == "python":
+            # FIXME: `.eden\config` stays in the folder after `eden unmount`, so
+            # `eden rm` takes the checkout for a mounted one and fails to unmount it.
+            # It should remove the checkout as on the other platforms.
+            self.assertIn("error unmounting", result.stderr)
+            self.assertIn(self.mount, self.load_directory_map())
+            return
+        self.assertEqual(
+            0,
+            result.returncode,
+            f"{impl} eden remove should remove an unmounted checkout. stderr={result.stderr}",
+        )
+        self.assertNotIn(self.mount, self.load_directory_map())
+        self.assertFalse(mount_path.exists())
+
+    @parameterized.expand(
+        [
+            ("rust", {"EDENFSCTL_ONLY_RUST": "1"}),
+            ("python", {"EDENFSCTL_SKIP_RUST": "1"}),
+        ]
+    )
     def test_remove_succeeds_when_config_toml_is_missing(
         self, impl: str, env: dict
     ) -> None:
