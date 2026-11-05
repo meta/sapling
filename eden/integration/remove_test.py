@@ -449,13 +449,6 @@ class RemoveTest(RemoveTestBase):
             capture_output=True,
             text=True,
         )
-        if sys.platform == "win32" and impl == "python":
-            # FIXME: `.eden\config` stays in the folder after `eden unmount`, so
-            # `eden rm` takes the checkout for a mounted one and fails to unmount it.
-            # It should remove the checkout as on the other platforms.
-            self.assertIn("error unmounting", result.stderr)
-            self.assertIn(self.mount, self.load_directory_map())
-            return
         self.assertEqual(
             0,
             result.returncode,
@@ -473,11 +466,6 @@ class RemoveTest(RemoveTestBase):
     def test_remove_succeeds_when_config_toml_is_missing(
         self, impl: str, env: dict
     ) -> None:
-        if sys.platform == "win32":
-            self.skipTest(
-                "On Windows, .eden\\config stays after `eden unmount`, so `eden rm` "
-                "takes the checkout for a mounted one and fails to unmount it"
-            )
         mount_path = pathlib.Path(self.mount)
         self.eden.unmount(mount_path)
         (self.eden.client_dir_for_mount(mount_path) / "config.toml").unlink()

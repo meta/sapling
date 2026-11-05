@@ -2312,13 +2312,33 @@ Do you still want to delete {path}?"""
                         )
                     remove_type = registered_type
 
+                # On Windows, `.eden\config` stays in the folder after the checkout
+                # is unmounted, so the daemon is asked as well. It's asked here,
+                # not before the prompt, because the checkout can be mounted in
+                # the meantime. If it can't answer, the folder decides, as it
+                # does on the other platforms.
+                is_mounted = remove_type in (
+                    RemoveType.ACTIVE_MOUNT,
+                    RemoveType.ACTIVE_UNREGISTERED,
+                )
+                if (
+                    is_mounted
+                    and sys.platform == "win32"
+                    and mount in configured_mounts
+                ):
+                    try:
+                        with instance.get_thrift_client() as client:
+                            is_mounted = Path(mount) in {
+                                Path(os.fsdecode(m.mountPoint))
+                                for m in client.listMounts()
+                            }
+                    except (EdenNotRunningError, TransportError):
+                        pass
+
                 result = remove_checkout_impl(
                     instance=mount_instance,
                     path=mount,
-                    is_mounted=(
-                        remove_type
-                        in (RemoveType.ACTIVE_MOUNT, RemoveType.ACTIVE_UNREGISTERED)
-                    ),
+                    is_mounted=is_mounted,
                     output=ui.get_output(),
                     preserve_mount_point=args.preserve_mount_point,
                     use_force=not args.no_force,
