@@ -301,20 +301,14 @@ class EdenServiceHandler
       DebugGetRawJournalResponse& out,
       std::unique_ptr<DebugGetRawJournalParams> params) override;
 
-  folly::SemiFuture<std::unique_ptr<std::vector<EntryInformationOrError>>>
-  semifuture_getEntryInformation(
+  folly::coro::Task<std::unique_ptr<std::vector<EntryInformationOrError>>>
+  co_getEntryInformation(
       std::unique_ptr<std::string> mountPoint,
       std::unique_ptr<std::vector<std::string>> paths,
       std::unique_ptr<SyncBehavior> sync) override;
 
-  folly::SemiFuture<std::unique_ptr<std::vector<EntryInformationOrError>>>
-  semifuture_getEntryInformationImpl(
-      std::unique_ptr<std::string> mountPoint,
-      std::unique_ptr<std::vector<std::string>> paths,
-      std::unique_ptr<SyncBehavior> sync);
-
   folly::coro::now_task<std::unique_ptr<std::vector<EntryInformationOrError>>>
-  co_getEntryInformationImpl(
+  getEntryInformationImpl(
       std::unique_ptr<std::string> mountPoint,
       std::unique_ptr<std::vector<std::string>> paths,
       std::unique_ptr<SyncBehavior> sync);

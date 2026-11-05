@@ -3767,57 +3767,11 @@ void EdenServiceHandler::debugGetRawJournal(
       mountHandle.getObjectStore());
 }
 
-folly::SemiFuture<std::unique_ptr<std::vector<EntryInformationOrError>>>
-EdenServiceHandler::semifuture_getEntryInformationImpl(
-    std::unique_ptr<std::string> mountPoint,
-    std::unique_ptr<std::vector<std::string>> paths,
-    std::unique_ptr<SyncBehavior> sync) {
-  auto helper = INSTRUMENT_THRIFT_CALL(
-      DBG3, *mountPoint, getSyncTimeout(*sync), toLogArg(*paths));
-  auto mountHandle = lookupMount(mountPoint);
-  auto& fetchContext = helper->getFetchContext();
-
-  return wrapImmediateFuture(
-             std::move(helper),
-             waitForPendingWrites(mountHandle.getEdenMount(), *sync)
-                 .thenValue([mountHandle,
-                             paths = std::move(paths),
-                             fetchContext = fetchContext.copy()](auto&&) {
-                   return applyToVirtualInode(
-                       mountHandle.getRootInode(),
-                       *paths,
-                       [](const VirtualInode& inode, const RelativePath&) {
-                         return inode.getDtype();
-                       },
-                       mountHandle.getObjectStorePtr(),
-                       fetchContext);
-                 })
-                 .thenValue([](vector<Try<dtype_t>> done) {
-                   auto out =
-                       std::make_unique<vector<EntryInformationOrError>>();
-                   out->reserve(done.size());
-                   for (auto& item : done) {
-                     EntryInformationOrError result;
-                     if (item.hasException()) {
-                       result.error() = newEdenError(item.exception());
-                     } else {
-                       EntryInformation info;
-                       info.dtype() = static_cast<Dtype>(item.value());
-                       result.info() = info;
-                     }
-                     out->emplace_back(std::move(result));
-                   }
-                   return out;
-                 }))
-      .semi();
-}
-
 folly::coro::now_task<std::unique_ptr<std::vector<EntryInformationOrError>>>
-EdenServiceHandler::co_getEntryInformationImpl(
+EdenServiceHandler::getEntryInformationImpl(
     std::unique_ptr<std::string> mountPoint,
     std::unique_ptr<std::vector<std::string>> paths,
     std::unique_ptr<SyncBehavior> sync) {
-  XLOG(DBG6, "Using coroutine path for getEntryInformation");
   auto helper = INSTRUMENT_THRIFT_CALL(
       DBG3, *mountPoint, getSyncTimeout(*sync), toLogArg(*paths));
   auto& fetchContext = helper->getFetchContext();
@@ -3852,31 +3806,12 @@ EdenServiceHandler::co_getEntryInformationImpl(
   co_return out;
 }
 
-folly::SemiFuture<std::unique_ptr<std::vector<EntryInformationOrError>>>
-EdenServiceHandler::semifuture_getEntryInformation(
+folly::coro::Task<std::unique_ptr<std::vector<EntryInformationOrError>>>
+EdenServiceHandler::co_getEntryInformation(
     std::unique_ptr<std::string> mountPoint,
     std::unique_ptr<std::vector<std::string>> paths,
     std::unique_ptr<SyncBehavior> sync) {
-  if (server_->getServerState()
-          ->getEdenConfig()
-          ->enableCoroutinesPhase8.getValue()) {
-    // @lint-ignore CLANGTIDY facebook-folly-coro-return-captures-local-var
-    return folly::coro::co_invoke(
-               [self = shared_from_this()](
-                   std::unique_ptr<std::string> mountPoint,
-                   std::unique_ptr<std::vector<std::string>> paths,
-                   std::unique_ptr<SyncBehavior> sync)
-                   -> folly::coro::Task<
-                       std::unique_ptr<std::vector<EntryInformationOrError>>> {
-                 co_return co_await self->co_getEntryInformationImpl(
-                     std::move(mountPoint), std::move(paths), std::move(sync));
-               },
-               std::move(mountPoint),
-               std::move(paths),
-               std::move(sync))
-        .semi();
-  }
-  return semifuture_getEntryInformationImpl(
+  co_return co_await getEntryInformationImpl(
       std::move(mountPoint), std::move(paths), std::move(sync));
 }
 

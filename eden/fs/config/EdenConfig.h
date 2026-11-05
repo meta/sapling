@@ -2115,15 +2115,6 @@ class EdenConfig : private ConfigSettingManager {
   ConfigSetting<bool> enableCoroutines{"coroutines:enabled", true, this};
 
   /**
-   * Controls whether EdenFS uses phase 8 coroutine implementations
-   * (getEntryInformation).
-   */
-  ConfigSetting<bool> enableCoroutinesPhase8{
-      "coroutines:enable-phase8",
-      false,
-      this};
-
-  /**
    * Controls whether EdenFS uses phase 9 coroutine implementations
    * (getFileInformation).
    */
