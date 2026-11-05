@@ -194,10 +194,8 @@ impl fmt::Display for NanoDag {
             end: usize,
         }
 
-        impl SmallRevs {
-            fn shift1(&self) -> Self {
-                self.iter().map(|r| r + 1).collect()
-            }
+        fn shift1(revs: &SmallRevs) -> SmallRevs {
+            revs.iter().map(|r| r + 1).collect()
         }
 
         impl State {
@@ -215,13 +213,13 @@ impl fmt::Display for NanoDag {
                 let end_revs = SmallRevs::from(end);
 
                 let mut children_vec = Vec::with_capacity(end + 1);
-                children_vec.push(dag.roots(&dag.all()).shift1());
+                children_vec.push(shift1(&dag.roots(&dag.all())));
                 for rev in 0..dag.parents.len() {
                     let children = dag.children(rev);
                     let revs = if children.is_empty() {
                         end_revs.clone()
                     } else {
-                        children.shift1()
+                        shift1(children)
                     };
                     children_vec.push(revs);
                 }

@@ -31,5 +31,6 @@ sl_rust_library(
         "fbsource//third-party/rust:bitflags",
         "fbsource//third-party/rust:im",
         "fbsource//third-party/rust:smallvec",
+        "//eden/scm/lib/util/small_set:small_set",
     ],
 )

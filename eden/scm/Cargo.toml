@@ -227,6 +227,7 @@ members = [
   "lib/util/rewrite-macros",
   "lib/util/rewrite-macros/tree-pattern-match",
   "lib/util/sigbus-memops",
+  "lib/util/small_set",
   "lib/util/sysutil",
   "lib/util/testutil",
   "lib/util/time-interval",

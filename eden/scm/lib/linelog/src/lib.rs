@@ -10,15 +10,15 @@ mod linelog;
 mod maybe_mut;
 #[allow(unused)]
 mod nanodag;
-mod small_revs;
 mod stacks;
+
+pub use small_set::SmallSet as SmallRevs;
 
 pub use crate::linelog::AbstractLineLog;
 pub use crate::linelog::CheckoutRev;
 pub use crate::linelog::EditFlags;
 pub use crate::linelog::EntryId;
 pub use crate::nanodag::NanoDag;
-pub use crate::small_revs::SmallRevs;
 pub use crate::stacks::FlattenLine;
 
 /// LineLog with string line content.

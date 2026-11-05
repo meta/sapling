@@ -17,9 +17,9 @@ use bitflags::bitflags;
 use im::Vector as ImVec;
 use smallvec::SmallVec;
 
+use crate::SmallRevs;
 use crate::maybe_mut::MaybeMut;
 use crate::nanodag::NanoDag;
-use crate::small_revs::SmallRevs;
 
 /// See https://sapling-scm.com/docs/internals/linelog for details.
 pub struct AbstractLineLog<T, M = ()> {

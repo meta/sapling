@@ -16,6 +16,7 @@ name = "linelog"
 [dependencies]
 bitflags = { version = "2.13.2", features = ["serde", "std"], default-features = false }
 im = { version = "15.1", default-features = false }
+sapling-small-set = { version = "0.1.0", path = "../util/small_set" }
 smallvec = { version = "1.16.4", default-features = false }
 
 [dev-dependencies]

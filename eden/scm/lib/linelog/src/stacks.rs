@@ -11,13 +11,13 @@
 use std::mem::take;
 use std::sync::Arc;
 
+use crate::SmallRevs;
 use crate::linelog::AbstractLineLog;
 use crate::linelog::EntryId;
 use crate::linelog::Inst;
 use crate::linelog::Pc;
 use crate::linelog::Rev;
 use crate::nanodag::NanoDag;
-use crate::small_revs::SmallRevs;
 
 /// A "flatten" line, annotating which revisions contain this line.
 #[derive(Clone)]
