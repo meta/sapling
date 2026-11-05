@@ -17,6 +17,7 @@ pub use crate::store::SqlBookmarksRef;
 
 #[cfg(test)]
 mod test {
+    use std::cmp::Reverse;
     use std::collections::BTreeMap;
     use std::collections::HashSet;
 
@@ -28,10 +29,12 @@ mod test {
     use bookmarks::BookmarkKind;
     use bookmarks::BookmarkPagination;
     use bookmarks::BookmarkPrefix;
+    use bookmarks::BookmarkUpdateLog;
     use bookmarks::BookmarkUpdateReason;
     use bookmarks::Bookmarks;
     use bookmarks::Freshness;
     use context::CoreContext;
+    use context::PerfCounterType;
     use fbinit::FacebookInit;
     use futures::stream::TryStreamExt;
     use mononoke_macros::mononoke;
@@ -43,6 +46,200 @@ mod test {
     use sql_construct::SqlConstruct;
 
     use super::*;
+
+    #[mononoke::fbinit_test]
+    async fn test_recently_moved_filters_before_limit(fb: FacebookInit) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let builder = SqlBookmarksBuilder::with_sqlite_in_memory()?;
+        let store = builder.clone().with_repo_id(REPO_ZERO);
+        let other_repo = RepositoryId::new(1);
+        let branch = BookmarkKey::new("same")?;
+        let tag = BookmarkKey::with_name_and_category(branch.name().clone(), BookmarkCategory::Tag);
+        let note =
+            BookmarkKey::with_name_and_category(branch.name().clone(), BookmarkCategory::Note);
+        let scratch = BookmarkKey::new("scratch")?;
+        let no_log = BookmarkKey::new("no_log")?;
+        let other = BookmarkKey::new("other")?;
+        let rows = [
+            (
+                &REPO_ZERO,
+                &Some(1),
+                &branch,
+                &ONES_CSID,
+                &BookmarkKind::PullDefaultPublishing,
+            ),
+            (
+                &REPO_ZERO,
+                &Some(2),
+                &tag,
+                &TWOS_CSID,
+                &BookmarkKind::Publishing,
+            ),
+            (
+                &REPO_ZERO,
+                &Some(3),
+                &note,
+                &ONES_CSID,
+                &BookmarkKind::Publishing,
+            ),
+            // Even a scratch row with a log id must not consume the limit.
+            (
+                &REPO_ZERO,
+                &Some(100),
+                &scratch,
+                &ONES_CSID,
+                &BookmarkKind::Scratch,
+            ),
+            (
+                &REPO_ZERO,
+                &None,
+                &no_log,
+                &ONES_CSID,
+                &BookmarkKind::Publishing,
+            ),
+            (
+                &other_repo,
+                &Some(200),
+                &other,
+                &ONES_CSID,
+                &BookmarkKind::Publishing,
+            ),
+        ];
+        let values: Vec<_> = rows
+            .iter()
+            .map(|(repo, log_id, key, cs, kind)| {
+                (*repo, *log_id, key.name(), key.category(), *cs, *kind)
+            })
+            .collect();
+        crate::transaction::InsertBookmarks::query(
+            store.write_connection(),
+            ctx.sql_query_telemetry(),
+            &values,
+        )
+        .await?;
+
+        assert_eq!(
+            store
+                .list_recently_moved_bookmarks(ctx.clone(), 1, Freshness::MostRecent)
+                .await?,
+            vec![(note.clone(), ONES_CSID)]
+        );
+        assert_eq!(
+            store
+                .list_recently_moved_bookmarks(ctx.clone(), 10, Freshness::MostRecent)
+                .await?,
+            vec![(note, ONES_CSID), (tag, TWOS_CSID), (branch, ONES_CSID)]
+        );
+        assert!(
+            store
+                .list_recently_moved_bookmarks(ctx.clone(), 0, Freshness::MostRecent)
+                .await?
+                .is_empty()
+        );
+        assert_eq!(
+            builder
+                .with_repo_id(other_repo)
+                .list_recently_moved_bookmarks(ctx, 10, Freshness::MostRecent)
+                .await?,
+            vec![(other, ONES_CSID)]
+        );
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn test_recently_moved_matches_live_log_entries(fb: FacebookInit) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let store = SqlBookmarksBuilder::with_sqlite_in_memory()?.with_repo_id(REPO_ZERO);
+        let x = BookmarkKey::new("x")?;
+        let y = BookmarkKey::new("y")?;
+        let deleted = BookmarkKey::new("deleted")?;
+        for (key, cs) in [
+            (&y, ONES_CSID),
+            (&x, ONES_CSID),
+            (&deleted, ONES_CSID),
+            (&x, TWOS_CSID),
+            (&x, ONES_CSID),
+            (&x, TWOS_CSID),
+        ] {
+            let mut txn = store.create_transaction(ctx.clone());
+            txn.force_set(key, cs, BookmarkUpdateReason::TestMove)?;
+            assert!(txn.commit().await?.is_some());
+        }
+        let mut txn = store.create_transaction(ctx.clone());
+        txn.force_delete(&deleted, BookmarkUpdateReason::TestMove)?;
+        assert!(txn.commit().await?.is_some());
+
+        let log = store
+            .read_next_bookmark_log_entries(ctx.clone(), 0.into(), 100, Freshness::MostRecent)
+            .try_collect::<Vec<_>>()
+            .await?;
+        let latest: BTreeMap<_, _> = log
+            .into_iter()
+            .map(|entry| (entry.bookmark_name, (entry.id, entry.to_changeset_id)))
+            .collect();
+        let mut live: Vec<_> = latest
+            .into_iter()
+            .filter_map(|(key, (id, cs))| cs.map(|cs| (id, key, cs)))
+            .collect();
+        live.sort_unstable_by_key(|entry| Reverse(entry.0));
+        let expected: Vec<_> = live.into_iter().map(|(_, key, cs)| (key, cs)).collect();
+        assert_eq!(expected, vec![(x, TWOS_CSID), (y, ONES_CSID)]);
+        for limit in [0, 1, 2, 10] {
+            assert_eq!(
+                store
+                    .list_recently_moved_bookmarks(ctx.clone(), limit, Freshness::MostRecent)
+                    .await?,
+                expected
+                    .iter()
+                    .take(limit as usize)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            );
+        }
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn test_recently_moved_freshness_uses_distinct_databases(fb: FacebookInit) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let primary = SqlBookmarksBuilder::with_sqlite_in_memory()?.with_repo_id(REPO_ZERO);
+        let replica = SqlBookmarksBuilder::with_sqlite_in_memory()?.with_repo_id(REPO_ZERO);
+        let key = BookmarkKey::new("x")?;
+        for (store, cs) in [(&primary, ONES_CSID), (&replica, TWOS_CSID)] {
+            let mut txn = store.create_transaction(ctx.clone());
+            txn.force_set(&key, cs, BookmarkUpdateReason::TestMove)?;
+            assert!(txn.commit().await?.is_some());
+        }
+        let mut connections = primary.connections.clone();
+        connections.read_connection = replica.connections.read_connection.clone();
+        let store = SqlBookmarksBuilder::from_sql_connections(connections).with_repo_id(REPO_ZERO);
+
+        for (freshness, cs, master_reads, replica_reads) in [
+            (Freshness::MaybeStale, TWOS_CSID, 0, 1),
+            (Freshness::MostRecent, ONES_CSID, 1, 0),
+        ] {
+            let query_ctx = CoreContext::test_mock(fb);
+            assert_eq!(
+                store
+                    .list_recently_moved_bookmarks(query_ctx.clone(), 10, freshness)
+                    .await?,
+                vec![(key.clone(), cs)]
+            );
+            assert_eq!(
+                query_ctx
+                    .perf_counters()
+                    .get_counter(PerfCounterType::SqlReadsMaster),
+                master_reads
+            );
+            assert_eq!(
+                query_ctx
+                    .perf_counters()
+                    .get_counter(PerfCounterType::SqlReadsReplica),
+                replica_reads
+            );
+        }
+        Ok(())
+    }
 
     #[mononoke::fbinit_test]
     async fn test_update_kind_compatibility(fb: FacebookInit) -> Result<()> {

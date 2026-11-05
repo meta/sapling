@@ -168,6 +168,19 @@ pub trait BookmarkUpdateLog: Send + Sync + 'static {
         reason: BookmarkUpdateReason,
     ) -> BoxFuture<'static, Result<Option<u64>>>;
 
+    /// Returns live publishing bookmarks, newest move first, up to `limit`.
+    ///
+    /// Includes all bookmark categories, preserving each key's category. Scratch
+    /// bookmarks and bookmarks without a recorded log id are excluded. Reads the
+    /// current bookmark values with the requested freshness, not historical log
+    /// entries.
+    fn list_recently_moved_bookmarks(
+        &self,
+        ctx: CoreContext,
+        limit: u64,
+        freshness: Freshness,
+    ) -> BoxFuture<'static, Result<Vec<(BookmarkKey, ChangesetId)>>>;
+
     fn get_largest_log_id(
         &self,
         ctx: CoreContext,
