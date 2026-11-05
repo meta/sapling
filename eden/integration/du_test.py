@@ -11,8 +11,11 @@
 """Integration tests for the `eden du` (disk usage) command."""
 
 import json
+import os
 import subprocess
 from pathlib import Path
+
+from eden.fs.cli.util import mkscratch_bin
 
 from .lib import testcase
 
@@ -167,6 +170,52 @@ class DiskUsageTest(testcase.EdenRepoTest):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Failed to find orphaned redirections for cleanup", result.stderr)
         self.assertNotIn("Summary", result.stdout)
+
+    def test_du_clean_orphaned_with_checkout_missing_config(self) -> None:
+        """A checkout left without config.toml by an interrupted `eden rm`."""
+        self.set_rust_rollout_config({"du": True})
+        broken_mount = os.path.join(self.tmp_dir, "broken")
+        self.eden.clone(self.repo.path, broken_mount)
+        self.eden.run_cmd(
+            "redirect", "add", "--mount", broken_mount, "buck-out", "symlink"
+        )
+        redirections = json.loads(
+            self.eden.run_cmd("redirect", "list", "--json", "--mount", broken_mount)
+        )
+        broken_target = Path(
+            next(r["target"] for r in redirections if r["repo_path"] == "buck-out")
+        )
+        self.assertTrue(broken_target.is_dir())
+        healthy_orphan = Path(
+            subprocess.check_output(
+                [
+                    os.fsdecode(mkscratch_bin()),
+                    "path",
+                    self.mount,
+                    "--subdir",
+                    "edenfs/redirections/orphaned",
+                ],
+                encoding="utf-8",
+            ).strip()
+        )
+        self.assertTrue(healthy_orphan.is_dir())
+        self.eden.unmount(Path(broken_mount))
+        (self.eden.client_dir_for_mount(Path(broken_mount)) / "config.toml").unlink()
+
+        result = self.eden.run_unchecked(
+            "du",
+            "--clean-orphaned",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            encoding="utf-8",
+        )
+
+        # FIXME: du should exit 0, warn about the broken checkout, delete the
+        # healthy checkout's orphan, and keep the broken checkout's scratch.
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f"Failed to find checkout for {broken_mount}", result.stderr)
+        self.assertTrue(healthy_orphan.exists())
+        self.assertTrue(broken_target.exists())
 
     # Materialized files tests
     def test_du_materialized_increases_after_file_modification(self) -> None:
