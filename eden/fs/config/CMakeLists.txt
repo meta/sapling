@@ -3,10 +3,10 @@
 # This software may be used and distributed according to the terms of the
 # GNU General Public License version 2.
 
-add_fbthrift_library(
-  eden_config_thrift
+thrift_add_library(
+  eden_config_thrift_cpp
   eden_config.thrift
-  LANGUAGES cpp
+  LANGUAGE cpp2
 )
 
 if (EDEN_HAVE_THRIFT_PYTHON)

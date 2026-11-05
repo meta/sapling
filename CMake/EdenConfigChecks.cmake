@@ -39,7 +39,7 @@ fb_find_or_fetch(wangle)
 include_directories(${WANGLE_INCLUDE_DIR})
 
 fb_find_or_fetch(FBThrift)
-include_directories(${FBTHRIFT_INCLUDE_DIR})
+include_directories(${THRIFT_INCLUDE_DIR})
 
 # The Python CLI, which eden doesn't build on Windows, uses fb303's
 # thrift-python modules.
@@ -57,8 +57,8 @@ else()
   set(eden_thrift_path_separator ":")
 endif()
 set(EDEN_RUST_THRIFT_ENV
-  "THRIFT=$<TARGET_FILE:FBThrift::thrift>"
-  "THRIFT_INCLUDE_PATH=$<JOIN:${FBTHRIFT_INCLUDE_DIR}$<SEMICOLON>$<TARGET_PROPERTY:fb303::fb303_thrift_cpp.thrift_includes,INTERFACE_INCLUDE_DIRECTORIES>,${eden_thrift_path_separator}>"
+  "THRIFT=$<TARGET_FILE:thrift::compiler>"
+  "THRIFT_INCLUDE_PATH=$<JOIN:${THRIFT_INCLUDE_DIR}$<SEMICOLON>$<TARGET_PROPERTY:fb303::fb303_thrift_cpp.thrift_includes,INTERFACE_INCLUDE_DIRECTORIES>,${eden_thrift_path_separator}>"
 )
 
 if (BUILD_TESTS)

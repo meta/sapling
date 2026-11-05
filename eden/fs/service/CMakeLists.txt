@@ -3,15 +3,15 @@
 # This software may be used and distributed according to the terms of the
 # GNU General Public License version 2.
 
-add_fbthrift_library(
-  eden_service_thrift
+thrift_add_library(
+  eden_service_thrift_cpp
   eden.thrift
-  LANGUAGES cpp
+  LANGUAGE cpp2
   SERVICES
     EdenService
   DEPENDS
-    eden_config_thrift
-    fb303::fb303_thrift
+    eden_config_thrift_cpp
+    fb303::fb303_thrift_cpp
 )
 # eden.thrift's GlobPath adapter is in edencommon.
 target_link_libraries(eden_service_thrift_cpp PUBLIC edencommon::edencommon_utils)
@@ -29,14 +29,14 @@ if (EDEN_HAVE_THRIFT_PYTHON)
   )
 endif()
 
-add_fbthrift_library(
-  streamingeden_thrift
+thrift_add_library(
+  streamingeden_thrift_cpp
   streamingeden.thrift
-  LANGUAGES cpp
+  LANGUAGE cpp2
   SERVICES
     StreamingEdenService
   DEPENDS
-    eden_service_thrift
+    eden_service_thrift_cpp
 )
 
 include(generated_targets.cmake)

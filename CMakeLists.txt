@@ -126,7 +126,6 @@ include_directories(
 )
 include(EdenFunctions)
 include(FBPythonBinary)
-include(FBThriftLibrary)
 include(RustStaticLibrary)
 
 include_directories(BEFORE ${CMAKE_CURRENT_BINARY_DIR})
