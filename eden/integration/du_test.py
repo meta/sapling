@@ -32,6 +32,12 @@ class DiskUsageTest(testcase.EdenRepoTest):
         self.repo.write_file("original.txt", "Original content\n")
         self.repo.commit("Initial commit.")
 
+    def broken_scratch_config(self) -> str:
+        """Write a scratch config that fails to parse, so scratch paths can't resolve."""
+        path = Path(self.tmp_dir) / "broken-scratch.toml"
+        path.write_text("template = \n")
+        return str(path)
+
     # Basic functionality tests
     def test_du_basic_runs_successfully(self) -> None:
         """Test that `eden du` runs without errors and produces expected sections."""
@@ -53,7 +59,7 @@ class DiskUsageTest(testcase.EdenRepoTest):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             encoding="utf-8",
-            env={"MKSCRATCH_BIN": "false"},
+            env={"SCRATCH_CONFIG_PATH": self.broken_scratch_config()},
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("failed to scan for orphaned redirections", result.stderr)
@@ -128,7 +134,7 @@ class DiskUsageTest(testcase.EdenRepoTest):
         self.assertIn("WARNING", result.stdout)
 
     def test_du_clean_continues_when_orphan_scan_fails(self) -> None:
-        """Test that `eden du --clean` runs its other cleanups and fails at the end when mkscratch fails."""
+        """Test that `eden du --clean` runs its other cleanups and fails at the end when orphan scanning fails."""
         # Keep Python fallback available for the nested `eden gc` command.
         self.set_rust_rollout_config({"du": True})
         result = self.eden.run_unchecked(
@@ -139,7 +145,7 @@ class DiskUsageTest(testcase.EdenRepoTest):
             stderr=subprocess.PIPE,
             encoding="utf-8",
             env={
-                "MKSCRATCH_BIN": "false",
+                "SCRATCH_CONFIG_PATH": self.broken_scratch_config(),
                 "EDENFSCTL_CONFIG_DIR": str(self.eden.eden_dir),
                 "EDENFSCTL_ETC_EDEN_DIR": str(self.eden.etc_eden_dir),
                 "EDENFSCTL_HOME_DIR": str(self.eden.home_dir),
@@ -166,7 +172,7 @@ class DiskUsageTest(testcase.EdenRepoTest):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             encoding="utf-8",
-            env={"MKSCRATCH_BIN": "false"},
+            env={"SCRATCH_CONFIG_PATH": self.broken_scratch_config()},
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Failed to find orphaned redirections for cleanup", result.stderr)
