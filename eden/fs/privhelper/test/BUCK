@@ -54,6 +54,7 @@ cpp_unittest(
         "//eden/fs/telemetry:xplat_logger",
         "//eden/fs/utils:mount_info_table",
         "//eden/fs/utils:statmount",
+        "//folly:string",
     ],
     external_deps = [
         ("boost", None, "boost_filesystem"),

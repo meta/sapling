@@ -108,6 +108,9 @@ constexpr int kRegisteredMountRootOpenFlags = O_PATH | O_DIRECTORY | O_CLOEXEC;
 #ifndef MOUNT_ATTR_RDONLY
 #define MOUNT_ATTR_RDONLY 0x00000001
 #endif
+#ifndef MOUNT_ATTR_NODEV
+#define MOUNT_ATTR_NODEV 0x00000004
+#endif
 #ifndef MOUNT_ATTR_NOSUID
 #define MOUNT_ATTR_NOSUID 0x00000002
 #endif
@@ -177,6 +180,9 @@ folly::File fsOpen(folly::StringPiece fsType) {
 
 folly::File fsMount(int fsFd, bool readOnly) {
   unsigned int mountAttrs = MOUNT_ATTR_NOSUID;
+  if (!disablePrivHelperHardening()) {
+    mountAttrs |= MOUNT_ATTR_NODEV;
+  }
   if (readOnly) {
     mountAttrs |= MOUNT_ATTR_RDONLY;
   }
@@ -610,11 +616,11 @@ folly::File PrivHelperServer::fuseMount(
       gid_,
       fuseDev.fd());
 
-  // The mount flags.
-  // We do not use MS_NODEV.  MS_NODEV prevents mount points from being created
-  // inside our filesystem.  We currently use bind mounts to point the buck-out
-  // directory to an alternate location outside of eden.
+  // Bind redirections inherit their source flags independently of this mount.
   int mountFlags = MS_NOSUID;
+  if (!disablePrivHelperHardening()) {
+    mountFlags |= MS_NODEV;
+  }
   if (readOnly) {
     mountFlags |= MS_RDONLY;
   }
@@ -886,6 +892,9 @@ void PrivHelperServer::nfsMount(
   mattrFlags |= NFS_MATTR_MNTFLAGS;
   // These are non-NFS specific and will be also passed directly to mount(2)
   nfs_mattr_mntflags mountFlags = MNT_NOSUID;
+  if (!disablePrivHelperHardening()) {
+    mountFlags |= MNT_NODEV;
+  }
   if (options.readOnly) {
     mountFlags |= MNT_RDONLY;
   }
@@ -974,11 +983,11 @@ void PrivHelperServer::nfsMount(
   }
   auto mountOpts = makeLinuxNfsMountOptions(options);
 
-  // The mount flags.
-  // We do not use MS_NODEV.  MS_NODEV prevents mount points from being created
-  // inside our filesystem.  We currently use bind mounts to point the buck-out
-  // directory to an alternate location outside of eden.
+  // Bind redirections inherit their source flags independently of this mount.
   int mountFlags = MS_NOSUID;
+  if (!disablePrivHelperHardening()) {
+    mountFlags |= MS_NODEV;
+  }
   if (options.readOnly) {
     mountFlags |= MS_RDONLY;
   }

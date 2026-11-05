@@ -5,6 +5,7 @@
  * GNU General Public License version 2.
  */
 
+#include <folly/Conv.h>
 #include <folly/Exception.h>
 #include <folly/File.h>
 #include <folly/FileUtil.h>
@@ -12,6 +13,7 @@
 #include <folly/Range.h>
 #include <folly/ScopeGuard.h>
 #include <folly/SocketAddress.h>
+#include <folly/String.h>
 #include <folly/Synchronized.h>
 #include <folly/futures/Future.h>
 #include <folly/io/Cursor.h>
@@ -28,6 +30,7 @@
 #include <gtest/gtest.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -46,6 +49,7 @@
 #include <sched.h>
 #include <sys/mount.h>
 #include <sys/prctl.h>
+#include <sys/statvfs.h>
 #include "eden/fs/privhelper/priority/LinuxMemoryPriority.h"
 #include "eden/fs/utils/MountInfoTable.h"
 #include "eden/fs/utils/Statmount.h"
@@ -1007,6 +1011,59 @@ TEST_F(PrivHelperRawProtocolTest, legacyMacFuseConfigRequestsAreNoOps) {
       PrivHelperConn::REQ_SET_USE_EDENFS, useEdenFsResponse);
 }
 
+#ifdef __linux__
+TEST(PrivHelperMountFlagsTest, initialFuseMountHasAnExplicitNodevFlag) {
+  if (access("/dev/fuse", R_OK | W_OK) != 0) {
+    GTEST_SKIP() << "/dev/fuse is unavailable";
+  }
+  TemporaryDirectory dir;
+  runInMountNamespace([&] {
+    File clientConn;
+    File serverConn;
+    PrivHelperConn::createConnPair(clientConn, serverConn);
+    PrivHelperServer server;
+    std::thread thread([&server, conn = std::move(serverConn)]() mutable {
+      server.initPartial(std::move(conn), getuid(), getgid());
+      server.run();
+    });
+    SCOPE_EXIT {
+      thread.join();
+    };
+    RawPrivHelperClient client(std::move(clientConn));
+    auto response = client.sendAndRecv(
+        PrivHelperConn::serializeMountRequest(
+            1, dir.path().string(), false, "fuse.edenfs"));
+    PrivHelperConn::parseEmptyResponse(
+        PrivHelperConn::REQ_MOUNT_FUSE, response);
+    const auto mounts = getMountInfoForPath(
+        dir.path().c_str(),
+        {.includeMountOptions = true, .includeMountId = true});
+    ASSERT_TRUE(mounts.hasValue());
+    ASSERT_TRUE(mounts->has_value());
+    std::string mountinfo;
+    ASSERT_TRUE(folly::readFile("/proc/self/mountinfo", mountinfo));
+    std::vector<StringPiece> lines;
+    folly::split('\n', mountinfo, lines);
+    const auto row =
+        std::find_if(lines.begin(), lines.end(), [&](StringPiece line) {
+          return line.startsWith(fmt::format("{} ", mounts->value().mountId));
+        });
+    ASSERT_NE(lines.end(), row);
+    std::vector<StringPiece> fields;
+    folly::split(' ', *row, fields);
+    ASSERT_GT(fields.size(), 5);
+    std::vector<StringPiece> flags;
+    folly::split(',', fields[5], flags);
+    EXPECT_NE(flags.end(), std::find(flags.begin(), flags.end(), "nodev"));
+    EXPECT_NE(flags.end(), std::find(flags.begin(), flags.end(), "nosuid"));
+    response = client.sendAndRecv(
+        PrivHelperConn::serializeUnmountRequest(2, dir.path().string(), {}));
+    PrivHelperConn::parseEmptyResponse(
+        PrivHelperConn::REQ_UNMOUNT_FUSE, response);
+  });
+}
+#endif
+
 #ifdef __APPLE__
 TEST_F(
     PrivHelperRawProtocolTest,
@@ -1320,6 +1377,9 @@ TEST(PrivHelperSanityTest, bindMountClonesAnOPathSourceDescriptor) {
     const auto target = root / "redirect";
     folly::fs::create_directory(source);
     folly::fs::create_directories(target);
+    checkUnixError(
+        mount("tmpfs", root.c_str(), "tmpfs", MS_NOSUID | MS_NODEV, "size=1m"));
+    folly::fs::create_directory(target);
     ASSERT_TRUE(
         folly::writeFile(StringPiece{"content"}, (source / "file").c_str()));
 
@@ -1335,6 +1395,13 @@ TEST(PrivHelperSanityTest, bindMountClonesAnOPathSourceDescriptor) {
     checkUnixError(stat(target.c_str(), &targetStat));
     EXPECT_EQ(sourceStat.st_ino, targetStat.st_ino);
     EXPECT_EQ(sourceStat.st_dev, targetStat.st_dev);
+    struct statvfs sourceFlags{}, targetFlags{}, checkoutFlags{};
+    checkUnixError(statvfs(source.c_str(), &sourceFlags));
+    checkUnixError(statvfs(target.c_str(), &targetFlags));
+    checkUnixError(statvfs(root.c_str(), &checkoutFlags));
+    EXPECT_NE(0, checkoutFlags.f_flag & ST_NOSUID);
+    EXPECT_EQ(sourceFlags.f_flag & ST_NOSUID, targetFlags.f_flag & ST_NOSUID);
+    EXPECT_EQ(0, targetFlags.f_flag & ST_NOSUID);
   });
 }
 

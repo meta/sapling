@@ -27,6 +27,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR APPLE)
       Folly::folly_portability_fcntl
       Folly::folly_range
       Folly::folly_scope_guard
+      Folly::folly_string
       Folly::folly_synchronization_baton
       Folly::folly_synchronization_saturating_semaphore
       Folly::folly_synchronized
