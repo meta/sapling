@@ -458,14 +458,29 @@ ImmediateFuture<NfsDispatcher::ReaddirRes> NfsDispatcherImpl::readdirplus(
             NfsDirList{count, nfsv3Procs::readdirplus}, offset, context);
         auto& dirListRef = dirList.getListRef();
         std::vector<ImmediateFuture<folly::Unit>> futuresVec{};
+        const auto onlineFsck = mount_->getOverlay()->usesOnlineFsck();
+        auto setAttributes =
+            [onlineFsck](
+                auto& entry, bool verifyInode, folly::Try<struct stat> st) {
+              if (onlineFsck &&
+                  (st.hasException() ||
+                   (verifyInode && st.value().st_ino != entry.fileid))) {
+                entry.name_handle = {};
+                entry.name_attributes = {};
+                return folly::unit;
+              }
+              entry.name_attributes = statToPostOpAttr(st);
+              return folly::unit;
+            };
         for (auto& entry : dirListRef) {
           if (entry.name == "." || entry.name == "..") {
             futuresVec.push_back(
                 this->getattr(InodeNumber{entry.fileid}, context)
-                    .thenTry([&entry](folly::Try<struct stat> st) {
-                      entry.name_attributes = statToPostOpAttr(st);
-                      return folly::unit;
-                    }));
+                    .thenTry(
+                        [&entry, setAttributes](folly::Try<struct stat> st) {
+                          return setAttributes(
+                              entry, /*verifyInode=*/false, std::move(st));
+                        }));
           } else {
             futuresVec.push_back(
                 inode->getOrLoadChild(PathComponent{entry.name}, context)
@@ -473,10 +488,14 @@ ImmediateFuture<NfsDispatcher::ReaddirRes> NfsDispatcherImpl::readdirplus(
                         [entry, context = context.copy()](InodePtr&& inodep) {
                           return statHelper(inodep, context);
                         })
-                    .thenTry([&entry](folly::Try<struct stat> st) {
-                      entry.name_attributes = statToPostOpAttr(st);
-                      return folly::unit;
-                    }));
+                    .thenTry(
+                        [&entry, setAttributes](folly::Try<struct stat> st) {
+                          // The name may have been rebound after readdir. Do
+                          // not pair the old handle with the new inode's
+                          // attributes.
+                          return setAttributes(
+                              entry, /*verifyInode=*/true, std::move(st));
+                        }));
           }
         }
         auto res = collectAllSafe(std::move(futuresVec));

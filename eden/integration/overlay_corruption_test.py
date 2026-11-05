@@ -896,5 +896,63 @@ class OnlineFsckOnTest(OverlayCorruptionTestBase):
         self.assertEqual("original-target", os.readlink(source))
 
 
+class NfsReaddirplusCorruptionTest(
+    testcase.NFSTestMixin, testcase.HgRepoTestMixin, testcase.EdenRepoTest
+):
+    def edenfs_extra_config(self) -> Optional[Dict[str, List[str]]]:
+        configs = super().edenfs_extra_config() or {}
+        overlay = configs.setdefault("overlay", [])
+        overlay.append("use-wal = true")
+        overlay.append("online-fsck = true")
+        return configs
+
+    def select_storage_engine(self) -> str:
+        return "sqlite"
+
+    def populate_repo(self) -> None:
+        self.repo.write_file("README", "overlay corruption\n")
+        self.repo.commit("Initial commit.")
+
+    def test_readdirplus_withholds_conflicting_handle(self) -> None:
+        case_dir = self.mount_path / "nfs"
+        (case_dir / "s").mkdir(parents=True)
+        (case_dir / "a").write_text("a")
+        (case_dir / "b").write_text("b")
+        (case_dir / "s" / "f").write_text("f")
+        paths = {
+            ".": case_dir,
+            "a": case_dir / "a",
+            "b": case_dir / "b",
+            "s": case_dir / "s",
+            "s/f": case_dir / "s" / "f",
+        }
+        ctx = Ctx(
+            self.eden.overlay_dir_for_mount(self.mount_path),
+            {name: os.lstat(path).st_ino for name, path in paths.items()},
+            _BIG_INODE,
+        )
+        self.eden.shutdown()
+        ctx.append_wal(_wal_add("g", _REG, ctx.ino["a"]), "s")
+        self.eden.start()
+
+        os.lstat(self.mount_path / "nfs" / "a")
+        subdir = self.mount_path / "nfs" / "s"
+        names = " ".join(sorted(os.listdir(subdir)))
+        try:
+            alias = os.lstat(subdir / "g")
+        except OSError as ex:
+            lookup = _errname(ex)
+        else:
+            lookup = "alias" if alias.st_ino == ctx.ino["a"] else "fresh"
+
+        expected = """readdirplus | lookup-g
+f g         | fresh"""
+        self.assertEqual(expected, f"readdirplus | lookup-g\n{names:<11} | {lookup}")
+        # The repaired lookup can return a new inode, but readdirplus must not
+        # give g the conflicting handle for a. Their payloads stay separate.
+        self.assertEqual("", (subdir / "g").read_text())
+        self.assertEqual("a", (case_dir / "a").read_text())
+
+
 # Keep the shared base class out of unittest discovery
 del OverlayCorruptionTestBase
