@@ -19,10 +19,26 @@ sl_rust_library(
             },
         },
     },
-    deps = [
-        "fbsource//third-party/rust:hex",
-        "fbsource//third-party/rust:sha2-010",
+    test_deps = [
+        "fbsource//third-party/rust:tempfile",
     ],
+    deps = [
+        "fbsource//third-party/rust:anyhow",
+        "fbsource//third-party/rust:dirs",
+        "fbsource//third-party/rust:hex",
+        "fbsource//third-party/rust:serde",
+        "fbsource//third-party/rust:sha2-010",
+        "fbsource//third-party/rust:toml",
+        "//eden/scm/lib/identity:identity",
+    ] + select({
+        "DEFAULT": [],
+        "ovr_config//os:linux": [
+            "fbsource//third-party/rust:nix",
+        ],
+        "ovr_config//os:macos": [
+            "fbsource//third-party/rust:nix",
+        ],
+    }),
 )
 
 sl_rust_binary(
@@ -33,17 +49,10 @@ sl_rust_binary(
             "name": "mkscratch",
         },
     },
-    test_deps = [
-        "fbsource//third-party/rust:tempfile",
-    ],
     deps = [
         "fbsource//third-party/rust:anyhow",
         "fbsource//third-party/rust:clap",
-        "fbsource//third-party/rust:dirs",
-        "fbsource//third-party/rust:serde",
-        "fbsource//third-party/rust:toml",
         ":mkscratch",
-        "//eden/scm/lib/identity:identity",
     ] + select({
         "DEFAULT": [],
         "ovr_config//os:linux": [
