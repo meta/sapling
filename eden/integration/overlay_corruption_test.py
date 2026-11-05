@@ -910,6 +910,40 @@ class OnlineFsckOnTest(OverlayCorruptionTestBase):
         alias.unlink()
         self.assertEqual("original-target", os.readlink(source))
 
+    def test_offline_fsck_repairs_duplicate_bindings(self) -> None:
+        # Exercise offline repair before online lookup rewrites these bindings.
+        # They no longer fail normal removal with online fsck enabled.
+        names = {"base_dup_inode", "base_cycle_x"}
+        cases = [case for case in CASES if case.name in names]
+        self.assertEqual(names, {case.name for case in cases})
+        ctxs = {
+            case.name: self._make_ctx(self.mount_path, case.name, _BIG_INODE + index)
+            for index, case in enumerate(cases)
+        }
+
+        self.eden.shutdown()
+        for case in cases:
+            case.build(ctxs[case.name])
+        repair = self.eden.run_unchecked(
+            "fsck",
+            str(self.mount_path),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        self.assertIn(
+            "successfully repaired all",
+            repair.stdout.decode("utf-8", errors="replace"),
+        )
+        self.assertEqual(dict.fromkeys(ctxs, "-"), self._fsck(self.mount_path, ctxs))
+
+        self._start(self.mount_path)
+        removed = {name: self._rm(self.mount_path / name) for name in sorted(ctxs)}
+        self.assertEqual(dict.fromkeys(ctxs, "ok"), removed)
+        recreated = {
+            name: self._recreate(self.mount_path / name) for name in sorted(ctxs)
+        }
+        self.assertEqual(dict.fromkeys(ctxs, "ok"), recreated)
+
 
 class NfsReaddirplusCorruptionTest(
     testcase.NFSTestMixin, testcase.HgRepoTestMixin, testcase.EdenRepoTest
