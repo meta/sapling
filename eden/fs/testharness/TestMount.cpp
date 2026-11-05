@@ -13,7 +13,6 @@
 #include <folly/io/IOBuf.h>
 #include <folly/logging/xlog.h>
 #include <folly/testing/TestUtil.h>
-#include <gflags/gflags.h>
 #include <gtest/gtest.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -63,11 +62,6 @@ using std::make_shared;
 using std::make_unique;
 using std::shared_ptr;
 using std::string;
-
-DEFINE_int32(
-    num_eden_test_threads,
-    2,
-    "the number of eden CPU worker threads to create during unit tests");
 
 namespace facebook::eden {
 

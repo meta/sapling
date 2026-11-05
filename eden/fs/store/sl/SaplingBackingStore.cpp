@@ -59,12 +59,9 @@
 #include "common/fb303/cpp/ThreadPoolExecutorCounters.h" // @manual
 #endif
 
-DEFINE_bool(
-    hg_fetch_missing_trees,
-    true,
-    "Set this parameter to \"no\" to disable fetching missing treemanifest "
-    "trees from the remote mercurial server.  This is generally only useful "
-    "for testing/debugging purposes");
+// Still passed by out-of-tree test fixtures (musecode); has had no effect for
+// years.
+DEFINE_bool(hg_fetch_missing_trees, true, "DEPRECATED - has no effect.");
 
 namespace facebook::eden {
 

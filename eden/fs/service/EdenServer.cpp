@@ -161,10 +161,6 @@
 #endif // !_WIN32
 
 DEFINE_bool(
-    debug,
-    false,
-    "run fuse in debug mode"); // TODO: remove; no longer needed
-DEFINE_bool(
     takeover,
     false,
     "If another edenfs process is already running, "
@@ -184,6 +180,8 @@ DEFINE_bool(
     false,
     "Enable the fault injection framework.");
 
+// Still passed by antlir's eden_access tooling; has had no effect since the
+// LocalStore was removed.
 DEFINE_string(local_storage_engine_unsafe, "", "DEPRECATED - has no effect.");
 
 DEFINE_int64(

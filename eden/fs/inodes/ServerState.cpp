@@ -35,12 +35,6 @@ DEFINE_bool(
     "Block mount attempts via the fault injection framework.  "
     "Requires --enable_fault_injection.");
 
-DEFINE_bool(
-    fault_injection_fail_opening_local_store,
-    false,
-    "Causes the local store to fail to open on startup. "
-    "Requires --enable_fault_injection.");
-
 namespace facebook::eden {
 /** Throttle Ignore change checks, max of 1 per kUserIgnoreMinPollSeconds */
 constexpr std::chrono::seconds kUserIgnoreMinPollSeconds{5};

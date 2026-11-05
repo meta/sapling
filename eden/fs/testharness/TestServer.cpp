@@ -8,7 +8,6 @@
 #include "eden/fs/testharness/TestServer.h"
 
 #include <folly/io/async/EventBase.h>
-#include <gflags/gflags.h>
 
 #include "eden/common/telemetry/SessionInfo.h"
 #include "eden/common/testharness/TempFile.h"
@@ -69,14 +68,6 @@ unique_ptr<EdenServer> TestServer::createServer(
     const Options& options) {
   auto edenDir = tmpDir + "eden"_pc;
   ensureDirectoryExists(edenDir);
-
-  // Always use an in-memory local store during tests.
-  // TODO: in the future we should build a better mechanism for controlling this
-  // rather than having to update a command line flag.
-  GFLAGS_NAMESPACE::SetCommandLineOptionWithMode(
-      "local_storage_engine_unsafe",
-      "memory",
-      GFLAGS_NAMESPACE::SET_FLAG_IF_DEFAULT);
 
   auto userInfo = UserInfo::lookup();
   userInfo.setHomeDirectory(tmpDir + "home"_pc);

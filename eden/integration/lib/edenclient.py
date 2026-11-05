@@ -519,10 +519,7 @@ class EdenFS:
                 self.assert_running_fuse_transports()
 
     def get_extra_daemon_args(self) -> List[str]:
-        extra_daemon_args: List[str] = [
-            "--local_storage_engine_unsafe",
-            self._storage_engine,
-        ]
+        extra_daemon_args: List[str] = []
 
         privhelper = FindExe.EDEN_PRIVHELPER
         if privhelper is not None:
