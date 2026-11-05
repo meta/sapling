@@ -63,6 +63,17 @@ if sys.platform == "win32":
         "persistence_test.PersistenceTestHg": [
             "test_does_not_reuse_inode_numbers_after_cold_restart"
         ],
+        # These tests need FUSE or NFS. Windows mounts use ProjectedFS.
+        "pressure_gc_test.ActiveFuseInvalidationTest": [
+            "test_active_invalidation_forgets_file_inode",
+            "test_active_invalidation_forgets_file_inode_after_takeover",
+            "test_active_invalidation_preserves_bind_redirection_0_without_takeover",
+            "test_active_invalidation_preserves_bind_redirection_1_after_takeover",
+            "test_active_invalidation_preserves_getcwd_of_running_process",
+            "test_active_invalidation_reclaims_siblings_of_open_file",
+            "test_active_invalidation_reclaims_unpinned_directories",
+        ],
+        "pressure_gc_test.PressureGcWithoutPinScanTest": True,
         # Windows has no privhelper process to kill.
         "privhelper_test.PrivHelperDeathTest": True,
         "rage_test.RageTestDefault": True,
