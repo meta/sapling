@@ -2473,6 +2473,7 @@ class EdenConfig : private ConfigSettingManager {
    * Validate and recover overlay data on access instead of running startup
    * fsck. Requires inode reservation and the Legacy catalog. Unvisited
    * orphan subtrees are left for offline fsck. Disabled by default.
+   * See eden/fs/docs/OnlineFsck.md for recovery policy and trade-offs.
    */
   ConfigSetting<bool> overlayOnlineFsck{"overlay:online-fsck", false, this};
 

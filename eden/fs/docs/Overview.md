@@ -69,6 +69,7 @@ more depth:
 - [Inode Lifetime Management](./InodeLifetime.md)
 - [Inode Locking](./InodeLocks.md)
 - [Inode Storage](./InodeStorage.md)
+- [Online fsck](./OnlineFsck.md)
 - [Path Handling](./Paths.md)
 - [Rename Handling](./Rename.md)
 - [Redirections](./Redirections.md)
