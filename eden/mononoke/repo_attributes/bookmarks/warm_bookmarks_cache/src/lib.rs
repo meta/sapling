@@ -2365,6 +2365,9 @@ async fn single_bookmark_updater(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+
     use anyhow::anyhow;
     use bonsai_hg_mapping::BonsaiHgMapping;
     use bookmarks::BookmarkUpdateLog;
@@ -3458,5 +3461,156 @@ mod tests {
         let mut state = BookmarkState::from_warmers(kind, &warmers);
         state.set_all_tracked(cs_id);
         state
+    }
+
+    /// Wraps `inner` so that every `is_warm` call is counted.
+    fn counting_warmer(inner: Warmer, count: Arc<AtomicUsize>) -> Warmer {
+        let Warmer {
+            warmer,
+            is_warm,
+            name,
+            tags,
+        } = inner;
+        Warmer {
+            warmer,
+            is_warm: Box::new(move |ctx: &CoreContext, cs_id: ChangesetId| {
+                count.fetch_add(1, Ordering::Relaxed);
+                is_warm(ctx, cs_id)
+            }),
+            name,
+            tags,
+        }
+    }
+
+    /// Adds `commits` derived commits on top of master, points
+    /// `bookmarks_per_commit` bookmarks at each of them, and adds an underived
+    /// `feature` bookmark. Returns the bookmarked derived commits.
+    async fn add_duplicate_bookmarks(
+        ctx: &CoreContext,
+        repo: &Repo,
+        commits: usize,
+        bookmarks_per_commit: usize,
+    ) -> Result<Vec<ChangesetId>, Error> {
+        let mut parent = resolve_cs_id(ctx, repo, "master").await?;
+        let mut trunk = Vec::with_capacity(commits);
+        for i in 0..commits {
+            parent = CreateCommitContext::new(ctx, repo, vec![parent])
+                .add_file(format!("file{i}").as_str(), format!("content{i}"))
+                .commit()
+                .await?;
+            for j in 0..bookmarks_per_commit {
+                bookmark(ctx, repo, format!("tags/v{i}.{j}").as_str())
+                    .set_to(parent)
+                    .await?;
+            }
+            trunk.push(parent);
+        }
+        repo.repo_derived_data()
+            .derive::<RootUnodeManifestId>(ctx, parent, DerivationPriority::LOW)
+            .await?;
+
+        let feature = CreateCommitContext::new(ctx, repo, vec![parent])
+            .add_file("feature", "feature")
+            .commit()
+            .await?;
+        bookmark(ctx, repo, "feature").set_to(feature).await?;
+        Ok(trunk)
+    }
+
+    /// Initializes the cache with a counting unodes warmer. Returns the cache
+    /// contents, the number of warm checks and the elapsed time, after
+    /// asserting that every bookmark on a derived commit is warm at its own
+    /// commit and log entry.
+    async fn init_and_count(
+        ctx: &CoreContext,
+        repo: &Repo,
+    ) -> Result<(HashMap<BookmarkKey, BookmarkState>, usize, Duration), Error> {
+        let count = Arc::new(AtomicUsize::new(0));
+        let warmers = Arc::new(vec![counting_warmer(
+            create_derived_data_warmer::<RootUnodeManifestId>(
+                ctx,
+                repo.repo_derived_data_arc(),
+                vec![WarmerTag::Hg, WarmerTag::Git],
+            ),
+            count.clone(),
+        )]);
+        let sub = repo
+            .bookmarks()
+            .create_subscription(ctx, Freshness::MostRecent)
+            .await?;
+
+        let start = std::time::Instant::now();
+        let cache = init_bookmarks(
+            ctx,
+            &*sub,
+            repo.bookmarks(),
+            repo.bookmark_update_log(),
+            &warmers,
+            InitMode::Rewind,
+        )
+        .await?;
+        let elapsed = start.elapsed();
+
+        for (key, (cs_id, kind, log_id)) in sub.bookmarks() {
+            if key.name().as_str() == "feature" {
+                continue;
+            }
+            let mut expected = test_bookmark_state_all_warmers(*kind, *cs_id);
+            if let Some(log_id) = log_id {
+                expected.set_log_id(*log_id);
+            }
+            assert_eq!(cache.get(key), Some(&expected), "bookmark {key}");
+        }
+        Ok((cache, count.load(Ordering::Relaxed), elapsed))
+    }
+
+    #[mononoke::fbinit_test]
+    async fn test_init_checks_each_changeset_once(fb: FacebookInit) -> Result<(), Error> {
+        let repo: Repo = Linear::get_repo(fb).await;
+        let ctx = CoreContext::test_mock(fb);
+        add_duplicate_bookmarks(&ctx, &repo, 4, 50).await?;
+
+        let (cache, checks, _) = init_and_count(&ctx, &repo).await?;
+
+        // 200 tags plus master are warm; feature is underived and absent.
+        assert_eq!(cache.len(), 201);
+        assert!(!cache.contains_key(&BookmarkKey::new("feature")?));
+        // The 6 distinct bookmarked commits (4 tagged, master, feature) are
+        // checked once each, plus a few checks while walking feature back.
+        assert!(
+            checks <= 9,
+            "expected one warm check per distinct commit, got {checks}"
+        );
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn test_init_with_duplicate_bookmarks_slow_blobstore(
+        fb: FacebookInit,
+    ) -> Result<(), Error> {
+        // 10ms per blobstore read, roughly a cachelib miss served by memcache.
+        let get_distr = rand_distr::Normal::<f64>::new(0.01, 0.002).unwrap();
+        let put_distr = rand_distr::Normal::<f64>::new(0.0, 0.000001).unwrap();
+        let blobstore = Arc::new(DelayedBlobstore::new(
+            Memblob::default(),
+            get_distr,
+            put_distr,
+        ));
+        let repo: Repo = TestRepoFactory::new(fb)?
+            .with_blobstore(blobstore)
+            .build()
+            .await?;
+        Linear::init_repo(fb, &repo).await?;
+        let ctx = CoreContext::test_mock(fb);
+        // 95% of bookmarks repeat a commit, the median for repos with
+        // 5k-20k bookmarks.
+        add_duplicate_bookmarks(&ctx, &repo, 100, 20).await?;
+
+        let (cache, checks, elapsed) = init_and_count(&ctx, &repo).await?;
+        println!(
+            "{} bookmarks on 101 commits, 10ms reads: {checks} warm checks in {elapsed:?}",
+            cache.len() + 1
+        );
+        Ok(())
     }
 }
