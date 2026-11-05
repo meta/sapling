@@ -921,6 +921,9 @@ async fn remove_inactive_checkout(
         .with_context(|| format!("failed to remove {} from config json file", path.display()))?;
 
     if !options.preserve_mount_point {
+        fail_point!("remove:clean_mount_point", |_| {
+            Err(anyhow!("failpoint: expected failure"))
+        });
         clean_mount_point(path)?;
     }
     validate_removal_completion(instance, path, options.preserve_mount_point).await

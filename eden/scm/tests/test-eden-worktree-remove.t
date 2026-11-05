@@ -551,6 +551,31 @@ test worktree remove - forgets a worktree whose folder and parent folder are gon
   eden checkout $TESTTMP/gone_parent/inner not found on disk, continuing to remove from registry
   removed $TESTTMP/gone_parent/inner
 
+test worktree remove - a failed folder deletion can be retried
+
+  $ cd $TESTTMP
+  $ newclientrepo delete_fails_repo
+  $ touch file.txt
+  $ sl commit -qAm init
+  $ sl worktree add $TESTTMP/delete_fails
+  created linked worktree at $TESTTMP/delete_fails
+  $ FAILPOINTS=remove:clean_mount_point=return sl worktree remove $TESTTMP/delete_fails -y
+  Unmounting checkout...
+  Deleting EdenFS checkout state...
+  abort: direct EdenFS removal failed for $TESTTMP?delete_fails: failpoint: expected failure (glob)
+  [255]
+FIXME: EdenFS forgets the checkout before it deletes the folder, so nothing can
+remove the folder that is left. The checkout should stay registered until its
+folder is gone, and the retry should remove it. (On Windows, `.eden\config` is
+still in the folder, so edenfs-remove refuses instead of `sl`.)
+  $ sl worktree remove $TESTTMP/delete_fails -y --force
+  abort: refusing to delete $TESTTMP?delete_fails: it is not a registered EdenFS checkout (glob) (no-windows !)
+  abort: direct EdenFS removal failed for $TESTTMP?delete_fails: $TESTTMP?delete_fails is not a registered EdenFS checkout (glob) (windows !)
+  [255]
+  $ sl worktree list
+    linked  $TESTTMP?delete_fails (glob)
+  * main    $TESTTMP?delete_fails_repo (glob)
+
 test worktree remove - unmounts an added redirection on Windows
 
 #if windows
