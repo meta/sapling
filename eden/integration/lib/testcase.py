@@ -358,6 +358,10 @@ class EdenTestCase(EdenTestCaseBase):
                 configs["redirections"] = ['darwin-redirection-type = "symlink"']
         elif sys.platform == "win32":
             configs["notifications"] = ['enable-eden-menu = "false"']
+            # On Windows, each EventBase uses loopback TCP ports.
+            # Thread pools get one thread for each core. Tests also run on each core.
+            # Without a limit, the tests can use all ephemeral ports.
+            configs["daemon"] = ['environment = ["FOLLY_AVAILABLE_CONCURRENCY_MAX=4"]']
         return configs
 
     def create_hg_repo(
