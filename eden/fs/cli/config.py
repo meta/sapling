@@ -1284,8 +1284,8 @@ Do you want to run `eden mount %s` instead?"""
 
                 print(
                     f"""
-    At this point your EdenFS mount is destroyed, but EdenFS is having
-    trouble cleaning up leftovers. You will need to manually remove {path}.
+    EdenFS still lists this checkout. Remove {path} manually, then run
+    `eden rm {path}` again to finish removing it.
     """
                 )
 

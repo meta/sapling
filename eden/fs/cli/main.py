@@ -1814,7 +1814,7 @@ def remove_legacyephemeral_checkouts(
                 preserve_mount_point=False,
                 use_force=True,
                 complain_about_redirections=False,
-                skip_destroy=False,
+                skip_destroy=True,
                 debug=False,
             )
 
@@ -1825,20 +1825,26 @@ def remove_legacyephemeral_checkouts(
                     "  Continuing with config cleanup...\n"
                 )
 
+            try:
+                out.write(f"Deleting mount {path}...\n")
+                instance.destroy_mount(str(path), preserve_mount_point=False)
+            except Exception as e:
+                result.destroy_error = e
+
+            if result.cleanup_error:
+                out.write(
+                    f"  Warning: Failed to clean up mount point {path}: {result.cleanup_error}\n"
+                    "  Manual cleanup recommended.\n"
+                    f"  Run: rm -rf {path}\n"
+                )
+
             if result.destroy_error:
                 out.write(
                     f"  Error deleting configuration for {path}: {result.destroy_error}\n"
                     "  This checkout will fail to mount. Manual cleanup recommended.\n"
-                    f"  Run: sudo unmount -f {path} && rm -rf {path}\n"
+                    f"  Run: eden rm {path}\n"
                 )
             else:
-                if result.cleanup_error:
-                    out.write(
-                        f"  Warning: Failed to cleanup mount point {path}: {result.cleanup_error}\n"
-                        "  Manual cleanup recommended.\n"
-                        f"  Run: rm -rf {path}\n"
-                    )
-
                 out.write(f"  Removed {path}\n")
                 removed_count += 1
 
@@ -1892,9 +1898,9 @@ def remove_checkout_impl(
         preserve_mount_point: If True, don't delete the mount point directory
         use_force: If True, use force unmount
         complain_about_redirections: If True, log warnings about failing to unmount redirections
-        skip_destroy: If True, skip the destroy_mount step (for CLEANUP_ONLY case)
+        skip_destroy: If True, skip the destroy_mount step
         debug: If True, include debug info in cleanup_mount
-        proceed_on_unmount_failure: If True, continue with destroy/cleanup even if unmount fails.
+        proceed_on_unmount_failure: If True, continue with cleanup/destroy even if unmount fails.
             If False, return early with unmount_error set.
         aux_timeout: Timeout in seconds for stopping auxiliary processes. If None, uses the default.
     """
@@ -1933,26 +1939,25 @@ def remove_checkout_impl(
             if not proceed_on_unmount_failure:
                 # Caller wants to abort on unmount failure
                 return result
-            # Otherwise continue to destroy/cleanup
+            # Otherwise continue to cleanup/destroy
 
-    # Step 2: Destroy mount config and overlay
-    if not skip_destroy:
-        try:
-            output.write(f"Deleting mount {path}...\n")
-            instance.destroy_mount(path, preserve_mount_point)
-        except Exception as e:
-            result.destroy_error = e
-            # Don't attempt cleanup if destroy failed
-            return result
-
-    # Step 3: Cleanup mount point directory
+    # Step 2: Cleanup mount point directory
     # Note: This runs even when skip_destroy=True (e.g., CLEANUP_ONLY case)
     try:
         output.write(f"Cleaning up mount {path}...\n")
         instance.cleanup_mount(Path(path), preserve_mount_point, debug)
     except Exception as e:
         result.cleanup_error = e
-        # Cleanup failure is less severe - don't mark as total failure
+        # Keep the checkout registered, so that a retry removes it
+        return result
+
+    # Step 3: Destroy mount config and overlay
+    if not skip_destroy:
+        try:
+            output.write(f"Deleting mount {path}...\n")
+            instance.destroy_mount(path, preserve_mount_point)
+        except Exception as e:
+            result.destroy_error = e
 
     return result
 
@@ -2355,7 +2360,7 @@ Do you still want to delete {path}?"""
                     # pyre-fixme[6]: Pyre doesn't narrow Optional type after if guard
                     self.optional_traceback(result.destroy_error, args.debug)
                 else:
-                    # Handle cleanup errors if destroy succeeded
+                    # Handle cleanup errors, which stop the removal before destroy
                     if result.cleanup_error:
                         msg = f"error cleaning up mount {mount}: {result.cleanup_error}"
                         if (

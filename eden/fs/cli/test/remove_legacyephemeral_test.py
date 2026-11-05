@@ -9,6 +9,7 @@
 import tempfile
 import unittest
 from contextlib import contextmanager
+from pathlib import Path
 from typing import cast, Generator, List
 from unittest.mock import patch
 
@@ -35,10 +36,17 @@ class RemoveLegacyEphemeralCheckoutsTest(unittest.TestCase):
         def mock_destroy_mount(path: str, preserve_mount_point: bool) -> None:
             destroy_mount_calls.append(path)
 
+        def mock_cleanup_mount(
+            path: Path, preserve_mount_point: bool, debug: bool
+        ) -> None:
+            pass
+
         # pyre-ignore[16]: FakeEdenInstance has no attribute unmount
         instance.unmount = mock_unmount
         # pyre-ignore[16]: FakeEdenInstance has no attribute destroy_mount
         instance.destroy_mount = mock_destroy_mount
+        # pyrefly: ignore[missing-attribute]
+        instance.cleanup_mount = mock_cleanup_mount
 
         return unmount_calls, destroy_mount_calls
 
@@ -214,6 +222,8 @@ class RemoveLegacyEphemeralCheckoutsTest(unittest.TestCase):
         config = checkout.get_config()
         checkout.save_config(config._replace(inode_catalog_type="legacyephemeral"))
 
+        self._add_mock_methods(instance)
+
         def failing_destroy_mount(path: str, preserve_mount_point: bool) -> None:
             raise Exception("Cleanup failed")
 
@@ -229,7 +239,77 @@ class RemoveLegacyEphemeralCheckoutsTest(unittest.TestCase):
         self.assertIn("Error deleting configuration", output)
         self.assertIn("Cleanup failed", output)
         self.assertIn("Manual cleanup recommended", output)
-        self.assertIn("sudo unmount -f", output)
+        self.assertIn("eden rm", output)
+
+    def test_cleanup_and_destroy_failures_log_both_errors(self) -> None:
+        instance = FakeEdenInstance(self.tmp_dir)
+        out = TestOutput()
+
+        checkout = instance.create_test_mount("ephemeral_mount", active=False)
+        config = checkout.get_config()
+        checkout.save_config(config._replace(inode_catalog_type="legacyephemeral"))
+        self._add_mock_methods(instance)
+
+        with (
+            patch.object(
+                instance, "cleanup_mount", side_effect=OSError("Folder cleanup failed")
+            ),
+            patch.object(
+                instance,
+                "destroy_mount",
+                side_effect=OSError("Configuration deletion failed"),
+            ),
+        ):
+            result = main_mod.remove_legacyephemeral_checkouts(
+                cast(EdenInstance, instance), out
+            )
+
+        self.assertEqual(result, 0)
+        output = out.getvalue()
+        self.assertIn("Warning: Failed to clean up mount point", output)
+        self.assertIn("Folder cleanup failed", output)
+        self.assertIn("Error deleting configuration", output)
+        self.assertIn("Configuration deletion failed", output)
+        self.assertIn(f"Run: rm -rf {checkout.path}", output)
+        self.assertIn(f"Run: eden rm {checkout.path}", output)
+
+    def test_cleanup_mount_failure_still_removes_checkout(self) -> None:
+        instance = FakeEdenInstance(self.tmp_dir)
+        out = TestOutput()
+
+        checkout = instance.create_test_mount("ephemeral_mount", active=False)
+        config = checkout.get_config()
+        checkout.save_config(config._replace(inode_catalog_type="legacyephemeral"))
+
+        _unmount_calls, destroy_mount_calls = self._add_mock_methods(instance)
+
+        def destroy_mount(path: str, preserve_mount_point: bool) -> None:
+            destroy_mount_calls.append(path)
+            instance.remove_checkout_configuration(path)
+
+        def failing_cleanup_mount(
+            path: Path, preserve_mount_point: bool, debug: bool
+        ) -> None:
+            raise Exception("Cleanup failed")
+
+        # pyrefly: ignore[missing-attribute]
+        instance.cleanup_mount = failing_cleanup_mount
+        # pyrefly: ignore[missing-attribute]
+        instance.destroy_mount = destroy_mount
+
+        result = main_mod.remove_legacyephemeral_checkouts(
+            cast(EdenInstance, instance), out
+        )
+
+        self.assertEqual(result, 1)
+        output = out.getvalue()
+        self.assertIn("Warning: Failed to clean up mount point", output)
+        self.assertIn("Cleanup failed", output)
+        self.assertIn("Manual cleanup recommended", output)
+        self.assertIn("rm -rf", output)
+        self.assertEqual(destroy_mount_calls, [str(checkout.path)])
+        self.assertEqual(instance.get_checkouts(), [])
+        self.assertFalse((instance.clients_path / "ephemeral_mount").exists())
 
     def test_get_checkouts_failure_continues(self) -> None:
         """Test that failure to enumerate checkouts doesn't crash."""

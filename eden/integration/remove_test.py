@@ -492,3 +492,47 @@ class RemoveTest(RemoveTestBase):
         )
         self.assertNotIn(self.mount, self.load_directory_map())
         self.assertFalse(client_dir.exists())
+
+    @parameterized.expand(
+        [
+            ("rust", {"EDENFSCTL_ONLY_RUST": "1"}),
+            ("python", {"EDENFSCTL_SKIP_RUST": "1"}),
+        ]
+    )
+    def test_retry_removes_checkout_whose_folder_deletion_failed(
+        self, impl: str, env: dict
+    ) -> None:
+        if sys.platform == "win32":
+            self.skipTest(
+                "A read-only directory doesn't stop deleting its files on Windows"
+            )
+        mount_path = pathlib.Path(self.mount)
+        client_dir = self.eden.client_dir_for_mount(mount_path)
+        self.eden.unmount(mount_path)
+        locked_dir = mount_path / "locked"
+        locked_dir.mkdir()
+        (locked_dir / "file").touch()
+        locked_dir.chmod(0o500)
+        try:
+            result = self.eden.run_unchecked(
+                "remove",
+                "--yes",
+                self.mount,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+        finally:
+            locked_dir.chmod(0o700)
+        self.assertNotEqual(
+            0,
+            result.returncode,
+            f"{impl} eden remove should fail to delete the locked directory",
+        )
+        self.assertIn(self.mount, self.load_directory_map())
+        self.assertTrue(client_dir.exists())
+
+        self.eden.run_cmd("remove", "--yes", self.mount, env=env)
+        self.assertNotIn(self.mount, self.load_directory_map())
+        self.assertFalse(mount_path.exists())
+        self.assertFalse(client_dir.exists())
