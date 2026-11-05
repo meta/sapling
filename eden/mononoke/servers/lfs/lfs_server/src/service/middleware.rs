@@ -54,7 +54,9 @@ impl Middleware for ThrottleMiddleware {
         Chain: FnOnce(State) -> Pin<Box<HandlerFuture>>,
     {
         if let Some(uri) = Uri::try_borrow_from(&state) {
-            if uri.path() == "/health_check" {
+            // Batch requests only mint download/upload URLs; they must keep
+            // working so clients can be directed at other tasks.
+            if uri.path() == "/health_check" || uri.path().ends_with("/objects/batch") {
                 return chain(state);
             }
         }
