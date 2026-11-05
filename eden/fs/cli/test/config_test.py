@@ -11,12 +11,13 @@ import io
 import json
 import os
 import re
+import shutil
 import struct
 import sys
 import unittest
 from collections import namedtuple
 from pathlib import Path
-from typing import Dict, Union
+from typing import Any, Dict, Union
 from unittest.mock import MagicMock, Mock, patch
 
 import toml
@@ -418,6 +419,34 @@ prefetching-enable = true
             {str(registered_mount): "registered", str(mount): "orphan"},
             json.loads((self._state_dir / "config.json").read_text()),
         )
+
+    def test_remove_client_dir_already_removed(self) -> None:
+        client_dir = self._state_dir / "clients" / "already-removed"
+
+        # FIXME: a client dir that another `eden rm` already deleted should
+        # count as removed, so this should not raise.
+        with self.assertRaises(FileNotFoundError):
+            config_mod._remove_client_dir(client_dir)
+
+    def test_remove_client_dir_concurrently_removed_entry(self) -> None:
+        client_dir = self._state_dir / "clients" / "racing"
+        (client_dir / "local" / "ff").mkdir(parents=True)
+        (client_dir / "config.toml").write_text("")
+        real_rmtree = shutil.rmtree
+
+        def concurrent_rmtree(path: Path, **kwargs: Any) -> None:
+            # Another `eden rm` deletes the entry between iterdir() and rmtree().
+            real_rmtree(path)
+            real_rmtree(path, **kwargs)
+
+        with patch("shutil.rmtree", side_effect=concurrent_rmtree):
+            # FIXME: entries that another `eden rm` already deleted should
+            # count as removed, so this should not raise and client_dir should
+            # be gone afterwards.
+            with self.assertRaises(FileNotFoundError):
+                config_mod._remove_client_dir(client_dir)
+
+        self.assertTrue(client_dir.exists())
 
     def test_checkout_without_protocol_defaults_to_nfs_on_macos(self) -> None:
         client_dir = self._state_dir / "clients" / "legacy-client"

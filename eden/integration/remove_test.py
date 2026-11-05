@@ -557,3 +557,27 @@ class RemoveTest(RemoveTestBase):
         self.assertNotIn(self.mount, self.load_directory_map())
         self.assertFalse(mount_path.exists())
         self.assertFalse(client_dir.exists())
+
+    def test_python_remove_succeeds_when_client_dir_is_missing(self) -> None:
+        # Another `eden rm` of the same checkout, or an interrupted one, can
+        # leave the checkout registered after deleting its client dir.
+        mount_path = pathlib.Path(self.mount)
+        client_dir = self.eden.client_dir_for_mount(mount_path)
+        self.eden.unmount(mount_path)
+        shutil.rmtree(client_dir)
+
+        result = self.eden.run_unchecked(
+            "remove",
+            "--yes",
+            self.mount,
+            env={"EDENFSCTL_SKIP_RUST": "1"},
+            capture_output=True,
+            text=True,
+        )
+
+        # FIXME: `eden rm` should exit 0 and unregister the checkout instead
+        # of failing to delete the missing client dir.
+        self.assertEqual(1, result.returncode, result.stderr)
+        self.assertIn("error deleting configuration", result.stderr)
+        self.assertIn(self.mount, self.load_directory_map())
+        self.assertFalse(os.path.exists(self.mount))
