@@ -47,6 +47,9 @@ folly::Expected<std::vector<MountTableEntry>, int> readProcMountInfo(
 uint64_t getStatmountMask(MountInfoOptions options) {
   auto mask = STATMOUNT_SB_BASIC | STATMOUNT_MNT_ROOT | STATMOUNT_MNT_POINT |
       STATMOUNT_FS_TYPE;
+  if (options.includeMountId) {
+    mask |= STATMOUNT_MNT_BASIC;
+  }
   if (options.includeMountSource) {
     mask |= STATMOUNT_SB_SOURCE;
   }
@@ -141,6 +144,7 @@ folly::Expected<MountTableEntry, int> parseStatmount(
   }
 
   MountTableEntry info;
+  info.mountId = options.includeMountId ? sm.mnt_id_old : 0;
   info.devMajor = sm.sb_dev_major;
   info.devMinor = sm.sb_dev_minor;
   info.mountRoot = sm.str + sm.mnt_root;

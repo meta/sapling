@@ -23,7 +23,8 @@ namespace {
 
 constexpr MountInfoOptions kAllFields{
     .includeMountSource = true,
-    .includeMountOptions = true};
+    .includeMountOptions = true,
+    .includeMountId = true};
 constexpr uint64_t kBasicMask = STATMOUNT_SB_BASIC | STATMOUNT_MNT_ROOT |
     STATMOUNT_MNT_POINT | STATMOUNT_FS_TYPE;
 
@@ -47,7 +48,7 @@ TEST(MountInfoTableTest, statmountRequiresAllRequestedFields) {
       detail::parseStatmount(sm, {.includeMountSource = true}).hasValue());
   EXPECT_EQ(EOPNOTSUPP, detail::parseStatmount(sm, kAllFields).error());
 
-  sm.mask |= STATMOUNT_MNT_OPTS;
+  sm.mask |= STATMOUNT_MNT_OPTS | STATMOUNT_MNT_BASIC;
   EXPECT_TRUE(detail::parseStatmount(sm, kAllFields).hasValue());
   for (auto field :
        {STATMOUNT_SB_BASIC,
@@ -58,6 +59,10 @@ TEST(MountInfoTableTest, statmountRequiresAllRequestedFields) {
     EXPECT_EQ(EOPNOTSUPP, detail::parseStatmount(sm, {}).error());
     sm.mask |= field;
   }
+  sm.mask &= ~STATMOUNT_MNT_BASIC;
+  EXPECT_TRUE(detail::parseStatmount(sm, {}).hasValue());
+  EXPECT_EQ(
+      EOPNOTSUPP, detail::parseStatmount(sm, {.includeMountId = true}).error());
 }
 
 TEST(MountInfoTableTest, parsesStatmountMetadata) {
@@ -65,8 +70,11 @@ TEST(MountInfoTableTest, parsesStatmountMetadata) {
       "/data/users/gzuo/fbsource\0fuse\0edenfs:\0user_id=229400\0/\0";
   std::vector<char> buffer(sizeof(struct statmount) + sizeof(strings));
   auto& sm = *reinterpret_cast<struct statmount*>(buffer.data());
-  sm.mask = kBasicMask | STATMOUNT_SB_SOURCE | STATMOUNT_MNT_OPTS;
+  sm.mask = kBasicMask | STATMOUNT_MNT_BASIC | STATMOUNT_SB_SOURCE |
+      STATMOUNT_MNT_OPTS;
   sm.sb_dev_minor = 344;
+  sm.mnt_id = 0x100000065;
+  sm.mnt_id_old = 101;
   std::memcpy(sm.str, strings, sizeof(strings));
   sm.fs_type = static_cast<uint32_t>(std::strlen(sm.str) + 1);
   sm.sb_source =
@@ -79,6 +87,8 @@ TEST(MountInfoTableTest, parsesStatmountMetadata) {
 
   auto result = detail::parseStatmount(sm, kAllFields);
   ASSERT_TRUE(result.hasValue());
+  EXPECT_EQ(0, detail::parseStatmount(sm, {})->mountId);
+  EXPECT_EQ(101, result->mountId);
   EXPECT_EQ(0, result->devMajor);
   EXPECT_EQ(344, result->devMinor);
   EXPECT_EQ("/", result->mountRoot);
