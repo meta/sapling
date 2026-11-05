@@ -12,6 +12,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -214,6 +215,61 @@ class DiskUsageTest(testcase.EdenRepoTest):
         self.assertIn(f"Run `eden rm {broken_mount}`", result.stderr)
         self.assertFalse(healthy_orphan.exists())
         self.assertTrue(broken_target.exists())
+
+    def test_du_clean_orphaned_with_missing_mount(self) -> None:
+        """An interrupted removal leaves both the mount and config.toml gone."""
+        self.set_rust_rollout_config({"du": True})
+        scratch_config = Path(os.environ["SCRATCH_CONFIG_PATH"])
+        original_config = scratch_config.read_text()
+        for style in ("flat", "mirror"):
+            with self.subTest(style=style):
+                scratch_config.write_text(original_config + f'\nstyle = "{style}"\n')
+                broken_mount = Path(self.tmp_dir) / f"broken-{style}"
+                self.eden.clone(self.repo.path, str(broken_mount))
+                self.eden.run_cmd(
+                    "redirect",
+                    "add",
+                    "--mount",
+                    str(broken_mount),
+                    "buck-out",
+                    "symlink",
+                )
+                broken_target = (broken_mount / "buck-out").resolve(strict=True)
+                (broken_target / "payload").write_text("keep")
+                healthy_orphan = Path(
+                    subprocess.check_output(
+                        [
+                            os.fsdecode(mkscratch_bin()),
+                            "path",
+                            self.mount,
+                            "--subdir",
+                            "edenfs/redirections/orphaned",
+                        ],
+                        encoding="utf-8",
+                    ).strip()
+                )
+                self.eden.unmount(broken_mount)
+                client_dir = self.eden.client_dir_for_mount(broken_mount)
+                shutil.rmtree(broken_mount)
+                (client_dir / "config.toml").unlink()
+
+                result = self.eden.run_unchecked(
+                    "du",
+                    "--clean-orphaned",
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    encoding="utf-8",
+                )
+
+                # FIXME: Cleanup should exit 0, delete the healthy orphan, and
+                # preserve the missing checkout's target without recreating it.
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(
+                    "Failed to find orphaned redirections for cleanup", result.stderr
+                )
+                self.assertTrue(healthy_orphan.exists())
+                self.assertEqual((broken_target / "payload").read_text(), "keep")
+                self.assertFalse(broken_mount.exists())
 
     # Materialized files tests
     def test_du_materialized_increases_after_file_modification(self) -> None:
