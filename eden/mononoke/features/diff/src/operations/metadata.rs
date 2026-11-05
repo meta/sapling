@@ -85,10 +85,7 @@ impl FileGeneratedSpan {
         let mut manual_section_start = None;
 
         for (line_number, line) in content.lines().enumerate() {
-            if line.contains(concat!("@", "generated"))
-                || line.contains(concat!("@", "partially-generated"))
-            // The redundant concat is used to avoid marking this file as generated.
-            {
+            if has_generated_annotation(line) {
                 found_generated_annotation = true;
             }
 
@@ -115,6 +112,21 @@ impl FileGeneratedSpan {
             },
         )
     }
+}
+
+/// Markers immediately preceded by a backtick are Markdown code-span references
+/// to the marker rather than a declaration that the file is generated.
+fn has_generated_annotation(line: &str) -> bool {
+    // The redundant concat is used to avoid marking this file as generated.
+    [
+        concat!("@", "generated"),
+        concat!("@", "partially-generated"),
+    ]
+    .iter()
+    .any(|marker| {
+        line.match_indices(marker)
+            .any(|(idx, _)| !line[..idx].ends_with('`'))
+    })
 }
 
 impl TextFile {
@@ -919,6 +931,53 @@ mod tests {
         let lines_count = metadata_diff.lines_count.unwrap();
         assert_eq!(lines_count.added_lines, 3);
         assert_eq!(lines_count.significant_added_lines, 0);
+
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn test_metadata_marker_in_code_span_not_generated(
+        fb: FacebookInit,
+    ) -> Result<(), DiffError> {
+        let ctx = CoreContext::test_mock(fb);
+        let repo = init_test_repo(&ctx).await?;
+
+        let doc_content = concat!(
+            "# Policy\n",
+            "**Files with `@",
+            "generated SignedSource` header.** Do not edit.\n",
+            "Never hand-edit `@",
+            "partially-generated` files.\n"
+        );
+        let header_content = concat!("// @", "generated\n", "See `@", "generated`.\n");
+        let cs = CreateCommitContext::new_root(&ctx, &repo)
+            .add_file("doc.md", doc_content)
+            .add_file("header.txt", header_content)
+            .commit()
+            .await?;
+
+        for (path, expected) in [
+            ("doc.md", DiffGeneratedStatus::NonGenerated),
+            ("header.txt", DiffGeneratedStatus::Fully),
+        ] {
+            let input = DiffSingleInput::ChangesetPath(DiffInputChangesetPath {
+                changeset_id: cs,
+                path: create_non_root_path(path)?,
+                replacement_path: None,
+            });
+            let metadata_diff = metadata(
+                &ctx,
+                None::<(DiffSingleInput, &BasicTestRepo)>,
+                Some((input, &repo)),
+                false,
+            )
+            .await?;
+            assert_eq!(
+                metadata_diff.other_file_info.generated_status,
+                Some(expected),
+                "{path}"
+            );
+        }
 
         Ok(())
     }
