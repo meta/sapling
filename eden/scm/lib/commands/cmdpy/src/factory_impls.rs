@@ -41,7 +41,11 @@ fn initialize_python_and_run_python_hook(
     if let Ok(mut locked) = PYTHON.try_lock() {
         // Note: do not run Python logic while holding this lock. Otherwise it
         // might deadlock with the Python GIL in theory.
-        *locked = Some(interp);
+        // Keep only the `HgPython` that initialized Python. Dropping it
+        // finalizes Python, and the others own nothing.
+        if interp.is_python_initialized_by_us() {
+            *locked = Some(interp);
+        }
     }
 
     result

@@ -82,7 +82,7 @@ impl HgPython {
         HgPython { keep_alive }
     }
 
-    fn is_python_initialized_by_us(&self) -> bool {
+    pub(crate) fn is_python_initialized_by_us(&self) -> bool {
         self.keep_alive.is_some()
     }
 
@@ -226,10 +226,7 @@ impl HgPython {
                     }
                 } else {
                     let message = format_py_error(py, &err).unwrap_or_else(|err| {
-                        format!(
-                            "unknown python exception {:?} {:?}",
-                            &err.ptype, &err.pvalue
-                        )
+                        format!("unknown python exception {:?} {:?}", err.ptype, err.pvalue)
                     });
                     let _ = io.write_err(message);
                     1
