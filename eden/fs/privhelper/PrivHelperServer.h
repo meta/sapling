@@ -412,7 +412,6 @@ class PrivHelperServer : private UnixSocket::ReceiveCallback {
   enum class BindUnmountResult {
     Unmounted,
     AlreadyUnmounted,
-    ProcFdUnavailable,
   };
 
   BindUnmountResult bindUnmountByFd(

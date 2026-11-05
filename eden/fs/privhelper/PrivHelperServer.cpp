@@ -275,31 +275,18 @@ void PrivHelperServer::unmountRegisteredMount(
   if (useModernMountApi()) {
     const auto procFdPath =
         fmt::format("/proc/self/fd/{}", registeredMount.rootFd.fd());
-    struct stat st{};
-    // This probes procfs support for an already-open fd before using that fd
-    // path for umount2().
-    //
-    // @lint-ignore CLANGTIDY facebook-hte-BadCall-stat
-    if (stat(procFdPath.c_str(), &st) == 0) {
-      XLOGF(
-          DBG2,
-          "Unmounting registered mount `{}` through `{}`",
-          mountPath,
-          procFdPath);
-      const auto rc =
-          umount2(procFdPath.c_str(), linuxUnmountFlags(options, false));
-      if (rc != 0) {
-        logUnmountError(mountPath.c_str(), errno);
-      }
-      return;
-    }
-
+    // Filesystem errors must not restore authority to the original pathname.
     XLOGF(
         DBG2,
-        "failed to stat {}; falling back to path-based unmount for {}: {}",
-        procFdPath,
+        "Unmounting registered mount `{}` through `{}`",
         mountPath,
-        folly::errnoStr(errno));
+        procFdPath);
+    const auto rc =
+        umount2(procFdPath.c_str(), linuxUnmountFlags(options, false));
+    if (rc != 0) {
+      logUnmountError(mountPath.c_str(), errno);
+    }
+    return;
   }
 #endif
   unmount(mountPath.c_str(), options);
@@ -1722,21 +1709,6 @@ PrivHelperServer::BindUnmountResult PrivHelperServer::bindUnmountByFd(
   // umount2() still takes a path, but this procfs path refers to the already
   // open target fd. Do not pass UMOUNT_NOFOLLOW here: the procfd magic link is
   // the mechanism that converts the fd back to a kernel path for umount2().
-  struct stat st{};
-  // This probes procfs support for an already-open fd before deciding whether
-  // to use the explicit legacy fallback.
-  //
-  // @lint-ignore CLANGTIDY facebook-hte-BadCall-stat
-  if (stat(procFdPath.c_str(), &st) != 0) {
-    XLOGF(
-        DBG2,
-        "failed to stat {}; falling back to path-based unmount for {}: {}",
-        procFdPath,
-        mountPath,
-        folly::errnoStr(errno));
-    return BindUnmountResult::ProcFdUnavailable;
-  }
-
   XLOGF(DBG2, "Unmounting bind mount `{}` through `{}`", mountPath, procFdPath);
   const auto rc = umountBindMountByFd(procFdPath.c_str());
   if (rc != 0 && errno == EINVAL) {
@@ -1764,7 +1736,7 @@ void PrivHelperServer::insecureBindUnmount(const char* mountPath) {
 }
 
 void PrivHelperServer::bindUnmount(
-    const char* mountPath,
+    [[maybe_unused]] const char* mountPath,
     folly::StringPiece mountRoot) {
 #ifndef __APPLE__
   auto targetFd = openBindMountTarget(mountRoot, mountPath);
@@ -1782,8 +1754,9 @@ void PrivHelperServer::bindUnmount(
   }
 #else
   (void)mountRoot;
+  folly::throwSystemErrorExplicit(
+      ENOTSUP, "bind unmounts are not supported on macOS");
 #endif
-  insecureBindUnmount(mountPath);
 }
 
 UnixSocket::Message PrivHelperServer::processSetRestartArgsMsg(Cursor& cursor) {

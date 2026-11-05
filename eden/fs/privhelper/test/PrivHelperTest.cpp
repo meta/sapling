@@ -365,6 +365,14 @@ class PrivHelperFdUnmountTestServer : public PrivHelperServer {
     return insecureBindUnmountCalled_.load();
   }
 
+  void setUnmountError(int error) {
+    unmountError_.store(error);
+  }
+
+  size_t fdUnmountCalls() const {
+    return fdUnmountCalls_.load();
+  }
+
  private:
   void unmount(const char* /* mountPath */, UnmountOptions /* options */)
       override {}
@@ -376,12 +384,15 @@ class PrivHelperFdUnmountTestServer : public PrivHelperServer {
 
 #ifndef __APPLE__
   int umountBindMountByFd(const char* /* procFdPath */) override {
-    errno = EINVAL;
+    ++fdUnmountCalls_;
+    errno = unmountError_.load();
     return -1;
   }
 #endif
 
   std::atomic<bool> insecureBindUnmountCalled_{false};
+  std::atomic<int> unmountError_{EINVAL};
+  std::atomic<size_t> fdUnmountCalls_{0};
 };
 
 namespace {
@@ -2032,6 +2043,92 @@ TEST_F(PrivHelperFdUnmountTest, bindUnmountAllowsAlreadyUnmountedTarget) {
   EXPECT_FALSE(server_.insecureBindUnmountCalled());
 #endif
 }
+
+TEST_F(PrivHelperFdUnmountTest, bindUnmountErrorsDoNotRestorePathAuthority) {
+#ifdef __APPLE__
+  GTEST_SKIP() << "Linux-specific procfd bind unmount validation";
+#else
+  auto root = makeTempDir();
+  folly::fs::create_directory(root.path() / "child");
+  const auto path = root.path().string();
+  client_->takeoverStartup(path, {}).get(1s);
+
+  for (const auto error : {EIO, ENOENT, ENOTCONN}) {
+    server_.setUnmountError(error);
+    EXPECT_THROW(
+        client_->bindUnMount(path + "/child").get(1s), std::system_error);
+  }
+  EXPECT_EQ(3, server_.fdUnmountCalls());
+  EXPECT_FALSE(server_.insecureBindUnmountCalled());
+#endif
+}
+
+#ifdef __linux__
+class PrivHelperRegisteredUnmountTestServer : public PrivHelperServer {
+ public:
+  void registerMount(const std::string& path) {
+    registerMountPoint(path);
+  }
+};
+
+TEST(PrivHelperUnmountTest, disconnectedMountKeepsAuthorityAfterAncestorSwap) {
+  if (access("/dev/fuse", R_OK | W_OK) != 0) {
+    GTEST_SKIP() << "/dev/fuse is unavailable";
+  }
+  TemporaryDirectory dir;
+  runInMountNamespace([&] {
+    checkUnixError(mount("tmpfs", dir.path().c_str(), "tmpfs", 0, "size=1m"));
+    const auto original = dir.path() / "original";
+    const auto moved = dir.path() / "moved";
+    const auto victim = dir.path() / "victim";
+    folly::fs::create_directories(original / "mount");
+    folly::fs::create_directories(victim / "mount");
+    checkUnixError(
+        mount("victim", (victim / "mount").c_str(), "tmpfs", 0, "size=1m"));
+    ASSERT_TRUE(
+        folly::writeFile(
+            StringPiece{"victim"}, (victim / "mount" / "marker").c_str()));
+    File fuse("/dev/fuse", O_RDWR | O_CLOEXEC);
+    const auto options = fmt::format(
+        "fd={},rootmode=40755,user_id={},group_id={}",
+        fuse.fd(),
+        getuid(),
+        getgid());
+    checkUnixError(mount(
+        "edenfs:",
+        (original / "mount").c_str(),
+        "fuse",
+        MS_NOSUID | MS_NODEV,
+        options.c_str()));
+
+    File clientConn;
+    File serverConn;
+    PrivHelperConn::createConnPair(clientConn, serverConn);
+    PrivHelperRegisteredUnmountTestServer server;
+    const auto path = (original / "mount").string();
+    server.registerMount(path);
+    std::thread thread([&server, conn = std::move(serverConn)]() mutable {
+      server.initPartial(std::move(conn), getuid(), getgid());
+      server.run();
+    });
+    SCOPE_EXIT {
+      thread.join();
+    };
+    RawPrivHelperClient client(std::move(clientConn));
+    fuse.close();
+    folly::fs::rename(original, moved);
+    folly::fs::create_directory_symlink(victim, original);
+
+    auto response = client.sendAndRecv(
+        PrivHelperConn::serializeUnmountRequest(2, path, {}));
+    PrivHelperConn::parseEmptyResponse(
+        PrivHelperConn::REQ_UNMOUNT_FUSE, response);
+    EXPECT_TRUE(folly::fs::exists(victim / "mount" / "marker"));
+    struct stat st{};
+    EXPECT_EQ(0, stat((moved / "mount").c_str(), &st));
+  });
+}
+#endif
 
 TEST_F(PrivHelperTest, takeoverShutdown) {
   auto abcMountPoint = makeTempDir("abc");
