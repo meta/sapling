@@ -74,6 +74,19 @@ struct FileAccessMonitorProcess {
  */
 void detachFromParentProcessGroup();
 
+/** Select the served owner, retaining CLI selection during hardening rollback.
+ */
+struct PrivHelperOwner {
+  uid_t uid;
+  gid_t gid;
+};
+
+PrivHelperOwner resolvePrivHelperOwner(
+    uid_t realUid,
+    gid_t realGid,
+    uid_t cliUid,
+    gid_t cliGid);
+
 /**
  * Whether an NFS mount with these options gets the macOS f_fstypename
  * override ("edenfs:") applied after mounting, while the override is on.

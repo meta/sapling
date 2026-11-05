@@ -141,6 +141,29 @@ void installPrivHelperRollbackMarker() {
 } // namespace
 #endif
 
+TEST(PrivHelperOwnerTest, onlyRealRootCanChooseAnOwner) {
+  if (disablePrivHelperHardening()) {
+    GTEST_SKIP() << "requires hardening to be enabled";
+  }
+  const auto user = resolvePrivHelperOwner(123, 456, 0, 0);
+  EXPECT_EQ(123, user.uid);
+  EXPECT_EQ(456, user.gid);
+  const auto root = resolvePrivHelperOwner(0, 0, 123, 456);
+  EXPECT_EQ(123, root.uid);
+  EXPECT_EQ(456, root.gid);
+}
+
+#ifdef __linux__
+TEST(PrivHelperOwnerTest, rollbackRestoresTheCliOwner) {
+  runInMountNamespace([] {
+    installPrivHelperRollbackMarker();
+    const auto owner = resolvePrivHelperOwner(123, 456, 0, 0);
+    EXPECT_EQ(0, owner.uid);
+    EXPECT_EQ(0, owner.gid);
+  });
+}
+#endif
+
 TEST(TccDisclaimKillswitch, presentWhenFileExists) {
   TemporaryFile killswitch;
   EXPECT_TRUE(tccDisclaimKillswitchPresent(killswitch.path().c_str()));

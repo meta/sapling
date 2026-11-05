@@ -388,6 +388,36 @@ bool spawnEdenFs(
 }
 } // namespace
 
+PrivHelperOwner resolvePrivHelperOwner(
+    uid_t realUid,
+    gid_t realGid,
+    uid_t cliUid,
+    gid_t cliGid) {
+  if (realUid == 0) {
+    return {cliUid, cliGid};
+  }
+  if (disablePrivHelperHardening()) {
+    XLOGF(
+        WARN,
+        "Privhelper hardening disabled; using CLI owner {}/{} for caller {}/{}",
+        cliUid,
+        cliGid,
+        realUid,
+        realGid);
+    return {cliUid, cliGid};
+  }
+  if (cliUid != realUid || cliGid != realGid) {
+    XLOGF(
+        WARN,
+        "Ignoring CLI privhelper owner {}/{}; caller is {}/{}",
+        cliUid,
+        cliGid,
+        realUid,
+        realGid);
+  }
+  return {realUid, realGid};
+}
+
 PrivHelperServer::PrivHelperServer()
     : spawnEdenFs_{spawnEdenFs}, now_{currentEpochSeconds} {}
 

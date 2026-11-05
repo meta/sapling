@@ -32,52 +32,6 @@
 
 using namespace facebook::eden;
 
-namespace {
-struct PrivHelperOwner {
-  uid_t uid;
-  gid_t gid;
-};
-
-PrivHelperOwner resolvePrivHelperOwner(
-    uid_t realUid,
-    gid_t realGid,
-    uid_t cliUid,
-    gid_t cliGid) {
-  if (realUid == 0) {
-    return {cliUid, cliGid};
-  }
-
-  // A non-root real uid means argv is controlled by the caller, including the
-  // installed setuid-root path. Only real-root launches may nominate a
-  // different Eden owner, such as the sudo/dev flow using SUDO_UID.
-  const auto hardeningDisabled = disablePrivHelperHardening();
-  const auto ownerMismatch = cliUid != realUid || cliGid != realGid;
-  if (ownerMismatch) {
-    auto reason = std::string{"using real uid/gid"};
-    if (hardeningDisabled) {
-      reason = "honoring CLI values because `" +
-          std::string{kDisablePrivHelperHardeningPath} + "` is present";
-    }
-    XLOGF(
-        WARNING,
-        "CLI-provided privhelper uid/gid {}/{} do not match real uid/gid {}/{}; {}",
-        cliUid,
-        cliGid,
-        realUid,
-        realGid,
-        reason);
-  } else if (hardeningDisabled) {
-    XLOGF(
-        WARNING,
-        "Using CLI-provided privhelper uid/gid because `{}` is present",
-        kDisablePrivHelperHardeningPath);
-  }
-
-  return hardeningDisabled ? PrivHelperOwner{cliUid, cliGid}
-                           : PrivHelperOwner{realUid, realGid};
-}
-} // namespace
-
 DEFINE_int32(
     privhelper_uid,
     facebook::eden::UserInfo::kDefaultNobodyUid,
