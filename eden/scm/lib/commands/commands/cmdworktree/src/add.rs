@@ -485,6 +485,9 @@ fn resolve_rev(ctx: &ReqCtx<WorktreeOpts>, repo: &Repo) -> Result<std::result::R
         .args(configfiles)
         // An alias like `log = log -G` would change the output.
         .args(["--config", "alias.log=log"])
+        // `log` is read-only, so it would pull a missing commit hidden, but we
+        // check the commit out like `goto` does.
+        .args(["--config", "experimental.autopull-always-visible=true"])
         // Prompts may also write to stdout, so mark the template's node lines.
         .args(["log", "-r", rev, "-l", "2", "-T", r"node: {node}\n"])
         // Without a stdin, a diff with several local versions resolves to the

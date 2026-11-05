@@ -78,7 +78,8 @@ class pullattempt:
         # (best-effort) avoid changing visible heads for readonly command.
         visible = repo.ui.cmdtype != registrar.command.readonly
 
-        # Temporary config in case the above change caused issues.
+        # Set by commands that resolve a commit with a readonly command and then
+        # check it out, like `worktree add` running `log`.
         if repo.ui.configbool("experimental", "autopull-always-visible"):
             visible = True
 

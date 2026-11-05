@@ -179,11 +179,10 @@ The pulled commit is in the commit graph by the time EdenFS clones it.
 
   $ grep -q -- --skip-commit-resolve $TESTTMP/remote_diff.log
 
-FIXME: The pulled commit should be visible, the way `goto` leaves it, so this
-should print "remote diff". `log` is a read-only command, so autopull pulls the
-commit hidden.
+The pulled commit is visible, the way `goto` leaves it.
 
   $ sl log -r 'heads(draft())' -T '{desc|firstline}\n'
+  remote diff
 
 test worktree add - an ambiguous Phabricator diff aborts for agents and picks the newest version otherwise
 
