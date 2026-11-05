@@ -1085,48 +1085,89 @@ TEST(PrivHelperMountFlagsTest, initialFuseMountHasAnExplicitNodevFlag) {
         PrivHelperConn::REQ_UNMOUNT_FUSE, response);
   });
 }
-#endif
 
-#ifdef __APPLE__
-TEST_F(
-    PrivHelperRawProtocolTest,
-    bindUnmountIsUnsupportedEvenForRegisteredPaths) {
-  auto dir = makeTempDir();
-  const auto path = dir.path().string();
-  auto response = client_->sendAndRecv(
-      PrivHelperConn::serializeTakeoverStartupRequest(1, path, {}));
-  PrivHelperConn::parseEmptyResponse(
-      PrivHelperConn::REQ_TAKEOVER_STARTUP, response);
-  server_.setFuseUnmountResult(path).setValue();
-
-  for (const auto& suffix : {"/buck-out", "/../victim"}) {
-    response = client_->sendAndRecv(
-        PrivHelperConn::serializeBindUnMountRequest(2, path + suffix));
-    EXPECT_THROW_RE(
-        PrivHelperConn::parseEmptyResponse(
-            PrivHelperConn::REQ_UNMOUNT_BIND, response),
-        std::system_error,
-        "bind unmounts are not supported on macOS");
+TEST(PrivHelperRollbackTest, legacyFuseMountOmitsNodevAndForwardsTheType) {
+  if (access("/dev/fuse", R_OK | W_OK) != 0) {
+    GTEST_SKIP() << "/dev/fuse is unavailable";
   }
+  TemporaryDirectory dir;
+  runInMountNamespace([&] {
+    installPrivHelperRollbackMarker();
+    File clientConn;
+    File serverConn;
+    PrivHelperConn::createConnPair(clientConn, serverConn);
+    PrivHelperServer server;
+    std::thread thread([&server, conn = std::move(serverConn)]() mutable {
+      server.initPartial(std::move(conn), getuid(), getgid());
+      server.run();
+    });
+    SCOPE_EXIT {
+      thread.join();
+    };
+    RawPrivHelperClient client(std::move(clientConn));
+    auto response = client.sendAndRecv(
+        PrivHelperConn::serializeMountRequest(
+            1, dir.path().string(), false, "ramfs"));
+    PrivHelperConn::parseEmptyResponse(
+        PrivHelperConn::REQ_MOUNT_FUSE, response);
+    struct statvfs flags{};
+    checkUnixError(statvfs(dir.path().c_str(), &flags));
+    EXPECT_NE(0, flags.f_flag & ST_NOSUID);
+    EXPECT_EQ(0, flags.f_flag & ST_NODEV);
+    response = client.sendAndRecv(
+        PrivHelperConn::serializeUnmountRequest(2, dir.path().string(), {}));
+    PrivHelperConn::parseEmptyResponse(
+        PrivHelperConn::REQ_UNMOUNT_FUSE, response);
+  });
 }
 #endif
 
-TEST_F(PrivHelperRawProtocolTest, fuseRequestRejectsOtherFilesystemTypes) {
+#ifdef __APPLE__
+TEST_F(PrivHelperTest, bindUnmountIsUnsupportedEvenForRegisteredPaths) {
+  auto dir = makeTempDir();
+  const auto path = dir.path().string();
+  client_->takeoverStartup(path, {}).get(1s);
+  server_.setFuseUnmountResult(path).setValue();
+
+  for (const auto& suffix : {"/buck-out", "/../victim"}) {
+    auto rejected = client_->bindUnMount(path + suffix);
+    auto nextRequest = client_->getServerPid();
+    EXPECT_THROW_RE(
+        std::move(rejected).get(1s),
+        std::system_error,
+        "bind unmounts are not supported on macOS");
+    EXPECT_EQ(getpid(), std::move(nextRequest).get(1s));
+  }
+  EXPECT_TRUE(xplatLogger_->getEvents().empty());
+}
+#endif
+
+TEST_F(PrivHelperTest, fuseRequestRejectsOtherFilesystemTypes) {
   auto dir = makeTempDir();
   for (const auto& type :
        {std::string{"ramfs"},
         std::string{"fuse.other"},
         std::string{"fuse\0ramfs", 10}}) {
-    auto response = client_->sendAndRecv(
-        PrivHelperConn::serializeMountRequest(
-            1, dir.path().string(), false, type));
+    auto rejected = client_->fuseMount(dir.path().string(), false, type);
+    auto nextRequest = client_->getServerPid();
     EXPECT_THROW_RE(
-        PrivHelperConn::parseEmptyResponse(
-            PrivHelperConn::REQ_MOUNT_FUSE, response),
+        std::move(rejected).get(1s),
         std::system_error,
         "unsupported FUSE filesystem type");
+    EXPECT_EQ(getpid(), std::move(nextRequest).get(1s));
   }
   EXPECT_TRUE(server_.getRequestedVfsTypes().empty());
+  TemporaryFile mountedFile;
+  for (const auto& type : {"fuse", "fuse.edenfs"}) {
+    const auto path = (dir.path() / type).string();
+    folly::fs::create_directory(path);
+    server_.setFuseMountResult(path).setValue(File(mountedFile.fd(), false));
+    server_.setFuseUnmountResult(path).setValue();
+    auto mounted = client_->fuseMount(path, false, type).get(1s);
+    EXPECT_GE(mounted.fd(), 0);
+    EXPECT_EQ(std::vector<std::string>{type}, server_.getRequestedVfsTypes());
+  }
+  EXPECT_TRUE(xplatLogger_->getEvents().empty());
 }
 
 TEST_F(PrivHelperTest, nfsFstypeOverrideCanBeTurnedOff) {
@@ -1456,6 +1497,10 @@ class PrivHelperCleanupTestServer : public PrivHelperServer {
     return cleanupStaleBindMounts(path, root.fd());
   }
 
+  SanityCheckResult cleanupWithoutDescriptor(const std::string& path) {
+    return cleanupStaleBindMounts(path, -1);
+  }
+
  private:
   std::vector<MountTableEntry> mountsForCleanup() const override {
     auto mounts = PrivHelperServer::mountsForCleanup();
@@ -1534,6 +1579,63 @@ TEST(PrivHelperCleanupTest, stackedChildrenArePeeledBeforeTheirParent) {
     EXPECT_EQ(3, result.staleRedirectionMountsSucceeded);
     EXPECT_EQ(0, result.staleRedirectionMountsFailed);
     EXPECT_EQ(3, server.snapshots);
+  });
+}
+
+TEST(
+    PrivHelperCleanupTest,
+    rollbackUsesLegacyCleanupWithoutDescriptorMetadata) {
+  TemporaryDirectory dir;
+  runInMountNamespace([&] {
+    checkUnixError(mount("tmpfs", dir.path().c_str(), "tmpfs", 0, "size=1m"));
+    const auto child = dir.path() / "child";
+    folly::fs::create_directory(child);
+    checkUnixError(mount("tmpfs", child.c_str(), "tmpfs", 0, "size=1m"));
+    ASSERT_TRUE(
+        folly::writeFile(StringPiece{"mounted"}, (child / "marker").c_str()));
+    installPrivHelperRollbackMarker();
+    PrivHelperCleanupTestServer server;
+    server.afterSnapshot = [](size_t) {
+      ADD_FAILURE() << "hardened cleanup should not enumerate mounts";
+    };
+
+    const auto result = server.cleanupWithoutDescriptor(dir.path().string());
+
+    EXPECT_EQ(1, result.staleRedirectionMountsFound);
+    EXPECT_EQ(1, result.staleRedirectionMountsSucceeded);
+    EXPECT_EQ(0, result.staleRedirectionMountsFailed);
+    EXPECT_EQ(0, server.snapshots);
+    EXPECT_FALSE(folly::fs::exists(child / "marker"));
+  });
+}
+
+TEST(PrivHelperCleanupTest, enumerationErrorsAreContainedAndRetryable) {
+  TemporaryDirectory dir;
+  runInMountNamespace([&] {
+    checkUnixError(mount("tmpfs", dir.path().c_str(), "tmpfs", 0, "size=1m"));
+    const auto child = dir.path() / "child";
+    folly::fs::create_directory(child);
+    for (const size_t failingSnapshot : {1, 2}) {
+      checkUnixError(mount("tmpfs", child.c_str(), "tmpfs", 0, "size=1m"));
+      ASSERT_TRUE(
+          folly::writeFile(StringPiece{"mounted"}, (child / "marker").c_str()));
+      PrivHelperCleanupTestServer server;
+      server.afterSnapshot = [failingSnapshot](size_t snapshot) {
+        if (snapshot == failingSnapshot) {
+          folly::throwSystemErrorExplicit(EIO, "injected mount-table failure");
+        }
+      };
+
+      const auto failed = server.cleanup(dir.path().string());
+
+      EXPECT_EQ(0, failed.staleRedirectionMountsSucceeded);
+      EXPECT_TRUE(folly::fs::exists(child / "marker"));
+      server.afterSnapshot = {};
+      const auto retried = server.cleanup(dir.path().string());
+      EXPECT_EQ(1, retried.staleRedirectionMountsSucceeded);
+      EXPECT_EQ(0, retried.staleRedirectionMountsFailed);
+      EXPECT_FALSE(folly::fs::exists(child / "marker"));
+    }
   });
 }
 
@@ -2397,10 +2499,15 @@ TEST_F(PrivHelperFdUnmountTest, bindUnmountErrorsDoNotRestorePathAuthority) {
 
   for (const auto error : {EIO, ENOENT, ENOTCONN}) {
     server_.setUnmountError(error);
-    EXPECT_THROW(
-        client_->bindUnMount(path + "/child").get(1s), std::system_error);
+    auto rejected = client_->bindUnMount(path + "/child");
+    auto nextRequest = client_->getServerPid();
+    EXPECT_THROW(std::move(rejected).get(1s), std::system_error);
+    EXPECT_EQ(getpid(), std::move(nextRequest).get(1s));
   }
   EXPECT_EQ(3, server_.fdUnmountCalls());
+  server_.setUnmountError(EINVAL);
+  EXPECT_NO_THROW(client_->bindUnMount(path + "/child").get(1s));
+  EXPECT_EQ(4, server_.fdUnmountCalls());
   EXPECT_FALSE(server_.insecureBindUnmountCalled());
 #endif
 }

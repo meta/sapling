@@ -14,7 +14,11 @@ constexpr const char* kDisablePrivHelperHardeningPath{
 
 /**
  * Check the root-controlled rollback marker and minimum supported kernel.
- * Restart the helper when changing the marker to apply startup credentials.
+ * The marker restores legacy mount operations, cleanup, mount flags, request
+ * validation, and startup owner selection. It intentionally disables security
+ * checks; ordinary syscall errors never enable rollback.
+ * Stop EdenFS and wait for its helper to exit before changing the marker, then
+ * start EdenFS again. Owner IDs and existing mount flags cannot change live.
  */
 bool disablePrivHelperHardening();
 
