@@ -26,16 +26,17 @@ use diff_service_if_services::errors::diff_service::DiffUnifiedHeaderlessUnaryEx
 use diff_service_if_services::errors::diff_service::DiffUnifiedStreamExn;
 use diff_service_if_services::errors::diff_service::DiffUnifiedUnaryExn;
 use diff_service_if_services::errors::diff_service::MetadataDiffExn;
+use ephemeral_blobstore::StorageLocation;
 use fbinit::FacebookInit;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use futures_stats::TimedFutureExt;
+use mononoke_api::ChangesetSpecifier;
 use mononoke_api::Mononoke;
 use mononoke_api::RepoContext;
 use mononoke_api::RestrictedPathsPolicy;
 use mononoke_app::MononokeApp;
 use mononoke_thrift_server::RequestContext;
-use mononoke_types::ChangesetId;
 use scuba_ext::MononokeScubaSampleBuilder;
 use source_control as source_control_thrift;
 
@@ -43,7 +44,7 @@ use crate::errors::ServerError;
 use crate::platform;
 use crate::repo::Repo;
 use crate::utils::diff_conversion::convert_diff_single_input;
-use crate::utils::diff_conversion::try_extract_changeset_id_sync;
+use crate::utils::diff_conversion::input_changeset_specifier;
 
 pub fn internal_error<E: Into<Error>>(e: E) -> thrift::InternalError {
     thrift::InternalError {
@@ -206,7 +207,7 @@ impl DiffServiceImpl {
         &self,
         ctx: CoreContext,
         repo_name: &str,
-        changeset_id: Option<ChangesetId>,
+        specifier: Option<ChangesetSpecifier>,
     ) -> Result<RepoContext<Repo>, ServerError> {
         let authz = platform::authorization_context(&ctx);
 
@@ -215,13 +216,36 @@ impl DiffServiceImpl {
             .repo(ctx.clone(), repo_name)
             .await?
             .ok_or_else(|| classify_missing_repo_error(&self.mononoke, repo_name))?
-            .with_authorization_context(authz);
+            .with_authorization_context(authz.clone());
 
-        if let Some(cs_id) = changeset_id {
-            builder = builder
+        if let Some(ChangesetSpecifier::Bonsai(cs_id)) = specifier {
+            // TODO: Remove this check and legacy bubble lookup after all snapshot
+            // callers use ephemeral_bonsai, including older SCS deployments.
+            let repo = builder.build().await?;
+            if repo.config().storage_config.ephemeral_blobstore.is_none()
+                || repo
+                    .changeset_exists(cs_id, StorageLocation::Persistent)
+                    .await?
+            {
+                return Ok(repo);
+            }
+
+            builder = self
+                .mononoke
+                .repo(ctx.clone(), repo_name)
+                .await?
+                .ok_or_else(|| classify_missing_repo_error(&self.mononoke, repo_name))?
+                .with_authorization_context(authz)
                 .with_bubble(|ephemeral_store| {
                     let ctx = ctx.clone();
                     async move { ephemeral_store.bubble_from_changeset(&ctx, &cs_id).await }
+                })
+                .await?;
+        } else if let Some(specifier) = specifier {
+            builder = builder
+                .with_bubble(|ephemeral_store| {
+                    let ctx = ctx.clone();
+                    async move { specifier.bubble_id(&ctx, ephemeral_store).await }
                 })
                 .await?;
         }
@@ -240,14 +264,12 @@ impl DiffServiceImpl {
         input: thrift::DiffInput,
         policy: &RestrictedPathsPolicy,
     ) -> Result<ResolvedDiffInputs, ServerError> {
-        // Extract bonsai IDs synchronously for bubble association only.
-        // Full commit ID resolution happens later in convert_diff_single_input.
-        let base_changeset_id = input.base.as_ref().and_then(try_extract_changeset_id_sync);
-        let other_changeset_id = input.other.as_ref().and_then(try_extract_changeset_id_sync);
+        let base_specifier = input_changeset_specifier(input.base.as_ref())?;
+        let other_specifier = input_changeset_specifier(input.other.as_ref())?;
 
         let (base_repo, other_repo) = futures::try_join!(
-            self.get_repo_context(ctx.clone(), repo_name, base_changeset_id,),
-            self.get_repo_context(ctx.clone(), repo_name, other_changeset_id,),
+            self.get_repo_context(ctx.clone(), repo_name, base_specifier),
+            self.get_repo_context(ctx.clone(), repo_name, other_specifier),
         )?;
 
         let base = match input.base {

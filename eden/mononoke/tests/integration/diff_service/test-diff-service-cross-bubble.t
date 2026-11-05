@@ -159,3 +159,16 @@ Test: commit-compare regular commit vs snapshot (paths-only)
 Test: commit-compare snapshot vs regular commit (paths-only)
   $ diff_service_client commit-compare --repo-name repo --commit-id "$SNAPSHOT1_ID" --other-commit-id "$B_BONSAI" --paths-only
   M file.txt
+
+Explicit snapshot IDs also work with and without known bubble IDs.
+  $ diff_service_client diff-hunks --repo-name repo --commit-scheme ephemeral-bonsai --base-changeset-id "$SNAPSHOT1_ID" --base-path file.txt --other-changeset-id "$SNAPSHOT2_ID" --other-path file.txt
+  Hunks output (num_hunks: 1):
+  Hunk: add_range(0-1), remove_range(0-1)
+  === End of hunks ===
+  $ diff_service_client commit-compare --repo-name repo --commit-id "$SNAPSHOT1_ID" --bubble-id 1 --other-commit-id "$SNAPSHOT2_ID" --other-bubble-id 2 --paths-only
+  M file.txt
+
+An explicit bubble ID is honored rather than replaced by a changeset lookup.
+  $ diff_service_client diff-unified --repo-name repo --base-changeset-id "$SNAPSHOT1_ID" --base-bubble-id 9999 --base-path file.txt --other-changeset-id "$B_BONSAI" --other-path file.txt > "$TESTTMP/wrong-bubble.out" 2> "$TESTTMP/wrong-bubble.err"
+  [1]
+  $ python3 -c "from pathlib import Path; assert 'bubble 9999 does not exist, or has expired' in Path('$TESTTMP/wrong-bubble.err').read_text()"

@@ -10,7 +10,8 @@
 setup
   $ . "${TEST_FIXTURES}/library.sh"
 
-  $ REPONAME="repo" setup_common_config
+Use a multiplexed store without ephemeral storage for ordinary commits.
+  $ MULTIPLEXED=1 REPONAME="repo" setup_common_config
 
 Keep internal paging disabled while capturing the one-shot response.
   $ merge_just_knobs <<EOF

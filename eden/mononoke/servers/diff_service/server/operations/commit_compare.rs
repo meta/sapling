@@ -13,10 +13,8 @@ use context::CoreContext;
 use diff_service_if as thrift;
 use futures_stats::TimedFutureExt;
 use mononoke_api::ChangesetContext;
-use mononoke_api::ChangesetSpecifier;
 use mononoke_api::RepoContext;
 use mononoke_api::RestrictedPathsPolicy;
-use mononoke_types::ChangesetId;
 use scuba_ext::MononokeScubaSampleBuilder;
 use source_control as source_control_thrift;
 
@@ -161,12 +159,9 @@ impl DiffServiceImpl {
         // Create separate repo contexts for each changeset to support cross-bubble diffs.
         // Each ephemeral changeset may live in a different bubble, so we need
         // independent repo contexts with per-changeset bubble resolution.
-        let base_cs_id = filter_bonsai(&specifier);
-        let other_cs_id = other_specifier.as_ref().and_then(filter_bonsai);
-
         let (base_repo, other_repo) = futures::try_join!(
-            self.get_repo_context(ctx.clone(), repo_name, base_cs_id),
-            self.get_repo_context(ctx.clone(), repo_name, other_cs_id),
+            self.get_repo_context(ctx.clone(), repo_name, Some(specifier)),
+            self.get_repo_context(ctx.clone(), repo_name, other_specifier),
         )?;
 
         let base_changeset = base_repo.changeset(specifier).await?.ok_or_else(|| {
@@ -475,19 +470,6 @@ fn has_stable_paging_cursor(params: &source_control_thrift::CommitCompareParams)
         && !params
             .compare_items
             .contains(&source_control_thrift::CommitCompareItem::TREES)
-}
-
-fn filter_bonsai(specifier: &ChangesetSpecifier) -> Option<ChangesetId> {
-    match specifier {
-        ChangesetSpecifier::Bonsai(cs_id) | ChangesetSpecifier::EphemeralBonsai(cs_id, _) => {
-            Some(*cs_id)
-        }
-        ChangesetSpecifier::Hg(_)
-        | ChangesetSpecifier::Globalrev(_)
-        | ChangesetSpecifier::GitSha1(_)
-        | ChangesetSpecifier::Svnrev(_)
-        | ChangesetSpecifier::P4Changelist(_) => None,
-    }
 }
 
 impl AddScubaParams for thrift::CommitCompareRequest {

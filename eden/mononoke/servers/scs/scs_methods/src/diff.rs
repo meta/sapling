@@ -381,9 +381,19 @@ impl<'a> DiffRouter<'a> {
         let path = NonRootMPath::try_from(content.path().clone())
             .map_err(|e| remote_infra_error(format!("{e:?}")))?
             .to_string();
-        let changeset_id = content.changeset().id();
+        let bonsai_id = content.changeset().id().as_ref().to_vec();
+        let commit_id = match content.repo_ctx().bubble_id() {
+            Some(bubble_id) => {
+                diff_service_if::CommitId::ephemeral_bonsai(diff_service_if::EphemeralBonsai {
+                    bonsai_id,
+                    bubble_id: bubble_id.into(),
+                    ..Default::default()
+                })
+            }
+            None => diff_service_if::CommitId::bonsai(bonsai_id),
+        };
         Ok(diff_service_client::DiffInput::CommitPath {
-            commit_id: diff_service_if::CommitId::bonsai(changeset_id.as_ref().to_vec()),
+            commit_id,
             path,
             replacement_path,
         })

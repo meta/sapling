@@ -7,6 +7,8 @@
 setup
   $ . "${TEST_FIXTURES}/library.sh"
 
+Use a multiplexed store without ephemeral storage for ordinary commits.
+  $ export MULTIPLEXED=1
   $ REPONAME="repo" setup_common_config
   $ REPOID=1 REPONAME=lfs_repo GIT_LFS_INTERPRET_POINTERS=1 setup_common_config
 setup basic repo with some commits and files
@@ -29,6 +31,12 @@ setup basic repo with some commits and files
   $ start_and_wait_for_diff_service
   $ diff_service_client status
   Service status: fb303_status::ALIVE
+
+A missing ordinary commit reports a missing commit even without ephemeral storage.
+  $ MISSING_COMMIT=$(python3 -c "print('f' * 64)")
+  $ diff_service_client metadata-diff --repo-name repo --base-changeset-id "$MISSING_COMMIT" --base-path file1.txt --other-changeset-id "$A" --other-path file1.txt > "$TESTTMP/missing-commit.out" 2> "$TESTTMP/missing-commit.err"
+  [1]
+  $ python3 -c "from pathlib import Path; assert 'commit not found' in Path('$TESTTMP/missing-commit.err').read_text()"
 
 test metadata diff method with actual content IDs
 Get content IDs for the files we created

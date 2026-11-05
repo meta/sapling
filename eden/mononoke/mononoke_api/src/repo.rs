@@ -961,11 +961,12 @@ impl<R: RepoDerivedDataRef> RepoContext<R> {
     /// also reads persistent commits, so this does not mean a changeset
     /// read through it is ephemeral.
     pub fn in_bubble(&self) -> bool {
-        self.repo()
-            .repo_derived_data()
-            .manager()
-            .bubble_id()
-            .is_some()
+        self.bubble_id().is_some()
+    }
+
+    /// The bubble this context is bound to, which can also read persistent commits.
+    pub fn bubble_id(&self) -> Option<BubbleId> {
+        self.repo().repo_derived_data().manager().bubble_id()
     }
 }
 

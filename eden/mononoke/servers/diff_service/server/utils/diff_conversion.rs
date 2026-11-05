@@ -306,24 +306,18 @@ fn convert_diff_generated_status_to_thrift(
     }
 }
 
-/// Try to extract a ChangesetId synchronously from bonsai/ephemeral_bonsai CommitId.
-/// Returns None for other commit ID types (hg, git, globalrev, svnrev).
-///
-/// Only bonsai and ephemeral_bonsai IDs can be extracted without async DB lookups.
-/// Other ID types (hg, git, globalrev, svnrev) require mapping tables
-/// (bonsai_hg_mapping, bonsai_git_mapping, etc.) which need a RepoContext.
-///
-/// This creates a chicken-and-egg problem: building a RepoContext with the
-/// correct ephemeral bubble requires knowing the bonsai changeset ID, but
-/// resolving non-bonsai IDs requires the RepoContext. We break the cycle by
-/// extracting bonsai IDs synchronously here (used for bubble setup in
-/// `get_repo_context`), then resolving all ID types asynchronously
-/// in `convert_diff_single_input` once the RepoContext is available.
-///
-/// Returning None for non-bonsai IDs is correct because non-bonsai IDs always
-/// refer to persistent (non-ephemeral) commits, so no bubble lookup is needed.
-///
-/// Handles both old (changeset_path) and new (commit_path) thrift variants.
+pub fn input_changeset_specifier(
+    input: Option<&thrift::DiffSingleInput>,
+) -> Result<Option<ChangesetSpecifier>, ServerError> {
+    match input {
+        Some(thrift::DiffSingleInput::commit_path(cp)) => {
+            commit_id_to_specifier(&cp.commit_id).map(Some)
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Extract a canonical changeset ID for logging without resolving other ID schemes.
 pub fn try_extract_changeset_id_sync(input: &thrift::DiffSingleInput) -> Option<ChangesetId> {
     match input {
         thrift::DiffSingleInput::commit_path(cp) => match &cp.commit_id {
@@ -331,9 +325,6 @@ pub fn try_extract_changeset_id_sync(input: &thrift::DiffSingleInput) -> Option<
             thrift::CommitId::ephemeral_bonsai(ephemeral) => {
                 ChangesetId::from_bytes(&ephemeral.bonsai_id).ok()
             }
-            // Other ID types (hg, git, globalrev, svnrev) need async resolution
-            // via RepoContext. None here means no bubble lookup, which is correct
-            // since these IDs always refer to persistent commits.
             _ => None,
         },
         _ => None,

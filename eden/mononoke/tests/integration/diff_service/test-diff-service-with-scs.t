@@ -315,15 +315,16 @@ Test full diff between regular commit (D) and snapshot
   +snapshot line 2
 
 Test metadata diff with snapshot via remote diff service
-  $ scsc diff --repo repo -i "$D_BONSAI" --snapshot-id "$SNAPSHOT_ID" -f metadata-diff
+  $ scsc diff --repo repo -i "$D_BONSAI" --snapshot-id "$SNAPSHOT_ID" -f metadata-diff > "$TESTTMP/explicit-parent-metadata.out"
+  $ cat "$TESTTMP/explicit-parent-metadata.out"
   --- a/file1.txt, file type: FILE, content type: TEXT, generated status: NOT_GENERATED,
   +++ b/file1.txt, file type: FILE, content type: TEXT, generated status: NOT_GENERATED,
   first added line number: 1, * significant lines (* added, * deleted), * total (* added, * deleted) (glob)
   
 
-
-
-
+The default persistent parent can be read through the snapshot's bubble context.
+  $ scsc diff --repo repo --snapshot-id "$SNAPSHOT_ID" -f metadata-diff > "$TESTTMP/implicit-parent-metadata.out"
+  $ diff -u "$TESTTMP/explicit-parent-metadata.out" "$TESTTMP/implicit-parent-metadata.out"
 
 == Verify diff service was called ==
 
