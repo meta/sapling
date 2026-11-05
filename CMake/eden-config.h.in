@@ -30,5 +30,4 @@ extern const uint64_t Eden_BuildInfo_kTimeUnix;
 #define EDEN_ETC_EDEN_DIR "${ETC_EDEN_DIR}"
 
 #cmakedefine01 EDEN_HAVE_GIT
-#cmakedefine EDEN_HAVE_SELINUX
 #cmakedefine EDEN_HAVE_LOGGER

@@ -104,9 +104,6 @@ endif()
 
 find_package(OpenSSL MODULE REQUIRED)
 
-find_package(SELinux)
-set(EDEN_HAVE_SELINUX ${SELINUX_FOUND})
-
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set(EDEN_HAVE_GIT OFF)
 elseif("${ENABLE_GIT}" STREQUAL "AUTO")
