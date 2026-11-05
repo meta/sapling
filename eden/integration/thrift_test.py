@@ -307,17 +307,9 @@ class ThriftTest(testcase.EdenRepoTest):
                 sync=SyncBehavior(syncTimeoutSeconds=60),
             )
 
-        self.assertEqual(1, len(results))
-        if self.repo.get_type() in ["hg", "filteredhg"]:
-            self.assertEqual(
-                results, [DigestHashResult(digestHash=self.expected_adir_digest_hash)]
-            )
-        else:
-            self.assert_digest_hash_error(
-                results[0],
-                "std::domain_error: getTreeAuxData is not implemented for GitBackingStores",
-                EdenErrorType.GENERIC_ERROR,
-            )
+        self.assertEqual(
+            results, [DigestHashResult(digestHash=self.expected_adir_digest_hash)]
+        )
 
     async def test_get_sha1_throws_for_path_with_dot_components(self) -> None:
         async with self.get_async_thrift_client() as client:
@@ -526,21 +518,12 @@ class ThriftTest(testcase.EdenRepoTest):
             )
         print(results)
         self.assertEqual(2, len(results))
-        if self.repo_type in ["hg", "filteredhg"]:
-            self.assert_digest_hash_error(
-                results[0],
-                "tree aux data missing for tree",
-                EdenErrorType.ATTRIBUTE_UNAVAILABLE,
-                ENOENT,
-            )
-
-        else:
-            self.assert_digest_hash_error(
-                results[0],
-                "std::domain_error: getTreeAuxData is not implemented for GitBackingStores",
-                EdenErrorType.GENERIC_ERROR,
-            )
-
+        self.assert_digest_hash_error(
+            results[0],
+            "tree aux data missing for tree",
+            EdenErrorType.ATTRIBUTE_UNAVAILABLE,
+            ENOENT,
+        )
         self.assertEqual(
             results[1],
             DigestHashResult(digestHash=self.expected_hello_blake3),

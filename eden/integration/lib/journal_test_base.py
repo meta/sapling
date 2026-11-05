@@ -26,7 +26,6 @@ from .thrift_objects import buildSmallChange
 
 
 class JournalTestBase(testcase.EdenRepoTest):
-    git_test_supported = False
     enable_fault_injection: bool = True
 
     def edenfs_extra_config(self) -> Optional[Dict[str, List[str]]]:

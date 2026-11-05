@@ -201,7 +201,6 @@ class IoUringTestMixinTest(unittest.TestCase):
 
 
 @mock.patch.object(eden.config, "HAVE_NFS", True)
-@mock.patch.object(eden.config, "HAVE_GIT", True)
 @mock.patch.object(eden.config, "HAVE_FILTEREDHG", True)
 @mock.patch.object(testcase.sys, "platform", "linux")
 class RepoTestVariantsTest(unittest.TestCase):
@@ -223,14 +222,11 @@ class RepoTestVariantsTest(unittest.TestCase):
         self.assertEqual(
             {
                 "Hg",
-                "Git",
                 "FilteredHg",
                 "NFSHg",
-                "NFSGit",
                 "NFSFilteredHg",
                 "Coroutines",
                 "IoUring",
-                "GitIoUring",
                 "FilteredHgIoUring",
                 "CoroutinesIoUring",
             },
@@ -241,7 +237,7 @@ class RepoTestVariantsTest(unittest.TestCase):
                 case = cls()
                 self.assertEqual(label.endswith("IoUring"), case.use_io_uring())
                 self.assertEqual(label.startswith("NFS"), case.use_nfs())
-                self.assertEqual("git" if "Git" in label else "hg", case.repo_type)
+                self.assertEqual("hg", case.repo_type)
                 self.assertEqual(
                     "FilteredHg" in label, case.backing_store_type == "filteredhg"
                 )
@@ -251,8 +247,8 @@ class RepoTestVariantsTest(unittest.TestCase):
 
     def test_case_sensitivity_composes_with_io_uring(self) -> None:
         variants = self.variants(case_sensitivity_dependent=True, run_coroutines=False)
-        self.assertEqual(27, len(variants))
-        for scm in ("Hg", "Git", "FilteredHg"):
+        self.assertEqual(18, len(variants))
+        for scm in ("Hg", "FilteredHg"):
             for label, sensitive in (
                 ("SystemCaseSensitivity", None),
                 ("CaseSensitive", True),
@@ -312,7 +308,6 @@ class RepoTestVariantsTest(unittest.TestCase):
                     set(self.variants(run_io_uring=False)), set(self.variants())
                 )
         with (
-            mock.patch.object(eden.config, "HAVE_GIT", False),
             mock.patch.object(eden.config, "HAVE_FILTEREDHG", False),
             mock.patch.object(eden.config, "HAVE_NFS", False),
         ):

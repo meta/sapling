@@ -180,126 +180,75 @@ class ReaddirTest(testcase.EdenRepoTest):
 
         # Eagerepo requires commits to be pushed to the server so that
         # aux data can be derived for trees
-        if self.repo_type in ["hg", "filteredhg"]:
-            self.repo.push(rev=".", target="master", create=True)
+        self.repo.push(rev=".", target="master", create=True)
 
-        self.adir_file_id = {
-            "hg": self.convert_raw_oid_to_foid(
-                Path("adir/file"),
-                RawObjectId(
-                    b"41825fd37af5796284289a1e0770ccd3d27d4832:adir/file",
-                    SourceControlType.REGULAR_FILE,
-                ),
+        self.adir_file_id = self.convert_raw_oid_to_foid(
+            Path("adir/file"),
+            RawObjectId(
+                b"41825fd37af5796284289a1e0770ccd3d27d4832:adir/file",
+                SourceControlType.REGULAR_FILE,
             ),
-            "git": b"929efb30534598535198700b994ee438d441d1af",
-        }[self.repo_type]
+        )
 
-        self.bdir_file_id = {
-            "hg": self.convert_raw_oid_to_foid(
-                Path("bdir/file"),
-                RawObjectId(
-                    b"e5336dae10d1e7590fc25db9d417d089295875e0:bdir/file",
-                    SourceControlType.REGULAR_FILE,
-                ),
+        self.bdir_file_id = self.convert_raw_oid_to_foid(
+            Path("bdir/file"),
+            RawObjectId(
+                b"e5336dae10d1e7590fc25db9d417d089295875e0:bdir/file",
+                SourceControlType.REGULAR_FILE,
             ),
-            "git": b"e50a49f9558d09d4d3bfc108363bb24c127ed263",
-        }[self.repo_type]
+        )
 
-        self.hello_id = {
-            "hg": self.convert_raw_oid_to_foid(
-                Path("hello"),
-                RawObjectId(
-                    b"edd9bdab9ab7a84b21a7a19fffe7a29709ac3b47:hello",
-                    SourceControlType.REGULAR_FILE,
-                ),
+        self.hello_id = self.convert_raw_oid_to_foid(
+            Path("hello"),
+            RawObjectId(
+                b"edd9bdab9ab7a84b21a7a19fffe7a29709ac3b47:hello",
+                SourceControlType.REGULAR_FILE,
             ),
-            "git": b"5c1b14949828006ed75a3e8858957f86a2f7e2eb",
-        }[self.repo_type]
+        )
 
-        self.slink_id = {
-            "hg": self.convert_raw_oid_to_foid(
-                Path("slink"),
-                RawObjectId(
-                    b"7fac34a232926c628f2d890d3eed95be7ab57f34:slink",
-                    SourceControlType.SYMLINK,
-                ),
+        self.slink_id = self.convert_raw_oid_to_foid(
+            Path("slink"),
+            RawObjectId(
+                b"7fac34a232926c628f2d890d3eed95be7ab57f34:slink",
+                SourceControlType.SYMLINK,
             ),
-            "git": b"b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0",
-        }[self.repo_type]
+        )
 
-        self.adir_id = {
-            "hg": self.convert_raw_oid_to_foid(
-                Path("adir"),
-                RawObjectId(
-                    b"6ae9e90c9c90aa85adbdab16808203e64a5163cb:adir",
-                    SourceControlType.TREE,
-                ),
+        self.adir_id = self.convert_raw_oid_to_foid(
+            Path("adir"),
+            RawObjectId(
+                b"6ae9e90c9c90aa85adbdab16808203e64a5163cb:adir",
+                SourceControlType.TREE,
             ),
-            "git": b"aa0e79d49fe12527662d2d73ea839691eb472c9a",
-        }[self.repo_type]
+        )
 
         # There is no easy way to compute the blake3/size of a directory on the fly (in Python)
         # Since these hashes/sizes should stay constant, we can just hardcode the expected result
         adir_digest_size = 207
         adir_blake3 = b"\x73\xf0\xc6\xe3\x6b\x3c\xb9\xfc\x64\xa8\xa3\x39\x24\x57\xd3\xc9\xd0\x2d\x11\xfd\x22\xe5\x36\x71\x94\x5d\x95\x3f\xfa\xc3\x8c\x92"
-        self.adir_digest_size_result = {
-            "hg": DigestSizeOrError(digestSize=adir_digest_size),
-            "filteredhg": DigestSizeOrError(digestSize=adir_digest_size),
-            "git": DigestSizeOrError(
-                error=EdenError(
-                    message="std::domain_error: getTreeAuxData is not implemented for GitBackingStores",
-                    errorType=EdenErrorType.GENERIC_ERROR,
-                )
-            ),
-        }[self.repo_type]
+        self.adir_digest_size_result = DigestSizeOrError(digestSize=adir_digest_size)
 
-        self.adir_digest_hash_result = {
-            "hg": DigestHashOrError(digestHash=adir_blake3),
-            "filteredhg": DigestHashOrError(digestHash=adir_blake3),
-            "git": DigestHashOrError(
-                error=EdenError(
-                    message="std::domain_error: getTreeAuxData is not implemented for GitBackingStores",
-                    errorType=EdenErrorType.GENERIC_ERROR,
-                )
-            ),
-        }[self.repo_type]
+        self.adir_digest_hash_result = DigestHashOrError(digestHash=adir_blake3)
 
-        self.cdir_subdir_id = {
-            "hg": self.convert_raw_oid_to_foid(
-                Path("cdir/subdir"),
-                RawObjectId(
-                    b"cd765cb479197becdca10a4baa87e983244bf24f:cdir/subdir",
-                    SourceControlType.TREE,
-                ),
+        self.cdir_subdir_id = self.convert_raw_oid_to_foid(
+            Path("cdir/subdir"),
+            RawObjectId(
+                b"cd765cb479197becdca10a4baa87e983244bf24f:cdir/subdir",
+                SourceControlType.TREE,
             ),
-            "git": b"f5497927ddcc19b41c4ca57e01ff99339f93db13",
-        }[self.repo_type]
+        )
 
         # There is no easy way to compute the blake3/size of a directory on the fly (in Python)
         # Since these hashes/sizes should stay constant, we can just hardcode the expected result
         cdir_subdir_digest_size = 211
         cdir_subdir_blake3 = b"\x2f\xe0\x36\xd6\xf0\x6a\xf6\xb5\x60\xe7\xe1\xf4\x95\x1c\x9c\xd7\xf1\x62\x08\x32\xa2\xee\xb8\x42\x16\x9b\xd4\xe7\x7b\x83\x0a\x94"
-        self.cdir_subdir_digest_size_result = {
-            "hg": DigestSizeOrError(digestSize=cdir_subdir_digest_size),
-            "filteredhg": DigestSizeOrError(digestSize=cdir_subdir_digest_size),
-            "git": DigestSizeOrError(
-                error=EdenError(
-                    message="std::domain_error: getTreeAuxData is not implemented for GitBackingStores",
-                    errorType=EdenErrorType.GENERIC_ERROR,
-                )
-            ),
-        }[self.repo_type]
+        self.cdir_subdir_digest_size_result = DigestSizeOrError(
+            digestSize=cdir_subdir_digest_size
+        )
 
-        self.cdir_subdir_digest_hash_result = {
-            "hg": DigestHashOrError(digestHash=cdir_subdir_blake3),
-            "filteredhg": DigestHashOrError(digestHash=cdir_subdir_blake3),
-            "git": DigestHashOrError(
-                error=EdenError(
-                    message="std::domain_error: getTreeAuxData is not implemented for GitBackingStores",
-                    errorType=EdenErrorType.GENERIC_ERROR,
-                )
-            ),
-        }[self.repo_type]
+        self.cdir_subdir_digest_hash_result = DigestHashOrError(
+            digestHash=cdir_subdir_blake3
+        )
 
     def assert_eden_error(
         self,

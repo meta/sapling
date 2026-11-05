@@ -27,7 +27,6 @@ namespace facebook::eden {
 // the Python CLI at fs/cli/config.py.
 constexpr BackingStoreType kSupportedRepositoryTypes[] = {
     BackingStoreType::HG,
-    BackingStoreType::GIT,
     BackingStoreType::RECAS,
     BackingStoreType::EMPTY,
     BackingStoreType::HTTP,
@@ -126,7 +125,7 @@ class CheckoutConfig {
   /**
    * Get the repository type.
    *
-   * Currently supported types include "git", "hg", "filteredhg", "empty", and
+   * Currently supported types include "hg", "filteredhg", "empty", and
    * "recas".
    */
   const std::string& getRepoType() const {

@@ -19,8 +19,6 @@ from .lib import hgrepo, testcase
 @testcase.eden_repo_test
 @unittest.skipUnless(sys.platform == "linux", "FIFOs are supported on Linux")
 class FifoTest(testcase.EdenRepoTest):
-    git_test_supported = False
-
     def populate_repo(self) -> None:
         self.repo.write_file("hello", "hola\n")
         self.repo.commit("Initial commit.")

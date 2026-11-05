@@ -104,18 +104,6 @@ endif()
 
 find_package(OpenSSL MODULE REQUIRED)
 
-if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  set(EDEN_HAVE_GIT OFF)
-elseif("${ENABLE_GIT}" STREQUAL "AUTO")
-  find_package(LibGit2 MODULE)
-  set(EDEN_HAVE_GIT "${LibGit2_FOUND}")
-elseif(ENABLE_GIT)
-  find_package(LibGit2 MODULE REQUIRED)
-  set(EDEN_HAVE_GIT "${LibGit2_FOUND}")
-else()
-  set(EDEN_HAVE_GIT OFF)
-endif()
-
 find_package(Re2 MODULE REQUIRED)
 include_directories(${RE2_INCLUDE_DIR})
 

@@ -99,11 +99,8 @@ chain of responsibility structure - if one of them fails, it will send the reque
 the next layer. The primary `BackingStore` implementation used by EdenFS is the
 `SaplingBackingStore` class, which fetches data from an Sapling repository. (The
 name `SaplingBackingStore` dates back to before Sapling was differentiated from
-Mercurial.) EdenFS also has a `GitBackingStore` implementation that can fetch
-data from a git repository. However, as the git CLI does not currently have any
-knowledge of EdenFS this is not particularly usable in practice: while EdenFS
-can show a view of a git repository, operations like `git status` or
-`git checkout` are not EdenFS aware.
+Mercurial.) Git repositories are served through the same store by Sapling's
+dotgit mode; EdenFS has no git-native store.
 
 # Persistent State Management
 

@@ -11,9 +11,7 @@
 namespace facebook::eden {
 
 BackingStoreType toBackingStoreType(std::string_view type) {
-  if (type == "git") {
-    return BackingStoreType::GIT;
-  } else if (type == "hg") {
+  if (type == "hg") {
     return BackingStoreType::HG;
   } else if (type == "filteredhg") {
     return BackingStoreType::FILTEREDHG;
@@ -24,14 +22,12 @@ BackingStoreType toBackingStoreType(std::string_view type) {
   } else if (type.empty()) {
     return BackingStoreType::EMPTY;
   } else {
-    throw_<std::domain_error>("unsupported backing store type");
+    throw_<std::domain_error>("unsupported backing store type: ", type);
   }
 }
 
 std::string_view toBackingStoreString(BackingStoreType type) {
   switch (type) {
-    case BackingStoreType::GIT:
-      return "git";
     case BackingStoreType::HG:
       return "hg";
     case BackingStoreType::FILTEREDHG:

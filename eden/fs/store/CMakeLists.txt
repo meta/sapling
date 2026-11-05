@@ -8,12 +8,6 @@ include(generated_targets.cmake)
 add_subdirectory(sl)
 add_subdirectory(filter)
 
-if("${EDEN_HAVE_GIT}")
-  add_subdirectory(git)
-else()
-  add_library(eden_fs_store_git INTERFACE)
-endif()
-
 if(BUILD_TESTS)
   add_subdirectory(test)
 endif()

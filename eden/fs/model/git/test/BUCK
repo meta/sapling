@@ -12,9 +12,6 @@ cpp_unittest(
         "fbsource//third-party/googletest:gtest",
         "fbsource//xplat/folly:string",
         "fbsource//xplat/folly/io:iobuf",
-        "//eden/fs/model:model",
-        "//eden/fs/model:testutil",
-        "//eden/fs/model/git:git",
         "//eden/fs/model/git:gitignore",
     ],
 )

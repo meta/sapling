@@ -70,6 +70,8 @@ const SNAPSHOT_MAGIC_4: &[u8] = b"eden\x00\x00\x00\x04";
 #[derive(Deserialize, Serialize, Debug, PartialEq, VariantNames, EnumString)]
 #[serde(rename_all = "lowercase")]
 enum RepositoryType {
+    // The daemon no longer mounts "git" checkouts; the CLI keeps recognising
+    // the type so existing ones can still be listed and removed.
     #[strum(serialize = "git")]
     Git,
     #[strum(serialize = "hg")]

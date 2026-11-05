@@ -109,8 +109,6 @@ endif()
 # Configuration options
 set(ENABLE_EDENSCM AUTO CACHE STRING "Enable support for Eden SCM repositories")
 set_property(CACHE ENABLE_EDENSCM PROPERTY STRINGS AUTO ON OFF)
-set(ENABLE_GIT AUTO CACHE STRING "Enable support for Git repositories")
-set_property(CACHE ENABLE_GIT PROPERTY STRINGS AUTO ON OFF)
 set(ENABLE_THRIFT_PYTHON AUTO CACHE STRING
   "Build the Python CLI, which needs thrift-python")
 set_property(CACHE ENABLE_THRIFT_PYTHON PROPERTY STRINGS AUTO ON OFF)
@@ -178,12 +176,6 @@ configure_file(
   ${CMAKE_CURRENT_SOURCE_DIR}/CMake/eden-config.cpp.in
   ${CMAKE_CURRENT_BINARY_DIR}/eden/fs/eden-config.cpp
 )
-
-if(EDEN_HAVE_GIT)
-  set(EDEN_HAVE_GIT_PY "True")
-else()
-  set(EDEN_HAVE_GIT_PY "False")
-endif()
 
 if(LINUX)
   set(EDEN_HAVE_NFS_PY "True")

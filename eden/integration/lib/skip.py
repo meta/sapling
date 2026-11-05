@@ -243,11 +243,6 @@ elif sys.platform.startswith("darwin"):
     # CalledProcessError
     TEST_DISABLED["health_test.HealthOfFakeEdenFSTest"] = True
 
-    # eden clone fails bc Git not supported?
-    TEST_DISABLED["remount_test.RemountTest"] = [
-        "test_git_and_hg",
-    ]
-
     # Broken on NFS since NFS will just hang with the message "nfs server
     # edenfs:: not responding". There was an attempt to fix this with commit
     # 1f5512cf74ca, but it seems like something in test teardown is causing
@@ -365,8 +360,7 @@ if not _have_ntapi_extension_module():
 # We only run tests on linux currently, so we only need to disable them there.
 if sys.platform.startswith("linux"):
     # tests to skip on nfs, this list allows us to avoid writing the nfs postfix
-    # on the test and disables them for both Hg and Git as nfs tests generally
-    # fail for both if they fail.
+    # on the test.
     NFS_TEST_DISABLED = {
         "takeover_test.TakeoverTest": [
             "test_takeover_doesnt_send_ping"  # this test uses protocol 3 of
@@ -406,11 +400,9 @@ if sys.platform.startswith("linux"):
     }
 
     for testModule, disabled in NFS_TEST_DISABLED.items():
-        for vcs in ["Hg", "Git"]:
-            TEST_DISABLED[testModule + "NFS" + vcs] = disabled
+        TEST_DISABLED[testModule + "NFSHg"] = disabled
 
-    # custom nfs tests that don't run on both hg and git that we also need to
-    # disable
+    # custom nfs tests that we also need to disable
     TEST_DISABLED.update(
         {
             "corrupt_overlay_test.CorruptOverlayTestNFS": [  # T89441739
@@ -471,7 +463,7 @@ for class_name, value_name in TEST_DISABLED.items():
     for suffix in ("FilteredHg", "Coroutines"):
         if class_name.endswith("Hg"):
             VARIANT_PARITY[class_name.replace("Hg", suffix)] = value_name
-        elif not class_name.endswith("Git"):
+        else:
             VARIANT_PARITY[class_name + suffix] = value_name
 TEST_DISABLED.update(VARIANT_PARITY)
 
@@ -544,7 +536,7 @@ EDEN_CRASH_NFS_DISABLED = {
 }
 
 for testModule, disabled in EDEN_CRASH_NFS_DISABLED.items():
-    other_mixins = ["Hg", "Git", "FilteredHg"]
+    other_mixins = ["Hg", "FilteredHg"]
     for mixin in other_mixins:
         # We need to be careful that we don't overwrite any pre-existing lists
         # or bulk disables that were disabled by other criteria.

@@ -109,6 +109,8 @@ CONFIG_JSON_LOCK = "config.json.lock"
 # in the Rust CLI at fs/cli_rs/edenfs-client/src/checkout.rs and the list in
 # the Daemon's CheckoutConfig at fs/config/CheckoutConfig.h.
 DEFAULT_REVISION = {  # supported repo name -> default bookmark
+    # The daemon no longer mounts "git" checkouts; the CLI keeps recognising
+    # the type so existing ones can still be listed and removed.
     "git": "refs/heads/master",
     "hg": "first(present(master) + .)",
     "filteredhg": "first(present(master) + .)",

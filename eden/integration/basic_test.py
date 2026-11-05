@@ -41,7 +41,7 @@ class BasicTest(BasicTestBase):
 
     Listing directories, checking stat information, asserting
     that the filesystem is reporting the basic information
-    about the sample git repo and that it is correct are all
+    about the sample repo and that it is correct are all
     things that are appropriate to include in this test case.
     """
 

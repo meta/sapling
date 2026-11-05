@@ -14,7 +14,6 @@ from .lib import testcase
 
 @testcase.eden_repo_test
 class ReaddirCookiesBreakAcrossCheckoutTest(testcase.EdenRepoTest):
-    git_test_supported: bool = False
     # Readdir resume cookies are inode numbers, checkout reassigns them via
     # erase-and-emplace with fresh monotonically increasing numbers, and the
     # NFS cookie verifier is hard-coded to 0, so a directory stream spanning

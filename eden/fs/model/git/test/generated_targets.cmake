@@ -7,15 +7,10 @@
 
 eden_add_test(eden_fs_model_git_test
   SRCS
-    GitBlobTest.cpp
     GitIgnoreTest.cpp
-    GitTreeTest.cpp
   DEPS
     ${LIBGMOCK_LIBRARIES}
     Folly::folly_io_iobuf
     Folly::folly_string
-    eden_fs_model
-    eden_fs_model_git
     eden_fs_model_git_gitignore
-    eden_fs_model_testutil
 )

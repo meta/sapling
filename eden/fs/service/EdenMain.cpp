@@ -70,10 +70,6 @@
 #include "eden/fs/telemetry/LogEvent.h"
 #include "eden/fs/utils/WinStackTrace.h"
 
-#if EDEN_HAVE_GIT
-#include "eden/fs/store/git/GitBackingStore.h" // @manual
-#endif
-
 #ifdef EDEN_HAVE_FBINIT
 #include <common/init/light.h>
 #endif
@@ -290,19 +286,6 @@ void EdenMain::registerStandardBackingStores() {
             std::move(saplingBackingStore),
             std::move(hgSparseFilter),
             reloadableConfig);
-      });
-
-  registerBackingStore(
-      BackingStoreType::GIT,
-      [](const CreateParams& params) -> std::shared_ptr<BackingStore> {
-#if EDEN_HAVE_GIT
-        const auto repoPath = realpath(params.name);
-        return std::make_shared<GitBackingStore>(repoPath);
-#else // EDEN_HAVE_GIT
-        (void)params;
-        throw std::domain_error(
-            "support for Git was not enabled in this EdenFS build");
-#endif // EDEN_HAVE_GIT
       });
 }
 

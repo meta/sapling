@@ -13,12 +13,6 @@
 #define EDEN_BUILD_REVISION ""
 #define EDEN_BUILD_TIME_UNIX 0ULL
 
-#ifdef __linux__
-#define EDEN_HAVE_GIT 1
-#else
-#define EDEN_HAVE_GIT 0
-#endif
-
 #ifdef _WIN32
 #define EDEN_ETC_EDEN_DIR "C:/ProgramData/Facebook/eden"
 #else

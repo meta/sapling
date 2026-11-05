@@ -596,8 +596,6 @@ class MountTest(testcase.EdenRepoTest):
 )
 @unittest.skipIf(sys.platform != "linux", "FUSE connection abort is Linux-only")
 class FuseIoUringMountTest(testcase.IoUringTestMixin, testcase.EdenRepoTest):
-    git_test_supported: bool = False
-
     def populate_repo(self) -> None:
         self.repo.write_file("hello", "hola\n")
         self.repo.commit("Initial commit.")

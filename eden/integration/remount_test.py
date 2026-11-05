@@ -45,40 +45,6 @@ class RemountTest(testcase.EdenRepoTest):
         # Verify that default repo created by EdenRepoTestBase is remounted
         self._assert_mounted(self.mount)
 
-    def test_git_and_hg(self) -> None:
-        # Create git and hg repositories for mounting
-        repo_names = {"git": "git_repo", "hg": "hg_repo"}
-        git_repo = self.create_git_repo(repo_names["git"])
-        hg_repo = self.create_hg_repo(repo_names["hg"])
-        repos = {"git_repo": git_repo, "hg_repo": hg_repo}
-
-        git_repo.write_file("hello", "hola\n")
-        git_repo.commit("Initial commit.")
-
-        hg_repo.write_file("hello", "hola\n")
-        hg_repo.commit("Initial commit.")
-
-        # Mount git and hg clients
-        for name, repo in repos.items():
-            for i in range(3):
-                self.eden.clone(repo.path, os.path.join(self.mounts_dir, f"{name}-{i}"))
-
-        self.eden.shutdown()
-        self.eden.start()
-
-        # Verify that clients are remounted on startup
-        for name, repo in repos.items():
-            scm_type = repo.get_type()
-            for i in range(3):
-                mount_path = os.path.join(self.mounts_dir, f"{name}-{i}")
-                self.assert_checkout_root_entries(
-                    {".eden", "hello"}, mount_path, scm_type=scm_type
-                )
-
-                hello = os.path.join(mount_path, "hello")
-                with open(hello, "r") as f:
-                    self.assertEqual("hola\n", f.read())
-
     def test_partial_unmount(self) -> None:
         self._clone_checkouts(5)
 

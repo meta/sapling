@@ -189,13 +189,6 @@ class FindExeClass:
         )
 
     @cached_property
-    def GIT(self) -> str:
-        git = shutil.which("git.real") or shutil.which("git")
-        if git is None:
-            raise Exception("unable to find git binary")
-        return git
-
-    @cached_property
     def HG(self) -> str:
         hg = self._find_hg()
         logging.info("Found hg binary: %r", hg)

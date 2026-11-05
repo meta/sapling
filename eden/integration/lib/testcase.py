@@ -44,7 +44,7 @@ from eden.fs.service.eden.thrift_types import (
 )
 from eden.test_support.testcase import EdenTestCaseBase
 
-from . import edenclient, gitrepo, hgrepo, mount_namespace, repobase, skip
+from . import edenclient, hgrepo, mount_namespace, repobase, skip
 
 
 mount_namespace.maybe_reexec_in_private_mount_namespace()
@@ -400,14 +400,6 @@ class EdenTestCase(EdenTestCaseBase):
 
         return repo
 
-    def create_git_repo(self, name: str) -> gitrepo.GitRepository:
-        repo_path = os.path.join(self.repos_dir, name)
-        os.makedirs(repo_path, exist_ok=True)
-        repo = gitrepo.GitRepository(repo_path, temp_mgr=self.temp_mgr)
-        repo.init()
-
-        return repo
-
     def get_path(self, path: str) -> str:
         """Resolves the path against self.mount."""
         return os.path.join(self.mount, path)
@@ -641,9 +633,6 @@ class EdenRepoTest(EdenTestCase):
     repo_type: str
     # pyre-fixme[13]: Attribute `inode_catalog_type` is never initialized.
     inode_catalog_type: str
-
-    # Run Git versions of tests, if on a compatible platform.
-    git_test_supported: bool = True
 
     # Override is_case_sensitive to True in subclasses to force a case-sensitive
     # clone regardless of the OS, or to False to force a case-insensitive clone.
@@ -951,8 +940,6 @@ def _replicate_eden_repo_test(  # noqa: C901
 
     scm_variants: MixinList = [("Hg", [HgRepoTestMixin])]
     # Gate some tests on whether EdenFS was built to support them.
-    if eden.config.HAVE_GIT and test_class.git_test_supported:
-        scm_variants.append(("Git", [GitRepoTestMixin]))
     if eden.config.HAVE_FILTEREDHG:
         scm_variants.append(("FilteredHg", [FilteredHgTestMixin]))
 
@@ -1069,19 +1056,6 @@ class FilteredHgTestMixin(HgRepoTestMixin):
 
     def create_repo(self, name: str, filtered: bool = True) -> repobase.Repository:
         return super().create_repo(name, filtered=filtered)
-
-
-class GitRepoTestMixin:
-    repo_type: str = "git"
-
-    def create_repo(self, name: str) -> repobase.Repository:
-        # pyre-fixme[16]: `GitRepoTestMixin` has no attribute `create_git_repo`.
-        return self.create_git_repo(name)
-
-    def create_eden_repo(self) -> repobase.Repository:
-        # pyre-fixme[16]: `GitRepoTestMixin` has no attribute `mount`.
-        # pyre-fixme[16]: `GitRepoTestMixin` has no attribute `temp_mgr`.
-        return gitrepo.GitRepository(self.mount, temp_mgr=self.temp_mgr)
 
 
 class NFSTestMixin:

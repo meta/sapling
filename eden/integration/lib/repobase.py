@@ -40,7 +40,7 @@ class Repository:
         raise NotImplementedError("subclasses must implement init()")
 
     def get_type(self) -> str:
-        """Returns the type of this repo as a string: "git" or "hg"."""
+        """Returns the type of this repo as a string, e.g. "hg"."""
         raise NotImplementedError("subclasses must implement get_type()")
 
     def get_head_hash(self) -> str:

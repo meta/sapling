@@ -3,29 +3,6 @@ load("@fbcode_macros//build_defs:cpp_library.bzl", "cpp_library")
 oncall("scm_client_infra")
 
 cpp_library(
-    name = "git",
-    srcs = [
-        "GitBlob.cpp",
-        "GitTree.cpp",
-    ],
-    headers = [
-        "GitBlob.h",
-        "GitTree.h",
-    ],
-    deps = [
-        "fbsource//third-party/fmt:fmt",
-        "fbsource//xplat/folly:conv",
-        "//eden/common/utils:throw",
-        "//eden/fs/model:model",
-    ],
-    exported_deps = [
-        "fbsource//xplat/folly:range",
-        "fbsource//xplat/folly/io:iobuf",
-        "//eden/fs/model:model-fwd",
-    ],
-)
-
-cpp_library(
     name = "gitignore",
     srcs = [
         "GitIgnore.cpp",

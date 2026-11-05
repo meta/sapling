@@ -497,25 +497,6 @@ class HgRepo(Repo):
         return out.strip().decode("utf-8")
 
 
-class GitRepo(Repo):
-    HEAD = "HEAD"
-
-    def __init__(self, source: str, working_dir: Optional[str] = None) -> None:
-        super(GitRepo, self).__init__("git", source, working_dir)
-
-    def __repr__(self) -> str:
-        return f"GitRepo(source={self.source!r}, working_dir={self.working_dir!r})"
-
-    def _run_git(self, args: List[str]) -> bytes:
-        cmd = ["git"] + args
-        out = subprocess.check_output(cmd, cwd=self.source)
-        return out
-
-    def get_commit_hash(self, commit: str) -> str:
-        out = self._run_git(["rev-parse", commit])
-        return out.strip().decode("utf-8")
-
-
 class ReCasRepo(Repo):
     HEAD = "HEAD"
 
@@ -554,29 +535,6 @@ def mkscratch_bin() -> Path:
     # it via the PATH.  In the integration test environment we'll set the
     # MKSCRATCH_BIN to point to the binary under test
     return Path(os.environ.get("MKSCRATCH_BIN", "mkscratch"))
-
-
-def is_git_dir(path: str) -> bool:
-    return (
-        os.path.isdir(os.path.join(path, "objects"))
-        and os.path.isdir(os.path.join(path, "refs"))
-        and os.path.exists(os.path.join(path, "HEAD"))
-    )
-
-
-def _get_git_repo(path: str) -> Optional[GitRepo]:
-    """
-    If path points to a git repository, return a GitRepo object.
-    Otherwise, if the path is not a git repository, return None.
-    """
-    if path.endswith(".git") and is_git_dir(path):
-        return GitRepo(path)
-
-    git_subdir = os.path.join(path, ".git")
-    if is_git_dir(git_subdir):
-        return GitRepo(git_subdir, path)
-
-    return None
 
 
 def get_hg_repo(path: str, backing_type: Optional[str] = None) -> Optional[HgRepo]:
@@ -646,9 +604,6 @@ def get_repo(path: str, backing_store_type: Optional[str] = None) -> Optional[Re
         hg_repo = get_hg_repo(path, backing_store_type)
         if hg_repo is not None:
             return hg_repo
-        git_repo = _get_git_repo(path)
-        if git_repo is not None:
-            return git_repo
 
         parent = os.path.dirname(path)
         if parent == path:

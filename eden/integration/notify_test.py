@@ -21,7 +21,6 @@ from .lib import testcase, util
 
 @testcase.eden_repo_test
 class NotifyTest(testcase.EdenRepoTest):
-    git_test_supported = False
     initial_commit: str = ""
 
     def populate_repo(self) -> None:
