@@ -1191,6 +1191,8 @@ Do you want to run `eden mount %s` instead?"""
     def cleanup_mount(
         self, path: Path, preserve_mount_point: bool = False, debug: bool = False
     ) -> None:
+        if not path.exists():
+            return
         if sys.platform != "win32":
             self._cleanup_unix_mount(path, preserve_mount_point)
         else:

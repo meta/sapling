@@ -464,7 +464,12 @@ class RemoveTest(RemoveTestBase):
         self.assertNotIn(self.mount, self.load_directory_map())
         self.assertFalse(os.path.exists(self.mount))
 
-    @parameterized.expand([("rust", {"EDENFSCTL_ONLY_RUST": "1"})])
+    @parameterized.expand(
+        [
+            ("rust", {"EDENFSCTL_ONLY_RUST": "1"}),
+            ("python", {"EDENFSCTL_SKIP_RUST": "1"}),
+        ]
+    )
     def test_remove_succeeds_when_folder_is_missing(self, impl: str, env: dict) -> None:
         mount_path = pathlib.Path(self.mount)
         client_dir = self.eden.client_dir_for_mount(mount_path)

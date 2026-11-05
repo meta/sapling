@@ -2175,6 +2175,11 @@ Do you still want to delete {path}?"""
                         )
 
                 if _path_is_missing(path):
+                    # A registered checkout whose folder is gone can still be removed.
+                    mount_path = os.path.realpath(path)
+                    if mount_path in configured_mounts:
+                        mounts.append((mount_path, RemoveType.INACTIVE_MOUNT))
+                        continue
                     return self._fail(
                         telemetry_sample,
                         FAILURE_KIND_USER_ERROR,
