@@ -51,6 +51,13 @@ class IntentionalUnmountMarkerTest(EdenTestCaseBase):
         self.instance.unmount(str(self.mount_path))
         self.assertTrue(self.marker.exists())
 
+    def test_unmount_of_an_unregistered_checkout_succeeds_without_a_marker(
+        self,
+    ) -> None:
+        (self.tmp_dir / ".eden" / "config.json").write_text(json.dumps({}))
+        self.instance.unmount(str(self.mount_path))
+        self.assertFalse(self.marker.exists())
+
     def test_unintentional_unmount_removes_the_marker(self) -> None:
         self.marker.touch()
         self.instance.unmount(str(self.mount_path), unintentional_unmount=True)

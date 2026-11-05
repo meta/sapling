@@ -1034,7 +1034,17 @@ Do you want to run `eden mount %s` instead?"""
             # The daemon writes this marker before it starts the unmount, but
             # only best-effort, so write it again now that the unmount
             # succeeded. It stops unmount recovery from remounting the checkout.
-            self._set_intentionally_unmounted(path)
+            # The marker lives in the client directory that config.json names,
+            # which a mounted-but-unregistered checkout does not have. The
+            # unmount itself already succeeded, so a missing marker is a
+            # warning, not a failure.
+            try:
+                self._set_intentionally_unmounted(path)
+            except Exception as ex:
+                log.warning(
+                    f"unmounted {path}, but could not mark it intentionally "
+                    f"unmounted: {ex}"
+                )
 
     def _intentionally_unmounted_file(self, path: str) -> Path:
         mount_path = Path(path).resolve(strict=False)
