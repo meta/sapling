@@ -17,6 +17,10 @@ MUTATION_KEYS = {"mutpred", "mutuser", "mutdate", "mutop", "mutsplit"}
 # `ServerError` code for a request that the repo's access control denied.
 CODE_PERMISSION_DENIED = 4
 
+# Pushvar that asks pushrebase to land a merge that descends from the
+# destination through a parent other than its first with that parent first.
+PUSHVAR_MAINLINE_PARENT_FIRST = "MAINLINE_PARENT_FIRST"
+
 CFG_SECTION = "push"
 CFG_KEY_ENABLE_DEBUG_INFO = "enable_debug_info"
 CFG_KEY_USE_LOCAL_BOOKMARK_VALUE = "use_local_bookmark_value"
@@ -274,6 +278,9 @@ def push_rebase(
     wnode = repo["."].node()
 
     pushvars = parse_pushvars(opargs.get("pushvars"))
+    # Servers that do not know the pushvar ignore it.
+    if repo.dageval(lambda: merges(stack_nodes)):
+        pushvars.setdefault(PUSHVAR_MAINLINE_PARENT_FIRST, "true")
 
     base = get_merge_base(repo, head_node, bookmark_node, remote_bookmark)
     rebased_nodes = repo.dageval(lambda: range([base], [head_node]) - [base])

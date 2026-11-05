@@ -168,11 +168,11 @@ With the config off, the push takes the wireproto path:
   updating bookmark master
 
 A merge whose merge base with master is its second parent (master, which has
-not moved since the merge) is rejected unless the push asks for the swap:
+not moved since the merge) is rejected when the push does not ask for the swap:
   $ sl go -q 2bb9d20e471c
   $ echo h > h && sl ci -qAm "add h"
   $ sl merge -q master && sl ci -qm "merge master into h"
-  $ sl push --to master
+  $ sl push --to master --pushvars MAINLINE_PARENT_FIRST=false
   pushing rev e4679e1f76e7 to destination eager:$TESTTMP/server bookmark master
   edenapi: queue 2 commits for upload
   edenapi: queue 1 file for upload
@@ -184,9 +184,10 @@ not moved since the merge) is rejected unless the push asks for the swap:
   abort: Server error: Forbid pushrebase because root (d2e8ce43bc1195a2122adb1527d30617d61c135d) is not a p1 of master bookmark
   [255]
 
-With the swap, the merge lands with master as its first parent and the
-`parents_swapped` extra, and replaces the pushed merge:
-  $ sl push --to master --pushvars MAINLINE_PARENT_FIRST=true
+The client asks for the swap for a push with merges. The merge lands with
+master as its first parent and the `parents_swapped` extra, and replaces the
+pushed merge:
+  $ sl push --to master
   pushing rev e4679e1f76e7 to destination eager:$TESTTMP/server bookmark master
   pushrebasing stack (d2e8ce43bc11, e4679e1f76e7] (1 commit) to remote bookmark master
   0 files updated, 0 files merged, 0 files removed, 0 files unresolved

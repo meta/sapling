@@ -116,10 +116,11 @@ both are rebased; G lands as it is.
 
 A merge of master into a branch has master as its second parent, so its merge
 base with master, which the stack is rebased from, is a second parent. Without
-the `MAINLINE_PARENT_FIRST` pushvar, that is forbidden:
+the `MAINLINE_PARENT_FIRST` pushvar, which the client sends for a push with
+merges, that is forbidden:
   $ commit J $A
   $ commit MJ $J master_bookmark
-  $ push --to master_bookmark
+  $ push --to master_bookmark --pushvars MAINLINE_PARENT_FIRST=false
   pushing rev c67d4217bb93 to destination https://localhost:$LOCAL_PORT/edenapi/ bookmark master_bookmark
   pushrebasing stack (6cc3000aa704, c67d4217bb93] (1 commit) to remote bookmark master_bookmark
   abort: Server error: invalid request: Pushrebase failed: Forbid pushrebase because root (6cc3000aa704180b569389da47d03ec7f31c55e1) is not a p1 of master_bookmark bookmark
@@ -130,7 +131,7 @@ first-parent history stays linear, and with the `parents_swapped` extra. Master
 has not moved since the merge, so apart from the order of the parents, the
 extra is all that distinguishes the landed merge from the pushed one. J lands
 as it is.
-  $ push --to master_bookmark --pushvars MAINLINE_PARENT_FIRST=true
+  $ push --to master_bookmark
   pushing rev c67d4217bb93 to destination https://localhost:$LOCAL_PORT/edenapi/ bookmark master_bookmark
   pushrebasing stack (6cc3000aa704, c67d4217bb93] (1 commit) to remote bookmark master_bookmark
   sending hello command
@@ -150,7 +151,7 @@ The same when master has moved on since the merge:
   $ commit U master_bookmark
   $ hg push -q --to master_bookmark
   $ hg up -q $MJ2
-  $ push --to master_bookmark --pushvars MAINLINE_PARENT_FIRST=true
+  $ push --to master_bookmark
   pushing rev 34c524605bc9 to destination https://localhost:$LOCAL_PORT/edenapi/ bookmark master_bookmark
   pushrebasing stack (3b2dcb2db901, 34c524605bc9] (1 commit) to remote bookmark master_bookmark
   sending hello command
@@ -171,7 +172,7 @@ be the landed merge's first parent. With it, the commit on master is:
   $ commit Y $B
   $ commit Z master_bookmark
   $ commit MYZ $Y $Z
-  $ push --to master_bookmark --pushvars MAINLINE_PARENT_FIRST=true
+  $ push --to master_bookmark
   pushing rev d75c4b51f5ef to destination https://localhost:$LOCAL_PORT/edenapi/ bookmark master_bookmark
   pushrebasing stack (9d20f60bfe52, d75c4b51f5ef] (2 commits) to remote bookmark master_bookmark
   sending hello command
@@ -242,3 +243,33 @@ pushed over the wire protocol, except with --no-rebase, which only SLAPI does.
   sending hello command
   sending unbundle command
   updating bookmark foo
+
+A merge whose first parent is a branch that forked before master's current
+commit, and whose second parent is a draft commit on master: W forked from A,
+and V is on master. Without `MAINLINE_PARENT_FIRST`, as on a server that
+ignores it, this merge lands with W as its first parent:
+  $ commit W $A
+  $ commit V master_bookmark
+  $ commit MWV $W $V
+  $ push --to master_bookmark --pushvars MAINLINE_PARENT_FIRST=false
+  pushing rev 17a26a071c69 to destination https://localhost:$LOCAL_PORT/edenapi/ bookmark master_bookmark
+  pushrebasing stack (602757f05542, 17a26a071c69] (2 commits) to remote bookmark master_bookmark
+  updated remote bookmark master_bookmark to 17a26a071c69
+  $ hg log -r "p1(master_bookmark) + p2(master_bookmark)" -T '{desc} [{phase}]\n'
+  W [public]
+  V [public]
+
+With it, as the client sends it, the merge lands with master's line first:
+  $ commit W2 $A
+  $ commit V2 master_bookmark
+  $ commit MWV2 $W2 $V2
+  $ push --to master_bookmark
+  pushing rev acf6991cbb74 to destination https://localhost:$LOCAL_PORT/edenapi/ bookmark master_bookmark
+  pushrebasing stack (17a26a071c69, acf6991cbb74] (2 commits) to remote bookmark master_bookmark
+  sending hello command
+  updated remote bookmark master_bookmark to f5d191addaff
+  $ hg log -r "p1(master_bookmark) + p2(master_bookmark)" -T '{desc} [{phase}]\n'
+  V2 [public]
+  W2 [public]
+  $ hg log -r master_bookmark -T '{desc} parents_swapped={get(extras, "parents_swapped")}\n'
+  MWV2 parents_swapped=1
