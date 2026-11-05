@@ -44,6 +44,7 @@ sl_rust_library(
         "fbsource//third-party/rust:fs-err",
         "fbsource//third-party/rust:serde",
         "//eden/scm/lib/agentdetect:agentdetect",
+        "fbsource//third-party/rust:tracing",
         "//eden/scm/lib/clidispatch:clidispatch",
         "//eden/scm/lib/clone:clone",
         "//eden/scm/lib/commands/cmdutil:cmdutil",

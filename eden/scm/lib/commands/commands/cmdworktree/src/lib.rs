@@ -31,7 +31,7 @@ define_flags! {
         /// create a snapshot of the current working copy, then restore it in the new worktree (for 'add')
         snapshot: bool,
 
-        /// revision to check out (for 'add')
+        /// revision to check out, must resolve to one commit (for 'add')
         #[short('r')]
         #[argtype("REV")]
         rev: String,

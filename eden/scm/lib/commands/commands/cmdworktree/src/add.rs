@@ -11,6 +11,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::process::Stdio;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -18,16 +19,19 @@ use anyhow::bail;
 use clidispatch::ReqCtx;
 use clidispatch::TermLogger;
 use clidispatch::abort;
+use clidispatch::io::IsTty;
 use cmdutil::ConfigExt;
 use cmdutil::Result;
 use configmodel::convert::ByteCount;
 use encoding::shell_output_bytes_to_path;
 use fs_err as fs;
 use repo::repo::Repo;
+use repo::repo::ResolveResult;
 use slex::Items;
 use slex::Work as SlexWork;
 use slex::WorkOptions;
 use spawn_ext::CommandExt;
+use types::HgId;
 use worktree::Reservation;
 use worktree::Worktrees;
 use worktree::check_dest_not_in_repo;
@@ -201,7 +205,10 @@ pub(crate) fn run(ctx: &ReqCtx<WorktreeOpts>, repo: &Repo, worktrees: &Worktrees
     let requested_target = if ctx.opts.rev.is_empty() {
         None
     } else {
-        Some(repo.resolve_commit(&ctx.opts.rev)?.any()?)
+        match resolve_rev(ctx, repo)? {
+            Ok(target) => Some(target),
+            Err(exit_code) => return Ok(exit_code),
+        }
     };
 
     let require_generated: bool = repo
@@ -446,6 +453,95 @@ pub(crate) fn run(ctx: &ReqCtx<WorktreeOpts>, repo: &Repo, worktrees: &Worktrees
     )?;
 
     Ok(0)
+}
+
+/// Resolve `--rev`. Revisions the native resolver doesn't know, such as revset
+/// expressions and Phabricator diffs, are resolved by `log`, which pulls
+/// missing commits. Returns `Err(exit_code)` if `log` failed;
+/// it has already printed why.
+fn resolve_rev(ctx: &ReqCtx<WorktreeOpts>, repo: &Repo) -> Result<std::result::Result<HgId, u8>> {
+    let rev = ctx.opts.rev.as_str();
+    let resolved = repo.resolve_commit(rev)?;
+    if !matches!(resolved, ResolveResult::NotFound(_)) {
+        return Ok(Ok(resolved.any()?));
+    }
+
+    tracing::info!(target: "command_info", worktree_rev_fallback = true);
+
+    let global_opts = ctx.global_opts();
+    let configs = global_opts
+        .config
+        .iter()
+        .flat_map(|c| ["--config", c.as_str()]);
+    let configfiles = global_opts
+        .configfile
+        .iter()
+        .flat_map(|c| ["--configfile", c.as_str()]);
+    let mut cmd = Command::new(current_sl_binary());
+    // Stay in the current directory so relative paths in the revset mean the same thing.
+    cmd.arg("-R")
+        .arg(repo.path())
+        .args(configs)
+        .args(configfiles)
+        // An alias like `log = log -G` would change the output.
+        .args(["--config", "alias.log=log"])
+        // Prompts may also write to stdout, so mark the template's node lines.
+        .args(["log", "-r", rev, "-l", "2", "-T", r"node: {node}\n"])
+        // Without a stdin, a diff with several local versions resolves to the
+        // newest one with a warning, or aborts for agents.
+        .stdin(Stdio::null());
+    // Revset functions like `obsolete()` only see hidden commits with `--hidden`.
+    if global_opts.hidden {
+        cmd.arg("--hidden");
+    }
+
+    // Like hooks, write straight to a terminal, and otherwise go through our IO.
+    ctx.io().flush()?;
+    let stderr_is_tty = ctx.io().error().is_tty();
+    if stderr_is_tty {
+        cmd.stderr(Stdio::inherit());
+    }
+    let output = {
+        let _blocked = ctx
+            .io()
+            .time_interval()
+            .scoped_blocked_interval("worktree-rev".into());
+        cmd.output()
+            .with_context(|| format!("failed to run {} log", identity::cli_name()))?
+    };
+    if !stderr_is_tty {
+        ctx.io().write_err(&output.stderr)?;
+    }
+    if !output.status.success() {
+        return Ok(Err(output.status.code().map_or(255, |code| code as u8)));
+    }
+
+    let id = parse_log_node(&output.stdout)?;
+    // The child may have pulled the commit. Reload the commit graph so
+    // `eden clone` sees it and doesn't resolve it again.
+    repo.invalidate_dag_commits()?;
+    Ok(Ok(id))
+}
+
+/// Parses the single node printed by the log template, ignoring prompt output.
+fn parse_log_node(stdout: &[u8]) -> Result<HgId> {
+    let stdout = String::from_utf8_lossy(stdout);
+    let mut lines = stdout
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| line.strip_prefix("node: "));
+    let line = lines.next().context("empty revision set")?;
+    if lines.next().is_some() {
+        abort!(
+            "revision set contains multiple commits; use first(...), last(...), or a commit hash"
+        );
+    }
+    HgId::from_hex(line.as_bytes()).with_context(|| {
+        format!(
+            "unexpected output from {} log: {line:?}",
+            identity::cli_name()
+        )
+    })
 }
 
 type SnapshotHandle = std::thread::JoinHandle<anyhow::Result<String>>;
@@ -768,4 +864,37 @@ fn update_dest_treestate(dest: &Path, status: &status::Status) -> anyhow::Result
 
     ts.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NODE: &str = "1111111111111111111111111111111111111111";
+
+    #[test]
+    fn test_parse_log_node() {
+        const OTHER: &str = "2222222222222222222222222222222222222222";
+        assert_eq!(
+            parse_log_node(b"").unwrap_err().to_string(),
+            "empty revision set",
+        );
+        assert_eq!(
+            parse_log_node(
+                format!("which commit to select [1-2/(c)ancel]? 1\nnode: {NODE}\n").as_bytes()
+            )
+            .unwrap(),
+            HgId::from_hex(NODE.as_bytes()).unwrap(),
+        );
+        assert_eq!(
+            parse_log_node(format!("node: {OTHER}\nnode: {NODE}\n").as_bytes())
+                .unwrap_err()
+                .to_string(),
+            "revision set contains multiple commits; use first(...), last(...), or a commit hash",
+        );
+        assert!(
+            parse_log_node(format!("@  {NODE}\n").as_bytes()).is_err(),
+            "graph output"
+        );
+    }
 }

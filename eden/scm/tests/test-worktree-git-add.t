@@ -49,12 +49,28 @@ The limit includes raw Git worktrees.
   [255]
 
 A revset expression is resolved by Sapling too.
-FIXME: This should create the worktree at "first". The Rust resolver doesn't
-parse revset expressions.
 
   $ sl worktree add $TESTTMP/at-parent -r "$(git rev-parse main)^"
-  abort: unknown revision '*^' (glob)
+  created linked worktree at $TESTTMP/at-parent
+  $ git -C $TESTTMP/at-parent log -1 --format=%s
+  first
+
+A revset returning multiple commits must select one explicitly.
+
+  $ revset="$(git rev-parse main)^ + $(git rev-parse main)"
+  $ sl worktree add $TESTTMP/multiple-revs -r "$revset"
+  abort: revision set contains multiple commits; use first(...), last(...), or a commit hash
   [255]
+  $ test -d $TESTTMP/multiple-revs
+  [1]
+  $ sl worktree add $TESTTMP/first-rev -r "first($revset)"
+  created linked worktree at $TESTTMP/first-rev
+  $ git -C $TESTTMP/first-rev log -1 --format=%s
+  first
+  $ sl worktree add $TESTTMP/last-rev -r "last($revset)"
+  created linked worktree at $TESTTMP/last-rev
+  $ git -C $TESTTMP/last-rev log -1 --format=%s
+  second
 
 Adding from a linked checkout inherits its sparse patterns and worktree configuration.
 

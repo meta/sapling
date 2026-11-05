@@ -120,25 +120,27 @@ test worktree add - revision flag checks out requested revision and accepts book
 
 test worktree add - revision flag accepts revset expressions and Phabricator diffs
 
-FIXME: This should create the worktree at "$base_hash". The Rust resolver
-doesn't parse revset expressions.
-
   $ sl worktree add $TESTTMP/linked_parent --rev '.^'
-  abort: unknown revision '.^'
+  created linked worktree at $TESTTMP/linked_parent
+  $ test "$(cd $TESTTMP/linked_parent && sl log -r . -T '{node}')" = "$base_hash"
+
+test worktree add - multiple revisions do not create a worktree
+
+  $ sl worktree add $TESTTMP/multiple_revs --rev '.^ + .'
+  abort: revision set contains multiple commits; use first(...), last(...), or a commit hash
   [255]
+  $ test -d $TESTTMP/multiple_revs
+  [1]
 
 test worktree add - invalid revision does not create a worktree
 
   $ sl worktree add $TESTTMP/invalid_rev --rev does-not-exist
-  abort: unknown revision 'does-not-exist'
+  abort: unknown revision 'does'!
   [255]
   $ test -d $TESTTMP/invalid_rev
   [1]
-
-FIXME: This should report "empty revision set".
-
   $ sl worktree add $TESTTMP/empty_rev --rev 'draft() and public()'
-  abort: unknown revision 'draft() and public()'
+  abort: empty revision set
   [255]
   $ test -d $TESTTMP/empty_rev
   [1]
@@ -167,13 +169,44 @@ test worktree add - revision flag pulls a Phabricator diff that isn't local
   $ sl commit -Aqm "remote diff"
   $ diff_hash=$(sl log -r . -T '{node}')
   $ cd $TESTTMP/remote_client
+  $ SL_LOG=clone=info sl worktree add $TESTTMP/remote_diff --rev D5678 --config extensions.fbcodereview= --config phrevset.callsign=CALLSIGN --config phrevset.mock-D5678=$diff_hash --config clone.use-skip-commit-resolve=true 2> $TESTTMP/remote_diff.log
+  created linked worktree at $TESTTMP/remote_diff
+  $ grep pulling $TESTTMP/remote_diff.log
+  pulling D5678 (*) from 'test:remote_server' (glob)
+  $ test "$(cd $TESTTMP/remote_diff && sl log -r . -T '{node}')" = "$diff_hash"
 
-FIXME: This should pull D5678 and create the worktree at "$diff_hash". The Rust
-resolver doesn't know Phabricator diffs.
+The pulled commit is in the commit graph by the time EdenFS clones it.
 
-  $ sl worktree add $TESTTMP/remote_diff --rev D5678 --config extensions.fbcodereview= --config phrevset.callsign=CALLSIGN --config phrevset.mock-D5678=$diff_hash
-  abort: unknown revision 'D5678'
+  $ grep -q -- --skip-commit-resolve $TESTTMP/remote_diff.log
+
+test worktree add - an ambiguous Phabricator diff aborts for agents and picks the newest version otherwise
+
+  $ enable amend fbcodereview
+  $ setconfig mutation.record=true mutation.enabled=true phrevset.callsign=CALLSIGN
+  $ echo local > file.txt
+  $ sl commit -Aqm "local diff"
+  $ local_diff=$(sl log -r . -T '{node}')
+  $ HGPLAIN=1 sl amend -q -d "1000 0" -m "$(printf 'older successor\n\nDifferential Revision: https://phabricator.intern.facebook.com/D1234')"
+  $ sl goto -q --hidden --config commit.modify-obsolete-mode=ignore $local_diff
+  $ HGPLAIN=1 sl amend -q -d "2000 0" -m "$(printf 'newer successor\n\nDifferential Revision: https://phabricator.intern.facebook.com/D1234')"
+  $ setconfig phrevset.mock-local-D1234=$local_diff
+  $ CODING_AGENT_METADATA=id=test_agent sl worktree add $TESTTMP/ambiguous_agent --rev D1234
+  D1234 resolves ambiguously to multiple local commits:
+    1: * 1970-01-01 00:33:20 +0000 newer successor (glob)
+    2: * 1970-01-01 00:16:40 +0000 older successor (glob)
+  abort: ambiguous commit for D1234
+  (specify one of the commit hashes directly, or set 'phrevset.prompt-ambiguous-successors=false' to select the newest revision automatically)
   [255]
+  $ test -d $TESTTMP/ambiguous_agent
+  [1]
+  $ sl worktree add $TESTTMP/ambiguous --rev D1234
+  D1234 resolves ambiguously to multiple local commits:
+    1: * 1970-01-01 00:33:20 +0000 newer successor (glob)
+    2: * 1970-01-01 00:16:40 +0000 older successor (glob)
+  warning: selected * for D1234 (glob)
+  created linked worktree at $TESTTMP/ambiguous
+  $ cd $TESTTMP/ambiguous && sl log -r . -T '{desc|firstline}\n'
+  newer successor
   $ cd $TESTTMP/myrepo
 
 test worktree add - writes .sl/worktreename marker (basename when no --label)
@@ -194,13 +227,10 @@ test worktree add - revision flag sees hidden commits with --hidden
   $ echo hidden > file.txt
   $ sl commit -Aqm "hidden predecessor"
   $ sl amend -qm "amended"
-
-FIXME: This should create the worktree at "hidden predecessor". The Rust
-resolver doesn't parse revset expressions.
-
   $ sl --hidden worktree add $TESTTMP/hidden_rev --rev 'obsolete()'
-  abort: unknown revision 'obsolete()'
-  [255]
+  created linked worktree at $TESTTMP/hidden_rev
+  $ cd $TESTTMP/hidden_rev && sl log -r . -T '{desc}\n'
+  hidden predecessor
   $ cd $TESTTMP/myrepo
 
 test worktree add - edensparse filters are copied to linked checkout

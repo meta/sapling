@@ -41,6 +41,7 @@ sapling-workingcopy = { version = "0.1.0", path = "../../../workingcopy" }
 sapling-worktree-registry = { version = "0.1.0", path = "../../../worktree" }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 slex = { version = "0.1.0", path = "../../../slex" }
+tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [features]
 default = []
