@@ -1018,6 +1018,22 @@ struct RepoResolveBookmarkParams {
   3: optional list<string> namespaces;
 }
 
+struct RepoResolveP4FileRevisionParams {
+  /// The path, relative to the repo root (the depot root), spelled as Perforce
+  /// records it.
+  1: Path path;
+
+  /// The Perforce revision of the path, 1 or above.
+  2: i64 revision;
+
+  /// The bookmark whose history is searched for the revision. Defaults to
+  /// "master".
+  3: optional string bookmark;
+
+  /// Commit identity schemes to return.
+  4: set<CommitIdentityScheme> identity_schemes;
+}
+
 struct RepoResolveCommitPrefixParams {
   /// The commit hash prefix to look up.
   1: string prefix;
@@ -2602,6 +2618,41 @@ enum RepoResolveCommitPrefixResponseType {
   NOT_FOUND = 2,
 }
 
+struct RepoResolveP4FileRevisionResponse {
+  /// The commit imported from the changelist that gave the path the revision,
+  /// in the requested schemes. Not set when the revision was not found: it is
+  /// newer than the bookmark (`revision` > `head_revision`), the path never
+  /// existed at the bookmark (no `head_revision`), or the search gave up
+  /// (`oldest_revision_walked` is set).
+  1: optional map<CommitIdentityScheme, CommitId> commit;
+
+  /// That commit's changelist, when found.
+  2: optional i64 changelist;
+
+  /// When found, whether the path exists at that revision: false when the
+  /// revision is a deletion.
+  3: bool exists;
+
+  /// When found, the path as Perforce records it.
+  4: optional Path path;
+
+  /// The revision the path has at the bookmark, a deletion included. Not set
+  /// when nothing ever existed at the path there.
+  5: optional i64 head_revision;
+
+  /// Set when the search walked its maximum number of changes to the path
+  /// without reaching `revision`: the oldest revision it saw. Revisions below
+  /// it need a search from an older commit.
+  6: optional i64 oldest_revision_walked;
+
+  /// How many changes to the path the search read.
+  7: i64 commits_walked;
+
+  /// With `head_revision`: whether the path exists at the bookmark, or that
+  /// revision deleted it.
+  8: optional bool head_exists;
+}
+
 struct RepoResolveCommitPrefixResponse {
   1: RepoResolveCommitPrefixResponseType resolved_type;
 
@@ -3907,6 +3958,29 @@ service SourceControlService {
     1: RequestError request_error,
     2: InternalError internal_error,
     3: OverloadError overload_error,
+  );
+
+  /// Find the commit a Perforce revision of a path was imported as, in a
+  /// Perforce mirror repo.
+  ///
+  /// Walks the path's changes back from the bookmark, newest first, until the
+  /// one that gave it the revision. The mirror is a linear import of one
+  /// stream, so revisions of a depot path only go up along it and the walk
+  /// stops early once it passes below the revision (merges would break that;
+  /// so does `p4 obliterate` of a whole file, whose earlier revisions are then
+  /// not found). It also stops after a server-side maximum number of changes
+  /// (`oldest_revision_walked`): until a revision index exists, a miss deep
+  /// in a much-changed file reads that many commits. Every commit of a
+  /// Perforce mirror records its files' revisions; one without is an
+  /// internal error.
+  RepoResolveP4FileRevisionResponse repo_resolve_p4_file_revision(
+    1: RepoSpecifier repo,
+    2: RepoResolveP4FileRevisionParams params,
+  ) throws (
+    1: RequestError request_error,
+    2: InternalError internal_error,
+    3: OverloadError overload_error,
+    4: RestrictedPathsAuthorizationError restricted_paths_authorization_error,
   );
 
   /// Resolve a bookmark

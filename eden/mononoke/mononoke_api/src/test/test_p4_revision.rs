@@ -23,6 +23,7 @@ use tests_utils::CreateCommitContext;
 use crate::MononokeError;
 use crate::P4LastChange;
 use crate::P4PathRevision;
+use crate::P4RevisionSearch;
 use crate::RepoContext;
 use crate::repo::Repo;
 
@@ -63,6 +64,7 @@ fn with_extras<'a>(
 /// c4 (CL 103) : + a.txt#3 (re-added), + c.txt#1 (branched from dir/b.txt)
 /// c5 (CL 104) :   dir/b.txt#3
 /// broken      :   a.txt#4 edited, but the extra lists another file
+/// d1 (CL 106) : - dir/b.txt#4, so `dir` goes too          (child of c5, like broken)
 /// ```
 struct Mirror {
     repo: RepoContext<Repo>,
@@ -73,6 +75,7 @@ struct Mirror {
     c4: ChangesetId,
     c5: ChangesetId,
     broken: ChangesetId,
+    d1: ChangesetId,
 }
 
 async fn mirror(ctx: &CoreContext) -> Result<Mirror> {
@@ -121,6 +124,12 @@ async fn mirror(ctx: &CoreContext) -> Result<Mirror> {
     )
     .commit()
     .await?;
+    let d1 = with_extras(
+        CreateCommitContext::new(ctx, &repo, vec![c5]).delete_file("dir/b.txt"),
+        p4_extras(106, &[("dir/b.txt", 4)]),
+    )
+    .commit()
+    .await?;
     let repo = RepoContext::new_test(ctx.clone(), Arc::new(repo)).await?;
     Ok(Mirror {
         repo,
@@ -131,6 +140,7 @@ async fn mirror(ctx: &CoreContext) -> Result<Mirror> {
         c4,
         c5,
         broken,
+        d1,
     })
 }
 
@@ -334,5 +344,156 @@ async fn test_p4_file_revisions_serve_several_paths(fb: FacebookInit) -> Result<
     );
     let legacy = m.repo.changeset(m.legacy).await?.expect("commit exists");
     assert!(legacy.p4_file_revisions().await?.is_none());
+    Ok(())
+}
+
+impl Mirror {
+    async fn find(
+        &self,
+        from: ChangesetId,
+        path: &str,
+        revision: u32,
+        max_commits: usize,
+    ) -> Result<P4RevisionSearch<Repo>, MononokeError> {
+        self.repo
+            .changeset(from)
+            .await?
+            .expect("commit exists")
+            .path_with_history(path)
+            .await?
+            .find_p4_revision(revision, max_commits)
+            .await
+    }
+
+    /// `(changeset, changelist, exists)` of the found revision.
+    async fn found(
+        &self,
+        from: ChangesetId,
+        path: &str,
+        revision: u32,
+    ) -> Result<(ChangesetId, u64, bool)> {
+        let search = self.find(from, path, revision, 1000).await?;
+        let found = search.found.expect("revision is in the history");
+        assert_eq!(found.revision, revision);
+        assert_eq!(found.path, NonRootMPath::new(path)?);
+        assert_eq!(search.oldest_revision_walked, None, "not capped");
+        Ok((found.changeset.id(), found.changelist.id(), found.exists))
+    }
+}
+
+#[mononoke::fbinit_test]
+async fn test_find_p4_revision_walks_back_from_the_head(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let m = mirror(&ctx).await?;
+
+    // At the head.
+    assert_eq!(m.found(m.c5, "dir/b.txt", 3).await?, (m.c5, 104, true));
+    // Deeper.
+    assert_eq!(m.found(m.c5, "dir/b.txt", 2).await?, (m.c2, 101, true));
+    assert_eq!(m.found(m.c5, "dir/b.txt", 1).await?, (m.c1, 100, true));
+    // Across a deletion: the deletion itself, and the life before it.
+    assert_eq!(m.found(m.c5, "a.txt", 3).await?, (m.c4, 103, true));
+    assert_eq!(m.found(m.c5, "a.txt", 2).await?, (m.c3, 102, false));
+    assert_eq!(m.found(m.c5, "a.txt", 1).await?, (m.c1, 100, true));
+    // A branched file's #1 is the branching commit.
+    assert_eq!(m.found(m.c5, "c.txt", 1).await?, (m.c4, 103, true));
+    // Searching from the deleting commit finds the deletion.
+    assert_eq!(m.found(m.c3, "a.txt", 2).await?, (m.c3, 102, false));
+
+    let search = m.find(m.c5, "a.txt", 1, 1000).await?;
+    assert_eq!(search.head_revision, Some(3));
+    assert_eq!(search.head_exists, Some(true));
+    assert_eq!(search.commits_walked, 3, "c4, c3, c1");
+
+    // A deletion at the head is the head revision, and can be the one looked for.
+    let search = m.find(m.d1, "dir/b.txt", 4, 1000).await?;
+    assert_eq!(search.head_revision, Some(4));
+    assert_eq!(search.head_exists, Some(false));
+    let found = search.found.expect("the deletion");
+    assert_eq!((found.changeset.id(), found.exists), (m.d1, false));
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_find_p4_revision_says_why_it_found_nothing(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let m = mirror(&ctx).await?;
+
+    // Newer than the head: the head's revision says so.
+    let search = m.find(m.c2, "dir/b.txt", 3, 1000).await?;
+    assert!(search.found.is_none());
+    assert_eq!(search.head_revision, Some(2));
+    assert_eq!(search.oldest_revision_walked, None);
+    assert_eq!(
+        search.commits_walked, 1,
+        "stops at the head: #2 is already below #3"
+    );
+
+    // Never existed at the head.
+    let search = m.find(m.c5, "nonexistent.txt", 1, 1000).await?;
+    assert!(search.found.is_none());
+    assert_eq!(search.head_revision, None);
+    assert_eq!(search.commits_walked, 0);
+
+    // Not in the history: stops early once past it, without walking to the root.
+    // (`dir/b.txt` has #1, #2, #3; the gap is synthetic.)
+    let search = m.find(m.c5, "a.txt", 4, 1000).await?;
+    assert!(search.found.is_none(), "head is #3");
+    assert_eq!(search.commits_walked, 1);
+
+    // Capped: the oldest revision seen says where to continue from.
+    let search = m.find(m.c5, "a.txt", 1, 2).await?;
+    assert!(search.found.is_none());
+    assert_eq!(search.head_revision, Some(3));
+    assert_eq!(search.oldest_revision_walked, Some(2), "c4 (#3), c3 (#2)");
+    assert_eq!(search.commits_walked, 2);
+    // A hit on the last change the cap allows is a hit.
+    let search = m.find(m.c5, "a.txt", 1, 3).await?;
+    assert!(search.found.is_some());
+    assert_eq!(search.oldest_revision_walked, None);
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_find_p4_revision_stops_at_a_directory(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let m = mirror(&ctx).await?;
+    // `dir` is deleted at d1, so it has a deletion history but no revisions.
+    let error = match m.find(m.d1, "dir", 1, 1000).await {
+        Err(error) => error,
+        Ok(_) => panic!("a deleted directory is not a file"),
+    };
+    assert!(
+        matches!(&error, MononokeError::InvalidRequest(reason) if reason.contains("directory")),
+        "{error:?}"
+    );
+    // The file in it is still found through the deletion.
+    assert_eq!(m.found(m.d1, "dir/b.txt", 2).await?, (m.c2, 101, true));
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_find_p4_revision_rejects_what_has_no_revisions(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let m = mirror(&ctx).await?;
+    for path in ["dir", ""] {
+        let error = match m.find(m.c5, path, 1, 1000).await {
+            Err(error) => error,
+            Ok(_) => panic!("{path:?} is not a file"),
+        };
+        assert!(
+            matches!(error, MononokeError::InvalidRequest(_)),
+            "{path:?}: {error:?}"
+        );
+    }
+    // A commit in the walk that records no revisions breaks the importer's invariant.
+    let error = match m.find(m.c5, "legacy.txt", 1, 1000).await {
+        Err(error) => error,
+        Ok(_) => panic!("legacy commit has no extras"),
+    };
+    assert!(
+        matches!(error, MononokeError::InternalError(_)),
+        "{error:?}"
+    );
     Ok(())
 }

@@ -16,6 +16,7 @@ use anyhow::anyhow;
 use futures::stream;
 use futures::stream::StreamExt;
 use futures::stream::TryStreamExt;
+use manifest::Entry;
 use mononoke_types::NonRootMPath;
 use mononoke_types::P4ChangelistId;
 use mononoke_types::P4FileRevs;
@@ -23,6 +24,7 @@ use mononoke_types::path::MPath;
 use repo_identity::RepoIdentityRef;
 
 use super::ChangesetPathHistoryContext;
+use super::ChangesetPathHistoryOptions;
 use crate::MononokeRepo;
 use crate::changeset::ChangesetContext;
 use crate::errors::MononokeError;
@@ -185,7 +187,144 @@ impl<R: MononokeRepo> RepoContext<R> {
     }
 }
 
+/// What a search of a path's history for a Perforce revision found.
+pub struct P4RevisionSearch<R> {
+    /// The change that gave the path the revision, if the search reached it.
+    pub found: Option<P4PathRevision<R>>,
+    /// The revision the path has at the changeset the search started from, a deletion
+    /// included. `None` if nothing ever existed at the path there.
+    pub head_revision: Option<u32>,
+    /// With `head_revision`: whether the path exists there, or that revision deleted it.
+    pub head_exists: Option<bool>,
+    /// Set when the search walked `max_commits` changes without reaching the revision:
+    /// the oldest revision it saw.
+    pub oldest_revision_walked: Option<u32>,
+    /// How many changes to the path the search read.
+    pub commits_walked: usize,
+}
+
+/// How many changes of a path are loaded ahead while walking its history.
+const P4_HISTORY_LOOKAHEAD: usize = 10;
+
 impl<R: MononokeRepo> ChangesetPathHistoryContext<R> {
+    /// Searches this path's history from this changeset, newest first and across
+    /// deletions, for the change whose changelist gave the path Perforce revision
+    /// `revision`, reading at most `max_commits` changes.
+    ///
+    /// Assumes a linear import, one stream per repo: revisions of a depot path then only
+    /// go up along the history, so the search stops as soon as it passes a revision below
+    /// `revision`, which is then not in the history. (Merges would break that order;
+    /// `p4 obliterate` of a whole file restarts its numbering, so a revision from before
+    /// one is reported not found.) Mutable renames are not followed: revisions belong to a
+    /// depot path. The search also stops where the path was a directory: directories
+    /// have no revisions.
+    ///
+    /// Every commit in a Perforce mirror carries the importer's revisions; one in the walk
+    /// without them is an internal error. Every change read costs a `ChangesetInfo`
+    /// fetch, so a miss deep in a much-changed file costs up to `max_commits` of them
+    /// until a `(path, revision)` index replaces the walk behind this signature.
+    pub async fn find_p4_revision(
+        &self,
+        revision: u32,
+        max_commits: usize,
+    ) -> Result<P4RevisionSearch<R>, MononokeError> {
+        let path = self.file_path()?;
+        let head_exists = match self.unode_id().await? {
+            Some(Entry::Tree(_)) => {
+                return Err(MononokeError::InvalidRequest(format!(
+                    "{path} is a directory: only files have Perforce revisions"
+                )));
+            }
+            Some(Entry::Leaf(_)) => true,
+            None => false,
+        };
+        let history = self
+            .history(ChangesetPathHistoryOptions {
+                follow_history_across_deletions: true,
+                ..Default::default()
+            })
+            .await?;
+        let stream_path = path.clone();
+        let mut changes = history
+            .map_ok(move |changeset| {
+                let path = stream_path.clone();
+                async move {
+                    let revisions = changeset.p4_file_revisions().await?.ok_or_else(|| {
+                        MononokeError::from(anyhow!(
+                            "commit {} changed {} but records no Perforce revisions",
+                            changeset.id(),
+                            path
+                        ))
+                    })?;
+                    let rev = revisions.revision(&path)?;
+                    Ok((changeset, revisions.changelist(), rev))
+                }
+            })
+            .try_buffered(P4_HISTORY_LOOKAHEAD)
+            .boxed();
+
+        let mut search = P4RevisionSearch {
+            found: None,
+            head_revision: None,
+            head_exists: None,
+            oldest_revision_walked: None,
+            commits_walked: 0,
+        };
+        while let Some((changeset, changelist, rev)) = changes.try_next().await? {
+            let Some(rev) = rev else {
+                // No revision: the path was a directory in that change. At the head, the
+                // request is for a deleted directory; deeper, the file's revisions end.
+                if search.commits_walked == 0 {
+                    return Err(MononokeError::InvalidRequest(format!(
+                        "{path} was a directory: only files have Perforce revisions"
+                    )));
+                }
+                break;
+            };
+            search.commits_walked += 1;
+            if search.head_revision.is_none() {
+                search.head_revision = Some(rev);
+                search.head_exists = Some(head_exists);
+            }
+            if rev == revision {
+                // The change that gave the revision either left a file or deleted it.
+                let exists = changeset
+                    .path_with_history(path.clone())
+                    .await?
+                    .is_file()
+                    .await?;
+                search.found = Some(P4PathRevision {
+                    changeset,
+                    changelist,
+                    revision,
+                    exists,
+                    path,
+                });
+                break;
+            }
+            if rev < revision {
+                break;
+            }
+            if search.commits_walked >= max_commits {
+                search.oldest_revision_walked = Some(rev);
+                break;
+            }
+        }
+        Ok(search)
+    }
+
+    /// Only files have Perforce revisions.
+    fn file_path(&self) -> Result<NonRootMPath, MononokeError> {
+        self.path()
+            .clone()
+            .into_optional_non_root_path()
+            .ok_or_else(|| {
+                MononokeError::InvalidRequest(
+                    "the repo root is not a file: only files have Perforce revisions".to_string(),
+                )
+            })
+    }
+
     /// The Perforce revision this path has as of this changeset, given its last change
     /// as `last_modified` (`exists`) or `last_deleted` (`!exists`) found it: the revision
     /// that change gave it, a deletion included. `None` if the path is a directory or the

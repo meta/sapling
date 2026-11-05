@@ -76,6 +76,7 @@ mod p4;
 pub use p4::P4ChangesetRevisions;
 pub use p4::P4LastChange;
 pub use p4::P4PathRevision;
+pub use p4::P4RevisionSearch;
 
 pub struct HistoryEntry {
     pub name: String,

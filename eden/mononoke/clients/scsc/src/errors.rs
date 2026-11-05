@@ -58,6 +58,7 @@ use source_control_clients::errors::RepoPrepareCommitsError;
 use source_control_clients::errors::RepoRebaseStackError;
 use source_control_clients::errors::RepoResolveBookmarkError;
 use source_control_clients::errors::RepoResolveCommitPrefixError;
+use source_control_clients::errors::RepoResolveP4FileRevisionError;
 use source_control_clients::errors::RepoStackGitBundleStoreError;
 use source_control_clients::errors::RepoUpdateSubmoduleExpansionError;
 use source_control_clients::errors::TreeExistsError;
@@ -185,6 +186,7 @@ impl_handle_selection_error_with_restricted_paths!(CommitMultiplePathLastChanged
 impl_handle_selection_error_with_restricted_paths!(CommitPathBlameError);
 impl_handle_selection_error_with_restricted_paths!(CommitPathExistsError);
 impl_handle_selection_error_with_restricted_paths!(CommitPathFirstChangedError);
+impl_handle_selection_error_with_restricted_paths!(RepoResolveP4FileRevisionError);
 impl_handle_selection_error_with_restricted_paths!(CommitPathHistoryError);
 impl_handle_selection_error_with_restricted_paths!(CommitPathInfoError);
 impl_handle_selection_error_with_restricted_paths!(CommitPathLastChangedError);

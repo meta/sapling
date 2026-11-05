@@ -285,6 +285,17 @@ impl AddScubaParams for thrift::RepoResolveBookmarkParams {
     }
 }
 
+impl AddScubaParams for thrift::RepoResolveP4FileRevisionParams {
+    fn add_scuba_params(&self, scuba: &mut MononokeScubaSampleBuilder) {
+        scuba.add("param_path", self.path.as_str());
+        scuba.add("param_revision", self.revision);
+        if let Some(bookmark) = &self.bookmark {
+            scuba.add("param_bookmark", bookmark.as_str());
+        }
+        self.identity_schemes.add_scuba_params(scuba);
+    }
+}
+
 impl AddScubaParams for thrift::RepoBookmarkInfoParams {
     fn add_scuba_params(&self, scuba: &mut MononokeScubaSampleBuilder) {
         scuba.add("bookmark_name", self.bookmark_name.as_str());

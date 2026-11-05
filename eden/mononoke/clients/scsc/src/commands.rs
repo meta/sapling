@@ -43,6 +43,7 @@ base_app::subcommands! {
     mod repo_exists;
     mod repo_info;
     mod repos;
+    mod resolve_p4_revision;
     mod run_hooks;
     #[cfg(all(target_os = "linux", fbcode_build))]
     mod scmqueryclient_test if "SCSC_SCMQUERY_TEST_ENABLED";

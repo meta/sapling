@@ -424,6 +424,7 @@ impl_into_thrift_error!(service::OrgStorageConfigExn);
 impl_into_thrift_error!(service::RepoInfoExn);
 impl_into_thrift_error!(service::GitRepoStateExn);
 impl_into_thrift_error!(service::RepoResolveBookmarkExn);
+impl_into_thrift_error!(restricted_paths service::RepoResolveP4FileRevisionExn);
 impl_into_thrift_error!(service::RepoResolveCommitPrefixExn);
 impl_into_thrift_error!(service::RepoListBookmarksExn);
 impl_into_thrift_error!(service::RepoCreateCommitExn);

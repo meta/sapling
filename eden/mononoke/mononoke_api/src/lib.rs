@@ -61,6 +61,7 @@ pub use crate::changeset_path::ChangesetPathHistoryOptions;
 pub use crate::changeset_path::P4ChangesetRevisions;
 pub use crate::changeset_path::P4LastChange;
 pub use crate::changeset_path::P4PathRevision;
+pub use crate::changeset_path::P4RevisionSearch;
 pub use crate::changeset_path::PathEntry;
 pub use crate::changeset_path_diff::ChangesetPathDiffContext;
 pub use crate::changeset_path_diff::CopyInfo;

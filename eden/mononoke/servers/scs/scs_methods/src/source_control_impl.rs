@@ -1235,6 +1235,11 @@ impl SourceControlService for SourceControlServiceThriftImpl {
             params: thrift::RepoResolveBookmarkParams,
         ) -> Result<thrift::RepoResolveBookmarkResponse, service::RepoResolveBookmarkExn>;
 
+        async fn repo_resolve_p4_file_revision(
+            repo: thrift::RepoSpecifier,
+            params: thrift::RepoResolveP4FileRevisionParams,
+        ) -> Result<thrift::RepoResolveP4FileRevisionResponse, service::RepoResolveP4FileRevisionExn>;
+
         async fn repo_resolve_commit_prefix(
             repo: thrift::RepoSpecifier,
             params: thrift::RepoResolveCommitPrefixParams,

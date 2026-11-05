@@ -97,6 +97,17 @@ impl AddScubaResponse for thrift::RepoListBookmarksResponse {}
 
 impl AddScubaResponse for thrift::RepoResolveBookmarkResponse {}
 
+impl AddScubaResponse for thrift::RepoResolveP4FileRevisionResponse {
+    fn add_scuba_response(&self, scuba: &mut MononokeScubaSampleBuilder) {
+        scuba.add("response_found", self.commit.is_some());
+        scuba.add("response_exists", self.exists);
+        if let Some(changelist) = self.changelist {
+            scuba.add("response_changelist", changelist);
+        }
+        scuba.add("response_commits_walked", self.commits_walked);
+    }
+}
+
 impl AddScubaResponse for thrift::RepoResolveCommitPrefixResponse {}
 
 impl AddScubaResponse for thrift::RepoBookmarkInfoResponse {}
