@@ -109,6 +109,11 @@ cpp_unittest(
     deps = [
         "fbsource//third-party/fmt:fmt",
         "fbsource//third-party/googletest:gtest",
+        "fbsource//xplat/folly/coro:invoke",
+        "fbsource//xplat/folly/coro:task",
+        "fbsource//xplat/folly/executors:cpu_thread_pool_executor",
+        "fbsource//xplat/folly/executors/thread_factory:named_thread_factory",
+        "fbsource//xplat/folly/futures:core",
         "//eden/common/utils:fault_injector",
         "//eden/fs/inodes:inodes",
         "//eden/fs/service:thrift-cpp2-types",
@@ -116,11 +121,6 @@ cpp_unittest(
         "//eden/fs/store:context",
         "//eden/fs/testharness:fake_backing_store_and_tree_builder",
         "//eden/fs/testharness:test_mount",
-        "//folly/coro:invoke",
-        "//folly/coro:task",
-        "//folly/executors:cpu_thread_pool_executor",
-        "//folly/executors/thread_factory:named_thread_factory",
-        "//folly/futures:core",
     ],
 )
 
