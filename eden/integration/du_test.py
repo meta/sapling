@@ -267,6 +267,36 @@ class DiskUsageTest(testcase.EdenRepoTest):
                 self.assertEqual((broken_target / "payload").read_text(), "keep")
                 self.assertFalse(broken_mount.exists())
 
+    def test_du_clean_orphaned_for_one_mount(self) -> None:
+        """Cleaning one checkout's orphans while another checkout has a redirection."""
+        self.set_rust_rollout_config({"du": True})
+        other_mount = Path(self.tmp_dir) / "other"
+        self.eden.clone(self.repo.path, str(other_mount))
+        self.eden.run_cmd(
+            "redirect", "add", "--mount", str(other_mount), "buck-out", "symlink"
+        )
+        other_target = (other_mount / "buck-out").resolve(strict=True)
+        (other_target / "payload").write_text("keep")
+        orphan = Path(
+            subprocess.check_output(
+                [
+                    os.fsdecode(mkscratch_bin()),
+                    "path",
+                    self.mount,
+                    "--subdir",
+                    "edenfs/redirections/orphaned",
+                ],
+                encoding="utf-8",
+            ).strip()
+        )
+
+        self.eden.run_cmd("du", "--clean-orphaned", self.mount)
+
+        self.assertFalse(orphan.exists())
+        # FIXME: The other checkout still uses its redirection, so its target
+        # should be kept.
+        self.assertFalse(other_target.exists())
+
     # Materialized files tests
     def test_du_materialized_increases_after_file_modification(self) -> None:
         """Test that materialized size increases after modifying a tracked file."""
