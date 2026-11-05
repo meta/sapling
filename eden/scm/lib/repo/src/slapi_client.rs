@@ -45,11 +45,12 @@ pub type OnceSlapi = OnceLock<(LazyCapabilities, Arc<dyn SaplingRemoteApi>)>;
 pub(crate) fn force_construct_eden_api(
     config: &dyn configmodel::Config,
     once_slapi: &OnceSlapi,
+    repo_url: &RepoUrl,
 ) -> Result<(LazyCapabilities, Arc<dyn SaplingRemoteApi>), SaplingRemoteApiError> {
     let (caps, eden_api) = once_slapi.get_or_try_init(
         || -> Result<(LazyCapabilities, Arc<dyn SaplingRemoteApi>), SaplingRemoteApiError> {
             tracing::trace!(target: "repo::eden_api", "creating edenapi");
-            let eden_api = Builder::from_config(config)?.build()?;
+            let eden_api = Builder::from_config(config)?.repo_url(repo_url)?.build()?;
             tracing::info!(url = eden_api.url(), "SaplingRemoteApi built");
             Ok((LazyCapabilities::default(), eden_api))
         },
@@ -80,7 +81,7 @@ pub(crate) fn optional_eden_api_from_config(
             // EagerRepo URLs (test:, eager: file path, dummyssh).
             if EagerRepo::url_to_dir(&path).is_some() {
                 tracing::trace!(target: "repo::eden_api", "using EagerRepo at {}", &path);
-                let (caps, edenapi) = force_construct_eden_api(config, once_slapi)?;
+                let (caps, edenapi) = force_construct_eden_api(config, once_slapi, &path)?;
                 return Ok(Some((caps, edenapi)));
             }
             // Legacy tests are incompatible with SaplingRemoteAPI.
@@ -96,18 +97,17 @@ pub(crate) fn optional_eden_api_from_config(
                     }
                 }
             }
-            // Explicitly set SaplingRemoteAPI URLs.
-            // Ideally we can make paths.default derive the edenapi URLs. But "push" is not on
-            // SaplingRemoteAPI yet. So we have to wait.
-            if config.get_nonempty("edenapi", "url").is_none()
-                || config.get_nonempty("remotefilelog", "reponame").is_none()
+            if !Builder::from_config(config)?
+                .repo_url(&path)?
+                .has_server_url_and_repo_name()?
             {
-                tracing::trace!(target: "repo::eden_api", "disabled because edenapi.url or remotefilelog.reponame is not set");
+                tracing::trace!(target: "repo::eden_api", "disabled because neither config nor paths.default gives a server URL and repo name");
                 return Ok(None);
             }
 
             tracing::trace!(target: "repo::eden_api", "proceeding with path {}, reponame {:?}", path, config.get("remotefilelog", "reponame"));
-            let (supported_capabilities, edenapi) = force_construct_eden_api(config, once_slapi)?;
+            let (supported_capabilities, edenapi) =
+                force_construct_eden_api(config, once_slapi, &path)?;
 
             Ok(Some((supported_capabilities, edenapi)))
         }

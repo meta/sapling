@@ -100,6 +100,7 @@ use pyconfigloader::config;
 use pyrevisionstore::edenapifilestore;
 use pyrevisionstore::edenapitreestore;
 use pyrevisionstore::filescmstore;
+use repourl::RepoUrl;
 use revisionstore::SaplingRemoteApiFileStore;
 use revisionstore::SaplingRemoteApiTreeStore;
 use types::FetchContext;
@@ -127,22 +128,24 @@ py_class!(pub class client |py| {
         path: Option<String> = None,
     ) -> PyResult<client> {
         let mut config = config.get_cfg(py);
-        let mut reponame = reponame;
+        let repo_url = path
+            .as_deref()
+            .and_then(|path| RepoUrl::from_str(&config, path).ok());
+        // The repo name of an explicit path wins over `remotefilelog.reponame`, which
+        // belongs to `paths.default`.
+        let reponame = reponame
+            .or_else(|| repo_url.as_ref()?.repo_name().map(ToString::to_string));
 
         if let Some(path) = path {
-            if reponame.is_none() {
-                // This sets reponame properly for mononoke:// URLs.
-                reponame = repourl::repo_name_from_url(&config, &path);
-            }
             // This is required for eager:// URLs.
             config.set("paths", "default", Some(path), &"pyedenapi".into());
         }
 
-        let inner = Builder::from_config(&config)
-            .map_pyerr(py)?
-            .repo_name(reponame)
-            .build()
-            .map_pyerr(py)?;
+        let mut builder = Builder::from_config(&config).map_pyerr(py)?;
+        if let Some(repo_url) = &repo_url {
+            builder = builder.repo_url(repo_url).map_pyerr(py)?;
+        }
+        let inner = builder.repo_name(reponame).build().map_pyerr(py)?;
 
         Self::create_instance(py, inner, Arc::new(config))
     }

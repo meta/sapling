@@ -134,6 +134,27 @@ impl RepoUrl {
     pub fn supports_slapi(&self) -> bool {
         matches!(self.scheme(), "mononoke" | "eager" | "test")
     }
+
+    /// SLAPI server base URL for a Mononoke repo URL: `https://host[:port]/slapi/` for
+    /// `mononoke://host[:port]/<repo>`.
+    ///
+    /// `None` for other schemes and for URLs without a host; an error if the host and
+    /// port do not form a valid `https` URL.
+    pub fn slapi_server_url(&self) -> Result<Option<Url>> {
+        if self.scheme() != "mononoke" {
+            return Ok(None);
+        }
+        let Some(host) = self.url.host_str().filter(|host| !host.is_empty()) else {
+            return Ok(None);
+        };
+        let authority = match self.url.port() {
+            Some(port) => format!("{host}:{port}"),
+            None => host.to_string(),
+        };
+        let url = Url::parse(&format!("https://{authority}/slapi/"))
+            .with_context(|| format!("deriving the SLAPI server URL from {}", self.url))?;
+        Ok(Some(url))
+    }
 }
 
 fn looks_like_windows_path(s: &str) -> bool {
@@ -315,6 +336,57 @@ mod test {
             check(r"eager://C:\some/repo", Some("repo"));
             check(r"eager:\\C\some\repo", Some("repo"));
         }
+    }
+
+    #[test]
+    fn test_slapi_server_url() {
+        let config = BTreeMap::<&str, &str>::from([
+            ("schemes.fb", "mononoke://example.com/{1}"),
+            ("schemes.mono", "mononoke://localhost:8443/{1}"),
+        ]);
+
+        let check = |url, expected: Option<&str>| {
+            let repo_url = RepoUrl::from_str(&config, url).unwrap();
+            assert_eq!(
+                repo_url
+                    .slapi_server_url()
+                    .unwrap()
+                    .as_ref()
+                    .map(Url::as_str),
+                expected,
+                "SLAPI server URL for {url}"
+            );
+        };
+
+        // The server URL depends only on the host and port, never on the repo name.
+        check(
+            "mononoke://example.com/repo",
+            Some("https://example.com/slapi/"),
+        );
+        check(
+            "mononoke://example.com/path/to/repo",
+            Some("https://example.com/slapi/"),
+        );
+        check(
+            "mononoke://example.com/",
+            Some("https://example.com/slapi/"),
+        );
+        check("fb:fbsource", Some("https://example.com/slapi/"));
+        check("mono:repo", Some("https://localhost:8443/slapi/"));
+        check(
+            "mononoke://[::1]:8443/repo",
+            Some("https://[::1]:8443/slapi/"),
+        );
+        // 443 is the default HTTPS port, so the URL omits it.
+        check(
+            "mononoke://example.com:443/repo",
+            Some("https://example.com/slapi/"),
+        );
+
+        // Other schemes have no derived SLAPI server URL.
+        check("https://example.com/edenapi/", None);
+        check("ssh://user@host/repo", None);
+        check("file:/path/to/repo", None);
     }
 
     #[test]
