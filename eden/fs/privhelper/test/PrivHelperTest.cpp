@@ -47,6 +47,7 @@
 #include <sys/mount.h>
 #include <sys/prctl.h>
 #include "eden/fs/privhelper/priority/LinuxMemoryPriority.h"
+#include "eden/fs/utils/MountInfoTable.h"
 #include "eden/fs/utils/Statmount.h"
 #endif
 
@@ -1334,6 +1335,239 @@ TEST(PrivHelperSanityTest, bindMountClonesAnOPathSourceDescriptor) {
     checkUnixError(stat(target.c_str(), &targetStat));
     EXPECT_EQ(sourceStat.st_ino, targetStat.st_ino);
     EXPECT_EQ(sourceStat.st_dev, targetStat.st_dev);
+  });
+}
+
+class PrivHelperCleanupTestServer : public PrivHelperServer {
+ public:
+  mutable size_t snapshots{0};
+  std::function<void(size_t)> afterSnapshot;
+
+  SanityCheckResult cleanup(const std::string& path) {
+    File root(path.c_str(), O_PATH | O_DIRECTORY | O_CLOEXEC);
+    return cleanupStaleBindMounts(path, root.fd());
+  }
+
+ private:
+  std::vector<MountTableEntry> mountsForCleanup() const override {
+    auto mounts = PrivHelperServer::mountsForCleanup();
+    const auto snapshot = ++snapshots;
+    if (afterSnapshot) {
+      afterSnapshot(snapshot);
+    }
+    return mounts;
+  }
+};
+
+TEST(PrivHelperCleanupTest, cleansNestedMountsWithoutChangingTheCheckoutMount) {
+  TemporaryDirectory dir;
+  runInMountNamespace([&] {
+    checkUnixError(mount("tmpfs", dir.path().c_str(), "tmpfs", 0, "size=1m"));
+    const auto child = dir.path() / "child";
+    folly::fs::create_directory(child);
+    checkUnixError(mount("tmpfs", child.c_str(), "tmpfs", 0, "size=1m"));
+    const auto nested = child / "nested";
+    folly::fs::create_directory(nested);
+    checkUnixError(mount("tmpfs", nested.c_str(), "tmpfs", 0, "size=1m"));
+    ASSERT_TRUE(
+        folly::writeFile(StringPiece{"root"}, (dir.path() / "marker").c_str()));
+    ASSERT_TRUE(
+        folly::writeFile(StringPiece{"child"}, (child / "marker").c_str()));
+
+    PrivHelperCleanupTestServer server;
+    const auto result = server.cleanup(dir.path().string());
+
+    EXPECT_EQ(2, result.staleRedirectionMountsFound);
+    EXPECT_EQ(2, result.staleRedirectionMountsSucceeded);
+    EXPECT_EQ(0, result.staleRedirectionMountsFailed);
+    EXPECT_EQ(2, server.snapshots);
+    EXPECT_TRUE(folly::fs::exists(dir.path() / "marker"));
+    EXPECT_FALSE(folly::fs::exists(child / "marker"));
+  });
+}
+
+TEST(PrivHelperCleanupTest, siblingMountsUseBoundedValidationBatches) {
+  for (const int count : {16, 65}) {
+    TemporaryDirectory dir;
+    runInMountNamespace([&] {
+      checkUnixError(mount("tmpfs", dir.path().c_str(), "tmpfs", 0, "size=1m"));
+      for (int i = 0; i < count; ++i) {
+        const auto child = dir.path() / fmt::format("child-{}", i);
+        folly::fs::create_directory(child);
+        checkUnixError(mount("tmpfs", child.c_str(), "tmpfs", 0, "size=1m"));
+      }
+      PrivHelperCleanupTestServer server;
+
+      const auto result = server.cleanup(dir.path().string());
+
+      EXPECT_EQ(count, result.staleRedirectionMountsSucceeded);
+      EXPECT_EQ(0, result.staleRedirectionMountsFailed);
+      EXPECT_EQ(count == 16 ? 2 : 3, server.snapshots);
+    });
+  }
+}
+
+TEST(PrivHelperCleanupTest, stackedChildrenArePeeledBeforeTheirParent) {
+  TemporaryDirectory dir;
+  runInMountNamespace([&] {
+    checkUnixError(mount("tmpfs", dir.path().c_str(), "tmpfs", 0, "size=1m"));
+    const auto parent = dir.path() / "parent";
+    folly::fs::create_directory(parent);
+    checkUnixError(mount("tmpfs", parent.c_str(), "tmpfs", 0, "size=1m"));
+    const auto child = parent / "child";
+    folly::fs::create_directory(child);
+    for (int i = 0; i < 2; ++i) {
+      checkUnixError(mount("tmpfs", child.c_str(), "tmpfs", 0, "size=1m"));
+    }
+    PrivHelperCleanupTestServer server;
+
+    const auto result = server.cleanup(dir.path().string());
+
+    EXPECT_EQ(3, result.staleRedirectionMountsSucceeded);
+    EXPECT_EQ(0, result.staleRedirectionMountsFailed);
+    EXPECT_EQ(3, server.snapshots);
+  });
+}
+
+TEST(PrivHelperCleanupTest, peelsStackedMountsAtTheSamePath) {
+  TemporaryDirectory dir;
+  runInMountNamespace([&] {
+    checkUnixError(mount("tmpfs", dir.path().c_str(), "tmpfs", 0, "size=1m"));
+    const auto child = dir.path() / "child";
+    folly::fs::create_directory(child);
+    for (int i = 0; i < 2; ++i) {
+      checkUnixError(mount("tmpfs", child.c_str(), "tmpfs", 0, "size=1m"));
+      ASSERT_TRUE(
+          folly::writeFile(StringPiece{"mounted"}, (child / "marker").c_str()));
+    }
+
+    PrivHelperCleanupTestServer server;
+    const auto result = server.cleanup(dir.path().string());
+
+    EXPECT_EQ(2, result.staleRedirectionMountsSucceeded);
+    EXPECT_EQ(0, result.staleRedirectionMountsFailed);
+    EXPECT_FALSE(folly::fs::exists(child / "marker"));
+  });
+}
+
+TEST(PrivHelperCleanupTest, detachedFuseDoesNotRequireFilesystemAttributes) {
+  if (access("/dev/fuse", R_OK | W_OK) != 0) {
+    GTEST_SKIP() << "/dev/fuse is unavailable";
+  }
+  TemporaryDirectory dir;
+  runInMountNamespace([&] {
+    checkUnixError(mount("tmpfs", dir.path().c_str(), "tmpfs", 0, "size=1m"));
+    const auto child = dir.path() / "child";
+    folly::fs::create_directory(child);
+    File fuse("/dev/fuse", O_RDWR | O_CLOEXEC);
+    const auto options = fmt::format(
+        "fd={},rootmode=40755,user_id={},group_id={}",
+        fuse.fd(),
+        getuid(),
+        getgid());
+    checkUnixError(mount(
+        "edenfs:",
+        child.c_str(),
+        "fuse",
+        MS_NOSUID | MS_NODEV,
+        options.c_str()));
+    fuse.close();
+    struct stat st{};
+    ASSERT_EQ(-1, stat(child.c_str(), &st));
+    ASSERT_EQ(ENOTCONN, errno);
+
+    PrivHelperCleanupTestServer server;
+    const auto result = server.cleanup(dir.path().string());
+
+    EXPECT_EQ(1, result.staleRedirectionMountsSucceeded);
+    EXPECT_EQ(0, result.staleRedirectionMountsFailed);
+    EXPECT_EQ(0, stat(child.c_str(), &st));
+  });
+}
+
+TEST(PrivHelperCleanupTest, removedCandidateDoesNotSelectTheEnclosingMount) {
+  TemporaryDirectory dir;
+  runInMountNamespace([&] {
+    checkUnixError(mount("tmpfs", dir.path().c_str(), "tmpfs", 0, "size=1m"));
+    const auto child = dir.path() / "child";
+    folly::fs::create_directory(child);
+    checkUnixError(mount("tmpfs", child.c_str(), "tmpfs", 0, "size=1m"));
+    ASSERT_TRUE(
+        folly::writeFile(StringPiece{"root"}, (dir.path() / "marker").c_str()));
+    PrivHelperCleanupTestServer server;
+    server.afterSnapshot = [&](size_t snapshot) {
+      if (snapshot == 1) {
+        checkUnixError(umount2(child.c_str(), MNT_DETACH));
+      }
+    };
+
+    const auto result = server.cleanup(dir.path().string());
+
+    EXPECT_EQ(0, result.staleRedirectionMountsSucceeded);
+    EXPECT_EQ(1, result.staleRedirectionMountsFailed);
+    EXPECT_TRUE(folly::fs::exists(dir.path() / "marker"));
+  });
+}
+
+TEST(PrivHelperCleanupTest, ancestorSwapAfterPinningCannotRedirectCleanup) {
+  TemporaryDirectory dir;
+  runInMountNamespace([&] {
+    checkUnixError(mount("tmpfs", dir.path().c_str(), "tmpfs", 0, "size=1m"));
+    const auto original = dir.path() / "original";
+    const auto moved = dir.path() / "moved";
+    const auto victim = dir.path() / "victim";
+    for (const auto& root : {original, victim}) {
+      folly::fs::create_directories(root / "child");
+      checkUnixError(
+          mount("tmpfs", (root / "child").c_str(), "tmpfs", 0, "size=1m"));
+      ASSERT_TRUE(
+          folly::writeFile(
+              StringPiece{"mounted"}, (root / "child" / "marker").c_str()));
+    }
+    PrivHelperCleanupTestServer server;
+    server.afterSnapshot = [&](size_t snapshot) {
+      if (snapshot == 2) {
+        folly::fs::rename(original, moved);
+        folly::fs::create_directory_symlink(victim, original);
+      }
+    };
+
+    const auto result = server.cleanup(original.string());
+
+    EXPECT_EQ(1, result.staleRedirectionMountsSucceeded);
+    EXPECT_TRUE(folly::fs::exists(victim / "child" / "marker"));
+    EXPECT_FALSE(folly::fs::exists(moved / "child" / "marker"));
+  });
+}
+
+TEST(PrivHelperCleanupTest, descendantSymlinkCannotSelectAnOutsideMount) {
+  TemporaryDirectory dir;
+  runInMountNamespace([&] {
+    checkUnixError(mount("tmpfs", dir.path().c_str(), "tmpfs", 0, "size=1m"));
+    const auto checkout = dir.path() / "checkout";
+    const auto inside = checkout / "inside";
+    const auto victim = dir.path() / "victim";
+    for (const auto& root : {inside, victim}) {
+      folly::fs::create_directories(root / "child");
+      checkUnixError(
+          mount("tmpfs", (root / "child").c_str(), "tmpfs", 0, "size=1m"));
+      ASSERT_TRUE(
+          folly::writeFile(
+              StringPiece{"mounted"}, (root / "child" / "marker").c_str()));
+    }
+    PrivHelperCleanupTestServer server;
+    server.afterSnapshot = [&](size_t snapshot) {
+      if (snapshot == 1) {
+        folly::fs::rename(inside, checkout / "moved");
+        folly::fs::create_directory_symlink(victim, inside);
+      }
+    };
+
+    const auto result = server.cleanup(checkout.string());
+
+    EXPECT_EQ(0, result.staleRedirectionMountsSucceeded);
+    EXPECT_EQ(1, result.staleRedirectionMountsFailed);
+    EXPECT_TRUE(folly::fs::exists(victim / "child" / "marker"));
   });
 }
 

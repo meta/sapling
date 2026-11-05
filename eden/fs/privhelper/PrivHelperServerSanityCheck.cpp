@@ -23,6 +23,8 @@
 #include <sys/mount.h>
 #include <cerrno>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "eden/common/utils/ErrnoUtils.h"
 #include "eden/common/utils/FSDetect.h"
@@ -327,61 +329,201 @@ void PrivHelperServer::sanityCheckOpenedMountPoint(
   sanityCheckFs(mountPoint, mountPointFd);
 }
 
-SanityCheckResult PrivHelperServer::cleanupStaleBindMounts(
+#ifdef __linux__
+namespace {
+uint64_t mountIdForFd(int fd) {
+  std::string contents;
+  folly::checkUnixError(
+      folly::readFile(fmt::format("/proc/self/fdinfo/{}", fd).c_str(), contents)
+          ? 0
+          : -1,
+      "cannot read mount descriptor identity");
+  std::vector<folly::StringPiece> lines;
+  folly::split('\n', contents, lines);
+  for (const auto line : lines) {
+    if (line.startsWith("mnt_id:")) {
+      return folly::to<uint64_t>(folly::trimWhitespace(line.subpiece(7)));
+    }
+  }
+  throw std::runtime_error("mount ID missing from fdinfo");
+}
+} // namespace
+
+std::vector<MountTableEntry> PrivHelperServer::mountsForCleanup() const {
+  auto mounts = getAllMounts({.includeMountId = true});
+  if (mounts.hasError()) {
+    folly::throwSystemErrorExplicit(mounts.error(), "cannot enumerate mounts");
+  }
+  return std::move(mounts).value();
+}
+
+int PrivHelperServer::unmountCleanupMount(int mountFd) {
+  const auto path = fmt::format("/proc/self/fd/{}", mountFd);
+  return umount2(path.c_str(), MNT_DETACH);
+}
+#endif
+
+SanityCheckResult PrivHelperServer::insecureCleanupStaleBindMounts(
     const std::string& checkoutPath) {
   SanityCheckResult result{};
 #ifdef __linux__
-  auto mountsResult = getMountsUnderPath(checkoutPath);
-  if (mountsResult.hasError()) {
+  auto mounts = getMountsUnderPath(checkoutPath);
+  if (mounts.hasError()) {
     XLOGF(
         WARN,
-        "Failed to enumerate mounts under {}: {}; skipping redirection cleanup",
+        "Cannot enumerate legacy cleanup mounts under {}: {}",
         checkoutPath,
-        folly::errnoStr(mountsResult.error()));
+        folly::errnoStr(mounts.error()));
     return result;
   }
-  auto& staleMounts = mountsResult.value();
-  if (staleMounts.empty()) {
-    return result;
-  }
-
-  result.staleRedirectionMountsFound =
-      static_cast<uint32_t>(staleMounts.size());
-
-  // Sort mount points in reverse order to handle nested mounts
-  std::sort(
-      staleMounts.begin(),
-      staleMounts.end(),
-      [](const MountTableEntry& a, const MountTableEntry& b) {
-        return a.mountPoint > b.mountPoint;
-      });
-
-  for (const auto& mount : staleMounts) {
-    XLOGF(
-        INFO,
-        "Found potential stale redirection mount under {}: {}",
-        checkoutPath,
-        mount.mountPoint);
-    // Use MNT_DETACH (lazy unmount) to avoid blocking if mount is busy
+  result.staleRedirectionMountsFound = static_cast<uint32_t>(mounts->size());
+  std::sort(mounts->begin(), mounts->end(), [](const auto& a, const auto& b) {
+    return a.mountPoint > b.mountPoint;
+  });
+  for (const auto& mount : *mounts) {
     if (umount2(mount.mountPoint.c_str(), MNT_DETACH) == 0) {
-      XLOGF(
-          INFO,
-          "Successfully unmounted stale redirection mount: {}",
-          mount.mountPoint);
       ++result.staleRedirectionMountsSucceeded;
     } else {
-      auto err = errno;
+      ++result.staleRedirectionMountsFailed;
       XLOGF(
           WARN,
-          "Failed to unmount stale redirection mount {}: {}",
+          "Cannot unmount legacy cleanup mount {}: {}",
           mount.mountPoint,
-          folly::errnoStr(err));
-      ++result.staleRedirectionMountsFailed;
+          folly::errnoStr(errno));
     }
   }
 #else
-  // Redirection mount cleanup is only needed on Linux
   (void)checkoutPath;
+#endif
+  return result;
+}
+
+SanityCheckResult PrivHelperServer::cleanupStaleBindMounts(
+    const std::string& checkoutPath,
+    int checkoutFd) {
+  SanityCheckResult result{};
+#ifdef __linux__
+  if (disablePrivHelperHardening()) {
+    XLOGF(
+        WARN,
+        "Using legacy path-based redirection cleanup under {}",
+        checkoutPath);
+    return insecureCleanupStaleBindMounts(checkoutPath);
+  }
+  try {
+    // Use the pinned directory's current name only to discover candidates.
+    const auto fdPath = fmt::format("/proc/self/fd/{}", checkoutFd);
+    std::array<char, PATH_MAX> pathBuffer{};
+    const auto pathLength =
+        readlink(fdPath.c_str(), pathBuffer.data(), pathBuffer.size());
+    folly::checkUnixError(pathLength, "cannot read pinned checkout path");
+    if (static_cast<size_t>(pathLength) == pathBuffer.size()) {
+      throw std::runtime_error("pinned checkout path is too long");
+    }
+    const auto prefix = std::string(pathBuffer.data(), pathLength) + "/";
+    const auto checkoutId = mountIdForFd(checkoutFd);
+    auto allMounts = mountsForCleanup();
+    std::vector<MountTableEntry> mounts;
+    std::unordered_map<uint64_t, std::string> remaining;
+    for (auto& mount : allMounts) {
+      if (folly::StringPiece(mount.mountPoint).startsWith(prefix)) {
+        remaining.emplace(mount.mountId, mount.mountPoint);
+        mounts.push_back(std::move(mount));
+      }
+    }
+    result.staleRedirectionMountsFound = static_cast<uint32_t>(mounts.size());
+    std::sort(mounts.begin(), mounts.end(), [](const auto& a, const auto& b) {
+      return a.mountPoint > b.mountPoint;
+    });
+    struct PinnedMount {
+      folly::File fd;
+      uint64_t id;
+      std::string path;
+      bool validated{false};
+    };
+    std::vector<PinnedMount> batch;
+    std::unordered_map<uint64_t, size_t> batchIds;
+    std::unordered_set<std::string> batchPaths;
+    const auto flush = [&] {
+      if (batch.empty()) {
+        batchPaths.clear();
+        return;
+      }
+      // IDs cannot be reused while pinned. Validate the whole batch in one
+      // scan.
+      for (const auto& mount : mountsForCleanup()) {
+        const auto match = batchIds.find(mount.mountId);
+        if (match != batchIds.end()) {
+          auto& pinned = batch.at(match->second);
+          pinned.validated = mount.mountPoint == pinned.path;
+        }
+      }
+      for (const auto& pinned : batch) {
+        remaining.erase(pinned.id);
+        if (!pinned.validated) {
+          XLOGF(
+              WARN, "Skipping cleanup mount {}: identity changed", pinned.path);
+          continue;
+        }
+        if (unmountCleanupMount(pinned.fd.fd()) == 0) {
+          ++result.staleRedirectionMountsSucceeded;
+        } else {
+          XLOGF(
+              WARN,
+              "Cannot unmount cleanup mount {}: {}",
+              pinned.path,
+              folly::errnoStr(errno));
+        }
+      }
+      batch.clear();
+      batchIds.clear();
+      batchPaths.clear();
+    };
+    for (const auto& mount : mounts) {
+      // Bound open FDs and peel stacked children before progressing to a
+      // parent.
+      constexpr size_t kMaxPinnedMounts = 64;
+      if (batch.size() == kMaxPinnedMounts ||
+          batchPaths.contains(mount.mountPoint)) {
+        flush();
+      }
+      batchPaths.insert(mount.mountPoint);
+      try {
+        const auto relative = mount.mountPoint.substr(prefix.size());
+        open_how how{};
+        how.flags = O_PATH | O_DIRECTORY | O_CLOEXEC;
+        how.resolve = RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS;
+        const auto fd = static_cast<int>(syscall(
+            SYS_openat2, checkoutFd, relative.c_str(), &how, sizeof(how)));
+        folly::checkUnixError(
+            fd, "cannot pin cleanup mount ", mount.mountPoint);
+        folly::File file{fd, true};
+        const auto id = mountIdForFd(fd);
+        const auto discovered = remaining.find(id);
+        if (id == checkoutId || discovered == remaining.end() ||
+            discovered->second != mount.mountPoint) {
+          throw std::runtime_error("cleanup mount identity changed");
+        }
+        batchIds.emplace(id, batch.size());
+        batch.push_back(PinnedMount{std::move(file), id, mount.mountPoint});
+      } catch (const std::exception& ex) {
+        XLOGF(
+            WARN, "Skipping cleanup mount {}: {}", mount.mountPoint, ex.what());
+      }
+    }
+    flush();
+  } catch (const std::exception& ex) {
+    XLOGF(
+        WARN,
+        "Skipping redirection cleanup under {}: {}",
+        checkoutPath,
+        ex.what());
+  }
+  result.staleRedirectionMountsFailed = result.staleRedirectionMountsFound -
+      result.staleRedirectionMountsSucceeded;
+#else
+  (void)checkoutPath;
+  (void)checkoutFd;
 #endif
   return result;
 }
@@ -536,7 +678,7 @@ SanityCheckResult PrivHelperServer::sanityCheckMountPoint(
   if (options.performBindMountCleanup()) {
     // Only clean up mounts under a checkout after the checkout path itself has
     // passed the ownership and access checks.
-    auto cleanupResult = cleanupStaleBindMounts(mountPoint);
+    auto cleanupResult = cleanupStaleBindMounts(mountPoint, file.fd());
     result.staleRedirectionMountsFound =
         cleanupResult.staleRedirectionMountsFound;
     result.staleRedirectionMountsSucceeded =
@@ -581,7 +723,7 @@ PrivHelperServer::openAndSanityCheckMountPoint(
   if (options.performBindMountCleanup()) {
     // Only clean up mounts under a checkout after the checkout path itself has
     // passed the ownership and access checks.
-    auto cleanupResult = cleanupStaleBindMounts(mountPoint);
+    auto cleanupResult = cleanupStaleBindMounts(mountPoint, targetFd.fd());
     result.staleRedirectionMountsFound =
         cleanupResult.staleRedirectionMountsFound;
     result.staleRedirectionMountsSucceeded =

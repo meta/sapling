@@ -36,6 +36,8 @@ class Cursor;
 
 namespace facebook::eden {
 
+struct MountTableEntry;
+
 struct FileAccessMonitorProcess {
   SpawnedProcess proc;
 
@@ -181,11 +183,18 @@ class PrivHelperServer : private UnixSocket::ReceiveCallback {
 
   void unmountStaleMount(const std::string& mountPoint, int mountFd);
 
-  // Clean up stale redirection mounts under a checkout path that were left
-  // behind when EdenFS crashed without properly unmounting.
-  SanityCheckResult cleanupStaleBindMounts(const std::string& checkoutPath);
-
  protected:
+  // Clean up descendants of the already-authorized checkout directory.
+  SanityCheckResult cleanupStaleBindMounts(
+      const std::string& checkoutPath,
+      int checkoutFd);
+  SanityCheckResult insecureCleanupStaleBindMounts(
+      const std::string& checkoutPath);
+#ifdef __linux__
+  virtual std::vector<MountTableEntry> mountsForCleanup() const;
+  virtual int unmountCleanupMount(int mountFd);
+#endif
+
   virtual int statMountPoint(const char* path, struct stat* st) const;
 
   // Uses stat to determine if there's a stale mount point at the given path. If

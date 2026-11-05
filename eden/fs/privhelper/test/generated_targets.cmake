@@ -41,6 +41,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR APPLE)
       eden_fs_telemetry_structured_logger
       eden_fs_telemetry_xplat_keys
       eden_fs_telemetry_xplat_logger
+      eden_fs_utils_mount_info_table
       eden_fs_utils_statmount
       edencommon::edencommon_telemetry
       edencommon::edencommon_testharness
