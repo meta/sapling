@@ -118,21 +118,24 @@ class RemoveTest(RemoveTestBase):
     def test_remove_aux_process_timeout(self, impl: str, env: dict) -> None:
         """Test that eden rm correctly handles aux process timeout.
 
-        Uses two mounts with an injected 2-second delay and a 1s timeout
-        to verify that:
+        Uses two mounts with an injected delay that is much longer than the
+        timeout to verify that:
         1. Each mount gets its own full timeout
         2. The timeout message includes the step name to help identify what was stuck
         3. Both mounts are removed despite the timeouts
         """
-        self.skipTest("flakiness")
         # Create a second mount
         mount2 = os.path.join(self.tmp_dir, "mount2")
         self.eden.clone(self.repo.path, mount2)
 
+        timeout_secs = 1
+        # On Windows, eden rm has a fixed cost of more than 1 second.
+        # The delay is much longer than this cost.
+        # Thus the test can see a run that waits for the delay.
+        delay_secs = 30
         full_env = {
             **env,
-            # Inject a 2-second delay to simulate slow aux process stopping
-            "TEST_ONLY_AUX_PROCESSES_STOP_DELAY_SECS": "2",
+            "TEST_ONLY_AUX_PROCESSES_STOP_DELAY_SECS": str(delay_secs),
         }
 
         start_time = time.time()
@@ -140,7 +143,7 @@ class RemoveTest(RemoveTestBase):
             "remove",
             "--yes",
             "--timeout",
-            "1",
+            str(timeout_secs),
             self.mount,
             mount2,
             env=full_env,
@@ -149,17 +152,15 @@ class RemoveTest(RemoveTestBase):
         )
         elapsed_time = time.time() - start_time
 
-        # With per-mount timeout, each mount gets 1s timeout independently.
-        # Total time: 2 mounts × 1s timeout + overhead = ~2-3s
         self.assertGreater(
             elapsed_time,
-            2.0,
-            f"eden rm ({impl}) should use per-mount timeout (expected >2s, got {elapsed_time:.1f}s)",
+            2 * timeout_secs,
+            f"eden rm ({impl}) should use per-mount timeout (expected >{2 * timeout_secs}s, got {elapsed_time:.1f}s)",
         )
         self.assertLess(
             elapsed_time,
-            3.0,
-            f"eden rm ({impl}) should not wait for the full delay (expected <3s, got {elapsed_time:.1f}s)",
+            delay_secs,
+            f"eden rm ({impl}) should not wait for the full delay (expected <{delay_secs}s, got {elapsed_time:.1f}s)",
         )
 
         output = result.stderr or ""
