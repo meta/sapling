@@ -1143,6 +1143,35 @@ Do you want to run `eden mount %s` instead?"""
         # pyrefly: ignore [missing-attribute]
         shutil._rmtree_safe_fd = old_rmtree_safe_fd
 
+    def can_register_running_mount(self, path: Path, client_dir: Path) -> bool:
+        """True when `register_running_mount(path, client_dir)` would accept the
+        pair: the client directory is one of this instance's and holds a
+        checkout config, and neither the path nor the directory is registered."""
+        clients_dir = self._get_clients_dir().resolve(strict=False)
+        resolved = client_dir.resolve(strict=False)
+        directory_map = self._get_directory_map()
+        return (
+            resolved.parent == clients_dir
+            and (resolved / MOUNT_CONFIG).is_file()
+            and Path(path) not in directory_map
+            and resolved.name not in directory_map.values()
+        )
+
+    def register_running_mount(self, path: Path, client_dir: Path) -> None:
+        """Add a checkout the daemon serves but config.json does not list, so
+        that EdenFS remounts it after a restart and `eden rm` can remove it.
+
+        `client_dir` is the client directory the running mount uses (its
+        `.eden/client` link or the daemon's `edenClientPath`)."""
+        if not self.can_register_running_mount(path, client_dir):
+            raise ValueError(
+                f"cannot register {path}: {client_dir} is not an unused client "
+                f"directory of {self._get_clients_dir()} with a checkout config"
+            )
+        self._add_path_to_directory_map(
+            Path(path), client_dir.resolve(strict=False).name
+        )
+
     def _cleanup_unix_mount(self, path: Path, preserve_mount_point: bool) -> None:
         # Previous versions of EdenFS made the mount point directory read-only
         # as part of "eden clone".  Make sure it is writable now so we can clean it up.

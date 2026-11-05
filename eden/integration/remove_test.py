@@ -328,6 +328,89 @@ class RemoveTest(RemoveTestBase):
 
     @parameterized.expand(
         [
+            ("python", {"EDENFSCTL_SKIP_RUST": "1"}),
+        ]
+    )
+    def test_remove_succeeds_when_mount_is_not_registered(
+        self, impl: str, env: dict
+    ) -> None:
+        """A clone interrupted between the mount and the directory-map write
+        leaves a mount the daemon serves but config.json does not list."""
+        mount_path = pathlib.Path(self.mount)
+        client_dir = self.eden.client_dir_for_mount(mount_path)
+        directory_map = self.load_directory_map()
+        del directory_map[self.mount]
+        self.write_directory_map(directory_map)
+        self.assertIn("(unconfigured)", self.eden.run_cmd("list"))
+
+        result = self.eden.run_unchecked(
+            "remove",
+            "--yes",
+            self.mount,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            0,
+            result.returncode,
+            f"eden remove ({impl}) should succeed on an unregistered mount. stderr={result.stderr}",
+        )
+        self.assertIsNone(
+            self.eden.get_mount_state(mount_path),
+            "successful remove should leave the checkout unmounted",
+        )
+        self.assertFalse(
+            client_dir.exists(),
+            "successful remove should delete the client directory the mount used",
+        )
+        self.assertFalse(
+            os.path.exists(self.mount),
+            "successful remove should delete the checkout path",
+        )
+
+    def test_remove_without_the_config_dir_of_the_serving_instance(self) -> None:
+        """Run without `--config-dir`, `eden rm` classifies the checkout against
+        the default instance, which does not list it, and then finds the
+        instance that serves it through the checkout's `.eden` links. That
+        instance lists the checkout, so it is removed from there whole."""
+        mount_path = pathlib.Path(self.mount)
+        client_dir = self.eden.client_dir_for_mount(mount_path)
+        cmd, env = self.eden.get_edenfsctl_cmd_env(
+            "remove", "--yes", self.mount, config_dir=False
+        )
+
+        result = subprocess.run(
+            cmd,
+            env=env | {"EDENFSCTL_SKIP_RUST": "1"},
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            0,
+            result.returncode,
+            f"eden remove without --config-dir should succeed. stderr={result.stderr}",
+        )
+        self.assertIsNone(
+            self.eden.get_mount_state(mount_path),
+            "successful remove should leave the checkout unmounted",
+        )
+        self.assertNotIn(
+            self.mount,
+            self.load_directory_map(),
+            "successful remove should unregister the checkout from the instance that served it",
+        )
+        self.assertFalse(
+            client_dir.exists(),
+            "successful remove should delete the client directory",
+        )
+        self.assertFalse(
+            os.path.exists(self.mount),
+            "successful remove should delete the checkout path",
+        )
+
+    @parameterized.expand(
+        [
             ("rust", {"EDENFSCTL_ONLY_RUST": "1"}),
             ("python", {"EDENFSCTL_SKIP_RUST": "1"}),
         ]

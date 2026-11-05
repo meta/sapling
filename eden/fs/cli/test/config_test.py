@@ -8,6 +8,7 @@
 
 import configparser
 import io
+import json
 import os
 import re
 import struct
@@ -381,6 +382,42 @@ prefetching-enable = true
         config_mod._remove_client_dir(client_dir)
 
         self.assertFalse(client_dir.exists())
+
+    def test_register_running_mount_accepts_only_an_unused_client_dir_of_this_instance(
+        self,
+    ) -> None:
+        clients_dir = self._state_dir / "clients"
+        orphan = clients_dir / "orphan"
+        orphan.mkdir(parents=True)
+        (orphan / "config.toml").write_text("")
+        registered = clients_dir / "registered"
+        registered.mkdir()
+        (registered / "config.toml").write_text("")
+        no_config = clients_dir / "no-config"
+        no_config.mkdir()
+        outside = self.tmp_dir / "outside"
+        outside.mkdir()
+        (outside / "config.toml").write_text("")
+        registered_mount = self.tmp_dir / "mount"
+        (self._state_dir / "config.json").write_text(
+            json.dumps({str(registered_mount): "registered"})
+        )
+        cfg = self.get_config()
+        mount = self.tmp_dir / "orphan-mount"
+
+        self.assertFalse(cfg.can_register_running_mount(mount, registered))
+        self.assertFalse(cfg.can_register_running_mount(mount, no_config))
+        self.assertFalse(cfg.can_register_running_mount(mount, outside))
+        self.assertFalse(cfg.can_register_running_mount(registered_mount, orphan))
+        with self.assertRaises(ValueError):
+            cfg.register_running_mount(mount, outside)
+
+        self.assertTrue(cfg.can_register_running_mount(mount, orphan))
+        cfg.register_running_mount(mount, orphan)
+        self.assertEqual(
+            {str(registered_mount): "registered", str(mount): "orphan"},
+            json.loads((self._state_dir / "config.json").read_text()),
+        )
 
     def test_checkout_without_protocol_defaults_to_nfs_on_macos(self) -> None:
         client_dir = self._state_dir / "clients" / "legacy-client"

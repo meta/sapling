@@ -1951,6 +1951,11 @@ def remove_checkout_impl(
     return result
 
 
+def _is_registered_checkout(path: str, configured_mounts: List[str]) -> bool:
+    """True when config.json lists `path`, as given or with its links resolved."""
+    return path in configured_mounts or os.path.realpath(path) in configured_mounts
+
+
 # Types of removal
 #
 # * ACTIVE_MOUNT: removing a mounted repository, we need to talk with EdenFS
@@ -1961,11 +1966,20 @@ def remove_checkout_impl(
 # mount that failed to clean up. We try to clean it up again in this case.
 # NON_EDEN: removing a non-EdenFS directory or file using eden rm - in this
 # case we want to skip the Eden housekeeping after removing it
+# * ACTIVE_UNREGISTERED: removing a repository the daemon has mounted but
+# config.json does not list (`eden list` shows it as "(unconfigured)"). When the
+# mount's `.eden/client` link names one of our unused client directories we
+# register the checkout first and remove it as an ACTIVE_MOUNT, so that a
+# removal that stops half-way leaves a registered checkout a retry can finish;
+# otherwise we unmount it and delete the mount point only. A checkout that the
+# instance named by its `.eden` links does list (`eden rm` ran without that
+# instance's --config-dir) is removed from that instance as an ACTIVE_MOUNT.
 class RemoveType(enum.Enum):
     ACTIVE_MOUNT = 0
     INACTIVE_MOUNT = 1
     CLEANUP_ONLY = 2
     NON_EDEN = 3
+    ACTIVE_UNREGISTERED = 4
 
 
 @subcmd("remove", "Remove an EdenFS checkout", aliases=["rm"])
@@ -2016,6 +2030,66 @@ class RemoveCmd(Subcmd):
                 "Rerun 'eden remove' with --debug to see full traceback (required to report issues; please do so if the error is unexpected or ambiguous)"
             )
 
+    def _prepare_checkout_for_removal(
+        self, args: argparse.Namespace, mount: str, default_instance: EdenInstance
+    ) -> EdenInstance:
+        """Return the instance that serves `mount`.
+
+        Rewrites the checkout config without its redirection targets so the
+        redirected paths can be deleted. A checkout whose state cannot be
+        located (a mount config.json does not list) or whose config cannot be
+        read or written must not stop the removal: the checkout is being
+        deleted anyway.
+        """
+        try:
+            instance, checkout, _rel_path = require_checkout(args, mount)
+        except subcmd_mod.CmdError:
+            return default_instance
+        except Exception as ex:
+            print_stderr(
+                f"warning: cannot find the checkout state of {mount}, removing it "
+                f"anyway: {ex}"
+            )
+            return default_instance
+        try:
+            config = checkout.get_config()._replace(redirection_targets={})
+            checkout.save_config(config)
+        except (config_mod.CheckoutConfigCorruptedError, OSError) as ex:
+            print_stderr(
+                f"warning: cannot update the config of {mount} before removing "
+                f"it, removing it anyway: {ex}"
+            )
+        return instance
+
+    def _register_before_removal(
+        self, instance: EdenInstance, mount: str
+    ) -> Optional[RemoveType]:
+        """Register a mount config.json does not list, so that it is removed like
+        any other checkout and a removal that stops half-way leaves a
+        registered checkout. Returns the removal type to use, or None when
+        EdenFS does not serve the path: its `.eden` links are then stale or
+        hand-made, and nothing under it may be deleted.
+
+        `instance` is the one the mount's `.eden` links name. When `eden rm`
+        ran without the `--config-dir` of a daemon with its own state
+        directory, that instance is not the one the mount was classified
+        against and lists the checkout already: it is removed from there
+        whole, not unmounted and left registered."""
+        info = instance.get_mounts().get(Path(mount))
+        if info is None or info.state is None:
+            return None
+        if _is_registered_checkout(mount, instance.get_mount_paths()):
+            return RemoveType.ACTIVE_MOUNT
+        if instance.can_register_running_mount(Path(mount), info.data_dir):
+            instance.register_running_mount(Path(mount), info.data_dir)
+            return RemoveType.ACTIVE_MOUNT
+        print_stderr(
+            f"warning: {mount} is not listed in Eden's configuration file and its "
+            f"client directory {info.data_dir} is not one of this EdenFS "
+            "instance's; unmounting it and removing the mount point only."
+        )
+        return RemoveType.ACTIVE_UNREGISTERED
+
     def delete_file_with_confirmation(self, path: str) -> int:
         prompt = f"""\
 Warning: the following is a file, not a directory or an EdenFS mount: {path}
@@ -2058,6 +2132,8 @@ Do you still want to delete {path}?"""
                 try:
                     mount_path = util.get_eden_mount_name(path)
                     remove_type = RemoveType.ACTIVE_MOUNT
+                    if not _is_registered_checkout(mount_path, configured_mounts):
+                        remove_type = RemoveType.ACTIVE_UNREGISTERED
                 except util.NotAnEdenMountError as ex:
                     remove_type = RemoveType.NON_EDEN
                     # This is not an active mount point.
@@ -2145,26 +2221,38 @@ Do you still want to delete {path}?"""
             )
             for mount, remove_type in mounts:
                 print(f"Removing {mount}...")
-                # Removing reidrection targets from checkout config to allow deletion of redirected paths
-                instance, checkout, _rel_path = require_checkout(args, mount)
-                try:
-                    config = checkout.get_config()
-                except config_mod.CheckoutConfigCorruptedError:
-                    # An interrupted removal can leave no config.toml, and
-                    # then there are no redirection targets to clear.
-                    pass
-                else:
-                    checkout.save_config(config._replace(redirection_targets={}))
+                mount_instance = self._prepare_checkout_for_removal(
+                    args, mount, instance
+                )
+                if remove_type == RemoveType.ACTIVE_UNREGISTERED:
+                    registered_type = self._register_before_removal(
+                        mount_instance, mount
+                    )
+                    if registered_type is None:
+                        msg = (
+                            f"error: EdenFS does not report {mount} as a mounted "
+                            "checkout; its .eden links may be stale"
+                        )
+                        telemetry_sample.fail(msg)
+                        print_stderr(msg)
+                        return 1
+                    remove_type = registered_type
 
                 result = remove_checkout_impl(
-                    instance=instance,
+                    instance=mount_instance,
                     path=mount,
-                    is_mounted=(remove_type == RemoveType.ACTIVE_MOUNT),
+                    is_mounted=(
+                        remove_type
+                        in (RemoveType.ACTIVE_MOUNT, RemoveType.ACTIVE_UNREGISTERED)
+                    ),
                     output=ui.get_output(),
                     preserve_mount_point=args.preserve_mount_point,
                     use_force=not args.no_force,
                     complain_about_redirections=(sys.platform != "win32"),
-                    skip_destroy=(remove_type == RemoveType.CLEANUP_ONLY),
+                    skip_destroy=(
+                        remove_type
+                        in (RemoveType.CLEANUP_ONLY, RemoveType.ACTIVE_UNREGISTERED)
+                    ),
                     debug=args.debug,
                     proceed_on_unmount_failure=False,
                     aux_timeout=aux_timeout,
