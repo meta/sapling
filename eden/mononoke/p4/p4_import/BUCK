@@ -15,6 +15,7 @@ rust_library(
         "//eden/mononoke/common/mononoke_macros:mononoke_macros",
         "//eden/mononoke/common/scribe_ext:scribe_ext",
         "//eden/mononoke/common/scuba_ext:scuba_ext",
+        "//eden/mononoke/derived_data:bulk_derivation",
         "//eden/mononoke/derived_data:unodes",
         "//eden/mononoke/mononoke_types:mononoke_types-mocks",
         "//eden/mononoke/repo_factory:test_repo_factory",

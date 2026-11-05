@@ -17,6 +17,7 @@ use bonsai_git_mapping::BonsaiGitMapping;
 use bonsai_globalrev_mapping::BonsaiGlobalrevMapping;
 use bonsai_p4_mapping::AddP4MappingErrorKind;
 use bookmarks::Bookmarks;
+use bulk_derivation::BulkDerivation;
 use commit_graph::CommitGraph;
 use commit_graph::CommitGraphWriter;
 use context::SessionContainer;
@@ -31,6 +32,7 @@ use metaconfig_types::RepoConfig;
 use metaconfig_types::UpdateLoggingConfig;
 use mononoke_macros::mononoke;
 use mononoke_types::BonsaiChangesetMut;
+use mononoke_types::DerivableType;
 use mononoke_types::FileChange;
 use mononoke_types::GitLfs;
 use mononoke_types::P4ChangelistId;
@@ -946,7 +948,7 @@ async fn test_import_moves_the_bookmark_and_maps_each_changelist(fb: FacebookIni
     let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
     let master = BookmarkKey::new("master")?;
     let options = ImportOptions {
-        derive: vec![DerivableType::Fsnodes],
+        backfill_derivation: BackfillDerivation::OnlySpecificTypes(vec![DerivableType::Fsnodes]),
         ..Default::default()
     };
 
@@ -1516,7 +1518,10 @@ async fn test_types_the_repo_does_not_enable_are_not_derived(fb: FacebookInit) -
         .await?;
     let master = BookmarkKey::new("master")?;
     let options = ImportOptions {
-        derive: vec![DerivableType::Fsnodes, DerivableType::Unodes],
+        backfill_derivation: BackfillDerivation::OnlySpecificTypes(vec![
+            DerivableType::Fsnodes,
+            DerivableType::Unodes,
+        ]),
         ..Default::default()
     };
 
@@ -1542,7 +1547,7 @@ async fn test_types_the_repo_does_not_enable_are_not_derived(fb: FacebookInit) -
 }
 
 #[mononoke::fbinit_test]
-async fn test_default_options_derive_content_manifests(fb: FacebookInit) -> Result<()> {
+async fn test_default_options_derive_the_types_the_repo_enables(fb: FacebookInit) -> Result<()> {
     let ctx = CoreContext::test_mock(fb);
     let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
     let master = BookmarkKey::new("master")?;
@@ -1559,11 +1564,18 @@ async fn test_default_options_derive_content_manifests(fb: FacebookInit) -> Resu
     .await?;
 
     let head = imported.changelists[1].cs_id;
-    let manifest = repo
-        .repo_derived_data()
-        .fetch_derived::<RootContentManifestId>(&ctx, head)
-        .await?;
-    assert!(manifest.is_some());
+    let derived_data = repo.repo_derived_data();
+    let mut underived = Vec::new();
+    for &ty in &derived_data.active_config().types {
+        if !derived_data
+            .manager()
+            .is_derived(&ctx, head, None, ty)
+            .await?
+        {
+            underived.push(ty);
+        }
+    }
+    assert_eq!(underived, Vec::<DerivableType>::new());
     Ok(())
 }
 

@@ -46,7 +46,7 @@ use futures::channel::mpsc;
 use futures::future;
 use futures::stream;
 use futures_stats::TimedTryFutureExt;
-use import_common::BackfillDerivation;
+pub use import_common::BackfillDerivation;
 use import_common::save_and_derive_batch;
 use manifest::Entry;
 use manifest::ManifestOps;
@@ -56,7 +56,6 @@ use mononoke_types::ChangesetId;
 use mononoke_types::ContentId;
 use mononoke_types::ContentManifestId;
 use mononoke_types::ContentMetadataV2;
-use mononoke_types::DerivableType;
 use mononoke_types::FileType;
 use mononoke_types::NonRootMPath;
 use mononoke_types::P4ChangelistId;
@@ -164,10 +163,11 @@ fn symlink_target(size: u64, mut printed: Vec<u8>) -> Result<Bytes> {
 /// How to import: what to derive, and how much runs at once.
 #[derive(Clone, Debug)]
 pub struct ImportOptions {
-    /// Derived for every imported changeset before the bookmark moves, if the repo
-    /// enables them. Keep `ContentManifests` in it: the next batch's copy-source check
-    /// reads the base's content manifest, and would otherwise derive it there.
-    pub derive: Vec<DerivableType>,
+    /// Derived for every imported changeset before the bookmark moves, among the types
+    /// the repo enables. A narrowed list should keep `ContentManifests`: the next batch's
+    /// copy-source check reads the base's content manifest, and would otherwise derive it
+    /// there.
+    pub backfill_derivation: BackfillDerivation,
     /// Per changelist, the files printed and stored and the copy sources checked at once.
     /// At least 1.
     pub file_concurrency: usize,
@@ -178,7 +178,7 @@ pub struct ImportOptions {
 impl Default for ImportOptions {
     fn default() -> Self {
         Self {
-            derive: vec![DerivableType::ContentManifests],
+            backfill_derivation: BackfillDerivation::AllConfiguredTypes,
             file_concurrency: 16,
             changelist_lookahead: 2,
         }
@@ -884,7 +884,8 @@ pub async fn import_changelists(
     } else {
         Vec::new()
     };
-    let derive = BackfillDerivation::OnlySpecificTypes(options.derive.clone())
+    let derive = options
+        .backfill_derivation
         .types(&repo.repo_derived_data().active_config().types);
     let (save_and_derive, _) = save_and_derive_batch(ctx, repo, changesets, &derive)
         .try_timed()
