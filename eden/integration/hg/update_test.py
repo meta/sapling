@@ -888,6 +888,40 @@ class UpdateTest(EdenHgTestCase):
         self.eden = self.init_eden_client()
         self.eden.start()
 
+    async def test_checkout_failure_before_start_preserves_status(self) -> None:
+        self.repo.update(self.commit3)
+        snapshot_path = (
+            self.eden.client_dir_for_mount(pathlib.Path(self.mount)) / "SNAPSHOT"
+        )
+        snapshot_before = snapshot_path.read_bytes()
+
+        async with self.eden.get_async_thrift_client() as client:
+            await client.injectFault(
+                FaultDefinition(
+                    keyClass="waitForPendingWrites",
+                    keyValueRegex=".*",
+                    errorType="runtime_error",
+                    errorMessage="checkout not started",
+                    count=1,
+                )
+            )
+            with self.assertRaisesRegex(EdenError, "checkout not started"):
+                await client.checkOutRevision(
+                    mountPoint=self.mount_path_bytes,
+                    snapshotHash=self.commit1.encode(),
+                    checkoutMode=CheckoutMode.NORMAL,
+                    params=CheckOutRevisionParams(),
+                )
+
+        self.assertEqual(snapshot_before, snapshot_path.read_bytes())
+        self.assertEqual("updated in commit 3\n", self.read_file("foo/bar.txt"))
+        # FIXME: Status should succeed because checkout never changed the tree.
+        with self.assertRaisesRegex(hgrepo.HgError, "checkout was interrupted"):
+            self.assert_status_empty()
+
+        self.repo.update(self.commit1)
+        self.assert_status_empty()
+
     async def test_resume_interrupted_update(self) -> None:
         """
         Test resuming a hg checkout after Eden was killed mid-checkout

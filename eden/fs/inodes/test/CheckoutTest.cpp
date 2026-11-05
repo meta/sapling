@@ -2408,6 +2408,70 @@ TEST_P(CheckoutTest, checkoutFailsOnInProgressCheckout) {
   EXPECT_TRUE(testMount.getEdenMount()->tryStartInodeGC());
 }
 
+TEST_P(CheckoutTest, checkoutFailureBeforeStartPreservesParentState) {
+  for (bool resuming : {false, true}) {
+    SCOPED_TRACE(resuming);
+    FakeTreeBuilder builder1;
+    builder1.setFile("src/main.c", "old contents\n");
+    TestMount testMount{RootId{"1"}, builder1};
+    applyParam(testMount);
+
+    auto builder2 = builder1.clone();
+    builder2.replaceFile("src/main.c", "new contents\n");
+    builder2.finalize(testMount.getBackingStore(), true);
+    testMount.getBackingStore()->putCommit("2", builder2)->setReady();
+
+    auto checkoutTo2 = [&] {
+      auto executor = testMount.getServerExecutor().get();
+      return testMount.getEdenMount()
+          ->checkout(
+              testMount.getRootInode(),
+              RootId{"2"},
+              ObjectFetchContext::getNullContext(),
+              __func__)
+          .semi()
+          .via(executor)
+          .getVia(executor);
+    };
+
+    auto& faults = testMount.getServerState()->getFaultInjector();
+    if (resuming) {
+      faults.injectError(
+          "TreeInode::checkout",
+          ".*",
+          folly::make_exception_wrapper<std::runtime_error>("checkout failed"),
+          1);
+      EXPECT_THROW(checkoutTo2(), EdenError);
+    }
+    const auto parentBefore =
+        testMount.getEdenMount()->getCheckoutConfig()->getParentCommit();
+    const auto rootBefore = testMount.getEdenMount()->getCheckedOutRootId();
+    const auto contentsBefore = testMount.readFile("src/main.c");
+
+    faults.injectError(
+        "waitForPendingWrites",
+        ".*",
+        folly::make_exception_wrapper<std::runtime_error>(
+            "checkout not started"),
+        1);
+    EXPECT_THROW(checkoutTo2(), EdenError);
+    // FIXME: This should equal resuming: a failure before start() must restore
+    // the prior state because the working copy has not changed.
+    EXPECT_TRUE(testMount.getEdenMount()->isCheckoutInProgress());
+    EXPECT_EQ(
+        parentBefore,
+        testMount.getEdenMount()->getCheckoutConfig()->getParentCommit());
+    EXPECT_EQ(rootBefore, testMount.getEdenMount()->getCheckedOutRootId());
+    EXPECT_EQ(contentsBefore, testMount.readFile("src/main.c"));
+
+    testMount.remount();
+    EXPECT_EQ(resuming, testMount.getEdenMount()->isCheckoutInProgress());
+    EXPECT_NO_THROW(checkoutTo2());
+    EXPECT_FALSE(testMount.getEdenMount()->isCheckoutInProgress());
+    EXPECT_EQ("new contents\n", testMount.readFile("src/main.c"));
+  }
+}
+
 TEST_P(CheckoutTest, dryRunAfterInterruptedCheckoutKeepsInProgressMarker) {
   auto builder1 = FakeTreeBuilder();
   builder1.setFile("src/main.c", "// Some code.\n");
