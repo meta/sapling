@@ -27,6 +27,7 @@ base_app::subcommands! {
     mod info;
     mod is_ancestor;
     mod land_stack if "SCSC_WRITES_ENABLED";
+    mod last_changed;
     mod list_bookmarks;
     mod log;
     mod lookup;

@@ -24,8 +24,11 @@ use futures_watchdog::WatchdogExt;
 use maplit::btreeset;
 use mononoke_api::ChangesetPathHistoryOptions;
 use mononoke_api::MononokeError;
+use mononoke_api::P4LastChange;
 use mononoke_api::PathEntry;
 use mononoke_api::RestrictedPathsPolicy;
+use mononoke_types::NonRootMPath;
+use mononoke_types::P4ChangelistId;
 use mononoke_types::blame_v2::BlameParentIndex;
 use mononoke_types::path::MPath;
 use source_control as thrift;
@@ -39,6 +42,23 @@ use crate::into_response::IntoResponse;
 use crate::source_control_impl::SourceControlServiceImpl;
 
 const BLAME_TITLE_MAX_LENGTH: usize = 128;
+
+/// Fills a last change's Perforce fields. `p4_path` is only set when Perforce's spelling
+/// of the path differs from the `requested` one.
+fn set_p4_fields(
+    last_change: &mut thrift::CommitPathLastChange,
+    revision: u32,
+    changelist: P4ChangelistId,
+    path: &NonRootMPath,
+    requested: &str,
+) {
+    last_change.p4_revision = Some(revision.into());
+    last_change.p4_changelist = Some(changelist.id() as i64);
+    let path = path.to_string();
+    if path != requested {
+        last_change.p4_path = Some(path);
+    }
+}
 
 impl SourceControlServiceImpl {
     /// Determine whether anything exists at this path.
@@ -617,38 +637,40 @@ impl SourceControlServiceImpl {
     ) -> Result<thrift::CommitPathLastChangedResponse, scs_errors::ServiceError> {
         let (_repo, changeset) = self.repo_changeset(ctx, &commit_path.commit).await?;
         let path = changeset.path_with_history(&commit_path.path).await?;
-        match path.last_modified().await? {
-            Some(last_modified) => {
-                let last_modified =
-                    map_commit_identity(&last_modified, &params.identity_schemes).await?;
-                Ok(thrift::CommitPathLastChangedResponse {
-                    last_change: Some(thrift::CommitPathLastChange {
-                        exists: true,
-                        last_changed_commit: last_modified,
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                })
-            }
+        let (last_changed, exists) = match path.last_modified().await? {
+            Some(last_modified) => (last_modified, true),
             None => match path.last_deleted().await? {
-                Some(last_deleted) => {
-                    let last_deleted =
-                        map_commit_identity(&last_deleted, &params.identity_schemes).await?;
-                    Ok(thrift::CommitPathLastChangedResponse {
-                        last_change: Some(thrift::CommitPathLastChange {
-                            exists: false,
-                            last_changed_commit: last_deleted,
-                            ..Default::default()
-                        }),
+                Some(last_deleted) => (last_deleted, false),
+                None => {
+                    return Ok(thrift::CommitPathLastChangedResponse {
+                        last_change: None,
                         ..Default::default()
-                    })
+                    });
                 }
-                None => Ok(thrift::CommitPathLastChangedResponse {
-                    last_change: None,
-                    ..Default::default()
-                }),
             },
+        };
+        let last_changed_commit =
+            map_commit_identity(&last_changed, &params.identity_schemes).await?;
+        let mut last_change = thrift::CommitPathLastChange {
+            exists,
+            last_changed_commit,
+            ..Default::default()
+        };
+        if params.include_p4_revision {
+            if let Some(p4) = path.p4_revision(&last_changed, exists).await? {
+                set_p4_fields(
+                    &mut last_change,
+                    p4.revision,
+                    p4.changelist,
+                    &p4.path,
+                    &commit_path.path,
+                );
+            }
         }
+        Ok(thrift::CommitPathLastChangedResponse {
+            last_change: Some(last_change),
+            ..Default::default()
+        })
     }
 
     pub(crate) async fn commit_path_first_changed(
@@ -697,12 +719,13 @@ impl SourceControlServiceImpl {
             .map_ok(|context| async move {
                 let context_path = context.path().clone();
                 let last_modified = context.last_modified().await?;
-                Ok::<_, scs_errors::ServiceError>((context_path, last_modified))
+                let is_file = context.is_file().await?;
+                Ok::<_, scs_errors::ServiceError>((context_path, last_modified, is_file))
             })
             .map_err(scs_errors::ServiceError::from)
             .try_buffer_unordered(100)
-            .try_filter_map(|(path, maybe_last_changed)| async move {
-                Ok(maybe_last_changed.map(move |last_changed| (path, last_changed.id())))
+            .try_filter_map(|(path, maybe_last_changed, is_file)| async move {
+                Ok(maybe_last_changed.map(move |last_changed| (path, (last_changed, is_file))))
             })
             .try_collect::<BTreeMap<_, _>>()
             .await?;
@@ -719,42 +742,69 @@ impl SourceControlServiceImpl {
             .map_err(scs_errors::ServiceError::from)
             .try_buffer_unordered(100)
             .try_filter_map(|(path, maybe_last_changed)| async move {
-                Ok(maybe_last_changed.map(move |last_changed| (path, last_changed.id())))
+                Ok(maybe_last_changed.map(move |last_changed| (path, last_changed)))
             })
             .try_collect::<BTreeMap<_, _>>()
             .await?;
 
-        let changesets = path_last_modified
-            .values()
-            .chain(path_last_deleted.values())
-            .collect::<HashSet<_>>()
+        let last_changes = path_last_modified
             .into_iter()
-            .copied()
+            .map(|(path, (changeset, is_file))| P4LastChange {
+                path,
+                changeset,
+                exists: true,
+                is_file,
+            })
+            .chain(
+                path_last_deleted
+                    .into_iter()
+                    .map(|(path, changeset)| P4LastChange {
+                        path,
+                        changeset,
+                        exists: false,
+                        is_file: false,
+                    }),
+            )
             .collect::<Vec<_>>();
 
+        let changesets = last_changes
+            .iter()
+            .map(|change| change.changeset.id())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
         let commit_identities =
             map_commit_identities(&repo, changesets, &params.identity_schemes).await?;
 
-        let path_last_modified = path_last_modified
+        let mut p4_revisions = if params.include_p4_revision {
+            repo.p4_path_revisions(last_changes.clone()).await?
+        } else {
+            HashMap::new()
+        };
+
+        let path_last_change = last_changes
             .into_iter()
-            .map(|(path, last_changed)| (true, path, last_changed));
-        let path_last_deleted = path_last_deleted
-            .into_iter()
-            .map(|(path, last_changed)| (false, path, last_changed));
-        let path_last_change = path_last_modified
-            .chain(path_last_deleted)
-            .map(|(exists, path, last_changed)| {
+            .map(|change| {
                 let last_changed_commit = commit_identities
-                    .get(&last_changed)
+                    .get(&change.changeset.id())
                     .cloned()
                     .unwrap_or_default();
-                let last_change = thrift::CommitPathLastChange {
-                    exists,
+                let mut last_change = thrift::CommitPathLastChange {
+                    exists: change.exists,
                     last_changed_commit,
                     ..Default::default()
                 };
-
-                (path.to_string(), last_change)
+                let path = change.path.to_string();
+                if let Some(p4) = p4_revisions.remove(&change.path) {
+                    set_p4_fields(
+                        &mut last_change,
+                        p4.revision,
+                        p4.changelist,
+                        &p4.path,
+                        &path,
+                    );
+                }
+                (path, last_change)
             })
             .collect();
 
@@ -765,5 +815,38 @@ impl SourceControlServiceImpl {
             partial_info: super::partial_response_info(&policy),
             ..Default::default()
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use mononoke_macros::mononoke;
+
+    use super::*;
+
+    #[mononoke::test]
+    fn test_set_p4_fields_names_the_path_only_when_perforce_spells_it_differently() {
+        let path = NonRootMPath::new("Dir/File.txt").expect("valid path");
+        let mut last_change = thrift::CommitPathLastChange::default();
+        set_p4_fields(
+            &mut last_change,
+            7,
+            P4ChangelistId::new(41002),
+            &path,
+            "Dir/File.txt",
+        );
+        assert_eq!(last_change.p4_revision, Some(7));
+        assert_eq!(last_change.p4_changelist, Some(41002));
+        assert_eq!(last_change.p4_path, None, "same spelling as requested");
+
+        let mut last_change = thrift::CommitPathLastChange::default();
+        set_p4_fields(
+            &mut last_change,
+            7,
+            P4ChangelistId::new(41002),
+            &path,
+            "dir/file.txt",
+        );
+        assert_eq!(last_change.p4_path.as_deref(), Some("Dir/File.txt"));
     }
 }

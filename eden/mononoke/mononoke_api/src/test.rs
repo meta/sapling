@@ -13,6 +13,7 @@ mod test_file_diff;
 mod test_fold_commits;
 mod test_git;
 mod test_history;
+mod test_p4_revision;
 mod test_repo;
 mod test_repo_bookmarks;
 mod test_repo_create_changeset;

@@ -71,6 +71,12 @@ use crate::repo::RepoContext;
 use crate::restricted_paths::PathAccessInfo;
 use crate::tree::TreeContext;
 
+mod p4;
+
+pub use p4::P4ChangesetRevisions;
+pub use p4::P4LastChange;
+pub use p4::P4PathRevision;
+
 pub struct HistoryEntry {
     pub name: String,
     pub changeset_id: ChangesetId,
@@ -617,6 +623,11 @@ impl<R: MononokeRepo> ChangesetPathHistoryContext<R> {
             }
             None => Ok(None),
         }
+    }
+
+    /// Whether a file is at this path.
+    pub async fn is_file(&self) -> Result<bool, MononokeError> {
+        Ok(matches!(self.unode_id().await?, Some(Entry::Leaf(_))))
     }
 
     /// Returns the first (oldest) changeset that introduced this path.

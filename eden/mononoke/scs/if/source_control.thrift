@@ -2033,6 +2033,10 @@ struct CommitPathHistoryParams {
 struct CommitPathLastChangedParams {
   /// Commit identity schemes to return.
   1: set<CommitIdentityScheme> identity_schemes;
+
+  /// Perforce mirrors only: also return the Perforce revision the path has at
+  /// the commit (`CommitPathLastChange.p4_*`).
+  2: bool include_p4_revision;
 }
 
 struct CommitPathFirstChangedParams {
@@ -2053,6 +2057,10 @@ struct CommitMultiplePathLastChangedParams {
 
   /// Commit identity schemes to return.
   2: set<CommitIdentityScheme> identity_schemes;
+
+  /// Perforce mirrors only: also return the Perforce revision each path has at
+  /// the commit (`CommitPathLastChange.p4_*`).
+  3: bool include_p4_revision;
 }
 
 struct CommitRestrictedPathsAccessParams {
@@ -3077,6 +3085,20 @@ struct CommitPathLastChange {
   /// If nothing exists at this path, but something used to and has been
   /// deleted, this is the commit it was deleted in.
   2: map<CommitIdentityScheme, CommitId> last_changed_commit;
+
+  /// Perforce mirrors only, filled when `include_p4_revision` is set and the
+  /// last-changed commit was imported from Perforce: the Perforce revision the
+  /// path has at the commit. When `exists` is false, the revision of the
+  /// deletion.
+  3: optional i64 p4_revision;
+
+  /// Perforce mirrors only, filled with `p4_revision`: the changelist that
+  /// gave the path that revision (the last-changed commit's changelist).
+  4: optional i64 p4_changelist;
+
+  /// Perforce mirrors only, filled with `p4_revision`: the path as Perforce
+  /// records it, when its spelling differs from the requested path.
+  5: optional Path p4_path;
 }
 
 struct CommitPathLastChangedResponse {
