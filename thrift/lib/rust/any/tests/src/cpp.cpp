@@ -17,7 +17,6 @@
 #include <thrift/lib/cpp2/protocol/Serializer.h>
 #include <thrift/lib/cpp2/type/Any.h>
 #include <thrift/lib/cpp2/type/Name.h>
-#include <thrift/lib/cpp2/type/Runtime.h>
 #include <thrift/lib/rust/any/tests/if/gen-cpp2/test_structs_types.h>
 #include <thrift/lib/rust/any/tests/src/cpp.h>
 // #include "icsp/lib/Compression.h"

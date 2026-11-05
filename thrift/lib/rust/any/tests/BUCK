@@ -18,7 +18,6 @@ thrift_cxx_library(
         "//thrift/lib/cpp2/protocol:protocol",
         "//thrift/lib/cpp2/type:any",
         "//thrift/lib/cpp2/type:name",
-        "//thrift/lib/cpp2/type:runtime",
         "//thrift/lib/rust/any/tests/if:test_structs-cpp2-types",
     ],
     exported_deps = [
