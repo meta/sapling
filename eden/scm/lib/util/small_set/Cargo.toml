@@ -14,5 +14,13 @@ exclude = ["BUCK"]
 [lib]
 name = "small_set"
 
+[dependencies]
+serde = { version = "1.0.229", features = ["derive", "rc"], optional = true }
+
 [dev-dependencies]
 quickcheck = "1.1"
+serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
+
+[features]
+default = []
+serialize = ["serde"]

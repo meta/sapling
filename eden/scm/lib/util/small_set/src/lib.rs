@@ -12,6 +12,11 @@ use std::ops::Range;
 use std::ops::RangeInclusive;
 use std::ptr;
 
+#[cfg(feature = "serialize")]
+use serde::Serialize;
+#[cfg(feature = "serialize")]
+use serde::Serializer;
+
 /// Compact bitset of small non-negative integers.
 ///
 /// Optimized for size - only one pointer wide for small values
@@ -20,6 +25,8 @@ use std::ptr;
 /// Supports `insert`, `remove`, and `contains`.
 /// Sparse or large values (e.g. 10000) waste O(value) memory
 /// since every bit below is materialized.
+///
+/// With the `serialize` feature, serializes as a sequence of values in ascending order.
 ///
 /// Uses pointer tagging on a single machine word:
 /// - Bit 0 = 1: inline. Remaining bits represent values 0..=(N-2)
@@ -413,6 +420,16 @@ impl fmt::Debug for SmallSet {
     }
 }
 
+#[cfg(feature = "serialize")]
+impl Serialize for SmallSet {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_seq(self.iter())
+    }
+}
+
 impl FromIterator<usize> for SmallSet {
     fn from_iter<I: IntoIterator<Item = usize>>(iter: I) -> Self {
         let mut values = SmallSet::empty();
@@ -544,6 +561,18 @@ mod tests {
     #[test]
     fn test_option_size() {
         assert_eq!(mem::size_of::<Option<SmallSet>>(), mem::size_of::<usize>());
+    }
+
+    #[cfg(feature = "serialize")]
+    #[test]
+    fn test_serialize() {
+        assert_eq!(serde_json::to_string(SmallSet::empty_ref()).unwrap(), "[]");
+
+        let inline: SmallSet = [2, 0, 2].into_iter().collect();
+        assert_eq!(serde_json::to_string(&inline).unwrap(), "[0,2]");
+
+        let heap: SmallSet = [130, 0, 63].into_iter().collect();
+        assert_eq!(serde_json::to_string(&heap).unwrap(), "[0,63,130]");
     }
 
     #[test]
