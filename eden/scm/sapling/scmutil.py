@@ -370,7 +370,9 @@ def _callcatch(ui, req, func, trace):
             # Let's only eat the error if it explicitly mentions "pipe".
             and "pipe" in inst.args[1]
         ):
-            pass
+            # Exit like a process killed by SIGPIPE, so callers can tell a
+            # closed pipe from a real error (255).
+            return 128 + 13
         elif getattr(inst, "strerror", None):
             filename = getattr(inst, "filename", None)
             if filename:
