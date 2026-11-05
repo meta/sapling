@@ -45,7 +45,6 @@ eden_add_library(eden_fs_nfs_nfsd3
     eden_fs_store_context
     eden_fs_telemetry_error_info
     eden_fs_telemetry_error_logger
-    eden_fs_telemetry_fs_event_logger
     eden_fs_telemetry_log_info
     eden_fs_utils_clock
     eden_fs_utils_static_assert

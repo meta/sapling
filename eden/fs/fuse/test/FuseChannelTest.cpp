@@ -187,7 +187,6 @@ class FuseChannelTest : public ::testing::Test {
         std::move(testDispatcher),
         &straceLogger,
         std::make_shared<ProcessInfoCache>(),
-        /*fsEventLogger=*/nullptr,
         /*edenFsEventsLogger=*/nullptr,
         /*errorLogger=*/
         errorLoggerOverride_ ? *errorLoggerOverride_ : noopErrorLogger_,

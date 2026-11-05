@@ -41,7 +41,6 @@
 #include "eden/fs/telemetry/EdenErrorInfoBuilder.h"
 #include "eden/fs/telemetry/EdenFsEventsLogger.h"
 #include "eden/fs/telemetry/ErrorLogger.h"
-#include "eden/fs/telemetry/FsEventLogger.h"
 #include "eden/fs/telemetry/LogEvent.h"
 #include "eden/fs/utils/Clock.h"
 #include "eden/fs/utils/StaticAssert.h"
@@ -2129,16 +2128,14 @@ struct HandlerEntry {
       NfsStats::DurationPtr d,
       NfsStats::CounterPtr cS,
       NfsStats::CounterPtr cF,
-      AccessType at = AccessType::FsChannelOther,
-      SamplingGroup samplingGroup = SamplingGroup::DropAll)
+      AccessType at = AccessType::FsChannelOther)
       : name(n),
         handler(h),
         formatArgs(format),
         duration{d},
         countSuccessful{cS},
         countFailure{cF},
-        accessType(at),
-        samplingGroup{samplingGroup} {}
+        accessType(at) {}
 
   folly::StringPiece name;
   Handler handler = nullptr;
@@ -2147,7 +2144,6 @@ struct HandlerEntry {
   NfsStats::CounterPtr countSuccessful = nullptr;
   NfsStats::CounterPtr countFailure = nullptr;
   AccessType accessType = AccessType::FsChannelOther;
-  SamplingGroup samplingGroup = SamplingGroup::DropAll;
 };
 
 constexpr auto kNfs3dHandlers = [] {
@@ -2209,8 +2205,7 @@ constexpr auto kNfs3dHandlers = [] {
       &NfsStats::nfsRead,
       &NfsStats::nfsReadSuccessful,
       &NfsStats::nfsReadFailure,
-      Read,
-      SamplingGroup::Three};
+      Read};
   handlers[folly::to_underlying(nfsv3Procs::write)] = {
       "WRITE",
       &Nfsd3ServerProcessor::write,
@@ -2218,8 +2213,7 @@ constexpr auto kNfs3dHandlers = [] {
       &NfsStats::nfsWrite,
       &NfsStats::nfsWriteSuccessful,
       &NfsStats::nfsWriteFailure,
-      Write,
-      SamplingGroup::Two};
+      Write};
   handlers[folly::to_underlying(nfsv3Procs::create)] = {
       "CREATE",
       &Nfsd3ServerProcessor::create,
@@ -2460,12 +2454,6 @@ bool resolvesEntries(uint32_t procNumber) {
   const auto proc = static_cast<nfsv3Procs>(procNumber);
   return proc == nfsv3Procs::lookup || proc == nfsv3Procs::readdir ||
       proc == nfsv3Procs::readdirplus;
-}
-
-SamplingGroup nfsProcSamplingGroup(uint32_t procNumber) {
-  XDCHECK(procNumber < kNfs3dHandlers.size())
-      << "got invalid NFS procedure: " << procNumber;
-  return kNfs3dHandlers[procNumber].samplingGroup;
 }
 
 /**
@@ -2801,7 +2789,7 @@ ImmediateFuture<folly::Unit> Nfsd3ServerProcessor::dispatchRpc(
         return res;
       })
       .ensure([this, xid, procNumber, context = std::move(context)]() {
-        requestTracker_.finish(xid, procNumber);
+        requestTracker_.finish(xid);
         // A subscriber may have attached after this request started and
         // learned of it through debugOutstandingNfsCalls, as `eden trace fs`
         // does.
@@ -2832,10 +2820,6 @@ void Nfsd3ServerProcessor::clientConnected() {
 }
 } // namespace
 
-NfsRequestTracker::NfsRequestTracker(
-    std::shared_ptr<FsEventLogger> fsEventLogger)
-    : fsEventLogger_{std::move(fsEventLogger)} {}
-
 void NfsRequestTracker::start(
     uint32_t xid,
     std::chrono::steady_clock::time_point startTime) {
@@ -2843,24 +2827,9 @@ void NfsRequestTracker::start(
   (void)state->requests.emplace(xid, OutstandingRequest{xid, startTime});
 }
 
-void NfsRequestTracker::finish(uint32_t xid, uint32_t procNumber) {
-  std::chrono::nanoseconds duration{0};
-  {
-    auto state = stripes_[xid % kStripes].wlock();
-    auto it = state->requests.find(xid);
-    if (it == state->requests.end()) {
-      return;
-    }
-    duration = std::chrono::steady_clock::now() - it->second.requestStartTime;
-    state->requests.erase(it);
-  }
-  if (fsEventLogger_) {
-    fsEventLogger_->log({
-        duration,
-        nfsProcSamplingGroup(procNumber),
-        nfsProcName(procNumber),
-    });
-  }
+void NfsRequestTracker::finish(uint32_t xid) {
+  auto state = stripes_[xid % kStripes].wlock();
+  state->requests.erase(xid);
 }
 
 std::vector<NfsRequestTracker::OutstandingRequest>
@@ -2883,7 +2852,6 @@ Nfsd3::Nfsd3(
     std::unique_ptr<NfsDispatcher> dispatcher,
     const folly::Logger* straceLogger,
     std::shared_ptr<ProcessInfoCache> processInfoCache,
-    std::shared_ptr<FsEventLogger> fsEventLogger,
     const std::shared_ptr<EdenFsEventsLogger>& edenFsEventsLogger,
     ErrorLogger& errorLogger,
     folly::Duration /*requestTimeout*/,
@@ -2900,7 +2868,6 @@ Nfsd3::Nfsd3(
     FaultInjector& faultInjector)
     : privHelper_{privHelper},
       mountPath_{std::move(mountPath)},
-      requestTracker_{std::move(fsEventLogger)},
       faultInjector_{faultInjector},
       stats_{dispatcher->getStats().copy()},
       server_([&]() {

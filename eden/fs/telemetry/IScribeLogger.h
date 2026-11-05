@@ -14,17 +14,6 @@ namespace facebook::eden {
 
 class EdenMount;
 
-/**
- * A filesystem event to be logged through ScribeLogger.
- * The caller is responsible for ensuring the lifetime of the underlying
- * string exceeds the lifetime of the event.
- */
-struct FsEventSample {
-  uint64_t durationUs;
-  folly::StringPiece cause;
-  folly::StringPiece configList;
-};
-
 class IScribeLogger {
  public:
   IScribeLogger(
@@ -35,8 +24,6 @@ class IScribeLogger {
   virtual ~IScribeLogger() = default;
 
   virtual void log(std::string_view category, std::string&& message) = 0;
-
-  virtual void logFsEventSample(FsEventSample event) = 0;
 
   /**
    * This allows us to create objects derived from IScribeLogger with
@@ -58,8 +45,6 @@ class NullScribeLogger : public IScribeLogger {
   }
 
   void log(std::string_view /*category*/, std::string&& /*message*/) override {}
-
-  void logFsEventSample(FsEventSample /* event */) override {}
 };
 
 } // namespace facebook::eden

@@ -43,18 +43,6 @@ eden_add_library(eden_fs_telemetry_activity_recorder
     edencommon::edencommon_utils
 )
 
-eden_add_library(eden_fs_telemetry_fs_event_logger
-  SRCS
-    FsEventLogger.cpp
-  DEPS
-    Folly::folly_random
-    eden_fs_config
-    eden_fs_telemetry_scribe_logger
-  EXPORTED_DEPS
-    Folly::folly_range
-    Folly::folly_synchronized
-)
-
 eden_add_library(eden_fs_telemetry_log_info
   EXPORTED_DEPS
     Folly::folly_portability_sys_types

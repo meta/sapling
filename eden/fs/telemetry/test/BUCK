@@ -151,21 +151,6 @@ cpp_unittest(
 )
 
 cpp_unittest(
-    name = "fs_event_logger_test",
-    srcs = [
-        "FsEventLoggerTest.cpp",
-    ],
-    network_access = network_access_utils.none(),
-    supports_static_listing = False,
-    deps = [
-        "fbsource//third-party/googletest:gtest",
-        "//eden/fs/config:config",
-        "//eden/fs/telemetry:fs_event_logger",
-        "//eden/fs/telemetry:scribe_logger",
-    ],
-)
-
-cpp_unittest(
     name = "error_info_builder_test",
     srcs = [
         "EdenErrorInfoBuilderTest.cpp",

@@ -128,7 +128,6 @@ class NfsGcTest : public ::testing::Test {
         EdenDispatcherFactory::makeNfsDispatcher(&mount),
         &mount.getStraceLogger(),
         serverState.getProcessInfoCache(),
-        serverState.getFsEventLogger(),
         serverState.getEdenFsEventsLogger(),
         serverState.getErrorLogger(),
         /*requestTimeout=*/std::chrono::seconds{30},

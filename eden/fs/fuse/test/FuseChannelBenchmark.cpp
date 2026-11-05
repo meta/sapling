@@ -122,7 +122,6 @@ class GetattrBenchmark {
         &straceLogger,
         std::make_shared<ProcessInfoCache>(),
         nullptr,
-        nullptr,
         errorLogger_,
         60s,
         nullptr,

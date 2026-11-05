@@ -77,25 +77,6 @@ cpp_library(
 )
 
 cpp_library(
-    name = "fs_event_logger",
-    srcs = [
-        "FsEventLogger.cpp",
-    ],
-    headers = [
-        "FsEventLogger.h",
-    ],
-    deps = [
-        "fbsource//xplat/folly:random",
-        ":scribe_logger",
-        "//eden/fs/config:config",
-    ],
-    exported_deps = [
-        "fbsource//xplat/folly:range",
-        "fbsource//xplat/folly:synchronized",
-    ],
-)
-
-cpp_library(
     name = "log_info",
     headers = [
         "LogEvent.h",

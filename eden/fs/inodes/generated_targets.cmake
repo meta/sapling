@@ -141,7 +141,6 @@ eden_add_library(eden_fs_inodes
     eden_fs_store_backing_store_interface
     eden_fs_telemetry_error_info
     eden_fs_telemetry_error_logger
-    eden_fs_telemetry_fs_event_logger
     eden_fs_telemetry_log_info
     eden_fs_telemetry_task_trace
     eden_fs_telemetry_throw_trace_capture

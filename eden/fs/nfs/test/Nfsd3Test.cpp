@@ -140,7 +140,6 @@ struct Nfsd3Test : ::testing::Test {
         std::move(dispatcher),
         &straceLogger_,
         std::make_shared<ProcessInfoCache>(),
-        /*fsEventLogger=*/nullptr,
         std::make_shared<EdenFsEventsLogger>(nullptr),
         *errorLogger_,
         /*requestTimeout=*/std::chrono::seconds{30},

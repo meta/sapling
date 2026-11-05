@@ -55,7 +55,6 @@ namespace facebook::eden {
 class EdenFsEventsLogger;
 class ErrorLogger;
 class Notifier;
-class FsEventLogger;
 class FuseRequestContext;
 class FuseTransport;
 class PrivHelper;
@@ -268,7 +267,7 @@ class FuseChannel final : public FsChannel {
    *      a logger to use for logging strace/syscall like events.
    * processInfoCache -
    *      a cache of client process information (pid, command line, parent,
-   * etc). fsEventLogger - legacy telemetry on filesystem access.
+   * etc).
    * structuredLogger -
    *      This is a logger for error events. Inside a Meta environment, these
    *      events are exported off the machine this EdenFS instance is running
@@ -331,7 +330,6 @@ class FuseChannel final : public FsChannel {
       std::unique_ptr<FuseDispatcher> dispatcher,
       const folly::Logger* straceLogger,
       std::shared_ptr<ProcessInfoCache> processInfoCache,
-      std::shared_ptr<FsEventLogger> fsEventLogger,
       const std::shared_ptr<EdenFsEventsLogger>& edenFsEventsLogger,
       ErrorLogger& errorLogger,
       folly::Duration requestTimeout,
@@ -1067,7 +1065,6 @@ class FuseChannel final : public FsChannel {
   std::unique_ptr<FuseDispatcher> dispatcher_;
   const folly::Logger* const straceLogger_;
   const std::shared_ptr<EdenFsEventsLogger> edenFsEventsLogger_;
-  const std::shared_ptr<FsEventLogger> fsEventLogger_;
   ErrorLogger& errorLogger_;
   const AbsolutePath mountPath_;
   const folly::Duration requestTimeout_;

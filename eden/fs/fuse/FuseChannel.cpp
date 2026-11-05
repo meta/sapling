@@ -39,7 +39,6 @@
 #include "eden/fs/telemetry/EdenErrorInfoBuilder.h"
 #include "eden/fs/telemetry/EdenFsEventsLogger.h"
 #include "eden/fs/telemetry/ErrorLogger.h"
-#include "eden/fs/telemetry/FsEventLogger.h"
 #include "eden/fs/telemetry/LogEvent.h"
 #include "eden/fs/utils/StaticAssert.h"
 #include "eden/fs/utils/Thread.h"
@@ -279,7 +278,6 @@ struct HandlerEntry {
       FuseStats::CounterPtr cS,
       FuseStats::CounterPtr cF,
       AccessType at = AccessType::FsChannelOther,
-      SamplingGroup samplingGroup = SamplingGroup::DropAll,
       FuseStats::CounterPtr dispatchImmediateCounter = nullptr,
       FuseStats::CounterPtr dispatchDeferredCounter = nullptr)
       : name{n},
@@ -288,7 +286,6 @@ struct HandlerEntry {
         duration{d},
         countSuccessful{cS},
         countFailure{cF},
-        samplingGroup{samplingGroup},
         accessType{at},
         dispatchImmediate{dispatchImmediateCounter},
         dispatchDeferred{dispatchDeferredCounter} {}
@@ -318,7 +315,6 @@ struct HandlerEntry {
   FuseStats::DurationPtr duration = nullptr;
   FuseStats::CounterPtr countSuccessful = nullptr;
   FuseStats::CounterPtr countFailure = nullptr;
-  SamplingGroup samplingGroup = SamplingGroup::DropAll;
   AccessType accessType = AccessType::FsChannelOther;
   FuseStats::CounterPtr dispatchImmediate = nullptr;
   FuseStats::CounterPtr dispatchDeferred = nullptr;
@@ -339,7 +335,6 @@ constexpr auto kFuseHandlers = [] {
       &FuseStats::lookupSuccessful,
       &FuseStats::lookupFailure,
       Read,
-      SamplingGroup::Four,
       &FuseStats::dispatchLookupImmediate,
       &FuseStats::dispatchLookupDeferred};
   handlers[FUSE_FORGET] = {
@@ -357,7 +352,6 @@ constexpr auto kFuseHandlers = [] {
       &FuseStats::getattrSuccessful,
       &FuseStats::getattrFailure,
       Read,
-      SamplingGroup::Three,
       &FuseStats::dispatchGetattrImmediate,
       &FuseStats::dispatchGetattrDeferred};
   handlers[FUSE_SETATTR] = {
@@ -367,8 +361,7 @@ constexpr auto kFuseHandlers = [] {
       &FuseStats::setattr,
       &FuseStats::setattrSuccessful,
       &FuseStats::setattrFailure,
-      Write,
-      SamplingGroup::Two};
+      Write};
   handlers[FUSE_READLINK] = {
       "FUSE_READLINK",
       &FuseChannel::fuseReadLink,
@@ -377,7 +370,6 @@ constexpr auto kFuseHandlers = [] {
       &FuseStats::readlinkSuccessful,
       &FuseStats::readlinkFailure,
       Read,
-      SamplingGroup::DropAll,
       &FuseStats::dispatchReadlinkImmediate,
       &FuseStats::dispatchReadlinkDeferred};
   handlers[FUSE_SYMLINK] = {
@@ -403,8 +395,7 @@ constexpr auto kFuseHandlers = [] {
       &FuseStats::mkdir,
       &FuseStats::mkdirSuccessful,
       &FuseStats::mkdirFailure,
-      Write,
-      SamplingGroup::One};
+      Write};
   handlers[FUSE_UNLINK] = {
       "FUSE_UNLINK",
       &FuseChannel::fuseUnlink,
@@ -420,8 +411,7 @@ constexpr auto kFuseHandlers = [] {
       &FuseStats::rmdir,
       &FuseStats::rmdirSuccessful,
       &FuseStats::rmdirFailure,
-      Write,
-      SamplingGroup::One};
+      Write};
   handlers[FUSE_RENAME] = {
       "FUSE_RENAME",
       &FuseChannel::fuseRename,
@@ -429,8 +419,7 @@ constexpr auto kFuseHandlers = [] {
       &FuseStats::rename,
       &FuseStats::renameSuccessful,
       &FuseStats::renameFailure,
-      Write,
-      SamplingGroup::One};
+      Write};
   handlers[FUSE_LINK] = {
       "FUSE_LINK",
       &FuseChannel::fuseLink,
@@ -447,7 +436,6 @@ constexpr auto kFuseHandlers = [] {
       &FuseStats::openSuccessful,
       &FuseStats::openFailure,
       AccessType::FsChannelOther,
-      SamplingGroup::DropAll,
       &FuseStats::dispatchOpenImmediate,
       &FuseStats::dispatchOpenDeferred};
   handlers[FUSE_READ] = {
@@ -458,7 +446,6 @@ constexpr auto kFuseHandlers = [] {
       &FuseStats::readSuccessful,
       &FuseStats::readFailure,
       Read,
-      SamplingGroup::Three,
       &FuseStats::dispatchReadImmediate,
       &FuseStats::dispatchReadDeferred};
   handlers[FUSE_WRITE] = {
@@ -468,8 +455,7 @@ constexpr auto kFuseHandlers = [] {
       &FuseStats::write,
       &FuseStats::writeSuccessful,
       &FuseStats::writeFailure,
-      Write,
-      SamplingGroup::Two};
+      Write};
   handlers[FUSE_STATFS] = {
       "FUSE_STATFS",
       &FuseChannel::fuseStatFs,
@@ -509,7 +495,6 @@ constexpr auto kFuseHandlers = [] {
       &FuseStats::getxattrSuccessful,
       &FuseStats::getxattrFailure,
       Read,
-      SamplingGroup::Three,
       &FuseStats::dispatchGetxattrImmediate,
       &FuseStats::dispatchGetxattrDeferred};
   handlers[FUSE_LISTXATTR] = {
@@ -519,8 +504,7 @@ constexpr auto kFuseHandlers = [] {
       &FuseStats::listxattr,
       &FuseStats::listxattrSuccessful,
       &FuseStats::listxattrFailure,
-      Read,
-      SamplingGroup::Two};
+      Read};
   handlers[FUSE_REMOVEXATTR] = {
       "FUSE_REMOVEXATTR",
       &FuseChannel::fuseRemoveXAttr,
@@ -552,7 +536,6 @@ constexpr auto kFuseHandlers = [] {
       &FuseStats::readdirSuccessful,
       &FuseStats::readdirFailure,
       Read,
-      SamplingGroup::Three,
       &FuseStats::dispatchReaddirImmediate,
       &FuseStats::dispatchReaddirDeferred};
   handlers[FUSE_RELEASEDIR] = {
@@ -588,8 +571,7 @@ constexpr auto kFuseHandlers = [] {
       &FuseStats::create,
       &FuseStats::createSuccessful,
       &FuseStats::createFailure,
-      Write,
-      SamplingGroup::One};
+      Write};
   handlers[FUSE_INTERRUPT] = {"FUSE_INTERRUPT"};
   handlers[FUSE_BMAP] = {
       "FUSE_BMAP",
@@ -625,8 +607,7 @@ constexpr auto kFuseHandlers = [] {
       &FuseStats::rename2,
       &FuseStats::rename2Successful,
       &FuseStats::rename2Failure,
-      Write,
-      SamplingGroup::One};
+      Write};
   handlers[FUSE_LSEEK] = {"FUSE_LSEEK"};
   handlers[FUSE_COPY_FILE_RANGE] = {"FUSE_COPY_FILE_RANGE", Write};
   handlers[FUSE_SETUPMAPPING] = {"FUSE_SETUPMAPPING", Read};
@@ -790,11 +771,6 @@ iovec make_iovec(const T& t) {
   iov.iov_base = const_cast<T*>(&t);
   iov.iov_len = sizeof(t);
   return iov;
-}
-
-SamplingGroup fuseOpcodeSamplingGroup(uint32_t opcode) {
-  auto* entry = lookupFuseHandlerEntry(opcode);
-  return entry ? entry->samplingGroup : SamplingGroup::DropAll;
 }
 
 } // namespace
@@ -1007,7 +983,6 @@ FuseChannel::FuseChannel(
     std::unique_ptr<FuseDispatcher> dispatcher,
     const folly::Logger* straceLogger,
     std::shared_ptr<ProcessInfoCache> processInfoCache,
-    std::shared_ptr<FsEventLogger> fsEventLogger,
     const std::shared_ptr<EdenFsEventsLogger>& edenFsEventsLogger,
     ErrorLogger& errorLogger,
     folly::Duration requestTimeout,
@@ -1046,7 +1021,6 @@ FuseChannel::FuseChannel(
       dispatcher_(std::move(dispatcher)),
       straceLogger_(straceLogger),
       edenFsEventsLogger_(edenFsEventsLogger),
-      fsEventLogger_(std::move(fsEventLogger)),
       errorLogger_(errorLogger),
       mountPath_(mountPath),
       requestTimeout_(requestTimeout),
@@ -1627,13 +1601,6 @@ void FuseChannel::recordRequestFinish(
   // never started; a zero-length sample would only hide that.
   XDCHECK(duration.has_value())
       << "FUSE request " << requestId << " finished without a start";
-  if (fsEventLogger_ && duration) {
-    fsEventLogger_->log({
-        *duration,
-        fuseOpcodeSamplingGroup(header.opcode),
-        fuseOpcodeName(header.opcode),
-    });
-  }
   // A subscriber may have attached after this request started and learned
   // of it through debugOutstandingFuseCalls, as `eden trace fs` does.
   if (traceBus_->hasSubscription()) {

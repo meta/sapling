@@ -39,7 +39,6 @@ class EdenErrorInfoBuilder;
 class EdenStats;
 class ErrorLogger;
 class FaultInjector;
-class FsEventLogger;
 class IXplatLogger;
 class IScribeLogger;
 class InodeAccessLogger;
@@ -238,15 +237,6 @@ class ServerState {
     return inodeAccessLogger_;
   }
 
-  /**
-   * Returns a pointer to the FsEventLogger for logging FS event samples, if the
-   * platform supports it. Otherwise, returns nullptr. The caller is responsible
-   * for null checking.
-   */
-  const std::shared_ptr<FsEventLogger>& getFsEventLogger() const {
-    return fsEventLogger_;
-  }
-
   FaultInjector& getFaultInjector() {
     return *faultInjector_;
   }
@@ -321,7 +311,6 @@ class ServerState {
       systemIgnoreFileMonitor_;
   std::shared_ptr<Notifier> notifier_;
   std::shared_ptr<InodeAccessLogger> inodeAccessLogger_;
-  std::shared_ptr<FsEventLogger> fsEventLogger_;
 
   // Map of active page cache preload operations, keyed by a unique operation
   // ID.

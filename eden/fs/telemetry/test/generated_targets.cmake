@@ -53,16 +53,6 @@ eden_add_test(eden_fs_telemetry_test_event_rate_limiter_test
     eden_fs_telemetry_event_rate_limiter
 )
 
-eden_add_test(eden_fs_telemetry_test_fs_event_logger_test
-  SRCS
-    FsEventLoggerTest.cpp
-  DEPS
-    ${LIBGMOCK_LIBRARIES}
-    eden_fs_config
-    eden_fs_telemetry_fs_event_logger
-    eden_fs_telemetry_scribe_logger
-)
-
 eden_add_test(eden_fs_telemetry_test_error_info_builder_test
   SRCS
     EdenErrorInfoBuilderTest.cpp

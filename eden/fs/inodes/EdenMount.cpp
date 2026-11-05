@@ -2772,7 +2772,6 @@ std::unique_ptr<FuseChannel, FsChannelDeleter> makeFuseChannel(
       EdenDispatcherFactory::makeFuseDispatcher(mount),
       &mount->getStraceLogger(),
       mount->getServerState()->getProcessInfoCache(),
-      mount->getServerState()->getFsEventLogger(),
       mount->getServerState()->getEdenFsEventsLogger(),
       mount->getServerState()->getErrorLogger(),
       std::chrono::duration_cast<folly::Duration>(
@@ -2817,7 +2816,6 @@ folly::Future<NfsServer::NfsMountInfo> makeNfsChannel(
                    EdenDispatcherFactory::makeNfsDispatcher(mount),
                    &mount->getStraceLogger(),
                    mount->getServerState()->getProcessInfoCache(),
-                   mount->getServerState()->getFsEventLogger(),
                    mount->getServerState()->getEdenFsEventsLogger(),
                    mount->getServerState()->getErrorLogger(),
                    std::chrono::duration_cast<folly::Duration>(

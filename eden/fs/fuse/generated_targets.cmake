@@ -26,7 +26,6 @@ eden_add_library(eden_fs_fuse
     eden_fs_privhelper_interface
     eden_fs_telemetry_error_info
     eden_fs_telemetry_error_logger
-    eden_fs_telemetry_fs_event_logger
     eden_fs_telemetry_log_info
     eden_fs_telemetry_structured_logger
     eden_fs_utils_static_assert

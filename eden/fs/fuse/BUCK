@@ -21,7 +21,6 @@ cpp_library(
         "//eden/fs/privhelper:interface",
         "//eden/fs/telemetry:error_info",
         "//eden/fs/telemetry:error_logger",
-        "//eden/fs/telemetry:fs_event_logger",
         "//eden/fs/telemetry:log_info",
         "//eden/fs/telemetry:structured_logger",
         "//eden/fs/utils:static_assert",

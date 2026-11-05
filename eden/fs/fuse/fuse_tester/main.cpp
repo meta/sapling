@@ -142,7 +142,6 @@ int main(int argc, char** argv) {
       std::move(dispatcher),
       &straceLogger,
       std::make_shared<ProcessInfoCache>(),
-      /*fsEventLogger=*/nullptr,
       /*edenFsEventsLogger=*/nullptr,
       /*errorLogger=*/noopErrorLogger,
       std::chrono::seconds(60),

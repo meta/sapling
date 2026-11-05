@@ -25,7 +25,6 @@
 #include "eden/fs/telemetry/EdenFsEventsLogger.h"
 #include "eden/fs/telemetry/EdenStats.h"
 #include "eden/fs/telemetry/ErrorLogger.h"
-#include "eden/fs/telemetry/FsEventLogger.h"
 #include "eden/fs/telemetry/IXplatLogger.h"
 #include "eden/fs/utils/Clock.h"
 
@@ -110,11 +109,7 @@ ServerState::ServerState(
                             : std::make_shared<InodeAccessLogger>(
                                   config_,
                                   edenStats_.copy(),
-                                  std::move(xplatLogger))},
-      fsEventLogger_{
-          initialConfig.requestSamplesPerMinute.getValue()
-              ? std::make_shared<FsEventLogger>(config_, scribeLogger_)
-              : nullptr} {
+                                  std::move(xplatLogger))} {
   // It would be nice if we eventually built a more generic mechanism for
   // defining faults to be configured on start up.  (e.g., loading this from
   // the EdenConfig).

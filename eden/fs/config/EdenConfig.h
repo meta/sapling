@@ -1887,66 +1887,12 @@ class EdenConfig : private ConfigSettingManager {
       this};
 
   /**
-   * Controls sample denominator for each request sampling group.
-   * We assign request types into sampling groups based on their usage and
-   * set a sample denominator for each sampling group so that we have the
-   * flexibility of up/down-sampling different requests but also avoid having to
-   * set a sampling rate for each of the dozens of request types. For example,
-   * `mkdir` and `rmdir` can be assigned to a sampling group that have a high
-   * sampling rate while `getattr` and `getxattr` to another sampling group with
-   * low sampling rate as they happen very frequently.
-   *
-   * Sampling rates are calculated from sampling denominators. A denominator of
-   * 0 indicates dropping all requests in the group. Group 0's value is ignored
-   * as it's always considered as having denominator of 0. A positive
-   * denominator means that the requests in the group are sampled at 1/x (so
-   * denominator of 1 drops no events).
-   *
-   * We use sampling group as indexes into this vector to look
-   * up their denominators. Thus, the size of this vector should match the
-   * number of sampling groups defined by the enum `SamplingGroup`. If the
-   * vector has fewer elements than the number of sampling groups, look-ups will
-   * fail for the higher sampling groups and we will consider them having
-   * denominator of 0. For example, if the vector has size of 3, all requests of
-   * sampling group 4 will be dropped.
-   * Keeping this vector in ascending order is recommended but not required.
-   * e.g. {0, 10, 100, 1000, 10000}
-   */
-  ConfigSetting<std::vector<uint32_t>> requestSamplingGroupDenominators{
-      "telemetry:request-sampling-group-denominators",
-      std::vector<uint32_t>{0, 0, 0, 0, 0},
-      this};
-
-  /**
-   * Controls the max number of requests per minute per mount that can be sent
-   * for logging.
-   * A request is first sampled based on its sampling group denominators. Then
-   * if we have not reached this cap, the request is sent for logging.
-   */
-  ConfigSetting<uint32_t> requestSamplesPerMinute{
-      "telemetry:request-samples-per-minute",
-      0,
-      this};
-
-  /**
    * Minimum interval between NFS stats updates in seconds. NFS stat collection
    * only happens on macOS. Change this to 0 to disable NFS stat collection.
    */
   ConfigSetting<std::chrono::nanoseconds> updateNFSStatsInterval{
       "telemetry:update-nfs-stats-interval",
       std::chrono::seconds{0},
-      this};
-
-  /**
-   * Controls which configs we want to send with the request logging.
-   * The elements are full config keys, e.g. "hg:import-batch-size".
-   * Elements not valid or not present in the config map are silently ignored.
-   * This is only intended for facilitating A/B testing and should be empty if
-   * there is no active experiment.
-   */
-  ConfigSetting<std::vector<std::string>> requestSamplingConfigAllowlist{
-      "telemetry:request-sampling-config-allowlist",
-      std::vector<std::string>{},
       this};
 
   /**
