@@ -36,7 +36,6 @@ cpp_library(
         "//eden/fs/store:backing_store_interface",
         "//eden/fs/store:store",
         "//eden/fs/telemetry:error_logger",
-        "//eden/fs/telemetry:scribe_logger",
         "//eden/fs/telemetry:stats",
         "//eden/fs/utils:eden_error",
     ],
@@ -286,7 +285,6 @@ cpp_library(
         "//eden/fs/service:startup_logger",
         "//eden/fs/store:backing_store_interface",
         "//eden/fs/telemetry:activity_recorder",
-        "//eden/fs/telemetry:scribe_logger",
     ],
     exported_deps = [
         "fbsource//xplat/folly/futures:core",
@@ -323,7 +321,6 @@ cpp_library(
         "//eden/fs/inodes:inodes",
         "//eden/fs/notifications:command_notifier",
         "//eden/fs/telemetry:error_logger",
-        "//eden/fs/telemetry:scribe_logger",
         "//eden/fs/telemetry:stats",
     ],
 )

@@ -56,17 +56,6 @@ cpp_library(
 )
 
 cpp_library(
-    name = "scribe_logger",
-    headers = [
-        "IScribeLogger.h",
-    ],
-    exported_deps = [
-        "//eden/common/telemetry:log_info",
-        "//eden/fs/config:config",
-    ],
-)
-
-cpp_library(
     name = "activity_recorder",
     headers = [
         "IActivityRecorder.h",

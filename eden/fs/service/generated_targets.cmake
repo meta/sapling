@@ -40,7 +40,6 @@ eden_add_library(eden_fs_service_main
     eden_fs_store_filtered_backing_store
     eden_fs_store_sl_sapling_backing_store
     eden_fs_telemetry_log_info
-    eden_fs_telemetry_scribe_logger
     eden_fs_telemetry_structured_logger
     eden_fs_utils_win_stacktrace
     edencommon::edencommon_telemetry
@@ -222,7 +221,6 @@ eden_add_library(eden_fs_service_server
     eden_fs_telemetry_error_info
     eden_fs_telemetry_error_logger
     eden_fs_telemetry_log_info
-    eden_fs_telemetry_scribe_logger
     eden_fs_telemetry_structured_logger
     eden_fs_telemetry_task_trace
     eden_fs_telemetry_xplat_keys

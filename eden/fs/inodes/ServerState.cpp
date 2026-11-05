@@ -70,7 +70,6 @@ ServerState::ServerState(
     std::shared_ptr<StructuredLogger> structuredLogger,
     std::shared_ptr<StructuredLogger> notificationsStructuredLogger,
     std::shared_ptr<ErrorLogger> errorLogger,
-    std::shared_ptr<IScribeLogger> scribeLogger,
     std::shared_ptr<ReloadableConfig> reloadableConfig,
     const EdenConfig& initialConfig,
     folly::EventBase* nfsEventBase,
@@ -89,7 +88,6 @@ ServerState::ServerState(
       edenFsEventsLogger_{std::make_shared<EdenFsEventsLogger>(xplatLogger)},
       notificationsStructuredLogger_{std::move(notificationsStructuredLogger)},
       errorLogger_{std::move(errorLogger)},
-      scribeLogger_{std::move(scribeLogger)},
       faultInjector_{std::make_unique<FaultInjector>(enableFaultDetection)},
       nfsEventBase_{nfsEventBase},
       nfs_{

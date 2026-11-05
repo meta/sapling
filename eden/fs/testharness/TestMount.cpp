@@ -44,7 +44,6 @@
 #include "eden/fs/store/TreeCache.h"
 #include "eden/fs/telemetry/EdenStats.h"
 #include "eden/fs/telemetry/ErrorLogger.h"
-#include "eden/fs/telemetry/IScribeLogger.h"
 #include "eden/fs/testharness/FakeBackingStore.h"
 #include "eden/fs/testharness/FakeClock.h"
 #include "eden/fs/testharness/FakeFuse.h"
@@ -133,7 +132,6 @@ TestMount::TestMount(
       make_shared<NullStructuredLogger>(),
       make_shared<NullStructuredLogger>(),
       errorLogger_ ? errorLogger_ : make_shared<ErrorLogger>(),
-      make_shared<NullScribeLogger>(),
       reloadableConfig,
       *edenConfig_,
       nullptr,

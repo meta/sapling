@@ -121,7 +121,6 @@
 #include "eden/fs/telemetry/EdenStats.h"
 #include "eden/fs/telemetry/EdenStructuredLogger.h"
 #include "eden/fs/telemetry/ErrorLogger.h"
-#include "eden/fs/telemetry/IScribeLogger.h"
 #include "eden/fs/telemetry/IXplatLogger.h"
 #include "eden/fs/telemetry/LogEvent.h"
 #ifdef EDEN_HAVE_LOGGER
@@ -1004,7 +1003,6 @@ EdenServer::EdenServer(
     std::shared_ptr<const EdenConfig> edenConfig,
     ActivityRecorderFactory activityRecorderFactory,
     BackingStoreFactory* backingStoreFactory,
-    std::shared_ptr<IScribeLogger> scribeLogger,
     std::shared_ptr<StartupStatusChannel> startupStatusChannel,
     std::string version)
     : originalCommandLine_{std::move(originalCommandLine)},
@@ -1068,7 +1066,6 @@ EdenServer::EdenServer(
           structuredLogger_,
           notificationsStructuredLogger_,
           errorLogger_,
-          std::move(scribeLogger),
           config_,
           *edenConfig,
           nfsEventBaseThread_.getEventBase(),

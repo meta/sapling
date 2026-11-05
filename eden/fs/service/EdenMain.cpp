@@ -67,7 +67,6 @@
 #include "eden/fs/store/filter/HgSparseFilter.h"
 #include "eden/fs/store/sl/SaplingBackingStore.h"
 #include "eden/fs/telemetry/EdenFsEventsLogger.h"
-#include "eden/fs/telemetry/IScribeLogger.h"
 #include "eden/fs/telemetry/LogEvent.h"
 #include "eden/fs/utils/WinStackTrace.h"
 
@@ -356,12 +355,6 @@ ActivityRecorderFactory DefaultEdenMain::getActivityRecorderFactory() {
   };
 }
 
-std::shared_ptr<IScribeLogger> DefaultEdenMain::getScribeLogger(
-    SessionInfo /*sessionInfo*/,
-    std::shared_ptr<EdenConfig> /*edenConfig*/) {
-  return std::make_shared<NullScribeLogger>();
-}
-
 #ifdef __APPLE__
 time_t getBootTimeSysctl() {
   struct timeval boottime;
@@ -648,8 +641,6 @@ int runEdenMain(EdenMain&& main, int argc, char** argv) {
     auto sessionInfo = makeSessionInfo(
         identity, main.getLocalHostname(), main.getEdenfsVersion());
 
-    auto scribeLogger = main.getScribeLogger(sessionInfo, edenConfig);
-
     // Set the memory priority for the EdenFS daemon process. On macOS, this
     // modifies the process' Jetsam priority. On Linux, this modifies the value
     // of /proc/<pid>/oom_score_adj.
@@ -730,7 +721,6 @@ int runEdenMain(EdenMain&& main, int argc, char** argv) {
         std::move(edenConfig),
         main.getActivityRecorderFactory(),
         main.getBackingStoreFactory(),
-        std::move(scribeLogger),
         std::move(startupStatusChannel),
         main.getEdenfsVersion());
 

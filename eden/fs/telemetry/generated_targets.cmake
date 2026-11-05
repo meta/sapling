@@ -32,12 +32,6 @@ eden_add_library(eden_fs_telemetry_xplat_keys)
 
 eden_add_library(eden_fs_telemetry_xplat_logger)
 
-eden_add_library(eden_fs_telemetry_scribe_logger
-  EXPORTED_DEPS
-    eden_fs_config
-    edencommon::edencommon_telemetry
-)
-
 eden_add_library(eden_fs_telemetry_activity_recorder
   EXPORTED_DEPS
     edencommon::edencommon_utils

@@ -22,8 +22,6 @@ from .lib import testcase
 
 @testcase.eden_test
 class ConfigTest(testcase.EdenTestCase):
-    enable_logview: bool = False
-
     def assert_config(
         self,
         config: EdenConfigData,

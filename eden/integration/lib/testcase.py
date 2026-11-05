@@ -45,13 +45,7 @@ from eden.fs.service.eden.thrift_types import (
 from eden.test_support.testcase import EdenTestCaseBase
 
 from . import edenclient, gitrepo, hgrepo, mount_namespace, repobase, skip
-from .find_executables import FindExe
 
-
-if not FindExe.is_buck_build() or os.environ.get("EDENFS_SUFFIX", "") != "":
-    _build_flavor = "open_source"
-else:
-    _build_flavor = "facebook"
 
 mount_namespace.maybe_reexec_in_private_mount_namespace()
 
@@ -77,8 +71,6 @@ class EdenTestCase(EdenTestCaseBase):
     # Override enable_fault_injection to True in subclasses to enable Eden's fault
     # injection framework when starting edenfs
     enable_fault_injection: bool = False
-
-    enable_logview: bool = True
 
     def report_time(self, event: str) -> None:
         """
@@ -205,11 +197,6 @@ class EdenTestCase(EdenTestCaseBase):
         extra_args = self.edenfs_extra_args()
         if self.enable_fault_injection:
             extra_args.append("--enable_fault_injection")
-
-        if _build_flavor == "facebook" and not self.enable_logview:
-            # add option to disable logview
-            # we set `EDENFS_SUFFIX` when running our tests with OSS build
-            extra_args.append("--eden_logview=false")
 
         return edenclient.EdenFS(
             base_dir=pathlib.Path(self.tmp_dir),
@@ -654,8 +641,6 @@ class EdenRepoTest(EdenTestCase):
     repo_type: str
     # pyre-fixme[13]: Attribute `inode_catalog_type` is never initialized.
     inode_catalog_type: str
-
-    enable_logview: bool = False
 
     # Run Git versions of tests, if on a compatible platform.
     git_test_supported: bool = True

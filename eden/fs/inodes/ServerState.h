@@ -40,7 +40,6 @@ class EdenStats;
 class ErrorLogger;
 class FaultInjector;
 class IXplatLogger;
-class IScribeLogger;
 class InodeAccessLogger;
 class NfsServer;
 class Notifier;
@@ -79,7 +78,6 @@ class ServerState {
       std::shared_ptr<StructuredLogger> structuredLogger,
       std::shared_ptr<StructuredLogger> notificationsStructuredLogger,
       std::shared_ptr<ErrorLogger> errorLogger,
-      std::shared_ptr<IScribeLogger> scribeLogger,
       std::shared_ptr<ReloadableConfig> reloadableConfig,
       const EdenConfig& initialConfig,
       folly::EventBase* nfsEventBase,
@@ -218,16 +216,6 @@ class ServerState {
   }
 
   /**
-   * Returns a ScribeLogger that can be used to send log events to external
-   * long term storage for offline consumption. Prefer this method if the
-   * caller needs to own a reference due to lifetime mismatch with the
-   * ServerState
-   */
-  const std::shared_ptr<IScribeLogger>& getScribeLogger() const {
-    return scribeLogger_;
-  }
-
-  /**
    * Returns a InodeAccessLogger that can be used to send log events to external
    * long term storage for offline consumption. Prefer this method if the
    * caller needs to own a reference due to lifetime mismatch with the
@@ -299,7 +287,6 @@ class ServerState {
   std::shared_ptr<EdenFsEventsLogger> edenFsEventsLogger_;
   std::shared_ptr<StructuredLogger> notificationsStructuredLogger_;
   std::shared_ptr<ErrorLogger> errorLogger_;
-  std::shared_ptr<IScribeLogger> scribeLogger_;
   std::unique_ptr<FaultInjector> const faultInjector_;
   folly::EventBase* const nfsEventBase_;
   std::shared_ptr<NfsServer> nfs_;

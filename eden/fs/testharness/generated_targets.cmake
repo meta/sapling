@@ -23,7 +23,6 @@ eden_add_library(eden_fs_testharness_test_mount
     eden_fs_store
     eden_fs_store_backing_store_interface
     eden_fs_telemetry_error_logger
-    eden_fs_telemetry_scribe_logger
     eden_fs_telemetry_stats
     eden_fs_testharness_fake_backing_store_and_tree_builder
     eden_fs_testharness_fake_fuse
@@ -216,7 +215,6 @@ eden_add_library(eden_fs_testharness_test_server
     eden_fs_service_startup_logger
     eden_fs_store_backing_store_interface
     eden_fs_telemetry_activity_recorder
-    eden_fs_telemetry_scribe_logger
     eden_fs_testharness_fake_privhelper
     edencommon::edencommon_telemetry
     edencommon::edencommon_testharness
@@ -241,7 +239,6 @@ eden_add_library(eden_fs_testharness_test_server_state
     eden_fs_inodes
     eden_fs_notifications_command_notifier
     eden_fs_telemetry_error_logger
-    eden_fs_telemetry_scribe_logger
     eden_fs_telemetry_stats
     eden_fs_testharness_fake_clock
     eden_fs_testharness_fake_privhelper
