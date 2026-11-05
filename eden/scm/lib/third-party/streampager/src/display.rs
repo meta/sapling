@@ -8,12 +8,13 @@ use scopeguard::guard;
 use termwiz::caps::Capabilities as TermCapabilities;
 use termwiz::cell::CellAttributes;
 use termwiz::color::ColorAttribute;
-use termwiz::input::InputEvent;
+use termwiz::input::{InputEvent, MouseButtons};
 use termwiz::surface::change::Change;
 use termwiz::surface::{CursorVisibility, Position};
 use termwiz::terminal::Terminal;
 use vec_map::VecMap;
 
+use crate::action::Action;
 use crate::command;
 use crate::config::Config;
 use crate::direct;
@@ -24,6 +25,9 @@ use crate::help::help_text;
 use crate::progress::Progress;
 use crate::screen::Screen;
 use crate::search::SearchKind;
+
+/// How many lines to scroll for each click of the mouse wheel.
+const WHEEL_SCROLL_LINES: usize = 3;
 
 /// Capabilities of the terminal that we care about.
 #[derive(Default)]
@@ -321,6 +325,21 @@ pub(crate) fn start(
                             command::search(SearchKind::First, event_sender.clone())
                         })
                         .paste(text, width)
+                }
+                // Only the vertical wheel scrolls; other mouse events are
+                // ignored. Check the config here rather than relying on mouse
+                // events not arriving, since Windows always puts the console in
+                // mouse-input mode.
+                Some(Event::Input(InputEvent::Mouse(ref mouse)))
+                    if config.mouse
+                        && mouse.mouse_buttons.contains(MouseButtons::VERT_WHEEL) =>
+                {
+                    let action = if mouse.mouse_buttons.contains(MouseButtons::WHEEL_POSITIVE) {
+                        Action::ScrollUpLines(WHEEL_SCROLL_LINES)
+                    } else {
+                        Action::ScrollDownLines(WHEEL_SCROLL_LINES)
+                    };
+                    screen.dispatch_action(action, &event_sender)
                 }
                 Some(Event::Loaded(index)) if screens.is_current_index(index) => {
                     DisplayAction::Refresh

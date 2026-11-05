@@ -176,6 +176,9 @@ pub struct Config {
     /// Specify default wrapping move.
     pub wrapping_mode: WrappingMode,
 
+    /// Specify whether to handle the mouse, so the scroll wheel scrolls.
+    pub mouse: bool,
+
     /// Specify the name of the default key map.
     pub keymap: KeymapConfig,
 }
@@ -191,6 +194,7 @@ impl Default for Config {
             // See issue #52. With cursor hidden, scrolling is flaky in VSCode terminal.
             show_cursor: std::env::var("TERM_PROGRAM").ok().as_deref() == Some("vscode"),
             wrapping_mode: Default::default(),
+            mouse: false,
             keymap: Default::default(),
         }
     }
@@ -230,6 +234,11 @@ impl Config {
         if let Ok(s) = var("SP_READ_AHEAD_LINES") {
             if let Ok(n) = s.parse::<usize>() {
                 self.read_ahead_lines = n;
+            }
+        }
+        if let Ok(s) = var("SP_MOUSE") {
+            if let Some(b) = parse_bool(&s) {
+                self.mouse = b;
             }
         }
         self
