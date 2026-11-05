@@ -261,13 +261,9 @@ class DiskUsageTest(testcase.EdenRepoTest):
                     encoding="utf-8",
                 )
 
-                # FIXME: Cleanup should exit 0, delete the healthy orphan, and
-                # preserve the missing checkout's target without recreating it.
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn(
-                    "Failed to find orphaned redirections for cleanup", result.stderr
-                )
-                self.assertTrue(healthy_orphan.exists())
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f"Run `eden rm {broken_mount}`", result.stderr)
+                self.assertFalse(healthy_orphan.exists())
                 self.assertEqual((broken_target / "payload").read_text(), "keep")
                 self.assertFalse(broken_mount.exists())
 

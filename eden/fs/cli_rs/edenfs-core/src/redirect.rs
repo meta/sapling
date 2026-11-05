@@ -2426,6 +2426,7 @@ pub mod scratch {
     use std::collections::BTreeSet;
     use std::collections::VecDeque;
     use std::ffi::OsStr;
+    use std::ffi::OsString;
     use std::fs;
     use std::fs::DirEntry;
     use std::io::ErrorKind;
@@ -2436,6 +2437,7 @@ pub mod scratch {
     use anyhow::Result;
     use anyhow::anyhow;
     use edenfs_utils::metadata::MetadataExt;
+    use mkscratch::zzencode;
     use rayon::prelude::*;
 
     use super::Redirection;
@@ -2546,6 +2548,7 @@ pub mod scratch {
         scratch_path: PathBuf,
         scratch_subdir: PathBuf,
         existing_redirections: &BTreeSet<PathBuf>,
+        skipped_scratch_names: &BTreeSet<OsString>,
     ) -> Result<Vec<PathBuf>> {
         // Scratch directories can either be flat, ie: a directory like foo/bar will be encoded as
         // fooZbar, or mirrored, where no encoding is performed. Let's test how mkscratch encoded the
@@ -2582,7 +2585,11 @@ pub mod scratch {
         let mut orphaned_redirections = Vec::new();
         if is_scratch_mirrored {
             for dirent in scratch_root_entries {
-                let dirent_path = dirent?.path();
+                let dirent = dirent?;
+                if skipped_scratch_names.contains(&dirent.file_name()) {
+                    continue;
+                }
+                let dirent_path = dirent.path();
                 let redirection_path = dirent_path.join(&prefix);
                 if redirection_path.exists() {
                     // The directory exist, now we need to check if there is an unknown redirection.
@@ -2594,7 +2601,11 @@ pub mod scratch {
             }
         } else {
             for dirent in scratch_root_entries {
-                let dirent_path = dirent?.path();
+                let dirent = dirent?;
+                if skipped_scratch_names.contains(&dirent.file_name()) {
+                    continue;
+                }
+                let dirent_path = dirent.path();
                 if !dirent_path.is_dir() {
                     continue;
                 }
@@ -2617,29 +2628,29 @@ pub mod scratch {
         Ok(orphaned_redirections)
     }
 
-    /// The scratch directory that holds the redirection targets of the
-    /// checkout at `checkout_path`.
-    pub fn checkout_scratch_dir(checkout_path: &Path) -> Result<PathBuf> {
-        Ok(Redirection::resolve_scratch_path(
-            checkout_path,
-            None,
-            true,
-        )?)
-    }
-
     pub fn get_orphaned_redirection_targets(
         existing_redirections: &BTreeSet<PathBuf>,
+        skipped_mounts: &[PathBuf],
     ) -> Result<Vec<PathBuf>> {
         get_orphaned_redirection_targets_with_mkscratch(
             &Redirection::mkscratch_bin(),
             existing_redirections,
+            skipped_mounts,
         )
     }
 
     fn get_orphaned_redirection_targets_with_mkscratch(
         mkscratch: &Path,
         existing_redirections: &BTreeSet<PathBuf>,
+        skipped_mounts: &[PathBuf],
     ) -> Result<Vec<PathBuf>> {
+        // clone registers canonical mount paths. mkscratch encodes those paths
+        // as scratch directory names even when the subdirectories are mirrored.
+        // Encode the registration directly so a missing mount can be protected.
+        let skipped_scratch_names = skipped_mounts
+            .iter()
+            .map(|mount| OsString::from(zzencode(&mount.to_string_lossy())))
+            .collect();
         let scratch_subdir = Redirection::scratch_subdir();
         let scratch_subdir_str = scratch_subdir.to_string_lossy();
         let home_dir = match dirs::home_dir() {
@@ -2672,7 +2683,12 @@ pub mod scratch {
             Err(error) => return Err(error).context("failed to run mkscratch"),
         };
 
-        get_orphaned_redirection_targets_impl(scratch_path, scratch_subdir, existing_redirections)
+        get_orphaned_redirection_targets_impl(
+            scratch_path,
+            scratch_subdir,
+            existing_redirections,
+            &skipped_scratch_names,
+        )
     }
 
     #[cfg(test)]
@@ -2707,11 +2723,12 @@ pub mod scratch {
             )?;
             std::fs::set_permissions(&fake_mkscratch, std::fs::Permissions::from_mode(0o755))?;
 
-            let error =
-                get_orphaned_redirection_targets_with_mkscratch(&fake_mkscratch, &BTreeSet::new())
-                    .expect_err(
-                        "a failing mkscratch must surface an error, not an empty orphan list",
-                    );
+            let error = get_orphaned_redirection_targets_with_mkscratch(
+                &fake_mkscratch,
+                &BTreeSet::new(),
+                &[],
+            )
+            .expect_err("a failing mkscratch must surface an error, not an empty orphan list");
             assert!(
                 error.to_string().contains("scratch config broken"),
                 "error should carry mkscratch's stderr: {error:#}"
@@ -2727,6 +2744,7 @@ pub mod scratch {
             let res = get_orphaned_redirection_targets_impl(
                 scratch_path,
                 Path::new("foo/bar").to_path_buf(),
+                &BTreeSet::new(),
                 &BTreeSet::new(),
             )?;
             assert!(
@@ -2820,6 +2838,7 @@ pub mod scratch {
                 scratch_path,
                 scratch_subdir.to_path_buf(),
                 &existing_redirections,
+                &BTreeSet::new(),
             )?;
             assert!(!res.contains(&path.join("repo1").join(scratch_subdir).join("A")));
 
@@ -2874,6 +2893,7 @@ pub mod scratch {
                 scratch_path,
                 Path::new("foo/bar").to_path_buf(),
                 &existing_redirections,
+                &BTreeSet::new(),
             )?;
             assert!(!res.contains(&repo1_a_path));
 

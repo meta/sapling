@@ -558,23 +558,6 @@ fn get_checkouts(
     Ok((checkouts, skipped_mounts))
 }
 
-/// Drop the orphaned redirection candidates under the scratch directories of
-/// `skipped_mounts`. Their redirections are unknown, so their targets are
-/// kept until the checkout is removed.
-fn exclude_skipped_scratch(
-    orphaned: Vec<PathBuf>,
-    skipped_mounts: &[PathBuf],
-) -> Result<Vec<PathBuf>> {
-    let skipped_scratch_dirs = skipped_mounts
-        .iter()
-        .map(|mount| redirect::scratch::checkout_scratch_dir(mount))
-        .collect::<Result<Vec<_>>>()?;
-    Ok(orphaned
-        .into_iter()
-        .filter(|path| !skipped_scratch_dirs.iter().any(|dir| path.starts_with(dir)))
-        .collect())
-}
-
 /// Get all the fsck directories for the passed in checkouts.
 ///
 /// Some checkouts do not have a fsck directory, the returned Vec will not included them.
@@ -788,9 +771,10 @@ impl crate::Subcommand for DiskUsageCmd {
         // `--clean`/`--deep-clean` still run their other cleanups and report the
         // scan failure at the end.
         let (orphaned_redirections, orphan_scan_error) =
-            match redirect::scratch::get_orphaned_redirection_targets(&redirect_targets)
-                .and_then(|orphaned| exclude_skipped_scratch(orphaned, &skipped_mounts))
-            {
+            match redirect::scratch::get_orphaned_redirection_targets(
+                &redirect_targets,
+                &skipped_mounts,
+            ) {
                 Ok(orphaned) => (orphaned, None),
                 Err(error) if self.clean_orphaned => {
                     return Err(error.context("Failed to find orphaned redirections for cleanup"));
