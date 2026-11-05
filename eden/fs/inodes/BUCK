@@ -110,7 +110,6 @@ cpp_library(
         "DirEntry.h",
         "EdenDispatcherFactory.h",
         "EdenMount.h",
-        "EdenMountError.h",
         "EdenMountHandle.h",
         "FileInode.h",
         "FuseDispatcherImpl.h",

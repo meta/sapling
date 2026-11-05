@@ -10,14 +10,6 @@ eden_add_library(eden_fs_utils_event_base_state
     Folly::folly_io_async_async_base
 )
 
-eden_add_library(eden_fs_utils_eden_task_queue
-  SRCS
-    EdenTaskQueue.cpp
-  EXPORTED_DEPS
-    Folly::folly_concurrency_dynamic_bounded_queue
-    Folly::folly_executors_cpu_thread_pool_executor
-)
-
 set(EDEN_FS_UTILS_WIN_STACKTRACE_SELECT_DEPS)
 if (WIN32)
   list(APPEND EDEN_FS_UTILS_WIN_STACKTRACE_SELECT_DEPS dbghelp.lib)

@@ -11,20 +11,6 @@ cpp_library(
 )
 
 cpp_library(
-    name = "eden_task_queue",
-    srcs = [
-        "EdenTaskQueue.cpp",
-    ],
-    headers = [
-        "EdenTaskQueue.h",
-    ],
-    exported_deps = [
-        "fbsource//xplat/folly/concurrency:dynamic_bounded_queue",
-        "fbsource//xplat/folly/executors:cpu_thread_pool_executor",
-    ],
-)
-
-cpp_library(
     name = "win_stacktrace",
     srcs = [
         "WinStackTrace.cpp",

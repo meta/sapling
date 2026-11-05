@@ -462,7 +462,6 @@ cpp_library(
         "//eden/fs/telemetry/facebook:xplat_transforms",
         "//eden/fs/utils:clock",
         "//eden/fs/utils:eden_error",
-        "//eden/fs/utils:eden_task_queue",
         "//eden/fs/utils:fs_channel_types",
         "//eden/fs/utils:matcher",
         "//eden/fs/utils:mount_health_check",

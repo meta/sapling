@@ -13,7 +13,6 @@ eden_add_library(eden_fs_fuse
     FuseDispatcher.cpp
     FuseRequestContext.cpp
     IoUringFuseTransport.cpp
-    PollHandle.cpp
   DEPS
     ${RE2_LIBRARY}
     Boost::headers

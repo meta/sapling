@@ -229,7 +229,6 @@ eden_add_library(eden_fs_service_server
     eden_fs_telemetry_xplat_logger
     eden_fs_utils_clock
     eden_fs_utils_eden_error
-    eden_fs_utils_eden_task_queue
     eden_fs_utils_fs_channel_types
     eden_fs_utils_matcher
     eden_fs_utils_mount_health_check
