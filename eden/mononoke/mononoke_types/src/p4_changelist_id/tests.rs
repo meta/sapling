@@ -91,3 +91,17 @@ fn test_from_bcs_rejects_malformed_changelist() -> Result<()> {
     }
     Ok(())
 }
+
+#[mononoke::test]
+fn test_from_hg_extras_reads_the_same_extras() -> Result<()> {
+    let id = P4ChangelistId::new(41002);
+    let extras = id.to_hg_extras();
+    let borrowed = extras
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_slice()));
+    assert_eq!(P4ChangelistId::from_hg_extras(borrowed)?, id);
+    let error = P4ChangelistId::from_bcs(&create_bonsai([extra(P4_SOURCE_EXTRA, "git")])?)
+        .expect_err("not a Perforce import");
+    assert!(format!("{error:#}").contains("Bonsai cs"), "{error:#}");
+    Ok(())
+}

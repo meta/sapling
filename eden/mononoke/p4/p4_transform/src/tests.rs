@@ -8,6 +8,7 @@
 use std::collections::BTreeSet;
 
 use mononoke_macros::mononoke;
+use mononoke_types::P4FileRevs;
 use mononoke_types::hash::Blake3;
 use mononoke_types::hash::RichGitSha1;
 use mononoke_types::hash::Sha1;
@@ -617,6 +618,17 @@ fn test_rule_p4_file_revs_format() {
         extra(&bcs, FILE_REVS_EXTRA)
     );
     assert_eq!(42, P4ChangelistId::from_bcs(&bcs).unwrap().id());
+    let revs = P4FileRevs::from_bcs(&bcs).unwrap();
+    let path = |path| NonRootMPath::new(path).unwrap();
+    assert_eq!(Some(2), revs.revision(&path("b.txt")).unwrap());
+    assert_eq!(Some(1), revs.revision(&path("img/foo@2x.png")).unwrap());
+    assert_eq!(Some(3), revs.revision(&path("z.txt")).unwrap());
+    assert_eq!(
+        None,
+        revs.revision(&path("c.txt")).unwrap(),
+        "other depot's file"
+    );
+    assert_eq!(3, revs.iter().count());
 }
 
 #[mononoke::test]

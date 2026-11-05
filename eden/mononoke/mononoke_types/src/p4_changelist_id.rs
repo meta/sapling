@@ -62,8 +62,16 @@ impl P4ChangelistId {
     /// changeset is marked as imported from Perforce, as `bonsai_git_mapping` does for
     /// git, so an svn commit (which also uses `convert_revision`) is never misread.
     pub fn from_bcs(bcs: &BonsaiChangeset) -> Result<Self> {
+        Self::from_hg_extras(bcs.hg_extra())
+            .with_context(|| format!("Bonsai cs {}", bcs.get_changeset_id()))
+    }
+
+    /// [`Self::from_bcs`] for a changeset's hg extras from elsewhere, like `ChangesetInfo`.
+    pub fn from_hg_extras<'a>(
+        extras: impl IntoIterator<Item = (&'a str, &'a [u8])>,
+    ) -> Result<Self> {
         let (mut source, mut changelist) = (None, None);
-        for (key, value) in bcs.hg_extra() {
+        for (key, value) in extras {
             if key == P4_SOURCE_EXTRA {
                 source = Some(value);
             }
@@ -73,29 +81,20 @@ impl P4ChangelistId {
         }
         ensure!(
             source == Some(P4_SOURCE_VALUE.as_bytes()),
-            "Bonsai cs {} is not imported from Perforce",
-            bcs.get_changeset_id()
+            "not imported from Perforce"
         );
-        let changelist = changelist
-            .ok_or_else(|| anyhow!("Bonsai cs {} has no p4 changelist", bcs.get_changeset_id()))?;
+        let changelist = changelist.ok_or_else(|| anyhow!("no p4 changelist"))?;
         let parse = || -> Result<u64> { Ok(str::from_utf8(changelist)?.parse()?) };
         let id = parse().with_context(|| {
             format!(
-                "Bonsai cs {} has malformed p4 changelist {:?}",
-                bcs.get_changeset_id(),
+                "malformed p4 changelist {:?}",
                 String::from_utf8_lossy(changelist)
             )
         })?;
-        ensure!(
-            id != 0,
-            "Bonsai cs {} has p4 changelist 0, which Perforce never allocates",
-            bcs.get_changeset_id()
-        );
+        ensure!(id != 0, "p4 changelist 0, which Perforce never allocates");
         ensure!(
             i64::try_from(id).is_ok(),
-            "Bonsai cs {} has p4 changelist {} above i64::MAX, which the mapping can't store",
-            bcs.get_changeset_id(),
-            id
+            "p4 changelist {id} above i64::MAX, which the mapping can't store"
         );
         Ok(Self::new(id))
     }

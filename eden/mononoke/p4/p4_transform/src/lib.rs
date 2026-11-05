@@ -20,6 +20,7 @@ use mononoke_types::FileType;
 use mononoke_types::GitLfs;
 use mononoke_types::NonRootMPath;
 use mononoke_types::P4ChangelistId;
+use mononoke_types::P4FileRevs;
 use mononoke_types::PrefixTrie;
 use p4_types::Action;
 use p4_types::Changelist;
@@ -57,9 +58,10 @@ pub enum TransformError {
 /// The revision number of each of the changelist's files in the depot, one
 /// `<rev>\t<repo path>\n` line each, in `file_changes`' path order. Deletions are revisions
 /// too, including those Bonsai drops because a file replaced their directory. `p4-` keeps
-/// the transform's extras apart from the `convert_*` changelist id ones.
+/// the transform's extras apart from the `convert_*` changelist id ones. Written and read
+/// through `mononoke_types::P4FileRevs`.
 /// Design: designs/file_revisions_and_copy_from.md.
-pub const FILE_REVS_EXTRA: &str = "p4-file-revs";
+pub const FILE_REVS_EXTRA: &str = mononoke_types::P4_FILE_REVS_EXTRA;
 
 /// The id of the commit server the changelist came from: a replica's commit server, or the
 /// server itself when standalone. Changelist numbers are only unique per commit server, so
@@ -150,16 +152,15 @@ pub fn file_revs(depot_root: &str, changelist: &Changelist) -> Result<Vec<u8>, T
         }
     }
     revisions.sort_unstable();
-    let mut lines = String::new();
-    for (path, rev) in revisions {
-        let path = path.to_string();
-        // A newline would end the line early; a tab is fine after the first.
-        if path.contains('\n') {
-            return Err(TransformError::NewlineInPath(path));
-        }
-        lines.push_str(&format!("{rev}\t{path}\n"));
+    // A newline would end the line early; a tab is fine after the first.
+    if let Some((path, _)) = revisions
+        .iter()
+        .find(|(path, _)| path.to_vec().contains(&b'\n'))
+    {
+        return Err(TransformError::NewlineInPath(path.to_string()));
     }
-    Ok(lines.into_bytes())
+    let revs: P4FileRevs = revisions.into_iter().collect();
+    Ok(revs.as_bytes().to_vec())
 }
 
 /// The `SERVER_ID_EXTRA` value `changeset` recorded, if it has one.
