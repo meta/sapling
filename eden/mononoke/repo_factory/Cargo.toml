@@ -100,5 +100,8 @@ virtually_sharded_blobstore = { version = "0.1.0", path = "../blobstore/virtuall
 warm_bookmarks_cache = { version = "0.1.0", path = "../repo_attributes/bookmarks/warm_bookmarks_cache" }
 wireproto_handler = { version = "0.1.0", path = "../servers/slapi/wireproto_handler" }
 
+[dev-dependencies]
+mononoke_macros = { version = "0.1.0", path = "../common/mononoke_macros" }
+
 [lints]
 workspace = true

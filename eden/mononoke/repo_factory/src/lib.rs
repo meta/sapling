@@ -110,6 +110,7 @@ use enabled_derived_data_types::SqlEnabledDerivedDataTypesBuilder;
 use environment::BookmarkCacheAddress;
 use environment::BookmarkCacheDerivedData;
 use environment::BookmarkCacheKind;
+use environment::BookmarkCacheOptions;
 use environment::Caching;
 use environment::LocalCacheEncoding;
 use environment::MononokeEnvironment;
@@ -1817,32 +1818,14 @@ impl RepoFactory {
     }
 
     /// Resolve the effective bookmark cache options for a repo.
-    /// For Git repos, always use local WBC instead of the process-level
-    /// default (Remote), while preserving the configured derived data
-    /// scope.
     fn effective_bookmark_cache_options(
         &self,
         repo_config: &ArcRepoConfig,
     ) -> Result<(BookmarkCacheKind, BookmarkCacheDerivedData)> {
-        if repo_config.default_commit_identity_scheme == CommitIdentityScheme::GIT
-            // A Local WBC with no warmers (NoDerivation, e.g. gitimport) can't
-            // warm anything; leave such callers on their configured cache kind.
-            && self.env.bookmark_cache_options.derived_data
-                != BookmarkCacheDerivedData::NoDerivation
-            // An explicitly disabled cache never queries the Bookmark Service,
-            // so it stays disabled; only a Remote default is upgraded to Local.
-            && self.env.bookmark_cache_options.cache_kind != BookmarkCacheKind::Disabled
-        {
-            Ok((
-                BookmarkCacheKind::Local,
-                self.env.bookmark_cache_options.derived_data.clone(),
-            ))
-        } else {
-            Ok((
-                self.env.bookmark_cache_options.cache_kind.clone(),
-                self.env.bookmark_cache_options.derived_data.clone(),
-            ))
-        }
+        Ok(effective_bookmark_cache_options(
+            repo_config,
+            &self.env.bookmark_cache_options,
+        ))
     }
 
     async fn build_bookmarks_cache_impl(
@@ -2321,4 +2304,115 @@ fn get_derivation_client(
             None
         };
     Ok(derivation_service_client)
+}
+
+/// The bookmark cache options for a repo, given the process-level `configured`
+/// ones. Git and Perforce repos have no Bookmark Service shard, so for them a
+/// Remote cache is upgraded to a local WBC, keeping the configured derived data
+/// scope.
+fn effective_bookmark_cache_options(
+    repo_config: &RepoConfig,
+    configured: &BookmarkCacheOptions,
+) -> (BookmarkCacheKind, BookmarkCacheDerivedData) {
+    let no_bookmark_service_shard = matches!(
+        repo_config.default_commit_identity_scheme,
+        CommitIdentityScheme::GIT | CommitIdentityScheme::P4
+    ) || repo_config.p4_source.is_some();
+    let cache_kind = if no_bookmark_service_shard
+        // A Local WBC with no warmers (NoDerivation, e.g. gitimport) can't
+        // warm anything; leave such callers on their configured cache kind.
+        && configured.derived_data != BookmarkCacheDerivedData::NoDerivation
+        // An explicitly disabled cache never queries the Bookmark Service,
+        // so it stays disabled; only a Remote default is upgraded to Local.
+        && configured.cache_kind != BookmarkCacheKind::Disabled
+    {
+        BookmarkCacheKind::Local
+    } else {
+        configured.cache_kind.clone()
+    };
+    (cache_kind, configured.derived_data.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use metaconfig_types::P4SourceConfig;
+    use mononoke_macros::mononoke;
+
+    use super::*;
+
+    fn remote() -> BookmarkCacheOptions {
+        BookmarkCacheOptions {
+            cache_kind: BookmarkCacheKind::Remote(BookmarkCacheAddress::default()),
+            derived_data: BookmarkCacheDerivedData::AllKinds,
+        }
+    }
+
+    fn repo(scheme: CommitIdentityScheme, p4_source: Option<P4SourceConfig>) -> RepoConfig {
+        RepoConfig {
+            default_commit_identity_scheme: scheme,
+            p4_source,
+            ..Default::default()
+        }
+    }
+
+    fn p4_source() -> Option<P4SourceConfig> {
+        Some(P4SourceConfig {
+            server_alias: "test1".to_string(),
+            depot: "//test1/".to_string(),
+        })
+    }
+
+    #[mononoke::test]
+    fn test_repos_without_a_bookmark_service_shard_use_a_local_cache() {
+        for repo in [
+            repo(CommitIdentityScheme::GIT, None),
+            repo(CommitIdentityScheme::P4, None),
+            repo(CommitIdentityScheme::P4, p4_source()),
+            // A mirror whose config still says HG is a Perforce repo all the same.
+            repo(CommitIdentityScheme::HG, p4_source()),
+        ] {
+            assert_eq!(
+                effective_bookmark_cache_options(&repo, &remote()),
+                (BookmarkCacheKind::Local, BookmarkCacheDerivedData::AllKinds),
+                "{repo:?}"
+            );
+        }
+    }
+
+    #[mononoke::test]
+    fn test_hg_repos_keep_the_remote_cache() {
+        for scheme in [
+            CommitIdentityScheme::HG,
+            CommitIdentityScheme::BONSAI,
+            CommitIdentityScheme::UNKNOWN,
+        ] {
+            let (cache_kind, derived_data) =
+                effective_bookmark_cache_options(&repo(scheme.clone(), None), &remote());
+            assert!(
+                matches!(cache_kind, BookmarkCacheKind::Remote(_)),
+                "{scheme:?}"
+            );
+            assert_eq!(derived_data, BookmarkCacheDerivedData::AllKinds);
+        }
+    }
+
+    #[mononoke::test]
+    fn test_disabled_and_no_derivation_are_left_alone() {
+        let repo = repo(CommitIdentityScheme::P4, p4_source());
+        let disabled = BookmarkCacheOptions {
+            cache_kind: BookmarkCacheKind::Disabled,
+            ..remote()
+        };
+        assert_eq!(
+            effective_bookmark_cache_options(&repo, &disabled).0,
+            BookmarkCacheKind::Disabled
+        );
+        let no_derivation = BookmarkCacheOptions {
+            derived_data: BookmarkCacheDerivedData::NoDerivation,
+            ..remote()
+        };
+        let (cache_kind, derived_data) = effective_bookmark_cache_options(&repo, &no_derivation);
+        assert!(matches!(cache_kind, BookmarkCacheKind::Remote(_)));
+        assert_eq!(derived_data, BookmarkCacheDerivedData::NoDerivation);
+    }
 }

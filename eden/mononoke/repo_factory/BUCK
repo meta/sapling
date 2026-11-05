@@ -13,6 +13,9 @@ rust_library(
             "MononokeRepoFactoryStats_ods3_types": "//eden/mononoke/facebook/ods3_schemas:MononokeRepoFactoryStats_ods3-rust",
         }
     ),
+    test_deps = [
+        "//eden/mononoke/common/mononoke_macros:mononoke_macros",
+    ],
     deps = [
         "fbsource//third-party/rust:anyhow",
         "fbsource//third-party/rust:parking_lot",
