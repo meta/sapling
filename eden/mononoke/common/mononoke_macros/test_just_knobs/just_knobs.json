@@ -135,6 +135,7 @@
     "scm/mononoke:mononoke_enforce_draft_acl": false,
     "scm/mononoke:disable_repo_client_warm_bookmarks_cache": false,
     "scm/mononoke:git_server_dynamic_repo_loading": false,
+    "scm/mononoke:git_server_enforce_diverted_push_acl": false,
     "scm/mononoke:enable_git_server_lazy_repo_build": true,
     "scm/mononoke:enable_scs_lazy_repo_build": true,
     "scm/mononoke:git_server_enable_v1_protocol": false,

@@ -22,7 +22,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
+use bookmarks::BookmarkKey;
+use bookmarks_movement::BookmarkKindRestrictions;
 use bytes::Bytes;
+use context::CoreContext;
 use multi_repo_land_if::MemberRefUpdate;
 use multi_repo_land_if::RepoBookmarkModification;
 use multi_repo_land_if::RepoBookmarkModificationMove;
@@ -32,6 +35,8 @@ use multi_repo_land_if_clients::errors::AsManifestBranchNotEnabled;
 use multi_repo_land_if_clients::make_MultiRepoLandService;
 use permission_checker::AclProvider;
 use permission_checker::MononokeIdentitySetExt;
+use repo_authorization::AuthorizationContext;
+use repo_authorization::RepoWriteOperation;
 use repo_identity::RepoIdentityRef;
 use source_control::CommitId;
 use source_control::RepoSpecifier;
@@ -39,6 +44,7 @@ use thrift_client::MononokeThriftClient;
 use tracing::error;
 use tracing::info;
 
+use crate::Repo;
 use crate::command::RefUpdate;
 use crate::model::RepositoryRequestContext;
 use crate::service::GitMappingsStore;
@@ -167,6 +173,109 @@ pub async fn check_emergency_push(
             EMERGENCY_PUSH_ACL,
         )
     }
+}
+
+/// Knob: when off, a denied diverted ref is only logged ("would fail") and
+/// still lands; when on, it is rejected before the submit. Off is the
+/// measurement stage of the rollout, not a long-term state.
+const ENFORCE_DIVERTED_PUSH_ACL: &str = "scm/mononoke:git_server_enforce_diverted_push_acl";
+
+/// Authorize each divertable ref as the pusher, exactly as the local push
+/// path does inside `bookmarks_movement`: the bookmark's kind must be
+/// permitted, the pusher must have write access to the repo for that kind of
+/// operation, and the bookmark must not be restricted to other users.
+///
+/// Multi-Repo Land authorizes a `submit_manifest_land` against its Thrift
+/// peer, which is this server's service identity; the pusher's own identities
+/// never reach it. Without this check a read-only user can move any diverted
+/// branch.
+///
+/// Returns the refs that may be diverted and, for each denied ref, the error
+/// to report for it. Only listing failures are errors.
+async fn authorize_diverted_refs(
+    request_context: &RepositoryRequestContext,
+    divertable: Vec<RefUpdate>,
+    atomic: bool,
+) -> anyhow::Result<(Vec<RefUpdate>, Vec<(RefUpdate, anyhow::Error)>)> {
+    let ctx = &request_context.ctx;
+    let repo = request_context.repo.as_ref();
+    let repo_name = repo.repo_identity().name();
+    let enforce = justknobs::eval(ENFORCE_DIVERTED_PUSH_ACL, None, Some(repo_name));
+    let authz = AuthorizationContext::new_non_draft(ctx);
+
+    let mut permitted = Vec::with_capacity(divertable.len());
+    let mut denied: Vec<(RefUpdate, anyhow::Error)> = Vec::new();
+    for ref_update in divertable {
+        match authorize_one_diverted_ref(ctx, &authz, repo, &ref_update).await {
+            Ok(()) => permitted.push(ref_update),
+            Err(err) => {
+                let mut scuba = ctx.scuba().clone();
+                scuba.add(
+                    "log_tag",
+                    if enforce {
+                        "mrl_diverted_push_acl_denied"
+                    } else {
+                        "mrl_diverted_push_acl_would_deny"
+                    },
+                );
+                scuba.add("repo", repo_name);
+                scuba.add("bookmark", ref_update.ref_name.as_str());
+                scuba.add("identities", ctx.metadata().identities().to_string());
+                scuba.add("error", format!("{err:#}"));
+                scuba.unsampled();
+                scuba.log();
+                if enforce {
+                    denied.push((ref_update, err));
+                } else {
+                    permitted.push(ref_update);
+                }
+            }
+        }
+    }
+
+    // `git push --atomic`: one refused ref refuses them all, as the local
+    // path does.
+    if atomic && !denied.is_empty() {
+        let reason = format!("{:#}", denied[0].1);
+        denied.extend(permitted.drain(..).map(|r| {
+            let err = anyhow::anyhow!("atomic push refused: {reason}");
+            (r, err)
+        }));
+    }
+    Ok((permitted, denied))
+}
+
+/// The checks `UpdateBookmarkOp`/`CreateBookmarkOp` run before a local
+/// bookmark move, so a diverted push cannot do what a local one could not.
+/// Creates and moves are told apart by the ref's `from`.
+///
+/// Publishing only: Multi-Repo Land lands every diverted branch as a
+/// publishing bookmark, so a name in the repo's scratch namespace must not
+/// pass on the (weaker) draft check and come out public.
+///
+/// A ref name that is not a bookmark is a denial of that ref, not a push
+/// failure: the local path answers the same ref with a per-ref error.
+async fn authorize_one_diverted_ref(
+    ctx: &CoreContext,
+    authz: &AuthorizationContext,
+    repo: &Repo,
+    ref_update: &RefUpdate,
+) -> anyhow::Result<()> {
+    let bookmark = BookmarkKey::new(
+        ref_update
+            .ref_name
+            .strip_prefix("refs/")
+            .unwrap_or(ref_update.ref_name.as_str()),
+    )?;
+    let kind = BookmarkKindRestrictions::OnlyPublishing.check_kind(repo, &bookmark)?;
+    let op = if ref_update.from.is_null() {
+        RepoWriteOperation::CreateBookmark(kind)
+    } else {
+        RepoWriteOperation::UpdateBookmark(kind)
+    };
+    authz.require_repo_write(ctx, repo, op).await?;
+    authz.require_bookmark_modify(ctx, repo, &bookmark).await?;
+    Ok(())
 }
 
 /// Result of diverting a push.
@@ -314,6 +423,7 @@ pub async fn divert_to_rl_land_service(
     _git_bonsai_mapping_store: Arc<GitMappingsStore>,
     _object_store: Arc<GitObjectStore>,
     service_address: Option<String>,
+    atomic: bool,
 ) -> anyhow::Result<DiversionResult> {
     let ctx = &request_context.ctx;
     let repo_name = request_context.repo.repo_identity().name().to_string();
@@ -323,6 +433,19 @@ pub async fn divert_to_rl_land_service(
     if divertable.is_empty() {
         return Ok(DiversionResult {
             diverted: vec![],
+            remaining,
+        });
+    }
+
+    // Authorize as the pusher before anything leaves this server: the land
+    // service sees only our service identity.
+    let (divertable, denied) =
+        authorize_diverted_refs(&request_context, divertable, atomic).await?;
+    let mut diverted: Vec<(RefUpdate, anyhow::Result<()>)> =
+        denied.into_iter().map(|(r, err)| (r, Err(err))).collect();
+    if divertable.is_empty() {
+        return Ok(DiversionResult {
+            diverted,
             remaining,
         });
     }
@@ -344,11 +467,13 @@ pub async fn divert_to_rl_land_service(
         Err(e) => {
             let err_str = format!("cannot land push for repo {repo_name}: {e:#}");
             error!("{err_str}");
-            return Ok(DiversionResult {
-                diverted: divertable
+            diverted.extend(
+                divertable
                     .into_iter()
-                    .map(|r| (r, Err(anyhow::anyhow!(err_str.clone()))))
-                    .collect(),
+                    .map(|r| (r, Err(anyhow::anyhow!(err_str.clone())))),
+            );
+            return Ok(DiversionResult {
+                diverted,
                 remaining,
             });
         }
@@ -356,7 +481,7 @@ pub async fn divert_to_rl_land_service(
     remaining.extend(plan.unsupported);
     let Some(params) = plan.params else {
         return Ok(DiversionResult {
-            diverted: vec![],
+            diverted,
             remaining,
         });
     };
@@ -391,8 +516,9 @@ pub async fn divert_to_rl_land_service(
             );
             scuba.unsampled();
             scuba.log();
+            diverted.extend(plan.submitted.into_iter().map(|r| (r, Ok(()))));
             Ok(DiversionResult {
-                diverted: plan.submitted.into_iter().map(|r| (r, Ok(()))).collect(),
+                diverted,
                 remaining,
             })
         }
@@ -411,7 +537,7 @@ pub async fn divert_to_rl_land_service(
                 scuba.log();
                 remaining.extend(plan.submitted);
                 return Ok(DiversionResult {
-                    diverted: vec![],
+                    diverted,
                     remaining,
                 });
             }
@@ -427,12 +553,13 @@ pub async fn divert_to_rl_land_service(
             scuba.add("error", format!("{e:#}"));
             scuba.unsampled();
             scuba.log();
-            Ok(DiversionResult {
-                diverted: plan
-                    .submitted
+            diverted.extend(
+                plan.submitted
                     .into_iter()
-                    .map(|r| (r, Err(anyhow::anyhow!(err_str.clone()))))
-                    .collect(),
+                    .map(|r| (r, Err(anyhow::anyhow!(err_str.clone())))),
+            );
+            Ok(DiversionResult {
+                diverted,
                 remaining,
             })
         }

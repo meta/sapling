@@ -397,6 +397,7 @@ async fn refs_update(
             git_bonsai_mapping_store.clone(),
             object_store.clone(),
             _multi_repo_land_service_address,
+            atomic_update,
         )
         .await?;
 

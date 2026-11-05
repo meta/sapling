@@ -14,6 +14,7 @@ async-trait = "0.1.92"
 bonsai_git_mapping = { version = "0.1.0", path = "../../../repo_attributes/bonsai_git_mapping" }
 bonsai_tag_mapping = { version = "0.1.0", path = "../../../repo_attributes/bonsai_tag_mapping" }
 bookmarks = { version = "0.1.0", path = "../../../repo_attributes/bookmarks" }
+bookmarks_movement = { version = "0.1.0", path = "../../../repo_attributes/bookmarks/bookmarks_movement" }
 bytes = { version = "1.12.1", features = ["serde"] }
 clap = { version = "4.6.2", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 cloned = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
