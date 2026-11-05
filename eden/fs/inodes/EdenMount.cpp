@@ -2829,49 +2829,40 @@ folly::Future<NfsServer::NfsMountInfo> makeNfsChannel(
                    mount->getServerState()->getReloadableConfig(),
                    mount->getServerState()->getFaultInjector());
              })
-      .thenValue([mount,
-                  nfsServer,
-                  connectedSocket = std::move(connectedSocket)](
-                     NfsServer::NfsMountInfo mountInfo) mutable {
-        auto [channel, mountdAddr] = std::move(mountInfo);
+      .thenValue(
+          [mount, nfsServer, connectedSocket = std::move(connectedSocket)](
+              NfsServer::NfsMountInfo mountInfo) mutable {
+            auto [channel, mountdAddr] = std::move(mountInfo);
 
-        if (connectedSocket) {
-          XLOGF(
-              DBG4,
-              "Mount takeover: Initiating nfsd with socket: {}",
-              connectedSocket.value().fd());
-          channel->initialize(std::move(connectedSocket.value()));
-          // TODO: we should register the NFS server on takeover too. but
-          // we only transfer the connected socket not the listening socket.
-          // the listening one is the one we wanna register. So we need to
-          // transfer that socket to be able to register it.
-        } else {
-          // The kernel requires a checkout's mountd and nfsd sockets to be
-          // of the same type, so follow the running mountd rather than
-          // nfs:use-uds, which only applies when a mountd is created.
-          std::optional<AbsolutePath> unixSocketPath;
-          if (nfsServer->getMountdAddr().getFamily() == AF_UNIX) {
-            unixSocketPath = mount->getCheckoutConfig()->getClientDirectory() +
-                kNfsdSocketName;
-            XLOGF(
-                DBG4,
-                "Normal Start: Initiating nfsd from scratch: {}",
-                unixSocketPath.value());
-          }
-          channel->initialize(makeNfsSocket(std::move(unixSocketPath)), false);
-          // we can't register uds sockets with our portmapper (portmapper v2
-          // does not support those).
-          auto addr = channel->getAddr();
-          if (addr.isFamilyInet()) {
-            nfsServer->recordPortNumber(
-                channel->getProgramNumber(),
-                channel->getProgramVersion(),
-                addr.getPort());
-          }
-        }
-        return NfsServer::NfsMountInfo{
-            std::move(channel), std::move(mountdAddr)};
-      });
+            if (connectedSocket) {
+              XLOGF(
+                  DBG4,
+                  "Mount takeover: Initiating nfsd with socket: {}",
+                  connectedSocket.value().fd());
+              channel->initialize(std::move(connectedSocket.value()));
+              // TODO: we should register the NFS server on takeover too. but
+              // we only transfer the connected socket not the listening socket.
+              // the listening one is the one we wanna register. So we need to
+              // transfer that socket to be able to register it.
+            } else {
+              // The kernel requires a checkout's mountd and nfsd sockets to be
+              // of the same type, so follow the running mountd rather than
+              // nfs:use-uds, which only applies when a mountd is created.
+              std::optional<AbsolutePath> unixSocketPath;
+              if (nfsServer->getMountdAddr().getFamily() == AF_UNIX) {
+                unixSocketPath =
+                    mount->getCheckoutConfig()->getClientDirectory() +
+                    kNfsdSocketName;
+                XLOGF(
+                    DBG4,
+                    "Normal Start: Initiating nfsd from scratch: {}",
+                    unixSocketPath.value());
+              }
+              channel->initialize(makeNfsSocket(std::move(unixSocketPath)));
+            }
+            return NfsServer::NfsMountInfo{
+                std::move(channel), std::move(mountdAddr)};
+          });
 }
 } // namespace
 

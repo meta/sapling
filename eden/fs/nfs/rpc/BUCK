@@ -34,6 +34,7 @@ cpp_library(
         "fbsource//xplat/folly:string",
         "fbsource//xplat/folly/futures:core",
         "fbsource//xplat/folly/io:iobuf",
+        "fbsource//xplat/folly/logging:logging",
         "fbsource//xplat/folly/portability:sockets",
         "//eden/common/utils:throw",
         "//eden/fs/telemetry:log_info",
@@ -48,7 +49,6 @@ cpp_library(
         ":rpc",
         "//eden/common/utils:immediate_future",
         "//eden/fs/inodes:fs_channel",
-        "//eden/fs/nfs/portmap:portmap",
         "//eden/fs/utils:event_base_state",
     ],
 )

@@ -107,7 +107,6 @@ cpp_library(
     headers = ["NfsServer.h"],
     deps = [
         ":nfsd3",
-        "//eden/fs/nfs/portmap:portmapserver",
         "//eden/fs/telemetry:structured_logger",
     ],
     exported_deps = [

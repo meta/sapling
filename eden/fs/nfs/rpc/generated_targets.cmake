@@ -27,6 +27,7 @@ eden_add_library(eden_fs_nfs_rpc_server
   DEPS
     Folly::folly_futures_core
     Folly::folly_io_iobuf
+    Folly::folly_logging_logging
     Folly::folly_portability_sockets
     Folly::folly_string
     eden_fs_telemetry_log_info
@@ -38,7 +39,6 @@ eden_add_library(eden_fs_nfs_rpc_server
     Folly::folly_net_network_socket
     Folly::folly_network_address
     eden_fs_inodes_fs_channel
-    eden_fs_nfs_portmap
     eden_fs_nfs_rpc
     eden_fs_utils_event_base_state
     edencommon::edencommon_utils

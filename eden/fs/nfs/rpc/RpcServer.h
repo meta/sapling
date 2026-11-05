@@ -18,7 +18,6 @@
 
 #include "eden/common/utils/ImmediateFuture.h"
 #include "eden/fs/inodes/FsChannel.h"
-#include "eden/fs/nfs/portmap/PortmapClient.h"
 #include "eden/fs/nfs/rpc/Rpc.h"
 #include "eden/fs/utils/EventBaseState.h"
 
@@ -213,8 +212,8 @@ class RpcServer;
 inline constexpr size_t kDefaultReadBufferAllocationSize = 64 * 1024;
 
 /**
- * RpcConnectionHandler manages connected RPC sockets, whether for NFS or Mountd
- * or Rpcbind.
+ * RpcConnectionHandler manages connected RPC sockets, whether for NFS or
+ * Mountd.
  *
  * Right now, it only supports stream sockets, such as TCP. If we add support
  * for UDP or unix datagram sockets, rename this to RpcStreamHandler and
@@ -504,13 +503,6 @@ class RpcServer final : public std::enable_shared_from_this<RpcServer>,
   folly::SemiFuture<folly::File> takeoverStop();
 
   /**
-   * Enables the service mapping with rpcbind/portmap.
-   *
-   * Must be called on the EventBase.
-   */
-  void registerService(uint32_t progNumber, uint32_t progVersion);
-
-  /**
    * Return the EventBase that this RpcServer is running on.
    */
   folly::EventBase* getEventBase() const {
@@ -577,17 +569,10 @@ class RpcServer final : public std::enable_shared_from_this<RpcServer>,
   // used to handle requests on the connected sockets.
   std::shared_ptr<RpcServerProcessor> proc_;
 
-  struct PortmapState {
-    PortmapClient portMap;
-    std::vector<PortmapMapping4> mappedPorts;
-  };
-
   struct State {
     // Set to true when acceptStopped() is called so we can assert that it was
     // synchronous.
     bool acceptStopped = false;
-
-    std::optional<PortmapState> portmapState;
 
     // Existing handlers that have an open socket and are processing requests
     // from their socket.

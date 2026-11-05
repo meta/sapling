@@ -1199,30 +1199,6 @@ class EdenConfig : private ConfigSettingManager {
   // [nfs]
 
   /**
-   * Controls whether Eden will run its own rpcbind/portmapper server. On
-   * Linux there is one built into the kernel that is always running, and on
-   * mac there is one built into the kernel you just have to poke into running.
-   * There is not one built into Windows and no good (and discoverable by
-   * kmancini) external option to use. So we built our own.
-   *
-   * Rpcbind/portmapper runs on a fixed port (111), so two port mappers will
-   * conflict with each other. Thus we don't want to run rpcbind if there is
-   * already one running.
-   *
-   * Long story short, you never want to set this to true on Linux or mac,
-   * but do on windows (with care).
-   */
-  ConfigSetting<bool> runInternalRpcbind{
-      "nfs:run-internal-rpcbind",
-      false,
-      this};
-
-  /**
-   * Controls whether Mountd will register itself against rpcbind.
-   */
-  ConfigSetting<bool> registerMountd{"nfs:register-mountd", false, this};
-
-  /**
    * Whether EdenFS should unload NFS inodes. NFSv3 does not notify us when
    * file handles are closed. We have no definitive info from NFS on how many
    * open handles there are for already removed inodes.

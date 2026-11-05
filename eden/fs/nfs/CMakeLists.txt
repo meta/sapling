@@ -5,7 +5,6 @@
 
 include(generated_targets.cmake)
 
-add_subdirectory(portmap)
 add_subdirectory(rpc)
 add_subdirectory(xdr)
 if(BUILD_TESTS)

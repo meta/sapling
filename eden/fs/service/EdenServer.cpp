@@ -2237,9 +2237,7 @@ Future<Unit> EdenServer::prepareImpl(std::shared_ptr<StartupLogger> logger) {
         }
       }
       runInEventBaseThreadAndRethrow(nfsEventBase, [&] {
-        nfsServer->initialize(
-            makeNfsSocket(std::move(unixSocketPath)),
-            serverState_->getEdenConfig()->registerMountd.getValue());
+        nfsServer->initialize(makeNfsSocket(std::move(unixSocketPath)));
       });
 #ifndef _WIN32
     }

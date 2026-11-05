@@ -13,6 +13,7 @@
 #include <folly/futures/Future.h>
 #include <folly/io/IOBufQueue.h>
 #include <folly/io/async/AsyncSocket.h>
+#include <folly/logging/xlog.h>
 #include <folly/portability/Sockets.h>
 
 #include "eden/common/utils/Throw.h"
@@ -1016,55 +1017,7 @@ folly::SemiFuture<folly::File> RpcServer::takeoverStop() {
       });
 }
 
-RpcServer::~RpcServer() {
-  auto& ebstate = state_.get();
-  if (ebstate.portmapState) {
-    auto& state = ebstate.portmapState.value();
-    for (const auto& mapping : state.mappedPorts) {
-      state.portMap.unsetMapping(mapping);
-    }
-  }
-}
-
-namespace {
-
-std::pair<std::string, std::string> getNetIdAndAddr(const SocketAddress& addr) {
-  if (addr.isFamilyInet()) {
-    auto netid = addr.getFamily() == AF_INET6 ? PortmapMapping4::kTcp6NetId
-                                              : PortmapMapping4::kTcpNetId;
-    auto port = addr.getPort();
-    // The port format is a bit odd, reversed from looking at rpcinfo output.
-    return {
-        netid,
-        fmt::format(
-            "{}.{}.{}", addr.getAddressStr(), (port >> 8) & 0xff, port & 0xff)};
-  } else {
-    return {PortmapMapping4::kLocalNetId, addr.getPath()};
-  }
-}
-
-} // namespace
-
-void RpcServer::registerService(uint32_t progNumber, uint32_t progVersion) {
-  auto& ebstate = state_.get();
-  auto& pmstate = ebstate.portmapState;
-  if (!pmstate.has_value()) {
-    // The rpcbind client was never initialized, do it now.
-    pmstate.emplace();
-  }
-  auto& state = pmstate.value();
-
-  // Enumerate the addresses (in practice, just the loopback) and use the
-  // port number we got from the kernel to register the mapping for
-  // this program/version pair with rpcbind/portmap.
-  auto addrs = serverSocket_->getAddresses();
-  for (auto& addr : addrs) {
-    auto [netid, addrStr] = getNetIdAndAddr(addr);
-    PortmapMapping4 mapping{progNumber, progVersion, netid, addrStr, "edenfs"};
-    state.portMap.setMapping(mapping);
-    state.mappedPorts.push_back(std::move(mapping));
-  }
-}
+RpcServer::~RpcServer() = default;
 
 folly::SocketAddress RpcServer::getAddr() const {
   return serverSocket_->getAddress();

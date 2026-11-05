@@ -48,20 +48,10 @@ class Mountd {
 
   /**
    * Bind the RPC mountd program to the passed in address.
-   *
-   * If registerWithRpcbind is set, this mountd program will advertise itself
-   * against the rpcbind daemon allowing it to be visible system wide. Be aware
-   * that for a given transport (tcp/udp) only one mountd program can be
-   * registered with rpcbind, and thus if a real NFS server is running on this
-   * host, EdenFS won't be able to register itself.
    */
-  void initialize(folly::SocketAddress addr, bool registerWithRpcbind);
+  void initialize(folly::SocketAddress addr);
   void initialize(folly::File socket);
   void resumeAccepting();
-
-  uint32_t getProgramNumber();
-
-  uint32_t getProgramVersion();
 
   /**
    * Register a path as the root of a mount point.

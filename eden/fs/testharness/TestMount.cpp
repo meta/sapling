@@ -98,8 +98,8 @@ TestMount::TestMount(
   edenConfig_->enableActivityBuffer.setValue(
       enableActivityBuffer, ConfigSourceType::Default, true);
 
-  // By default, we should not allocate an NFS server (including mountd and
-  // rpcbindd) on an EventBase in unit tests.
+  // By default, we should not allocate an NFS server (including mountd) on
+  // an EventBase in unit tests.
   edenConfig_->enableNfsServer.setValue(false, ConfigSourceType::Default, true);
 
   if (configureEdenConfig_) {

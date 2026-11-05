@@ -88,7 +88,6 @@ eden_add_library(eden_fs_nfs_nfs_server
     NfsServer.cpp
   DEPS
     eden_fs_nfs_nfsd3
-    eden_fs_nfs_portmap_portmapserver
     eden_fs_telemetry_structured_logger
   EXPORTED_DEPS
     eden_fs_inodes_fs_channel

@@ -252,11 +252,8 @@ Mountd::Mountd(
               maximumInFlightRequests,
               highNfsRequestsLogInterval)) {}
 
-void Mountd::initialize(folly::SocketAddress addr, bool registerWithRpcbind) {
-  server_->initialize(addr);
-  if (registerWithRpcbind) {
-    server_->registerService(kMountdProgNumber, kMountdProgVersion);
-  }
+void Mountd::initialize(folly::SocketAddress addr) {
+  server_->initialize(std::move(addr));
 }
 
 void Mountd::initialize(folly::File socket) {
@@ -266,14 +263,6 @@ void Mountd::initialize(folly::File socket) {
 
 void Mountd::resumeAccepting() {
   server_->resumeAccepting();
-}
-
-uint32_t Mountd::getProgramNumber() {
-  return kMountdProgNumber;
-}
-
-uint32_t Mountd::getProgramVersion() {
-  return kMountdProgVersion;
 }
 
 void Mountd::registerMount(AbsolutePathPiece path, InodeNumber ino) {

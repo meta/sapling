@@ -8,7 +8,6 @@
 #include "eden/fs/nfs/NfsServer.h"
 
 #include "eden/fs/nfs/Nfsd3.h"
-#include "eden/fs/nfs/portmap/Rpcbindd.h"
 #include "eden/fs/telemetry/EdenFsEventsLogger.h"
 
 namespace facebook::eden {
@@ -17,7 +16,6 @@ NfsServer::NfsServer(
     PrivHelper* privHelper,
     folly::EventBase* evb,
     std::shared_ptr<folly::Executor> threadPool,
-    bool shouldRunOurOwnRpcbindServer,
     const std::shared_ptr<EdenFsEventsLogger>& edenFsEventsLogger,
     size_t maximumInFlightRequests,
     std::chrono::nanoseconds highNfsRequestsLogInterval,
@@ -25,14 +23,6 @@ NfsServer::NfsServer(
     : privHelper_{privHelper},
       evb_(evb),
       threadPool_{std::move(threadPool)},
-      rpcbindd_(
-          shouldRunOurOwnRpcbindServer ? std::make_shared<Rpcbindd>(
-                                             evb_,
-                                             threadPool_,
-                                             edenFsEventsLogger,
-                                             maximumInFlightRequests,
-                                             highNfsRequestsLogInterval)
-                                       : nullptr),
       mountd_(
           evb_,
           threadPool_,
@@ -43,33 +33,12 @@ NfsServer::NfsServer(
       highNfsRequestsLogInterval_(highNfsRequestsLogInterval),
       longRunningFSRequestThreshold_(longRunningFSRequestThreshold) {}
 
-void NfsServer::initialize(
-    folly::SocketAddress addr,
-    bool registerMountdWithRpcbind) {
-  mountd_.initialize(addr, registerMountdWithRpcbind);
-  if (rpcbindd_) {
-    rpcbindd_->initialize();
-  }
-  auto registeredAddr = mountd_.getAddr();
-  // we can't register uds sockets with our portmapper (portmapper v2
-  // does not support those).
-  if (registeredAddr.isFamilyInet()) {
-    recordPortNumber(
-        mountd_.getProgramNumber(),
-        mountd_.getProgramVersion(),
-        registeredAddr.getPort());
-  }
+void NfsServer::initialize(folly::SocketAddress addr) {
+  mountd_.initialize(std::move(addr));
 }
 
 void NfsServer::initialize(folly::File socket) {
   mountd_.initialize(std::move(socket));
-  if (rpcbindd_) {
-    rpcbindd_->initialize();
-  }
-  // TODO: we should register the mountd server on takeover too. but
-  // we only transfer the connected socket not the listening socket.
-  // the listening one is the one we wanna register. So we need to
-  // transfer that socket to be able to register it.
 }
 
 void NfsServer::resumeMountdAccepting() {
@@ -122,18 +91,6 @@ NfsServer::NfsMountInfo NfsServer::registerMount(
   mountd_.registerMount(path, rootIno);
 
   return {std::move(nfsd), mountd_.getAddr()};
-}
-
-/**
- * Registers an RPC service running a certain protocol version on port.
- */
-void NfsServer::recordPortNumber(
-    uint32_t protocol,
-    uint32_t version,
-    uint32_t port) {
-  if (rpcbindd_) {
-    rpcbindd_->recordPortNumber(protocol, version, port);
-  }
 }
 
 void NfsServer::unregisterMount(AbsolutePathPiece path) {

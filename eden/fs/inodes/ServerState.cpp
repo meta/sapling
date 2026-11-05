@@ -167,7 +167,6 @@ std::shared_ptr<NfsServer> ServerState::makeNfsServer(
       privHelper_.get(),
       nfsEventBase_,
       fsChannelThreadPool_,
-      config.runInternalRpcbind.getValue(),
       edenFsEventsLogger_,
       config.maxFsChannelInflightRequests.getValue(),
       config.highFsRequestsLogInterval.getValue(),

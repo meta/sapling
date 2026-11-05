@@ -906,13 +906,12 @@ class EdenServer : private TakeoverHandler {
   std::optional<std::string> oldDaemonPid_ = std::nullopt;
 
   /**
-   * The thread that serves the NFS sockets: mountd, rpcbind and every
-   * mount's nfsd. NFS requests must not wait behind the main EventBase,
-   * whose periodic tasks can block it for tens of seconds (the backing
-   * store flush syncs the hgcache), and soft mounts turn such a stall into
-   * ETIMEDOUT for the application. Declared before mountPoints_ and
-   * serverState_: a mount's NFS channel and the NFS servers are destroyed on
-   * this thread, so it must outlive them.
+   * The thread that serves the NFS sockets: mountd and every mount's nfsd. NFS
+   * requests must not wait behind the main EventBase, whose periodic tasks can
+   * block it for tens of seconds (the backing store flush syncs the hgcache),
+   * and soft mounts turn such a stall into ETIMEDOUT for the application.
+   * Declared before mountPoints_ and serverState_: a mount's NFS channel and
+   * the NFS servers are destroyed on this thread, so it must outlive them.
    */
   folly::ScopedEventBaseThread nfsEventBaseThread_{"NfsEventBase"};
 

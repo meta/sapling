@@ -2925,11 +2925,8 @@ folly::Future<FsChannel::StopFuture> Nfsd3::initialize() {
   return folly::makeFuture<FsChannel::StopFuture>(getStopFuture());
 }
 
-void Nfsd3::initialize(folly::SocketAddress addr, bool registerWithRpcbind) {
+void Nfsd3::initialize(folly::SocketAddress addr) {
   server_->initialize(addr);
-  if (registerWithRpcbind) {
-    server_->registerService(kNfsdProgNumber, kNfsd3ProgVersion);
-  }
 }
 
 void Nfsd3::initialize(folly::File connectedSocket) {
@@ -3167,14 +3164,6 @@ void Nfsd3::runInvalidation(Invalidation& invalidation) {
         mode,
         folly::errnoStr(error));
   }
-}
-
-uint32_t Nfsd3::getProgramNumber() {
-  return kNfsdProgNumber;
-}
-
-uint32_t Nfsd3::getProgramVersion() {
-  return kNfsd3ProgVersion;
 }
 
 void Nfsd3::invalidateInodes(

@@ -215,12 +215,6 @@ class Nfsd3 final : public FsChannel {
   /**
    * Create a new RPC NFSv3 program.
    *
-   * If registerWithRpcbind is set, this NFSv3 program will advertise itself
-   * against the rpcbind daemon allowing it to be visible system wide. Be aware
-   * that for a given transport (tcp/udp) only one NFSv3 program can be
-   * registered with rpcbind, and thus if a real NFS server is running on this
-   * host, EdenFS won't be able to register itself.
-   *
    * All the socket processing will be run on the EventBase passed in. This
    * also must be called on that EventBase thread.
    *
@@ -259,7 +253,7 @@ class Nfsd3 final : public FsChannel {
 
   [[nodiscard]] folly::Future<StopFuture> initialize() override;
 
-  void initialize(folly::SocketAddress addr, bool registerWithRpcbind);
+  void initialize(folly::SocketAddress addr);
   void initialize(folly::File connectedSocket);
 
   /**
@@ -390,10 +384,6 @@ class Nfsd3 final : public FsChannel {
   ImmediateFuture<folly::Unit> completeInvalidations() override;
 
   folly::coro::now_task<folly::Unit> co_completeInvalidations() override;
-
-  uint32_t getProgramNumber();
-
-  uint32_t getProgramVersion();
 
   /**
    * Obtain the address that this NFSv3 program is listening on.
