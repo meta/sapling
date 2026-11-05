@@ -1034,6 +1034,14 @@ async fn init_bookmarks(
 
     tracing::info!("{} bookmarks to warm up", total);
 
+    let warm_cs_ids = warm_changesets(
+        ctx,
+        all_bookmarks.values().map(|(cs_id, _, _)| *cs_id),
+        warmers,
+    )
+    .await;
+    let warm_cs_ids = &warm_cs_ids;
+
     let futs = all_bookmarks
         .iter()
         .enumerate()
@@ -1045,9 +1053,7 @@ async fn init_bookmarks(
 
             let remaining = total - i - 1;
 
-            let warm_state = get_warm_state(ctx, cs_id, warmers).watched().await?;
-
-            if !warm_state.are_all_warm() {
+            if !warm_cs_ids.contains(&cs_id) {
                 match mode {
                     InitMode::Rewind => {
                         let derived_cs_ids = move_bookmark_back_in_history_until_derived(
@@ -1249,6 +1255,38 @@ impl WarmState {
         };
         Ok(())
     }
+}
+
+/// Returns the changesets that are warm for every warmer. Each distinct
+/// changeset is checked once, however many bookmarks point at it. A changeset
+/// whose check fails is treated as cold, so its bookmarks are walked back
+/// instead of failing the whole initialization.
+async fn warm_changesets(
+    ctx: &CoreContext,
+    cs_ids: impl IntoIterator<Item = ChangesetId>,
+    warmers: &[Warmer],
+) -> HashSet<ChangesetId> {
+    let distinct: HashSet<ChangesetId> = cs_ids.into_iter().collect();
+    tracing::info!("{} distinct changesets to check", distinct.len());
+
+    stream::iter(distinct)
+        .map(|cs_id| async move {
+            match get_warm_state(ctx, cs_id, warmers).watched().await {
+                Ok(warm_state) => warm_state.are_all_warm().then_some(cs_id),
+                Err(err) => {
+                    tracing::warn!(
+                        "warm check for {} failed, treating it as cold: {:#}",
+                        cs_id,
+                        err
+                    );
+                    None
+                }
+            }
+        })
+        .buffer_unordered(100)
+        .filter_map(|cs_id| async move { cs_id })
+        .collect()
+        .await
 }
 
 async fn get_warm_state(
