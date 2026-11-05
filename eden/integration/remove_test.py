@@ -575,9 +575,6 @@ class RemoveTest(RemoveTestBase):
             text=True,
         )
 
-        # FIXME: `eden rm` should exit 0 and unregister the checkout instead
-        # of failing to delete the missing client dir.
-        self.assertEqual(1, result.returncode, result.stderr)
-        self.assertIn("error deleting configuration", result.stderr)
-        self.assertIn(self.mount, self.load_directory_map())
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertNotIn(self.mount, self.load_directory_map())
         self.assertFalse(os.path.exists(self.mount))

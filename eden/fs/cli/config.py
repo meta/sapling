@@ -297,19 +297,37 @@ class AbstractEdenInstance:
     def get_mounts(self) -> Dict[Path, ListMountInfo]: ...
 
 
+def _ignore_already_removed(
+    func: Callable[..., object], path: str, exc_info: Tuple[Any, BaseException, Any]
+) -> None:
+    if not isinstance(exc_info[1], FileNotFoundError):
+        raise exc_info[1]
+    log.debug(f"{path} was already removed")
+
+
 def _remove_client_dir(client_dir: Path) -> None:
     # EdenFS does not mount a client directory that has no SNAPSHOT.
     # edenfsctl reads config.toml to remove a partly deleted checkout.
+    # Another `eden rm` of the same checkout, or an earlier interrupted one,
+    # may already have deleted any part of the client directory.
     (client_dir / SNAPSHOT).unlink(missing_ok=True)
-    for entry in client_dir.iterdir():
+    try:
+        entries = list(client_dir.iterdir())
+    except FileNotFoundError:
+        log.warning(f"Client directory {client_dir} was already removed")
+        return
+    for entry in entries:
         if entry.name == MOUNT_CONFIG:
             continue
         if entry.is_dir() and not entry.is_symlink():
-            shutil.rmtree(entry)
+            shutil.rmtree(entry, onerror=_ignore_already_removed)
         else:
-            entry.unlink()
+            entry.unlink(missing_ok=True)
     (client_dir / MOUNT_CONFIG).unlink(missing_ok=True)
-    client_dir.rmdir()
+    try:
+        client_dir.rmdir()
+    except FileNotFoundError:
+        log.warning(f"Client directory {client_dir} was already removed")
 
 
 class EdenInstance(AbstractEdenInstance):

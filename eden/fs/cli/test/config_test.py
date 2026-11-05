@@ -423,10 +423,9 @@ prefetching-enable = true
     def test_remove_client_dir_already_removed(self) -> None:
         client_dir = self._state_dir / "clients" / "already-removed"
 
-        # FIXME: a client dir that another `eden rm` already deleted should
-        # count as removed, so this should not raise.
-        with self.assertRaises(FileNotFoundError):
-            config_mod._remove_client_dir(client_dir)
+        config_mod._remove_client_dir(client_dir)
+
+        self.assertFalse(client_dir.exists())
 
     def test_remove_client_dir_concurrently_removed_entry(self) -> None:
         client_dir = self._state_dir / "clients" / "racing"
@@ -440,13 +439,9 @@ prefetching-enable = true
             real_rmtree(path, **kwargs)
 
         with patch("shutil.rmtree", side_effect=concurrent_rmtree):
-            # FIXME: entries that another `eden rm` already deleted should
-            # count as removed, so this should not raise and client_dir should
-            # be gone afterwards.
-            with self.assertRaises(FileNotFoundError):
-                config_mod._remove_client_dir(client_dir)
+            config_mod._remove_client_dir(client_dir)
 
-        self.assertTrue(client_dir.exists())
+        self.assertFalse(client_dir.exists())
 
     def test_checkout_without_protocol_defaults_to_nfs_on_macos(self) -> None:
         client_dir = self._state_dir / "clients" / "legacy-client"
