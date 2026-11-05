@@ -385,6 +385,24 @@ void Overlay::initOverlay(
   IORequest req{this};
   auto optNextInodeNumber =
       inodeCatalog_->initOverlay(/*createIfNonExisting=*/true);
+  hadCleanStartup_ = optNextInodeNumber.has_value();
+#ifndef _WIN32
+  if (!optNextInodeNumber && useOnlineFsck_) {
+    if (auto reservation = loadInodeReservation(localDir_)) {
+      // The durable reservation bounds every inode handed out by the previous
+      // process. Skip the unused part of that reservation; validate directory
+      // contents and bindings on access instead of walking the entire overlay.
+      optNextInodeNumber = InodeNumber{*reservation};
+      XLOGF(
+          WARN,
+          "Overlay {} was not shut down cleanly; using inode reservation {} "
+          "with online validation instead of startup fsck",
+          localDir_,
+          *reservation);
+      stats_->increment(&OverlayStats::onlineFsckStartupSkip);
+    }
+  }
+#endif
   if (!optNextInodeNumber.has_value()) {
 #ifndef _WIN32
     if (inodeCatalogType_ == InodeCatalogType::LegacyEphemeral) {
@@ -478,8 +496,6 @@ void Overlay::initOverlay(
     // this is a bug.
     EDEN_BUG() << "InMemory overlay returned no next inode number";
 #endif
-  } else {
-    hadCleanStartup_ = true;
   }
 
 #ifndef _WIN32
@@ -534,16 +550,16 @@ void Overlay::initOverlay(
           .useSigbusProtection = useSigbusProtection,
       });
   if (!hadCleanStartup_) {
-    // The next inode number was rediscovered by scanning the overlay, so
-    // numbers at or above it will be handed out again. Records for them
-    // belong to inodes that no longer exist.
+    // The next inode number came from either scanning the overlay or the end
+    // of the durable reservation. Numbers at or above it may be handed out
+    // again, so records for them cannot describe a live inode.
     auto freed =
         inodeMetadataTable_->freeInodesFrom(InodeNumber{nextInodeNumber});
     if (freed > 0) {
       XLOGF(
           INFO,
           "Overlay {}: dropped {} inode metadata records at or above the "
-          "rediscovered next inode number {}",
+          "recovered next inode number {}",
           localDir_,
           freed,
           nextInodeNumber);

@@ -1704,7 +1704,83 @@ std::shared_ptr<Overlay> createTestOverlay(
       *EdenConfig::createTestEdenConfig());
 }
 
+void expectOnlineFsckFallsBackToStartupScan(const AbsolutePath& localDir) {
+  auto rawConfig = EdenConfig::createTestEdenConfig();
+  rawConfig->overlayOnlineFsck.setValue(true, ConfigSourceType::CommandLine);
+  auto config = std::make_shared<ReloadableConfig>(rawConfig);
+  auto noopErrorLogger = makeTestErrorLogger();
+  auto overlay = Overlay::create(
+      localDir,
+      kPathMapDefaultCaseSensitive,
+      kInodeCatalogType,
+      makeTestEdenFsEventsLogger(),
+      /*errorLogger=*/noopErrorLogger,
+      makeRefPtr<EdenStats>(),
+      *rawConfig);
+  bool ranFsck = false;
+  overlay->setFsckCallback([&] { ranFsck = true; });
+
+  overlay->initialize(config).get();
+  EXPECT_TRUE(ranFsck);
+  EXPECT_FALSE(overlay->hadCleanStartup());
+  EXPECT_TRUE(overlay->usesOnlineFsck());
+  overlay->close();
+}
+
 } // namespace
+
+TEST(PlainOverlayTest, onlineFsckUsesReservationWithoutStartupScan) {
+  folly::test::TemporaryDirectory testDir("overlay_online_fsck");
+  auto localDir = canonicalPath(testDir.path().string());
+  createDirtyOverlay(localDir);
+
+  auto rawConfig = EdenConfig::createTestEdenConfig();
+  rawConfig->overlayOnlineFsck.setValue(true, ConfigSourceType::CommandLine);
+  auto config = std::make_shared<ReloadableConfig>(rawConfig);
+  auto noopErrorLogger = makeTestErrorLogger();
+  auto overlay = Overlay::create(
+      localDir,
+      kPathMapDefaultCaseSensitive,
+      kInodeCatalogType,
+      makeTestEdenFsEventsLogger(),
+      /*errorLogger=*/noopErrorLogger,
+      makeRefPtr<EdenStats>(),
+      *rawConfig);
+  bool ranFsck = false;
+  overlay->setFsckCallback([&] { ranFsck = true; });
+
+  overlay->initialize(config).get();
+  EXPECT_FALSE(ranFsck);
+  EXPECT_FALSE(overlay->hadCleanStartup());
+  EXPECT_TRUE(overlay->usesOnlineFsck());
+  overlay->close();
+}
+
+TEST(PlainOverlayTest, onlineFsckScansWhenReservationIsMalformed) {
+  folly::test::TemporaryDirectory testDir(
+      "overlay_online_fsck_bad_reservation");
+  auto localDir = canonicalPath(testDir.path().string());
+  createDirtyOverlay(localDir);
+  auto reservationPath = (localDir + "inode-reservation"_pc).asString();
+  ASSERT_EQ(0, unlink(reservationPath.c_str()));
+  ASSERT_EQ(0, symlink("invalid", reservationPath.c_str()));
+
+  expectOnlineFsckFallsBackToStartupScan(localDir);
+}
+
+TEST(PlainOverlayTest, onlineFsckScansWhenReservationCannotBeRead) {
+  folly::test::TemporaryDirectory testDir(
+      "overlay_online_fsck_unreadable_reservation");
+  auto localDir = canonicalPath(testDir.path().string());
+  createDirtyOverlay(localDir);
+  auto reservationPath = (localDir + "inode-reservation"_pc).asString();
+  ASSERT_EQ(0, unlink(reservationPath.c_str()));
+  ASSERT_TRUE(
+      folly::writeFile(
+          folly::StringPiece{"not a symlink"}, reservationPath.c_str()));
+
+  expectOnlineFsckFallsBackToStartupScan(localDir);
+}
 
 TEST(PlainOverlayTest, semaphore_serializes_fsck) {
   folly::test::TemporaryDirectory testDir1("overlay_sem_test1");
@@ -1839,6 +1915,9 @@ WalLifecycleOverlay makeWalLifecycleOverlay(
     bool writeWalV2 = false,
     bool onlineFsck = false,
     std::optional<size_t> walCompactionMultiplier = std::nullopt) {
+  if (onlineFsck) {
+    createDirtyOverlay(dir);
+  }
   auto rawConfig = EdenConfig::createTestEdenConfig();
   rawConfig->overlayUseWal.setValue(useWal, ConfigSourceType::CommandLine);
   rawConfig->overlayWalWriteV2.setValue(
@@ -1865,6 +1944,7 @@ WalLifecycleOverlay makeWalLifecycleOverlay(
       stats.copy(),
       *rawConfig);
   overlay->initialize(reloadable).get();
+  EXPECT_EQ(onlineFsck, overlay->usesOnlineFsck());
   // Probabilistic WAL compaction would make hasWal assertions flaky; the
   // production default uses folly::Random::rand32(). Force a "never
   // compact" RNG by default and let individual tests override.

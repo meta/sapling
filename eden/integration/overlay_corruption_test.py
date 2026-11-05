@@ -478,6 +478,13 @@ class OverlayCorruptionTestBase(testcase.HgRepoTestMixin, testcase.EdenRepoTest)
             self.assertLess(time.monotonic(), deadline, "mount did not start")
             time.sleep(0.02)
 
+    def _restart(self, mount: pathlib.Path) -> None:
+        if self.online_fsck:
+            self.eden.kill_dirty()
+        else:
+            self.eden.shutdown()
+        self._start(mount)
+
     def _forget(self, mount: pathlib.Path) -> None:
         # `eden remove` needs the mount to load, which this one does not.
         if self.eden.is_healthy():
@@ -655,11 +662,14 @@ class OverlayCorruptionTestBase(testcase.HgRepoTestMixin, testcase.EdenRepoTest)
             if c.name in ctxs:
                 c.build(ctxs[c.name])
         self._start(mount)
+        if self.online_fsck:
+            # Prime the reservation, then exercise a dirty startup without
+            # accessing any case directory first.
+            self._restart(mount)
         walk = {n: self._walk(d) for n, d in dirs.items()}
         self._phase(mount, results, "first", walk)
 
-        self.eden.shutdown()
-        self._start(mount)
+        self._restart(mount)
         walk = {n: self._walk(d) for n, d in dirs.items()}
         self._phase(mount, results, "restart", walk)
 
@@ -667,6 +677,8 @@ class OverlayCorruptionTestBase(testcase.HgRepoTestMixin, testcase.EdenRepoTest)
         archive = {n: self._archive(ctx) for n, ctx in ctxs.items()}
         fsck = self._fsck(mount, ctxs)
         self._start(mount)
+        if self.online_fsck:
+            self._restart(mount)
         self._phase(mount, results, "archive", archive)
         self._phase(mount, results, "fsck", fsck)
 
@@ -748,7 +760,10 @@ class OverlayCorruptionTestBase(testcase.HgRepoTestMixin, testcase.EdenRepoTest)
         )
 
         # Restart so removeRecursively sees the child subtree only on disk.
-        self.eden.shutdown()
+        if self.online_fsck:
+            self.eden.kill_dirty()
+        else:
+            self.eden.shutdown()
         self._start(self.mount_path)
         async with self.get_async_thrift_client() as client:
             await client.removeRecursively(
@@ -931,7 +946,7 @@ class NfsReaddirplusCorruptionTest(
             {name: os.lstat(path).st_ino for name, path in paths.items()},
             _BIG_INODE,
         )
-        self.eden.shutdown()
+        self.eden.kill_dirty()
         ctx.append_wal(_wal_add("g", _REG, ctx.ino["a"]), "s")
         self.eden.start()
 

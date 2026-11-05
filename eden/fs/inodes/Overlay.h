@@ -155,7 +155,8 @@ class Overlay : public std::enable_shared_from_this<Overlay> {
   /**
    * True if either a new overlay was created on disk or initialize() returned
    * after opening an overlay that had been cleanly shut down. False prior to
-   * initialize() being called or if a consistency check was required.
+   * initialize() being called or after an unclean shutdown, including when
+   * a reservation lets startup skip the offline consistency check.
    */
   bool hadCleanStartup() const {
     return hadCleanStartup_;
