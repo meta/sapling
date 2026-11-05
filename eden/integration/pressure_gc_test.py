@@ -237,8 +237,12 @@ class ActiveFuseInvalidationTest(testcase.EdenRepoTest):
         # invalidateChildrenNotAccessedRecentlyFuse which sends
         # FUSE_NOTIFY_INVAL_ENTRY, then unloadChildrenUnreferencedByFs.
         if sys.platform == "linux":
+            # The kernel can drop its dentries without an invalidation, for
+            # example under memory pressure. Read the files again before each
+            # GC attempt. Then each file has a kernel reference to invalidate.
             invalidated, loaded_after = await self.invalidate_until_unloaded(
                 loaded_before=loaded_after_read,
+                before_invalidate=self.read_all,
             )
             self.assertLess(loaded_after, loaded_after_read)
         else:
