@@ -53,6 +53,7 @@ rust_library(
         "//eden/fs/cli_rs/edenfs-config:edenfs-config",
         "//eden/fs/cli_rs/edenfs-error:edenfs-error",
         "//eden/fs/cli_rs/edenfs-utils:edenfs-utils",
+        "//eden/scm/exec/scratch:mkscratch",
         "//eden/scm/lib/atomicfile:atomicfile",
         "//eden/scm/lib/thrift-types:thrift-types",
     ] + select({
@@ -64,9 +65,6 @@ rust_library(
             "fbsource//third-party/rust:libc",
             "fbsource//third-party/rust:psutil",
             "//eden/scm/exec/eden_apfs_mount_helper:eden_apfs",
-        ],
-        "ovr_config//os:windows": [
-            "//eden/scm/exec/scratch:mkscratch",
         ],
     }),
 )

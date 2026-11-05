@@ -466,14 +466,103 @@ test worktree remove - removes an unmounted checkout
   created linked worktree at $TESTTMP/unmounted
   $ eden unmount $TESTTMP/unmounted
   $ sl worktree remove $TESTTMP/unmounted -y --force
-  Cannot inspect repository-configured redirections while $TESTTMP/unmounted is unmounted. Their backing storage may remain. APFS volumes left behind require manual cleanup. (osx !)
-  Cannot inspect repository-configured redirections while $TESTTMP/unmounted is unmounted. Their backing storage may remain. Run `eden du --clean-orphaned` to reclaim leftover backing storage. (no-osx !)
   Deleting EdenFS checkout state...
   removed $TESTTMP/unmounted
   $ test -d $TESTTMP/unmounted
   [1]
   $ sl worktree list
   this worktree is not part of a group
+
+test worktree remove - deletes repository-configured redirection backing of unmounted checkouts
+
+#if no-windows
+  $ cd $TESTTMP
+  $ newclientrepo repo_redirection_repo
+  $ printf '[redirections]\n"buck-out" = "symlink"\n' > .eden-redirections
+  $ sl commit -qAm init
+  $ sl worktree add $TESTTMP/repo_redirection_unmounted
+  created linked worktree at $TESTTMP/repo_redirection_unmounted
+  $ sl worktree add $TESTTMP/repo_redirection_gone
+  created linked worktree at $TESTTMP/repo_redirection_gone
+  $ eden redirect fixup --mount $TESTTMP/repo_redirection_unmounted > /dev/null
+  $ eden redirect fixup --mount $TESTTMP/repo_redirection_gone > /dev/null
+  $ eden redirect add --mount $TESTTMP/repo_redirection_gone artifacts symlink
+  $ unmounted_backing="$(readlink $TESTTMP/repo_redirection_unmounted/buck-out)"
+  $ gone_backing="$(readlink $TESTTMP/repo_redirection_gone/buck-out)"
+  $ gone_artifacts_backing="$(readlink $TESTTMP/repo_redirection_gone/artifacts)"
+  $ mkdir "$(dirname "$unmounted_backing")/other-tool"
+  $ eden unmount $TESTTMP/repo_redirection_unmounted
+  $ eden unmount $TESTTMP/repo_redirection_gone
+  $ rm -rf $TESTTMP/repo_redirection_gone
+  $ sl worktree remove $TESTTMP/repo_redirection_unmounted $TESTTMP/repo_redirection_gone -y --force
+  Unmounting redirections...
+  Deleting redirection backing storage: *edenfsZredirectionsZartifacts... (glob)
+  Deleting redirection backing storage: *edenfsZredirectionsZbuck-out... (glob)
+  Deleting EdenFS checkout state...
+  removed $TESTTMP/repo_redirection_gone
+  Deleting redirection backing storage: *edenfsZredirectionsZbuck-out... (glob)
+  Deleting EdenFS checkout state...
+  removed $TESTTMP/repo_redirection_unmounted
+  $ test -e "$unmounted_backing"
+  [1]
+  $ test -d "$(dirname "$unmounted_backing")/other-tool"
+  $ test -e "$gone_backing"
+  [1]
+  $ test -e "$gone_artifacts_backing"
+  [1]
+  $ python -c 'import os, sys; print(os.path.exists(os.path.dirname(sys.argv[-1])))' "$gone_backing"
+  False
+  $ test -d $TESTTMP/repo_redirection_gone
+  [1]
+#endif
+
+test worktree remove - preserves backing shared by colliding scratch namespaces
+
+#if no-windows
+  $ cd $TESTTMP
+  $ newclientrepo scratch_ownership_repo
+  $ touch file.txt
+  $ sl commit -qAm init
+  $ sl worktree add $TESTTMP/scratch:owner
+  created linked worktree at $TESTTMP/scratch:owner
+  $ sl worktree add $TESTTMP/scratch_owner
+  created linked worktree at $TESTTMP/scratch_owner
+  $ eden redirect add --mount $TESTTMP/scratch_owner buck-out symlink
+  $ shared_backing="$(readlink $TESTTMP/scratch_owner/buck-out)"
+  $ echo keep > "$shared_backing/sentinel"
+  $ eden unmount $TESTTMP/scratch:owner
+  $ sl worktree remove $TESTTMP/scratch:owner -y --force
+  Redirection backing cleanup did not finish for $TESTTMP/scratch:owner: scratch namespace for $TESTTMP/scratch:owner is also used by $TESTTMP/scratch_owner. Continuing with removal. APFS volumes left behind require manual cleanup. (osx !)
+  Redirection backing cleanup did not finish for $TESTTMP/scratch:owner: scratch namespace for $TESTTMP/scratch:owner is also used by $TESTTMP/scratch_owner. Continuing with removal. Run `eden du --clean-orphaned` to reclaim leftover backing storage. (no-osx !)
+  Deleting EdenFS checkout state...
+  removed $TESTTMP/scratch:owner
+  $ test -d $TESTTMP/scratch:owner
+  [1]
+  $ cat "$shared_backing/sentinel"
+  keep
+
+The ownership check also preserves backing found by the normal planner.
+
+  $ sl worktree add $TESTTMP/scratch:owner
+  created linked worktree at $TESTTMP/scratch:owner
+  $ eden redirect add --mount $TESTTMP/scratch:owner artifacts symlink
+  $ planned_backing="$(readlink $TESTTMP/scratch:owner/artifacts)"
+  $ echo keep-planned > "$planned_backing/sentinel"
+  $ eden unmount $TESTTMP/scratch:owner
+  $ sl worktree remove $TESTTMP/scratch:owner -y --force
+  Unmounting redirections...
+  Redirection backing cleanup did not finish for $TESTTMP/scratch:owner: scratch namespace for $TESTTMP/scratch:owner is also used by $TESTTMP/scratch_owner. Continuing with removal. APFS volumes left behind require manual cleanup. (osx !)
+  Redirection backing cleanup did not finish for $TESTTMP/scratch:owner: scratch namespace for $TESTTMP/scratch:owner is also used by $TESTTMP/scratch_owner. Continuing with removal. Run `eden du --clean-orphaned` to reclaim leftover backing storage. (no-osx !)
+  Deleting EdenFS checkout state...
+  removed $TESTTMP/scratch:owner
+  $ cat "$planned_backing/sentinel"
+  keep-planned
+  $ cat "$shared_backing/sentinel"
+  keep
+  $ sl worktree list
+    linked  $TESTTMP/scratch_owner
+  * main    $TESTTMP/scratch_ownership_repo
+#endif
 
 test worktree remove - removes a checkout whose folder is gone
 
@@ -485,11 +574,14 @@ test worktree remove - removes a checkout whose folder is gone
   created linked worktree at $TESTTMP/folder_gone
   $ eden unmount $TESTTMP/folder_gone
   $ rm -rf $TESTTMP/folder_gone
+A removal that stops before deleting the folder leaves no folder behind.
+  $ FAILPOINTS=remove:clean_mount_point=return sl worktree remove $TESTTMP/folder_gone -y
+  Deleting EdenFS checkout state...
+  abort: direct EdenFS removal failed for $TESTTMP?folder_gone: failpoint: expected failure (glob)
+  [255]
+  $ test -d $TESTTMP/folder_gone
+  [1]
   $ sl worktree remove $TESTTMP/folder_gone -y
-  Cannot inspect repository-configured redirections while $TESTTMP/folder_gone is unmounted. Their backing storage may remain. APFS volumes left behind require manual cleanup. (osx !)
-  Cannot inspect repository-configured redirections while $TESTTMP/folder_gone is unmounted. Their backing storage may remain. Run `eden du --clean-orphaned` to reclaim leftover backing storage. (no-osx !)
-  Redirection backing cleanup did not finish for $TESTTMP/folder_gone: failed to plan managed redirection backing cleanup for $TESTTMP/folder_gone: failed to find checkout for $TESTTMP/folder_gone: $ENOENT$: $ENOENT$. Continuing with removal. APFS volumes left behind require manual cleanup. (osx !)
-  Redirection backing cleanup did not finish for $TESTTMP/folder_gone: failed to plan managed redirection backing cleanup for $TESTTMP/folder_gone: failed to find checkout for $TESTTMP/folder_gone: $ENOENT$: $ENOENT$. Continuing with removal. Run `eden du --clean-orphaned` to reclaim leftover backing storage. (no-osx !)
   Deleting EdenFS checkout state...
   removed $TESTTMP/folder_gone
   $ sl worktree list
@@ -523,8 +615,6 @@ test worktree remove - a failed folder deletion can be retried
   [255]
 The checkout stays registered until its folder is gone, so the retry removes it.
   $ sl worktree remove $TESTTMP/delete_fails -y --force
-  Cannot inspect repository-configured redirections while *delete_fails is unmounted. Their backing storage may remain. APFS volumes left behind require manual cleanup. (glob) (osx !)
-  Cannot inspect repository-configured redirections while *delete_fails is unmounted. Their backing storage may remain. Run `eden du --clean-orphaned` to reclaim leftover backing storage. (glob) (no-osx !)
   Deleting EdenFS checkout state...
   removed $TESTTMP/delete_fails
   $ test -d $TESTTMP/delete_fails

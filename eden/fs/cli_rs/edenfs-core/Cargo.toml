@@ -19,6 +19,7 @@ edenfs-error = { version = "0.1.0", path = "../edenfs-error" }
 edenfs-utils = { version = "0.1.0", path = "../edenfs-utils" }
 fbthrift_socket = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 hg_util = { package = "sapling-util", version = "0.2.0", path = "../../../scm/lib/util" }
+mkscratch = { version = "0.1.0", path = "../../../scm/exec/scratch" }
 rayon = "1.11.0"
 regex = "1.13.1"
 sapling-atomicfile = { version = "0.2.0", path = "../../../scm/lib/atomicfile" }
@@ -48,6 +49,3 @@ libc = "0.2.186"
 eden_apfs_mount_helper = { version = "0.1.0", path = "../../../scm/exec/eden_apfs_mount_helper" }
 libc = "0.2.186"
 psutil = { version = "5.4.0", features = ["disk"], default-features = false }
-
-[target.'cfg(target_os = "windows")'.dependencies]
-mkscratch = { version = "0.1.0", path = "../../../scm/exec/scratch" }

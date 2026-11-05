@@ -748,7 +748,8 @@ impl EdenFsCheckout {
         })
     }
 
-    fn from_config(path: PathBuf, data_dir: PathBuf, config: CheckoutConfig) -> EdenFsCheckout {
+    /// A configured checkout at `path` whose client state is in `data_dir`.
+    pub fn from_config(path: PathBuf, data_dir: PathBuf, config: CheckoutConfig) -> EdenFsCheckout {
         EdenFsCheckout {
             path,
             data_dir,

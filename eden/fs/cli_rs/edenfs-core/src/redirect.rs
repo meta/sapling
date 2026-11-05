@@ -45,7 +45,6 @@ use edenfs_utils::metadata::MetadataExt;
 use edenfs_utils::remove_symlink;
 use edenfs_utils::trace_env;
 use hg_util::no_follow::NoFollowRoot;
-#[cfg(target_os = "windows")]
 use mkscratch::zzencode;
 #[cfg(target_os = "macos")]
 use psutil::disk::disk_usage;
@@ -1919,6 +1918,7 @@ where
 /// Drop the planner before changing mounts; unmount verification needs fresh state.
 pub struct RedirectionBackingCleanupPlanner<'a> {
     checkout_path: &'a Path,
+    data_dir: &'a Path,
     scratch_root: Option<PathBuf>,
     #[cfg(target_os = "linux")]
     mounts: MountTableSnapshot,
@@ -1926,9 +1926,12 @@ pub struct RedirectionBackingCleanupPlanner<'a> {
 
 impl<'a> RedirectionBackingCleanupPlanner<'a> {
     /// Create a planner for one checkout's planning batch without reading mounts.
-    pub fn new(checkout_path: &'a Path) -> Self {
+    /// `checkout_path` is the canonical path of a registered checkout, whose client
+    /// state is in `data_dir`.
+    pub fn new(checkout_path: &'a Path, data_dir: &'a Path) -> Self {
         Self {
             checkout_path,
+            data_dir,
             scratch_root: None,
             #[cfg(target_os = "linux")]
             mounts: MountTableSnapshot::default(),
@@ -2081,15 +2084,7 @@ fn resolve_apfs_cleanup_target(
     checkout_path: &Path,
     repo_path: &ValidatedRepoPath,
 ) -> Result<PathBuf> {
-    let canonical_checkout = std::fs::canonicalize(checkout_path)
-        .from_err()
-        .with_context(|| {
-            format!(
-                "failed to canonicalize checkout path {}",
-                checkout_path.display()
-            )
-        })?;
-    let expected_target = canonical_checkout.join(repo_path.as_ref());
+    let expected_target = checkout_path.join(repo_path.as_ref());
     if std::fs::symlink_metadata(&expected_target)
         .is_ok_and(|metadata| metadata.file_type().is_symlink())
     {
@@ -2131,14 +2126,116 @@ fn resolve_apfs_cleanup_action(
     }))
 }
 
+/// Check that no other registered checkout shares this checkout's scratch namespace.
+pub fn check_scratch_namespace_owner(
+    checkout_path: &Path,
+    checkout_paths: impl IntoIterator<Item = PathBuf>,
+) -> anyhow::Result<()> {
+    // mkscratch's encoding maps both `:` and `_` to `_`. Compare registered paths so
+    // checkouts whose folders are gone still protect their backing.
+    let namespace = zzencode(&checkout_path.to_string_lossy());
+    for other in checkout_paths {
+        if dunce::simplified(&other) != dunce::simplified(checkout_path)
+            && zzencode(&other.to_string_lossy()) == namespace
+        {
+            return Err(anyhow!(
+                "scratch namespace for {} is also used by {}",
+                checkout_path.display(),
+                other.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Plan deleting every redirection backing in the mkscratch namespace of an unmounted
+/// checkout. The caller must first exclude other registered checkouts sharing its namespace.
+/// On Windows, the handles held by other planned actions for the checkout block this,
+/// so run those first.
+pub fn plan_unmounted_checkout_backing_cleanup(
+    checkout_path: &Path,
+    data_dir: &Path,
+) -> Result<Vec<RedirectionBackingCleanupAction>> {
+    let namespace = resolve_checkout_scratch_path(
+        checkout_path,
+        data_dir,
+        Some(&Redirection::scratch_subdir()),
+    )?;
+    scratch_namespace_cleanup_actions(&namespace)
+}
+
+/// Resolve a path in the scratch namespace of the registered checkout at the canonical
+/// `checkout_path`, whose client state is in `data_dir`, without reading the checkout
+/// folder, which may be gone.
+fn resolve_checkout_scratch_path(
+    checkout_path: &Path,
+    data_dir: &Path,
+    subdir: Option<&Path>,
+) -> Result<PathBuf> {
+    // Scratch is created while the checkout is mounted, when its owner is the user
+    // running EdenFS, who also created its client state.
+    let scratch = mkscratch::Config::load()
+        .and_then(|config| {
+            config.resolve_repo_root(checkout_path, data_dir, subdir, false, &zzencode)
+        })
+        .with_context(|| {
+            format!(
+                "Failed to resolve the scratch path of {}",
+                checkout_path.display()
+            )
+        })?;
+    Ok(scratch.path)
+}
+
+/// mkscratch's mirror style nests each backing under `<root>/edenfs/redirections`. Its default
+/// flat style names each one `edenfsZredirectionsZ<repo path>` in the root, next to other
+/// tools' data.
+fn scratch_namespace_cleanup_actions(
+    namespace: &Path,
+) -> Result<Vec<RedirectionBackingCleanupAction>> {
+    let subdir = Redirection::scratch_subdir();
+    let mirrored = namespace.ends_with(&subdir);
+    let root = if mirrored {
+        namespace.ancestors().nth(subdir.components().count())
+    } else {
+        namespace.parent()
+    };
+    let (Some(root), Some(leaf)) = (root, namespace.file_name()) else {
+        return Err(EdenFsError::ConfigurationError(format!(
+            "invalid scratch namespace {}",
+            namespace.display()
+        )));
+    };
+    let (dir, prefix) = if mirrored {
+        (namespace, Vec::new())
+    } else {
+        (root, [leaf.as_encoded_bytes(), b"Z"].concat())
+    };
+    let mut names = match std::fs::read_dir(dir) {
+        Ok(entries) => entries
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<std::io::Result<Vec<_>>>()
+            .from_err()?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error).from_err(),
+    };
+    names.retain(|name| name.as_encoded_bytes().starts_with(&prefix));
+    names.sort();
+    names.into_iter().try_fold(Vec::new(), |mut actions, name| {
+        actions.extend(scratch_cleanup_action(root, dir.join(name))?);
+        Ok(actions)
+    })
+}
+
 /// Resolve and validate cleanup actions for one batch of redirection backing targets.
 /// Use [`RedirectionBackingCleanupPlanner`] to share mount lookups across calls
 /// in the same planning batch.
 pub fn plan_redirection_backing_cleanup(
     checkout_path: &Path,
+    data_dir: &Path,
     redirections: &BTreeMap<PathBuf, Redirection>,
 ) -> Result<Vec<RedirectionBackingCleanupAction>> {
-    RedirectionBackingCleanupPlanner::new(checkout_path).plan(redirections)
+    RedirectionBackingCleanupPlanner::new(checkout_path, data_dir).plan(redirections)
 }
 
 impl RedirectionBackingCleanupPlanner<'_> {
@@ -2148,6 +2245,7 @@ impl RedirectionBackingCleanupPlanner<'_> {
         redirections: &BTreeMap<PathBuf, Redirection>,
     ) -> Result<Vec<RedirectionBackingCleanupAction>> {
         let checkout_path = self.checkout_path;
+        let data_dir = self.data_dir;
         if !cfg!(any(
             target_os = "linux",
             target_os = "macos",
@@ -2168,7 +2266,7 @@ impl RedirectionBackingCleanupPlanner<'_> {
             return Ok(Vec::new());
         }
         let scratch_root =
-            self.resolve_scratch_root(|path| Redirection::resolve_scratch_path(path, None, true))?;
+            self.resolve_scratch_root(|path| resolve_checkout_scratch_path(path, data_dir, None))?;
         redirections.try_fold(Vec::new(), |mut actions, redirection| {
             let repo_path = ValidatedRepoPath::try_from(redirection.repo_path.as_path())
                 .with_context(|| {
@@ -2184,8 +2282,11 @@ impl RedirectionBackingCleanupPlanner<'_> {
 
             // Creation passes the configured key to mkscratch, whose flat layout keeps `.`
             // components, so `./buck-out` and `buck-out` have different backing directories.
-            let resolved_target =
-                Redirection::resolve_scratch_dir(checkout_path, &redirection.repo_path, true)?;
+            let resolved_target = resolve_checkout_scratch_path(
+                checkout_path,
+                data_dir,
+                Some(&Redirection::scratch_subdir().join(&redirection.repo_path)),
+            )?;
             let target = self.resolve_scratch_cleanup_target(
                 &repo_path,
                 redirection.target.as_deref(),
@@ -2833,6 +2934,7 @@ mod tests {
     use crate::redirect::redirection_uses_symlink;
     use crate::redirect::resolve_apfs_cleanup_target;
     use crate::redirect::scratch_cleanup_action;
+    use crate::redirect::scratch_namespace_cleanup_actions;
 
     #[test]
     fn test_bind_redirection_with_symlink_backing_uses_symlink_state() {
@@ -3457,7 +3559,7 @@ mod tests {
     #[test]
     fn cleanup_reuses_scratch_root_and_retries_failed_resolution() {
         let checkout = Path::new("checkout");
-        let mut planner = RedirectionBackingCleanupPlanner::new(checkout);
+        let mut planner = RedirectionBackingCleanupPlanner::new(checkout, Path::new("data"));
         let attempts = std::cell::Cell::new(0);
         let resolve = |path: &Path| {
             assert_eq!(path, checkout);
@@ -3491,7 +3593,7 @@ mod tests {
         std::fs::create_dir_all(&resolved_target).expect("scratch directory should be created");
 
         assert_eq!(
-            RedirectionBackingCleanupPlanner::new(&checkout)
+            RedirectionBackingCleanupPlanner::new(&checkout, temp_dir.path())
                 .resolve_scratch_cleanup_target(
                     &repo_path,
                     Some(&resolved_target),
@@ -3560,7 +3662,7 @@ mod tests {
         std::os::unix::fs::symlink(&installed, &link).unwrap();
 
         for recorded in [None, Some(Path::new(""))] {
-            let error = RedirectionBackingCleanupPlanner::new(&checkout)
+            let error = RedirectionBackingCleanupPlanner::new(&checkout, temp_dir.path())
                 .resolve_scratch_cleanup_target(&repo_path, recorded, &resolved)
                 .expect_err("a changed scratch template must not abandon the installed backing");
             assert!(
@@ -3573,14 +3675,14 @@ mod tests {
         assert!(installed.exists());
         assert!(!resolved.exists());
         assert_eq!(
-            RedirectionBackingCleanupPlanner::new(&checkout)
+            RedirectionBackingCleanupPlanner::new(&checkout, temp_dir.path())
                 .resolve_scratch_cleanup_target(&repo_path, None, &installed)
                 .unwrap(),
             installed
         );
         std::fs::remove_dir(&installed).unwrap();
         assert_eq!(
-            RedirectionBackingCleanupPlanner::new(&checkout)
+            RedirectionBackingCleanupPlanner::new(&checkout, temp_dir.path())
                 .resolve_scratch_cleanup_target(&repo_path, None, &installed)
                 .unwrap(),
             installed,
@@ -3599,7 +3701,7 @@ mod tests {
         let unrelated_target = temp_dir.path().join("unrelated-data");
         std::fs::create_dir(&unrelated_target).expect("unrelated target should be created");
 
-        let error = RedirectionBackingCleanupPlanner::new(&checkout)
+        let error = RedirectionBackingCleanupPlanner::new(&checkout, temp_dir.path())
             .resolve_scratch_cleanup_target(&repo_path, Some(&unrelated_target), &resolved_target)
             .expect_err("unrelated recorded target should be rejected");
 
@@ -3626,7 +3728,7 @@ mod tests {
         )]);
 
         assert!(
-            plan_redirection_backing_cleanup(temp_dir.path(), &redirections)
+            plan_redirection_backing_cleanup(temp_dir.path(), temp_dir.path(), &redirections)
                 .expect("unknown redirections have no managed backing to plan")
                 .is_empty()
         );
@@ -3643,7 +3745,7 @@ mod tests {
         let resolved_target = temp_dir.path().join("scratch/generated-output");
 
         assert_eq!(
-            RedirectionBackingCleanupPlanner::new(&checkout)
+            RedirectionBackingCleanupPlanner::new(&checkout, temp_dir.path())
                 .resolve_scratch_cleanup_target(
                     &repo_path,
                     Some(&checkout_target),
@@ -3685,14 +3787,30 @@ mod tests {
             .expect("parent symlink should be created");
         let repo_path = ValidatedRepoPath::try_from(Path::new("generated/buck-out"))
             .expect("repo-relative path should be valid");
+        let checkout_path =
+            std::fs::canonicalize(checkout.path()).expect("checkout path should canonicalize");
 
-        let error = resolve_apfs_cleanup_target(checkout.path(), &repo_path)
+        let error = resolve_apfs_cleanup_target(&checkout_path, &repo_path)
             .expect_err("symlink traversal should be rejected");
         assert!(
             error
                 .to_string()
                 .contains("instead of its canonical checkout-relative location"),
             "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn apfs_cleanup_target_does_not_need_the_checkout_folder() {
+        let temp_dir = tempdir().expect("temporary directory should be created");
+        let checkout = temp_dir.path().join("checkout");
+        let repo_path = ValidatedRepoPath::try_from(Path::new("buck-out"))
+            .expect("repo-relative path should be valid");
+
+        assert_eq!(
+            resolve_apfs_cleanup_target(&checkout, &repo_path)
+                .expect("a checkout whose folder is gone should still have a cleanup target"),
+            checkout.join("buck-out")
         );
     }
 
@@ -3795,6 +3913,89 @@ mod tests {
             scratch.join(SCRATCH_README).exists(),
             "the scratch root stays while another target is in it"
         );
+    }
+
+    #[test]
+    fn unmounted_checkout_cleanup_deletes_only_flat_redirection_backing() {
+        let temp_dir = tempdir().expect("temporary directory should be created");
+        let scratch = temp_dir.path().join("scratch");
+        let fbcode_backing = scratch.join("edenfsZredirectionsZfbcodeZbuck-out");
+        let backing = scratch.join("edenfsZredirectionsZbuck-out");
+        let other_tool = scratch.join(".pyre");
+        let similar_name = scratch.join("edenfsZredirections_other");
+        for dir in [&fbcode_backing, &backing, &other_tool, &similar_name] {
+            std::fs::create_dir_all(dir).expect("scratch directory should be created");
+        }
+        std::fs::write(scratch.join(SCRATCH_README), "mkscratch")
+            .expect("README should be created");
+
+        let actions = scratch_namespace_cleanup_actions(&scratch.join("edenfsZredirections"))
+            .expect("the scratch namespace should be safe to clean up");
+        let targets: Vec<_> = actions.iter().map(|action| action.target()).collect();
+        assert_eq!(
+            targets,
+            [backing.as_path(), fbcode_backing.as_path()],
+            "only the redirection backing should be planned, in name order"
+        );
+        for action in actions {
+            action.execute().expect("scratch cleanup should succeed");
+        }
+
+        assert!(!backing.exists(), "the backing should be deleted");
+        assert!(!fbcode_backing.exists(), "the backing should be deleted");
+        assert!(other_tool.is_dir(), "another tool's directory should stay");
+        assert!(
+            similar_name.is_dir(),
+            "a directory outside the redirection namespace should stay"
+        );
+    }
+
+    #[test]
+    fn unmounted_checkout_cleanup_deletes_mirrored_redirection_backing() {
+        let temp_dir = tempdir().expect("temporary directory should be created");
+        let scratch = temp_dir.path().join("scratch");
+        let redirections = scratch.join("edenfs").join("redirections");
+        std::fs::create_dir_all(redirections.join("buck-out"))
+            .expect("backing directory should be created");
+        std::fs::create_dir_all(redirections.join("fbcode").join("buck-out"))
+            .expect("backing directory should be created");
+        std::fs::write(scratch.join(SCRATCH_README), "mkscratch")
+            .expect("README should be created");
+
+        let actions = scratch_namespace_cleanup_actions(&redirections)
+            .expect("the scratch namespace should be safe to clean up");
+        assert_eq!(
+            actions.len(),
+            2,
+            "each top-level backing directory should be planned on its own"
+        );
+        for action in actions {
+            action.execute().expect("scratch cleanup should succeed");
+        }
+
+        assert!(
+            !scratch.exists(),
+            "the mirrored directories and the scratch root should be deleted with the backing"
+        );
+    }
+
+    #[test]
+    fn unmounted_checkout_cleanup_ignores_missing_scratch_root() {
+        let temp_dir = tempdir().expect("temporary directory should be created");
+        let missing = temp_dir.path().join("missing");
+
+        for namespace in [
+            missing.join("edenfsZredirections"),
+            missing.join("edenfs").join("redirections"),
+        ] {
+            let actions = scratch_namespace_cleanup_actions(&namespace)
+                .expect("a missing scratch root should have nothing to clean up");
+            assert!(
+                actions.is_empty(),
+                "no backing should be planned for {}",
+                namespace.display()
+            );
+        }
     }
 
     #[cfg(unix)]

@@ -32,9 +32,11 @@ use edenfs_core::instance::EdenFsInstance;
 use edenfs_core::redirect::Redirection;
 use edenfs_core::redirect::RedirectionBackingCleanupAction;
 use edenfs_core::redirect::RedirectionBackingCleanupPlanner;
+use edenfs_core::redirect::check_scratch_namespace_owner;
 #[cfg(target_os = "linux")]
 use edenfs_core::redirect::finish_backing_cleanup_unmount;
 use edenfs_core::redirect::get_effective_redirections;
+use edenfs_core::redirect::plan_unmounted_checkout_backing_cleanup;
 #[cfg(target_os = "linux")]
 use edenfs_core::redirect::redirection_mount_status;
 use edenfs_utils::is_active_eden_mount;
@@ -106,9 +108,6 @@ pub enum RemoveCheckoutWarning {
     RedirectionUnmountTimedOut { path: PathBuf, timeout: Duration },
     /// Managed backing cleanup was skipped because the checkout's client config is missing.
     BackingCleanupSkipped { path: PathBuf },
-    /// Managed backing cleanup skipped repository-configured redirections because the checkout
-    /// is not mounted.
-    RepositoryRedirectionCleanupSkipped { path: PathBuf },
     /// Some managed backing could not be planned or deleted before checkout removal continued.
     BackingCleanupFailed { path: PathBuf, error: String },
 }
@@ -145,11 +144,6 @@ impl fmt::Display for RemoveCheckoutWarning {
             Self::BackingCleanupSkipped { path } => write!(
                 formatter,
                 "Skipping redirection backing cleanup for {} because its checkout config is missing. {BACKING_CLEANUP_RECOVERY}",
-                path.display()
-            ),
-            Self::RepositoryRedirectionCleanupSkipped { path } => write!(
-                formatter,
-                "Cannot inspect repository-configured redirections while {} is unmounted. Their backing storage may remain. {BACKING_CLEANUP_RECOVERY}",
                 path.display()
             ),
             Self::BackingCleanupFailed { path, error } => write!(
@@ -236,18 +230,10 @@ pub async fn remove_checkout_with_event_handler(
     }
     match redirection_cleanup {
         Some(BackingCleanupPolicy::DeleteManaged) => {
-            // `.eden-redirections` is checkout content, so only client config redirections
-            // can be planned while the checkout is unmounted.
-            if !checkout_is_mounted {
-                event_handler(RemoveCheckoutEvent::Warning(
-                    RemoveCheckoutWarning::RepositoryRedirectionCleanupSkipped {
-                        path: path.clone(),
-                    },
-                ));
-            }
             clean_up_managed_backing(
                 instance,
                 &path,
+                &client_name,
                 checkout_is_mounted,
                 options.auxiliary_process_timeout,
                 &mut event_handler,
@@ -371,17 +357,21 @@ struct ManagedBackingCleanupPlan {
 async fn plan_managed_backing_cleanup(
     instance: &EdenFsInstance,
     path: &Path,
+    client_name: &str,
     timeout: Duration,
 ) -> Result<ManagedBackingCleanupPlan> {
     let instance = instance.clone();
     let path = path.to_path_buf();
     let path_for_error = path.clone();
+    let data_dir = instance.config_directory(client_name);
     run_blocking_operation_with_timeout("eden-backing-cleanup-plan", timeout, move || {
-        let checkout = find_checkout(&instance, &path)
-            .with_context(|| format!("failed to find checkout for {}", path.display()))?;
+        let config = CheckoutConfig::parse_config(&data_dir).with_context(|| {
+            format!("failed to parse checkout config in {}", data_dir.display())
+        })?;
+        let checkout = EdenFsCheckout::from_config(path.clone(), data_dir.clone(), config);
         let mut redirections = Vec::new();
         let mut failures = Vec::new();
-        let mut planner = RedirectionBackingCleanupPlanner::new(&path);
+        let mut planner = RedirectionBackingCleanupPlanner::new(&path, &data_dir);
         for (repo_path, redirection) in get_effective_redirections(&instance, &checkout)
             .with_context(|| format!("failed to get redirections for {}", path.display()))?
         {
@@ -552,6 +542,7 @@ enum BackingDeletionScope {
 async fn clean_up_managed_backing<EventHandler>(
     instance: &EdenFsInstance,
     path: &Path,
+    client_name: &str,
     checkout_is_mounted: bool,
     timeout: Duration,
     event_handler: &mut EventHandler,
@@ -559,7 +550,7 @@ async fn clean_up_managed_backing<EventHandler>(
     EventHandler: FnMut(RemoveCheckoutEvent),
 {
     let start = Instant::now();
-    let plan = plan_managed_backing_cleanup(instance, path, timeout).await;
+    let plan = plan_managed_backing_cleanup(instance, path, client_name, timeout).await;
     debug!(path = %path.display(), elapsed = ?start.elapsed(), "Finished planning redirection backing cleanup");
     let ManagedBackingCleanupPlan {
         checkout,
@@ -652,6 +643,25 @@ async fn clean_up_managed_backing<EventHandler>(
     .await;
 
     debug!(path = %path.display(), elapsed = ?start.elapsed(), "Finished unmounting redirections");
+    if let Err(error) = instance
+        .get_configured_mounts_map()
+        .context("failed to read registered checkouts before backing cleanup")
+        .and_then(|checkouts| check_scratch_namespace_owner(path, checkouts.into_keys()))
+    {
+        event_handler(RemoveCheckoutEvent::Warning(
+            RemoveCheckoutWarning::BackingCleanupFailed {
+                path: path.to_path_buf(),
+                error: format!("{error:#}"),
+            },
+        ));
+        return;
+    }
+    // The sweep below can't tell which redirection an entry belongs to.
+    let leftover_scope = if scopes.contains(&BackingDeletionScope::Contents) {
+        BackingDeletionScope::Contents
+    } else {
+        BackingDeletionScope::Target
+    };
     let deletions = redirections
         .into_iter()
         .zip(scopes)
@@ -663,6 +673,52 @@ async fn clean_up_managed_backing<EventHandler>(
         })
         .collect();
     if let Err(error) = execute_backing_cleanup_actions(deletions, event_handler).await {
+        event_handler(RemoveCheckoutEvent::Warning(
+            RemoveCheckoutWarning::BackingCleanupFailed {
+                path: path.to_path_buf(),
+                error: format!("{error:#}"),
+            },
+        ));
+    }
+    if !checkout_is_mounted {
+        delete_leftover_backing(
+            path,
+            checkout.data_dir(),
+            leftover_scope,
+            timeout,
+            event_handler,
+        )
+        .await;
+    }
+}
+
+/// Delete the redirection backing of an unmounted checkout that the planner couldn't find,
+/// because the redirections configured in its `.eden-redirections` can't be read.
+async fn delete_leftover_backing(
+    path: &Path,
+    data_dir: PathBuf,
+    scope: BackingDeletionScope,
+    timeout: Duration,
+    event_handler: &mut impl FnMut(RemoveCheckoutEvent),
+) {
+    let checkout_path = path.to_path_buf();
+    let plan =
+        run_blocking_operation_with_timeout("eden-backing-cleanup-sweep", timeout, move || {
+            Ok(plan_unmounted_checkout_backing_cleanup(
+                &checkout_path,
+                &data_dir,
+            )?)
+        })
+        .await
+        .context("failed to plan cleanup of leftover redirection backing");
+    let result = match plan {
+        Ok(actions) => {
+            let deletions = actions.into_iter().map(|action| (action, scope)).collect();
+            execute_backing_cleanup_actions(deletions, event_handler).await
+        }
+        Err(error) => Err(error),
+    };
+    if let Err(error) = result {
         event_handler(RemoveCheckoutEvent::Warning(
             RemoveCheckoutWarning::BackingCleanupFailed {
                 path: path.to_path_buf(),
