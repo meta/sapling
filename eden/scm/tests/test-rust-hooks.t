@@ -236,10 +236,7 @@ gets a new interpreter:
   hook call 1
   survived the nested command
 
-A hook that runs another command with `bindings.commands.run` should survive it.
-FIXME: The post hook should survive the nested command. The nested command ends
-with `deinit()`, which drops the `HgPython` that initialized Python, so Python
-is finalized under the running post hook:
+A hook that runs another command with `bindings.commands.run` survives it:
   $ newclientrepo nestedcmdcrash
   $ cp $TESTTMP/nestedcmd/count.py $TESTTMP/nestedcmd/cmd.py .
   $ setconfig profiling.always-on-enabled=false hooks.pre-debugtestcommand.python=python:count.py:main hooks.post-debugtestcommand.python=python:cmd.py:main
@@ -249,4 +246,5 @@ is finalized under the running post hook:
   >>> print("\n".join(lines + ["exit 0" if proc.returncode == 0 else "crashed"]))
   hook call 1
   hook call 2
-  crashed
+  survived the nested command
+  exit 0

@@ -20,6 +20,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::channel;
 use std::thread;
@@ -58,6 +59,19 @@ use tracing_subscriber::layer::SubscriberExt;
 use crate::HgPython;
 use crate::commands;
 
+/// Number of `run_command` calls in progress.
+static RUNNING_COMMANDS: AtomicUsize = AtomicUsize::new(0);
+
+struct RunningCommand;
+
+impl Drop for RunningCommand {
+    fn drop(&mut self) {
+        if RUNNING_COMMANDS.fetch_sub(1, Ordering::AcqRel) == 1 {
+            crate::deinit();
+        }
+    }
+}
+
 /// Run a Rust or Python command.
 ///
 /// Have side effect on `io` and return the command exit code.
@@ -93,6 +107,9 @@ pub fn run_command(args: Vec<String>, io: &IO) -> i32 {
         constructors::init();
         return hgpython.run_python(&args, io) as i32;
     }
+
+    RUNNING_COMMANDS.fetch_add(1, Ordering::AcqRel);
+    let running_command = RunningCommand;
 
     // Extra initialization based on global flags.
     let global_opts = dispatch::parse_global_opts(&args[1..]).ok();
@@ -197,7 +214,10 @@ pub fn run_command(args: Vec<String>, io: &IO) -> i32 {
         failpoint::teardown_fail_points(scenario);
     }
 
-    crate::deinit();
+    // A nested command runs while the Python code that called it, ex. a hook
+    // calling `bindings.commands.run`, is still on the stack, so only the last
+    // command to exit may finalize Python.
+    drop(running_command);
 
     exit_code
 }
