@@ -47,4 +47,11 @@ class InodeError : public PathErrorBase {
   InodePtr inode_;
   std::optional<PathComponent> child_;
 };
+
+/** Missing or malformed overlay file data, distinct from ordinary I/O errors.
+ */
+class OverlayFileCorruption : public InodeError {
+ public:
+  using InodeError::InodeError;
+};
 } // namespace facebook::eden

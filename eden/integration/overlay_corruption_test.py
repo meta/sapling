@@ -436,8 +436,8 @@ wal_torn             | b s/ s/f             | unchanged          | dir,wal   | o
 wal_torn_len         | b s/ s/f             | unchanged          | dir,wal   | orphan                  | ok        | ok          | ok
 wal_remove_payload   | a b s/ s/f           | unchanged          | dir,wal   | -                       | ok        | ok          | ok
 file_bad_header      | a b s/ s/f           | unchanged          | -         | data                    | ok        | ok          | ok
-file_truncated       | a b:EIO s/ s/f       | unchanged          | -         | data                    | ok        | b:EIO       | -
-file_missing         | a b:ENOENT s/ s/f    | unchanged          | -         | missing                 | ok        | b:ENOENT    | -
+file_truncated       | a b:EACCES s/ s/f    | unchanged          | -         | data                    | ok        | ok          | ok
+file_missing         | a b:EACCES s/ s/f    | unchanged          | -         | missing                 | ok        | ok          | ok
 subdir_truncated     | a b s/               | unchanged          | dir       | orphan                  | ok        | ok          | ok
 subdir_missing       | a b s/               | unchanged          | -         | missing,orphan          | ok        | ok          | ok
 """

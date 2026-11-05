@@ -16,6 +16,7 @@
 #include "eden/fs/fuse/FuseDirList.h"
 #include "eden/fs/inodes/EdenMount.h"
 #include "eden/fs/inodes/FileInode.h"
+#include "eden/fs/inodes/InodeError.h"
 #include "eden/fs/inodes/InodeMap.h"
 #include "eden/fs/inodes/InodePtr.h"
 #include "eden/fs/inodes/Overlay.h"
@@ -144,12 +145,27 @@ ImmediateFuture<FuseDispatcher::Attr> FuseDispatcherImpl::getattr(
       .thenValue([this, ino, context = context.copy()](auto&&) {
         return inodeMap_->lookupInode(ino, context);
       })
-      .thenValue([context = context.copy()](const InodePtr& inode) {
+      .thenValue([this, context = context.copy()](const InodePtr& inode) {
         inode->markGcRef();
-        return inode->stat(context);
-      })
-      .thenValue([this](const struct stat& st) {
-        return FuseDispatcher::Attr{st, computeTtlForStat(st)};
+        return makeImmediateFutureWith([&]() { return inode->stat(context); })
+            .thenTry([this, inode](folly::Try<struct stat> maybeStat) {
+              if (!maybeStat.hasValue() &&
+                  mount_->getOverlay()->usesOnlineFsck() && !inode->isDir() &&
+                  maybeStat.exception()
+                      .is_compatible_with<OverlayFileCorruption>()) {
+                // Preserve enough attributes to remove an entry with missing
+                // or corrupt overlay data, but propagate other stat errors.
+                XLOGF(
+                    WARN,
+                    "error getting attributes for inode {} ({}): {}",
+                    inode->getNodeId(),
+                    inode->getLogPath(),
+                    maybeStat.exception().what());
+                return attrForInodeWithCorruptOverlay(*inode);
+              }
+              const auto& st = maybeStat.value();
+              return FuseDispatcher::Attr{st, computeTtlForStat(st)};
+            });
       });
 }
 

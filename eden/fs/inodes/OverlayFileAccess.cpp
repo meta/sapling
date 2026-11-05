@@ -168,7 +168,16 @@ FileOffset OverlayFileAccess::getFileSize(FileInode& inode) {
 }
 
 FileOffset OverlayFileAccess::getFileSize(InodeNumber ino, InodeBase* inode) {
-  auto entry = getEntryForInode(ino);
+  EntryPtr entry;
+  try {
+    entry = getEntryForInode(ino);
+  } catch (const std::system_error& ex) {
+    if (ex.code() != std::errc::no_such_file_or_directory) {
+      throw;
+    }
+    throw OverlayFileCorruption(
+        ENOENT, inode ? inode->inodePtrFromThis() : InodePtr{}, ex.what());
+  }
   uint64_t version;
   {
     auto info = entry->info.rlock();
@@ -201,7 +210,7 @@ FileOffset OverlayFileAccess::getFileSize(InodeNumber ino, InodeBase* inode) {
           ino,
           st.st_size);
     }
-    throw InodeError(
+    throw OverlayFileCorruption(
         EIO,
         inode ? inode->inodePtrFromThis() : InodePtr{},
         "corrupt overlay file");

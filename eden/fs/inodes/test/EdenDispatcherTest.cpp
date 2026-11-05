@@ -22,8 +22,11 @@
 #include <folly/testing/TestUtil.h>
 #include <gtest/gtest.h>
 #include "eden/common/utils/FaultInjector.h"
+#include "eden/fs/config/EdenConfig.h"
 #include "eden/fs/inodes/EdenMount.h"
+#include "eden/fs/inodes/FileInode.h"
 #include "eden/fs/inodes/InodeMap.h"
+#include "eden/fs/inodes/Overlay.h"
 #include "eden/fs/inodes/TreeInode.h"
 #include "eden/fs/model/Blob.h"
 #include "eden/fs/model/Tree.h"
@@ -348,6 +351,47 @@ TEST(RawEdenDispatcherTest, getattr_updates_last_used_time) {
       .get(0ms);
   auto timeAfter = inode->getLastGcRefTime();
   EXPECT_GT(timeAfter.toTimespec().tv_sec, timeBefore.toTimespec().tv_sec);
+}
+
+TEST(
+    RawEdenDispatcherTest,
+    getattr_propagates_backing_error_after_materialize) {
+  FakeTreeBuilder builder;
+  builder.setFile("file", "contents");
+  TestMount mount{
+      builder,
+      /*startReady=*/false,
+      /*enableActivityBuffer=*/true,
+      kPathMapDefaultCaseSensitive,
+      nullptr,
+      [](EdenConfig& config) {
+        config.overlayOnlineFsck.setValue(true, ConfigSourceType::CommandLine);
+      }};
+  ASSERT_TRUE(mount.getEdenMount()->getOverlay()->usesOnlineFsck());
+  auto inode = mount.getFileInode("file");
+  auto context = ObjectFetchContext::getNullContext();
+  auto attrFuture = mount.getDispatcher()
+                        ->getattr(inode->getNodeId(), context)
+                        .semi()
+                        .via(mount.getServerExecutor().get());
+  mount.drainServerExecutor();
+  ASSERT_FALSE(attrFuture.isReady());
+
+  // O_TRUNC can materialize the inode while its backing-store stat is pending.
+  DesiredMetadata desired;
+  desired.size = 0;
+  inode->setattr(desired, context).get(0ms);
+  ASSERT_TRUE(inode->isMaterialized());
+  builder.getStoredBlob("file"_relpath)
+      ->triggerError(std::system_error(EIO, std::generic_category()));
+  mount.drainServerExecutor();
+  EXPECT_THROW(std::move(attrFuture).get(0ms), std::system_error);
+  EXPECT_EQ(
+      0,
+      mount.getDispatcher()
+          ->getattr(inode->getNodeId(), context)
+          .get(0ms)
+          .st.st_size);
 }
 
 TEST(RawEdenDispatcherTest, lookup_returns_infinite_ttl_without_pressure_gc) {
