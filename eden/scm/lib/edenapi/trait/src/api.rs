@@ -301,9 +301,13 @@ pub trait SaplingRemoteApi: Send + Sync + 'static {
     ///
     /// * bookmark: the name of the bookmark to land to.
     /// * head: the head commit of the stack that is to be landed.
-    /// * base: the parent of the bottom of the stack that is to be landed. This must
-    ///   match the merge base of the head commit with respect to the current
-    ///   bookmark location.
+    /// * base: the merge base of the head commit and the bookmark. A caller
+    ///   whose view of the bookmark is behind the server's passes the same
+    ///   commit; the server rejects any other. The commits that descend from
+    ///   it and are ancestors of the head are rebased onto the bookmark, and
+    ///   must not be public. Other ancestors of the head that are not
+    ///   ancestors of the bookmark, such as the other side of a merge, land
+    ///   unchanged.
     /// * pushvars: the pushvars to use when landing the stack.
     async fn land_stack(
         &self,

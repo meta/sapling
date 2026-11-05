@@ -181,8 +181,9 @@ The server side bookmark value can be stable due to data derivation, let's worka
   $ sqlite3 "$TESTTMP/monsql/sqlite_dbs" "select count(*) from bookmarks_update_log";
   5
 
-attempt a move to a completely unrelated commit (no common ancestor), with an ancestor that
-fails the hook
+attempt to pushrebase onto a completely unrelated commit (no common ancestor), with an
+ancestor that fails the hook. There is nothing to rebase from, so the push is rejected
+before the hook runs, with or without the hook bypass
   $ hg up -q $Z
   $ hg push -r . --to master_bookmark --pushvar NON_FAST_FORWARD=true
   pushing rev * to destination https://localhost:$LOCAL_PORT/edenapi/ bookmark master_bookmark (glob)
@@ -193,30 +194,13 @@ fails the hook
   edenapi: uploaded 2 trees
   edenapi: uploaded 2 changesets
   pushrebasing stack (*, *] (2 commits) to remote bookmark master_bookmark (glob)
-  abort: Server error: hooks failed:
-    limit_filesize for *: File size limit is 10 bytes. You tried to push file ylarge that is over the limit (14 bytes, 1.40x the limit). This limit is enforced for files matching the following regex: ".*". (glob)
-  
-  WHY THIS IS BLOCKED: Large files have ongoing infrastructure costs — they impact caching systems, Mononoke, biggrep indexing, and permanent backups used by 30,000+ engineers.
-  
-  ALTERNATIVES TO CONSIDER:
-  - Manifold: Store large binaries in blob storage
-  - Dotslash: Distribute large tools without checking them in
-  - Buckify: Package binaries as Buck-managed dependencies
-  - LFS: Use Git LFS for large files that must be versioned
-  - Split files: Break large files into smaller pieces
-  
-  IF ALTERNATIVES DO NOT WORK:
-  1. Add @allow-large-files to your commit message (using `sl amend -e`).
-  2. Request bypass approval at https://fburl.com/support/sourcecontrol.
-  
-  See https://fburl.com/landing_big_diffs for more details.
+  abort: Server error: invalid request: cannot land * onto 'master_bookmark': they have no common ancestor (glob)
   [255]
 
-bypass the hook, and it should fail: can't push rebase to such a commit
   $ hg push -r . --to master_bookmark --pushvar NON_FAST_FORWARD=true --pushvar ALLOW_LARGE_FILES=true
   pushing rev * to destination https://localhost:$LOCAL_PORT/edenapi/ bookmark master_bookmark (glob)
   pushrebasing stack (*, *] (2 commits) to remote bookmark master_bookmark (glob)
-  abort: Server error: invalid request: Pushrebase failed: No common pushrebase root for master_bookmark, all possible roots: {ChangesetId(Blake2(*))} (glob)
+  abort: Server error: invalid request: cannot land * onto 'master_bookmark': they have no common ancestor (glob)
   [255]
 however, we can create a new bookmark there, bypassing the hook
   $ hg push -r . --to newbookmark --create --pushvar ALLOW_LARGE_FILES=true

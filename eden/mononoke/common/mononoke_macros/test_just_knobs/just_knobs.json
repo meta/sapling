@@ -247,6 +247,7 @@
     "scm/mononoke:land_service_batch_time_ms": 50,
     "scm/mononoke:land_service_batch_max_commits": 20,
     "scm/mononoke:land_service_batch_max_requeue": 100,
+    "scm/mononoke:pushrebase_land_stack_validation": 2,
     "scm/mononoke:pushrebase_max_commits_per_request": 100,
     "scm/mononoke:pushrebase_max_merge_conflicts": 10,
     "scm/mononoke:pushrebase_max_merge_file_size": 10485760,

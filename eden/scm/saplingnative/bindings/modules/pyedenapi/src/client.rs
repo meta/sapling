@@ -279,6 +279,8 @@ py_class!(pub class client |py| {
     /// land_stack(bookmark, head, base, pushvars) -> {old_hgids: [node], new_hgids: [node]}
     ///
     /// Land a stack of already-uploaded commits by rebasing onto a bookmark and updating the bookmark.
+    /// `base` must be the merge base of `head` and the bookmark. The commits between them are
+    /// rebased; other ancestors of `head` that are not on the bookmark land unchanged.
     def landstack(
         &self,
         bookmark: String,

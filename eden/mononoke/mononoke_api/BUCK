@@ -54,6 +54,7 @@ rust_library(
         "fbsource//third-party/rust:itertools",
         "fbsource//third-party/rust:maplit",
         "fbsource//third-party/rust:smallvec",
+        "fbsource//third-party/rust:strum",
         "fbsource//third-party/rust:thiserror",
         "fbsource//third-party/rust:tokio",
         "fbsource//third-party/rust:tracing",

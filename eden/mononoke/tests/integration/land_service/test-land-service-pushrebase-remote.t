@@ -25,7 +25,6 @@ Setup repo
   >  \|/
   >   A
   > # bookmark: D master_bookmark
-  > # bookmark: F b2
   > # modify: W B Bconflict
   > EOF
   A=aa53d24251ff3f54b1b2c29ae02826701b2abeb0079f1bb13b8434b54cd87675

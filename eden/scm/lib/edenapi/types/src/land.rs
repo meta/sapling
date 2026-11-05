@@ -37,6 +37,8 @@ pub struct LandStackRequest {
     #[id(1)]
     pub head: HgId,
 
+    /// The merge base of `head` and `bookmark`. See `land_stack` on
+    /// `SaplingRemoteApi`.
     #[id(2)]
     pub base: HgId,
 

@@ -73,14 +73,16 @@ Push a commit to infinitepush, then move bookmark to it
   E32A1E342CDB1E38E88466B4C1A01AE9F410024017AA21DC0A1C5DA6B3963BF2|E7D82AC745060584C51F27EC0FD9C0FE6CDD4E45
   F8C75E41A0C4D29281DF765F39DE47BCA1DCADFDC55ADA4CCC2F6DF567201658|BE393840A21645C52BBDE7E62BDB7269FC3EBB87
 
-Now push a commit to infinitepush, then force it to be public and then move bookmark to it
+Push a commit to infinitepush, then make it public, and move the bookmark to
+it. The move uploads nothing, so the server records the git mapping of the
+commits that the bookmark newly reaches:
   $ touch file4
   $ hg ci -Aqm commit1 --extra hg-git-rename-source=git --extra convert_revision=4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d
   $ hg push -q -r . --to "scratch/123" --create
 
   $ mononoke_admin phases -R repo add-public -i $(hg log -r . -T '{node}\n') &> /dev/null
 
-  $ hg push -q -r . --to "master_bookmark"
+  $ hg push -q -r . --to master_bookmark --no-rebase
   $ get_bonsai_git_mapping
   7AF229C8F6ED15A7C73DF5F9B2C2DE5CB588122E29F176397A3C52E41AB96791|1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A
   95472EDA8F395F39F6F7E860C0C3CEB75C4F94CB251DD186FBD2E70F96A702B6|4D4D4D4D4D4D4D4D4D4D4D4D4D4D4D4D4D4D4D4D
