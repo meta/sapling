@@ -795,10 +795,6 @@ class StatusEdgeCaseTest(EdenHgTestCase):
         self.commit2 = repo.commit("commit 2")
         self.assertNotEqual(self.commit1, self.commit2)
 
-    def select_storage_engine(self) -> str:
-        """we need to persist data across restarts"""
-        return "sqlite"
-
     def edenfs_logging_settings(self) -> Dict[str, str]:
         return {
             "eden.strace": "DBG7",

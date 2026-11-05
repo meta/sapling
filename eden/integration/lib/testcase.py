@@ -211,12 +211,10 @@ class EdenTestCase(EdenTestCaseBase):
             # we set `EDENFS_SUFFIX` when running our tests with OSS build
             extra_args.append("--eden_logview=false")
 
-        storage_engine = self.select_storage_engine()
         return edenclient.EdenFS(
             base_dir=pathlib.Path(self.tmp_dir),
             logging_settings=logging_settings,
             extra_args=extra_args,
-            storage_engine=storage_engine,
             expected_fuse_transport="io_uring" if self.use_io_uring() else "devfuse",
         )
 
@@ -495,13 +493,6 @@ class EdenTestCase(EdenTestCaseBase):
     def rmdir(self, path: str) -> None:
         """Unlink the directory at the specified path relative to the clone."""
         os.rmdir(self.get_path(path))
-
-    def select_storage_engine(self) -> str:
-        """
-        Prefer to use memory in the integration tests, but allow
-        the tests that restart to override this and pick something else.
-        """
-        return "memory"
 
     def set_rust_rollout_config(self, config: Dict[str, bool]) -> None:
         """Set the Rust rollout config for this test."""

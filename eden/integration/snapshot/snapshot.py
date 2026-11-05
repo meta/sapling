@@ -166,7 +166,6 @@ class BaseSnapshot(metaclass=abc.ABCMeta):
             eden_dir=self.eden_state_dir,
             etc_eden_dir=self.etc_eden_dir,
             home_dir=self.home_dir,
-            storage_engine="rocksdb",
             expected_fuse_transport=expected_transport,
         )
         if use_io_uring is not None:

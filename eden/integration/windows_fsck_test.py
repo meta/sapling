@@ -44,9 +44,6 @@ class WindowsFsckTest(prjfs_test.PrjFSTestBase):
     def get_initial_commit(self) -> str:
         return self.initial_commit
 
-    def select_storage_engine(self) -> str:
-        return "sqlite"
-
     def edenfs_logging_settings(self) -> Dict[str, str]:
         return {"eden.fs.inodes.sqlitecatalog": "DBG9"}
 

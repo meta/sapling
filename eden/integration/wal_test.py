@@ -324,9 +324,6 @@ class WalWithPathRenameTest(
     # 231-byte name, yielding 256 bytes.
     source_name: str = "f" * 231
 
-    def select_storage_engine(self) -> str:
-        return "sqlite"
-
     def edenfs_extra_config(self) -> dict[str, list[str]] | None:
         configs = super().edenfs_extra_config() or {}
         configs.setdefault("overlay", []).extend(

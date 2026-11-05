@@ -31,10 +31,6 @@ class RemountTest(testcase.EdenRepoTest):
         expected_entries = {".eden", "adir", "hello", "slink"}
         self.assert_checkout_root_entries(expected_entries, path=mount_path)
 
-    def select_storage_engine(self) -> str:
-        """we need to persist data across restarts"""
-        return "sqlite"
-
     def test_remount_basic(self) -> None:
         # Mount multiple clients
         self._clone_checkouts(5)
@@ -223,9 +219,6 @@ class CorruptCheckoutConfigTest(testcase.EdenRepoTest):
     def populate_repo(self) -> None:
         self.repo.write_file("hello", "hola\n")
         self.repo.commit("Initial commit.")
-
-    def select_storage_engine(self) -> str:
-        return "sqlite"
 
     def _prepare_unmounted_checkout(self) -> tuple[str, pathlib.Path]:
         mount2 = os.path.join(self.mounts_dir, "mount2")

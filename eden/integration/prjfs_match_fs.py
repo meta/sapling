@@ -35,9 +35,6 @@ class PrjfsMatchFsTest(prjfs_test.PrjFSTestBase):
         self.repo.write_file(".gitignore", "ignored/\n")
         self.initial_commit = self.repo.commit("Initial commit.")
 
-    def select_storage_engine(self) -> str:
-        return "sqlite"
-
     def get_initial_commit(self) -> str:
         return self.initial_commit
 

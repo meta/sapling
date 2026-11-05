@@ -130,7 +130,6 @@ class EdenFS:
         home_dir: Optional[Path] = None,
         logging_settings: Optional[Dict[str, str]] = None,
         extra_args: Optional[List[str]] = None,
-        storage_engine: str = "memory",
         expected_fuse_transport: Optional[str] = None,
         command_prefix: Sequence[str] = (),
     ) -> None:
@@ -171,7 +170,6 @@ class EdenFS:
         else:
             self._home_dir = home_dir
 
-        self._storage_engine = storage_engine
         self._logging_settings = logging_settings
         self._extra_args = extra_args
         self.expected_fuse_transport = expected_fuse_transport

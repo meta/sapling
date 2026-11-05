@@ -200,10 +200,6 @@ class StartWithRepoTest(testcase.EdenRepoTest):
         self.repo.write_file("hello", "hola\n")
         self.repo.commit("Initial commit.")
 
-    def select_storage_engine(self) -> str:
-        """we need to persist data across restarts"""
-        return "rocksdb"
-
 
 @testcase.eden_test
 class DirectInvokeTest(testcase.IntegrationTestCase):

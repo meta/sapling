@@ -106,10 +106,7 @@ overrides = {{}}
         ex = None
         with override_environ(eden_overrides):
             try:
-                eden = edenclient.EdenFS(
-                    base_dir=self.edenfs_dir,
-                    storage_engine="memory",
-                )
+                eden = edenclient.EdenFS(base_dir=self.edenfs_dir)
                 self.eden = eden
 
                 # Write out edenfs config file.

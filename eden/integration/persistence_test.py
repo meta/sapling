@@ -21,10 +21,6 @@ class PersistenceTest(testcase.EdenRepoTest):
         self.repo.write_file("subdir2/file_in_subdir2", "contents3")
         self.repo.commit("Initial commit.")
 
-    # These tests restart Eden and expect data to have persisted.
-    def select_storage_engine(self) -> str:
-        return "sqlite"
-
     def edenfs_logging_settings(self) -> Dict[str, str]:
         return {"eden.strace": "DBG7", "eden.fs.fuse": "DBG7"}
 

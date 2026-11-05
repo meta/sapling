@@ -25,9 +25,6 @@ class FifoTest(testcase.EdenRepoTest):
         self.repo.write_file("hello", "hola\n")
         self.repo.commit("Initial commit.")
 
-    def select_storage_engine(self) -> str:
-        return "sqlite"
-
     def assert_fifo_io(self, path: str) -> None:
         self.assertTrue(stat.S_ISFIFO(os.lstat(path).st_mode))
         with self.assertRaises(OSError) as error:

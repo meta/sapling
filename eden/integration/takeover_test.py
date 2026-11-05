@@ -77,10 +77,6 @@ class TakeoverTestBase(TakeoverTestCase):
         self.repo.write_file("src/test/test2.py", "test2")
         self.commit2 = self.repo.commit("Initial commit.")
 
-    def select_storage_engine(self) -> str:
-        """we need to persist data across restarts"""
-        return "sqlite"
-
     def edenfs_logging_settings(self) -> Dict[str, str]:
         if self._testMethodName == "test_takeover_with_io":
             # test_takeover_with_io causes lots of I/O, so do not enable
@@ -552,9 +548,6 @@ class TakeoverNfsServerDisabledTest(TakeoverTestCase):
         self.repo.write_file("hello", "hola\n")
         self.repo.commit("Initial commit.")
 
-    def select_storage_engine(self) -> str:
-        return "sqlite"
-
     def edenfs_extra_config(self) -> Optional[Dict[str, List[str]]]:
         configs = super().edenfs_extra_config() or {}
         configs["experimental"] = [
@@ -596,9 +589,6 @@ class TakeoverRocksDBStressTest(TakeoverTestCase):
         self.repo.write_file("test-directory/file", "")
         # pyre-fixme[16]: `TakeoverRocksDBStressTest` has no attribute `commit1`.
         self.commit1 = self.repo.commit("Initial commit.")
-
-    def select_storage_engine(self) -> str:
-        return "rocksdb"
 
     async def test_takeover_with_tree_inode_loading_from_local_store(self) -> None:
         """

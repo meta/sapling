@@ -105,9 +105,6 @@ class ActiveFuseInvalidationTest(testcase.EdenRepoTest):
     num_files: int = 10
     deep_file_count: int = 20
 
-    def select_storage_engine(self) -> str:
-        return "sqlite"
-
     def edenfs_extra_config(self) -> dict[str, list[str]] | None:
         result = super().edenfs_extra_config() or {}
         result.setdefault("experimental", []).append("enable-pressure-based-gc = true")

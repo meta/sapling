@@ -457,9 +457,6 @@ class OverlayCorruptionTestBase(testcase.HgRepoTestMixin, testcase.EdenRepoTest)
         overlay.append(f"online-fsck = {str(self.online_fsck).lower()}")
         return configs
 
-    def select_storage_engine(self) -> str:
-        return "sqlite"
-
     def populate_repo(self) -> None:
         self.repo.write_file("README", "overlay corruption\n")
         self.repo.commit("Initial commit.")
