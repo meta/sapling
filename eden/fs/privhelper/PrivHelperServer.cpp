@@ -1205,6 +1205,10 @@ UnixSocket::Message PrivHelperServer::processMountMsg(Cursor& cursor) {
   bool readOnly;
   string vfsType;
   PrivHelperConn::parseMountRequest(cursor, mountPath, readOnly, vfsType);
+  if (!disablePrivHelperHardening() && vfsType != "fuse" &&
+      vfsType != "fuse.edenfs") {
+    folly::throwSystemErrorExplicit(EINVAL, "unsupported FUSE filesystem type");
+  }
   XLOGF(DBG3, "mount \"{}\"", mountPath);
 
 #ifndef __APPLE__

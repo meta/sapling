@@ -1088,6 +1088,24 @@ TEST_F(
 }
 #endif
 
+TEST_F(PrivHelperRawProtocolTest, fuseRequestRejectsOtherFilesystemTypes) {
+  auto dir = makeTempDir();
+  for (const auto& type :
+       {std::string{"ramfs"},
+        std::string{"fuse.other"},
+        std::string{"fuse\0ramfs", 10}}) {
+    auto response = client_->sendAndRecv(
+        PrivHelperConn::serializeMountRequest(
+            1, dir.path().string(), false, type));
+    EXPECT_THROW_RE(
+        PrivHelperConn::parseEmptyResponse(
+            PrivHelperConn::REQ_MOUNT_FUSE, response),
+        std::system_error,
+        "unsupported FUSE filesystem type");
+  }
+  EXPECT_TRUE(server_.getRequestedVfsTypes().empty());
+}
+
 TEST_F(PrivHelperTest, nfsFstypeOverrideCanBeTurnedOff) {
   EXPECT_TRUE(server_.nfsFstypeOverrideEnabled());
   client_->setNfsFstypeOverride(false).get(1s);
