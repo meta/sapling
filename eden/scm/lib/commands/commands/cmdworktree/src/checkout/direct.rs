@@ -25,7 +25,13 @@ use edenfs_remove::RemoveCheckoutEvent;
 use edenfs_remove::RemoveCheckoutOptions;
 use repo::repo::Repo;
 
-pub(super) fn run_direct_eden_remove(logger: &TermLogger, repo: &Repo, path: &Path) -> Result<()> {
+/// Remove one EdenFS checkout. Returns `true` after removing its EdenFS state, even
+/// if its folder was already gone, or `false` if the path is missing and unregistered.
+pub(super) fn run_direct_eden_remove(
+    logger: &TermLogger,
+    repo: &Repo,
+    path: &Path,
+) -> Result<bool> {
     // `edenfs.basepath` lets tests point at a non-default EdenFS deployment;
     // the subprocess path honors it the same way (see `build_eden_command_type`).
     let base_path = repo.config().get_opt::<PathBuf>("edenfs", "basepath")?;
@@ -36,7 +42,7 @@ pub(super) fn run_direct_eden_remove(logger: &TermLogger, repo: &Repo, path: &Pa
             Some(base_path.join("home")),
         ),
         None => (
-            eden_config_dir(path)?,
+            eden_config_dir(repo, path)?,
             get_etc_eden_dir(&None),
             get_home_dir(&None),
         ),
@@ -75,22 +81,26 @@ pub(super) fn run_direct_eden_remove(logger: &TermLogger, repo: &Repo, path: &Pa
                 logger.flush();
             }),
         )
-        .with_context(|| format!("direct EdenFS removal failed for {}", path.display())),
+        .with_context(|| format!("direct EdenFS removal failed for {}", path.display()))?,
+        LocalCheckoutState::Unknown if !path.exists() => return Ok(false),
         LocalCheckoutState::Unknown => bail!(
             "refusing to delete {}: it is not a registered EdenFS checkout",
             path.display()
         ),
     }
+    Ok(true)
 }
 
 // Checkout-local metadata names the client directory on every platform, whereas
 // `get_config_dir` only knows the Unix `.eden/socket` symlink and otherwise falls
-// back to the current directory or the default location, which is what an
-// unmounted checkout needs anyway.
-fn eden_config_dir(path: &Path) -> Result<PathBuf> {
-    let config_dir = edenfs_client::get_client_dir(path)
-        .ok()
-        .and_then(|client_dir| Some(client_dir.parent()?.parent()?.to_path_buf()));
+// back to the current directory or the default location. A checkout without
+// metadata (unmounted on Unix, or with its folder gone) uses the metadata of the
+// repo's own checkout, which the same EdenFS serves.
+fn eden_config_dir(repo: &Repo, path: &Path) -> Result<PathBuf> {
+    let config_dir = [path, repo.path()].into_iter().find_map(|checkout| {
+        let client_dir = edenfs_client::get_client_dir(checkout).ok()?;
+        Some(client_dir.parent()?.parent()?.to_path_buf())
+    });
     match config_dir {
         Some(config_dir) => Ok(config_dir),
         None => Ok(get_config_dir(&None, &Some(path.to_path_buf()))?),

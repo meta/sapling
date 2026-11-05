@@ -9,6 +9,7 @@
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import time
@@ -462,3 +463,26 @@ class RemoveTest(RemoveTestBase):
         )
         self.assertNotIn(self.mount, self.load_directory_map())
         self.assertFalse(os.path.exists(self.mount))
+
+    @parameterized.expand([("rust", {"EDENFSCTL_ONLY_RUST": "1"})])
+    def test_remove_succeeds_when_folder_is_missing(self, impl: str, env: dict) -> None:
+        mount_path = pathlib.Path(self.mount)
+        client_dir = self.eden.client_dir_for_mount(mount_path)
+        self.eden.unmount(mount_path)
+        shutil.rmtree(mount_path)
+
+        result = self.eden.run_unchecked(
+            "remove",
+            "--yes",
+            self.mount,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            0,
+            result.returncode,
+            f"{impl} eden remove should succeed when the folder is missing. stderr={result.stderr}",
+        )
+        self.assertNotIn(self.mount, self.load_directory_map())
+        self.assertFalse(client_dir.exists())

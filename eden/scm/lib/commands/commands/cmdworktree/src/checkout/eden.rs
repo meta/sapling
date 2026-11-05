@@ -68,11 +68,7 @@ impl<'a> EdenCheckouts<'a> {
     }
 
     pub(super) fn remove(&self, logger: &TermLogger, path: &Path) -> Result<bool> {
-        if !path.exists() {
-            return Ok(false);
-        }
-        run_eden_remove(logger, self.repo, path)?;
-        Ok(true)
+        run_eden_remove(logger, self.repo, path)
     }
 
     pub(super) fn has_shelves(&self, path: &Path) -> Result<bool> {
@@ -117,18 +113,21 @@ impl PreparedAdd<'_> {
     }
 }
 
-fn run_eden_remove(logger: &TermLogger, repo: &Repo, path: &Path) -> Result<()> {
+fn run_eden_remove(logger: &TermLogger, repo: &Repo, path: &Path) -> Result<bool> {
     if repo
         .config()
         .get_or("worktree", "direct-eden-removal", || cfg!(feature = "fb"))?
     {
         run_direct_eden_remove(logger, repo, path)
+    } else if path.exists() {
+        edenfs_client::run_eden_remove(repo.config().as_ref(), path)?;
+        Ok(true)
     } else {
-        edenfs_client::run_eden_remove(repo.config().as_ref(), path)
+        Ok(false)
     }
 }
 
 #[cfg(not(feature = "fb"))]
-fn run_direct_eden_remove(_logger: &TermLogger, _repo: &Repo, _path: &Path) -> Result<()> {
+fn run_direct_eden_remove(_logger: &TermLogger, _repo: &Repo, _path: &Path) -> Result<bool> {
     clidispatch::abort!("worktree.direct-eden-removal is not supported in this build");
 }

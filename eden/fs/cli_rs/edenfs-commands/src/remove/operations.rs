@@ -31,6 +31,17 @@ pub async fn classify_path(path: &str) -> Result<(PathBuf, PathType)> {
     let path_buf = PathBuf::from(path);
 
     match path_buf.canonicalize() {
+        // A registered checkout whose folder is gone can still be removed.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let Ok(path) = edenfs_remove::canonicalize_checkout_path(&path_buf).await else {
+                return Err(e.into());
+            };
+            match edenfs_remove::classify_checkout(get_edenfs_instance(), &path).await {
+                Ok(LocalCheckoutState::Inactive) => Ok((path, PathType::InactiveEdenMount)),
+                Err(error) => Err(error),
+                _ => Err(e.into()),
+            }
+        }
         Err(e) => Err(e.into()),
         Ok(canonicalized_path) => {
             let path = canonicalized_path.as_path();
@@ -201,17 +212,5 @@ mod tests {
         fs::remove_file(&p).unwrap();
         assert!(target.exists());
         assert!(link.symlink_metadata().is_err());
-    }
-
-    #[tokio::test]
-    async fn test_classify_nonexistent_path() {
-        let tmp_dir = prepare_directory();
-        let path = format!("{}/test/no_file", tmp_dir.path().to_str().unwrap());
-        let path_buf = PathBuf::from(path);
-        let result = classify_path(path_buf.to_str().unwrap()).await;
-        assert!(
-            result.is_err(),
-            "nonexistent path should not be canonicalized"
-        );
     }
 }

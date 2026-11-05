@@ -528,14 +528,28 @@ test worktree remove - removes a checkout whose folder is gone
   created linked worktree at $TESTTMP/folder_gone
   $ eden unmount $TESTTMP/folder_gone
   $ rm -rf $TESTTMP/folder_gone
-FIXME: EdenFS still lists the checkout, so it should be removed too.
   $ sl worktree remove $TESTTMP/folder_gone -y
-  eden checkout $TESTTMP/folder_gone not found on disk, continuing to remove from registry
+  Cannot inspect repository-configured redirections while $TESTTMP/folder_gone is unmounted. Their backing storage may remain. APFS volumes left behind require manual cleanup. (osx !)
+  Cannot inspect repository-configured redirections while $TESTTMP/folder_gone is unmounted. Their backing storage may remain. Run `eden du --clean-orphaned` to reclaim leftover backing storage. (no-osx !)
+  Redirection backing cleanup did not finish for $TESTTMP/folder_gone: failed to plan managed redirection backing cleanup for $TESTTMP/folder_gone: failed to find checkout for $TESTTMP/folder_gone: $ENOENT$: $ENOENT$. Continuing with removal. APFS volumes left behind require manual cleanup. (osx !)
+  Redirection backing cleanup did not finish for $TESTTMP/folder_gone: failed to plan managed redirection backing cleanup for $TESTTMP/folder_gone: failed to find checkout for $TESTTMP/folder_gone: $ENOENT$: $ENOENT$. Continuing with removal. Run `eden du --clean-orphaned` to reclaim leftover backing storage. (no-osx !)
+  Deleting EdenFS checkout state...
   removed $TESTTMP/folder_gone
   $ sl worktree list
   this worktree is not part of a group
   $ eden list | grep folder_gone
-  $TESTTMP?folder_gone (not mounted) (glob)
+  [1]
+
+test worktree remove - forgets a worktree whose folder and parent folder are gone
+
+  $ cd $TESTTMP/missing_folder_repo
+  $ sl worktree add $TESTTMP/gone_parent/inner
+  created linked worktree at $TESTTMP/gone_parent/inner
+  $ eden rm -y $TESTTMP/gone_parent/inner > /dev/null
+  $ rm -rf $TESTTMP/gone_parent
+  $ sl worktree remove $TESTTMP/gone_parent/inner -y
+  eden checkout $TESTTMP/gone_parent/inner not found on disk, continuing to remove from registry
+  removed $TESTTMP/gone_parent/inner
 
 test worktree remove - unmounts an added redirection on Windows
 

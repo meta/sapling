@@ -78,8 +78,11 @@ impl<'a> Checkouts<'a> {
         }
     }
 
-    /// Remove one checkout. The caller holds its path lock. Returns false if an
-    /// EdenFS checkout was already missing on disk.
+    /// Remove one checkout. The caller holds its path lock.
+    ///
+    /// Returns `true` when the backend performed removal, including EdenFS state
+    /// cleanup for a missing folder. Returns `false` only when the backend skipped
+    /// a missing EdenFS checkout.
     #[cfg_attr(not(feature = "eden"), allow(unused_variables))]
     pub(crate) fn remove(&self, logger: &TermLogger, path: &Path, force: bool) -> Result<bool> {
         match self {

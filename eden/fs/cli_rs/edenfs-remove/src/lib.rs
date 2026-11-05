@@ -193,9 +193,7 @@ pub async fn remove_checkout_with_event_handler(
     options: RemoveCheckoutOptions,
     mut event_handler: impl FnMut(RemoveCheckoutEvent),
 ) -> Result<()> {
-    let path = tokio::fs::canonicalize(path)
-        .await
-        .with_context(|| format!("failed to canonicalize checkout path {}", path.display()))?;
+    let path = canonicalize_checkout_path(path).await?;
     let client_name = registered_client(instance, &path)?
         .ok_or_else(|| anyhow!("{} is not a registered EdenFS checkout", path.display()))?;
     let checkout_is_mounted = is_mounted_checkout(instance, &path).await;
@@ -318,6 +316,33 @@ async fn is_mounted_checkout(instance: &EdenFsInstance, path: &Path) -> bool {
             true
         }
     }
+}
+
+/// Canonicalize `path`. If its folder is gone, canonicalize its closest existing ancestor
+/// instead, so that a registered checkout whose folder was deleted can still be found and
+/// removed.
+pub async fn canonicalize_checkout_path(path: &Path) -> Result<PathBuf> {
+    let error = match tokio::fs::canonicalize(path).await {
+        Ok(path) => return Ok(path),
+        Err(error) => error,
+    };
+    if error.kind() == ErrorKind::NotFound
+        && let Ok(absolute) = std::path::absolute(path)
+    {
+        for ancestor in absolute.ancestors().skip(1) {
+            match tokio::fs::canonicalize(ancestor).await {
+                Ok(canonical) => {
+                    let missing = absolute
+                        .strip_prefix(ancestor)
+                        .expect("should be a prefix, since it is an ancestor");
+                    return Ok(canonical.join(missing));
+                }
+                Err(ancestor_error) if ancestor_error.kind() == ErrorKind::NotFound => {}
+                Err(_) => break,
+            }
+        }
+    }
+    Err(error).with_context(|| format!("failed to canonicalize checkout path {}", path.display()))
 }
 
 /// Return the client registered for `path` in the EdenFS directory map.
@@ -938,11 +963,18 @@ fn remove_client_dir(client_dir: &Path) -> std::io::Result<()> {
 }
 
 /// Remove a directory using the same permission and retry handling as checkout removal.
+/// A directory that is already gone counts as removed.
 #[tracing::instrument(level = "debug", skip_all, fields(path = %path.display()))]
 pub fn clean_mount_point(path: &Path) -> Result<()> {
     #[cfg(unix)]
-    std::fs::set_permissions(path, Permissions::from_mode(0o755))
-        .with_context(|| format!("failed to set permission 755 for path {}", path.display()))?;
+    match std::fs::set_permissions(path, Permissions::from_mode(0o755)) {
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            debug!(path = %path.display(), "Mount point is already gone");
+            return Ok(());
+        }
+        result => result
+            .with_context(|| format!("failed to set permission 755 for path {}", path.display()))?,
+    }
 
     forcefully_remove_dir_all(path)
         .with_context(|| format!("failed to remove mount point {}", path.display()))
@@ -967,9 +999,7 @@ pub async fn classify_checkout(
     instance: &EdenFsInstance,
     path: &Path,
 ) -> Result<LocalCheckoutState> {
-    let path = tokio::fs::canonicalize(path)
-        .await
-        .with_context(|| format!("failed to canonicalize checkout path {}", path.display()))?;
+    let path = canonicalize_checkout_path(path).await?;
     // A nested checkout's root is itself an active mount, so test the path before its ancestors.
     if is_active_eden_mount(&path) {
         return Ok(LocalCheckoutState::Active);
@@ -1543,6 +1573,58 @@ mod tests {
             }]
         );
         assert!(!checkout.exists());
+        assert!(
+            instance
+                .get_configured_mounts_map()
+                .expect("directory map")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn removes_registered_checkout_whose_folder_is_gone() {
+        let temp_dir = tempdir().expect("temporary directory");
+        let config_dir = temp_dir.path().join("eden");
+        let client_dir = config_dir.join("clients/test");
+        fs::create_dir_all(&client_dir).expect("client directory");
+        fs::write(client_dir.join("config.toml"), b"").expect("client config");
+        // The folder's parent is gone too.
+        let checkout = temp_dir
+            .path()
+            .canonicalize()
+            .expect("temporary directory path")
+            .join("worktrees")
+            .join("checkout");
+        fs::write(
+            config_dir.join("config.json"),
+            serde_json::to_vec(&BTreeMap::from([(&checkout, "test")])).expect("directory map"),
+        )
+        .expect("write directory map");
+        let instance = EdenFsInstance::with_daemon(
+            config_dir.clone(),
+            config_dir,
+            None,
+            Arc::new(DisconnectedDaemon),
+        );
+
+        assert_eq!(
+            classify_checkout(&instance, &checkout)
+                .await
+                .expect("classify checkout"),
+            LocalCheckoutState::Inactive
+        );
+        assert_eq!(
+            classify_checkout(&instance, &checkout.with_file_name("unregistered"))
+                .await
+                .expect("classify missing folder"),
+            LocalCheckoutState::Unknown,
+            "a missing folder that isn't registered is not a checkout"
+        );
+        remove_checkout(&instance, &checkout, RemoveCheckoutOptions::default())
+            .await
+            .expect("a registered checkout whose folder is gone must be removable");
+
+        assert!(!client_dir.exists());
         assert!(
             instance
                 .get_configured_mounts_map()
