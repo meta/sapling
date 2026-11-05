@@ -8,20 +8,10 @@
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fmt;
-#[cfg(unix)]
-use std::fs::File;
 #[cfg(target_os = "linux")]
 use std::future::Future;
-#[cfg(unix)]
-use std::io;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use std::io::ErrorKind;
-#[cfg(unix)]
-use std::io::Read;
-#[cfg(unix)]
-use std::os::fd::AsRawFd;
-#[cfg(unix)]
-use std::os::fd::OwnedFd;
 #[cfg(target_os = "linux")]
 use std::os::linux::fs::MetadataExt as MetadataLinuxExt;
 #[cfg(unix)]
@@ -30,9 +20,6 @@ use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
-use std::process::ExitStatus;
-#[cfg(unix)]
-use std::process::Stdio;
 use std::str::FromStr;
 
 use anyhow::Context;
@@ -67,23 +54,6 @@ use crate::mounttable::read_mount_table;
 pub const REPO_SOURCE: &str = ".eden-redirections";
 pub const USER_REDIRECTION_SOURCE: &str = ".eden/client/config.toml:redirections";
 pub const APFS_HELPER: &str = "/usr/local/libexec/eden/eden_apfs_mount_helper";
-#[cfg(unix)]
-const MKSCRATCH_SUCCESS_MARKER: &[u8] = b"\x1dEDEN_MKSCRATCH_SUCCESS\x1e";
-#[cfg(unix)]
-const MKSCRATCH_WRAPPER: &str = r#""$@" && printf '\035EDEN_MKSCRATCH_SUCCESS\036' >&2"#;
-
-#[derive(Debug)]
-enum MkscratchExitStatus {
-    Exited(ExitStatus),
-    RecoveredAfterReap,
-}
-
-#[derive(Debug)]
-struct MkscratchOutput {
-    status: MkscratchExitStatus,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-}
 
 #[derive(Clone, Serialize, Copy, Debug, PartialEq, PartialOrd)]
 #[serde(rename_all = "lowercase")]
@@ -571,176 +541,6 @@ impl Redirection {
         ))
     }
 
-    #[cfg(unix)]
-    fn classify_mkscratch_recovery(
-        status: Option<ExitStatus>,
-        stdout: Vec<u8>,
-        stderr: Vec<u8>,
-    ) -> Result<MkscratchOutput> {
-        // None means another thread reaped the child; the marker is still
-        // required to prove that the command succeeded.
-        if status.is_some_and(|status| !status.success()) {
-            return Err(EdenFsError::Other(anyhow!(
-                "mkscratch recovery wrapper failed with status {status:?}; an underlying signal may be encoded as 128 + signal; stderr: {}",
-                String::from_utf8_lossy(&stderr),
-            )));
-        }
-
-        let stderr = stderr
-            .strip_suffix(MKSCRATCH_SUCCESS_MARKER)
-            .ok_or_else(|| {
-                EdenFsError::Other(anyhow!(
-                    "mkscratch recovery wrapper completed without a success marker; status: {status:?}; stderr: {}",
-                    String::from_utf8_lossy(&stderr),
-                ))
-            })?;
-        Ok(MkscratchOutput {
-            status: MkscratchExitStatus::RecoveredAfterReap,
-            stdout,
-            stderr: stderr.to_vec(),
-        })
-    }
-
-    #[cfg(unix)]
-    fn finish_mkscratch_recovery(
-        mut read_output: impl FnMut(&mut [Vec<u8>; 2]) -> io::Result<()>,
-        mut wait: impl FnMut() -> io::Result<ExitStatus>,
-    ) -> Result<MkscratchOutput> {
-        // Keep bytes already consumed from the pipes across interrupted reads,
-        // including a partially read success marker.
-        let mut output = [Vec::new(), Vec::new()];
-        loop {
-            match read_output(&mut output) {
-                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-                result => {
-                    result.from_err()?;
-                    break;
-                }
-            }
-        }
-
-        let status = loop {
-            match wait() {
-                Ok(status) => break Some(status),
-                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-                Err(error) if error.raw_os_error() == Some(libc::ECHILD) => break None,
-                Err(error) => return Err(error).from_err(),
-            }
-        };
-        let [stdout, stderr] = output;
-        Self::classify_mkscratch_recovery(status, stdout, stderr)
-    }
-
-    #[cfg(unix)]
-    fn read_mkscratch_output(
-        pipes: &mut [Option<File>; 2],
-        output: &mut [Vec<u8>; 2],
-    ) -> io::Result<()> {
-        while pipes.iter().any(Option::is_some) {
-            let mut fds = pipes.each_ref().map(|pipe| libc::pollfd {
-                fd: pipe.as_ref().map_or(-1, AsRawFd::as_raw_fd),
-                events: libc::POLLIN,
-                revents: 0,
-            });
-            // SAFETY: fds is a writable array of the indicated length;
-            // pipes owns every nonnegative descriptor throughout poll.
-            if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) } == -1 {
-                return Err(io::Error::last_os_error());
-            }
-            for ((pipe, fd), bytes) in pipes.iter_mut().zip(fds).zip(output.iter_mut()) {
-                if fd.revents & libc::POLLNVAL != 0 {
-                    return Err(io::Error::from_raw_os_error(libc::EBADF));
-                }
-                if fd.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) == 0 {
-                    continue;
-                }
-                let Some(reader) = pipe else {
-                    continue;
-                };
-                // One bounded read per ready pipe prevents either writer
-                // from blocking behind a full stdout or stderr pipe.
-                let mut buffer = [0; 8192];
-                let count = reader.read(&mut buffer)?;
-                if count == 0 {
-                    *pipe = None;
-                } else {
-                    bytes.extend_from_slice(&buffer[..count]);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    fn retry_mkscratch_after_reap(mkscratch: &Path, args: &[&OsStr]) -> Result<MkscratchOutput> {
-        // Keep this command eligible for std's posix_spawn path: pre_exec
-        // callbacks would run daemon at-fork handlers before the shell exec.
-        let mut child = Command::new("/bin/sh")
-            .envs(trace_env("mkscratch"))
-            .arg("-c")
-            .arg(MKSCRATCH_WRAPPER)
-            .arg("--")
-            .arg(mkscratch)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .from_err()?;
-        let mut pipes = [
-            child
-                .stdout
-                .take()
-                .map(|pipe| File::from(OwnedFd::from(pipe))),
-            child
-                .stderr
-                .take()
-                .map(|pipe| File::from(OwnedFd::from(pipe))),
-        ];
-        let result = Self::finish_mkscratch_recovery(
-            |output| Self::read_mkscratch_output(&mut pipes, output),
-            || child.wait(),
-        );
-        // Child does not reap on drop. Close readers before waiting on an
-        // error so the child cannot remain blocked on its output pipes.
-        drop(pipes);
-        if result.is_err() {
-            loop {
-                match child.wait() {
-                    Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-                    Err(error) if error.raw_os_error() != Some(libc::ECHILD) => {
-                        tracing::warn!(%error, "failed to reap mkscratch recovery child");
-                    }
-                    _ => {}
-                }
-                break;
-            }
-        }
-        result
-    }
-
-    fn run_mkscratch(mkscratch: &Path, args: &[&OsStr]) -> Result<MkscratchOutput> {
-        let output = Command::new(mkscratch)
-            .envs(trace_env("mkscratch"))
-            .args(args)
-            .output();
-        match output {
-            Ok(output) => Ok(MkscratchOutput {
-                status: MkscratchExitStatus::Exited(output.status),
-                stdout: output.stdout,
-                stderr: output.stderr,
-            }),
-            #[cfg(unix)]
-            Err(error) if error.raw_os_error() == Some(libc::ECHILD) => {
-                // `mkscratch path` is idempotent, so retry the operation to
-                // recover an exit status instead of trusting output from the
-                // child whose status was reaped by another thread.
-                Redirection::retry_mkscratch_after_reap(mkscratch, args)
-            }
-            Err(error) => Err(error).from_err(),
-        }
-    }
-
     fn resolve_scratch_dir(
         checkout_path: &Path,
         subdir: &Path,
@@ -788,29 +588,20 @@ impl Redirection {
                     .unwrap_or_else(|_| "<undecodable arguments>".to_owned()),
             )
         };
-        let output = Redirection::run_mkscratch(&mkscratch, &args)
+        let output = Command::new(&mkscratch)
+            .envs(trace_env("mkscratch"))
+            .args(&args)
+            .output()
             .with_context(|| format!("Failed to execute mkscratch cmd: `{}`", command()))?;
-
-        match output.status {
-            MkscratchExitStatus::Exited(status) if status.success() => {
-                Redirection::parse_mkscratch_stdout(&output.stdout)
-            }
-            MkscratchExitStatus::RecoveredAfterReap => {
-                let path = Redirection::parse_mkscratch_stdout(&output.stdout)?;
-                tracing::info!(
-                    command = %command(),
-                    stderr = %String::from_utf8_lossy(&output.stderr),
-                    "mkscratch direct exit status was reaped; retry succeeded"
-                );
-                Ok(path)
-            }
-            status => Err(EdenFsError::Other(anyhow!(
+        if !output.status.success() {
+            return Err(EdenFsError::Other(anyhow!(
                 "Failed to execute `{}`, stderr: {}, exit status: {:?}",
                 command(),
                 String::from_utf8_lossy(&output.stderr),
-                status,
-            ))),
+                output.status,
+            )));
         }
+        Redirection::parse_mkscratch_stdout(&output.stdout)
     }
 
     pub fn expand_target_abspath(
@@ -2849,32 +2640,10 @@ pub mod scratch {
 mod tests {
     use std::collections::BTreeMap;
     #[cfg(unix)]
-    use std::ffi::OsStr;
-    #[cfg(unix)]
-    use std::fs::File;
-    #[cfg(unix)]
-    use std::io;
-    #[cfg(unix)]
-    use std::io::ErrorKind;
-    #[cfg(unix)]
-    use std::iter::once;
-    #[cfg(unix)]
-    use std::os::fd::OwnedFd;
-    #[cfg(unix)]
     use std::os::unix::ffi::OsStrExt;
-    #[cfg(unix)]
-    use std::os::unix::process::ExitStatusExt;
     use std::path::Path;
     use std::path::PathBuf;
-    #[cfg(unix)]
-    use std::process::Command;
-    #[cfg(unix)]
-    use std::process::ExitStatus;
-    #[cfg(unix)]
-    use std::process::Stdio;
 
-    #[cfg(unix)]
-    use edenfs_error::EdenFsError;
     #[cfg(target_os = "windows")]
     use mkscratch::zzencode;
     use rand::distr::Alphanumeric;
@@ -2883,12 +2652,6 @@ mod tests {
     use serde_test::assert_ser_tokens;
     use tempfile::tempdir;
 
-    #[cfg(unix)]
-    use crate::redirect::MKSCRATCH_SUCCESS_MARKER;
-    #[cfg(unix)]
-    use crate::redirect::MKSCRATCH_WRAPPER;
-    #[cfg(unix)]
-    use crate::redirect::MkscratchExitStatus;
     use crate::redirect::REPO_SOURCE;
     use crate::redirect::Redirection;
     use crate::redirect::RedirectionBackingCleanupPlanner;
@@ -2954,354 +2717,6 @@ mod tests {
                 PathBuf::from(r"relative\scratch"),
             );
         }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_mkscratch_recovery_requires_success_marker() {
-        let success = Redirection::classify_mkscratch_recovery(
-            None,
-            b"/tmp/scratch\n".to_vec(),
-            [b"warning".as_slice(), MKSCRATCH_SUCCESS_MARKER].concat(),
-        )
-        .expect("marked output should prove success");
-        assert!(matches!(
-            success.status,
-            MkscratchExitStatus::RecoveredAfterReap
-        ));
-        assert_eq!(success.stdout, b"/tmp/scratch\n");
-        assert_eq!(success.stderr, b"warning");
-
-        assert_eq!(
-            Redirection::parse_mkscratch_stdout(&success.stdout)
-                .expect("successful output should contain a path"),
-            PathBuf::from("/tmp/scratch"),
-        );
-
-        assert!(
-            Redirection::classify_mkscratch_recovery(
-                None,
-                b"/tmp/scratch\n".to_vec(),
-                b"warning".to_vec(),
-            )
-            .is_err(),
-            "unmarked output must not turn an unknown exit status into success",
-        );
-
-        for raw in [7 << 8, libc::SIGTERM] {
-            assert!(
-                Redirection::classify_mkscratch_recovery(
-                    Some(ExitStatus::from_raw(raw)),
-                    b"/tmp/scratch\n".to_vec(),
-                    [b"warning".as_slice(), MKSCRATCH_SUCCESS_MARKER].concat(),
-                )
-                .is_err(),
-                "a marker must not hide a known failure",
-            );
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_mkscratch_recovery_resumes_interrupted_reads_and_waits() {
-        let (marker_start, marker_end) =
-            MKSCRATCH_SUCCESS_MARKER.split_at(MKSCRATCH_SUCCESS_MARKER.len() / 2);
-        let mut reads = [
-            (
-                b"/tmp/".to_vec(),
-                b"war".to_vec(),
-                Err(ErrorKind::Interrupted.into()),
-            ),
-            (
-                b"scratch\n".to_vec(),
-                [b"ning".as_slice(), marker_start].concat(),
-                Err(ErrorKind::Interrupted.into()),
-            ),
-            (Vec::new(), marker_end.to_vec(), Ok(())),
-        ]
-        .into_iter();
-        let mut waits = [
-            Err(ErrorKind::Interrupted.into()),
-            Err(ErrorKind::Interrupted.into()),
-            Err(io::Error::from_raw_os_error(libc::ECHILD)),
-        ]
-        .into_iter();
-
-        let output = Redirection::finish_mkscratch_recovery(
-            |output| {
-                let (stdout, stderr, result) = reads.next().expect("must stop reading at EOF");
-                output[0].extend(stdout);
-                output[1].extend(stderr);
-                result
-            },
-            || waits.next().expect("must stop waiting after completion"),
-        )
-        .expect("interrupted I/O must preserve the complete output and marker");
-
-        assert!(matches!(
-            output.status,
-            MkscratchExitStatus::RecoveredAfterReap
-        ));
-        assert_eq!(output.stdout, b"/tmp/scratch\n");
-        assert_eq!(output.stderr, b"warning");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_mkscratch_recovery_preserves_read_errors() {
-        let mut reads = once(Err(ErrorKind::PermissionDenied.into()));
-        let error = Redirection::finish_mkscratch_recovery(
-            |output| {
-                output[0].extend_from_slice(b"/tmp/scratch\n");
-                output[1].extend_from_slice(MKSCRATCH_SUCCESS_MARKER);
-                reads.next().expect("must not retry a non-interrupted read")
-            },
-            || panic!("must propagate a read error before collecting exit status"),
-        )
-        .expect_err("even marked output must not hide an I/O failure");
-
-        let EdenFsError::Other(error) = error else {
-            panic!("expected the original I/O error");
-        };
-        assert_eq!(
-            error
-                .downcast_ref::<io::Error>()
-                .expect("must preserve the I/O error")
-                .kind(),
-            ErrorKind::PermissionDenied,
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_mkscratch_recovery_preserves_wait_errors() {
-        let mut reads = once(Ok(()));
-        let mut waits = once(Err(ErrorKind::PermissionDenied.into()));
-        let error = Redirection::finish_mkscratch_recovery(
-            |output| {
-                output[0].extend_from_slice(b"/tmp/scratch\n");
-                output[1].extend_from_slice(MKSCRATCH_SUCCESS_MARKER);
-                reads.next().expect("must not reread output while waiting")
-            },
-            || waits.next().expect("must not retry a non-interrupted wait"),
-        )
-        .expect_err("even marked output must not hide a wait failure");
-
-        let EdenFsError::Other(error) = error else {
-            panic!("expected the original I/O error");
-        };
-        assert_eq!(
-            error
-                .downcast_ref::<io::Error>()
-                .expect("must preserve the I/O error")
-                .kind(),
-            ErrorKind::PermissionDenied,
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_mkscratch_recovery_wrapper_reports_command_result() {
-        let success = Redirection::retry_mkscratch_after_reap(
-            Path::new("/bin/sh"),
-            &["-c", "printf '/tmp/scratch\\n'; printf warning >&2"].map(OsStr::new),
-        )
-        .expect("successful retry should be recognized");
-        assert!(matches!(
-            success.status,
-            MkscratchExitStatus::RecoveredAfterReap
-        ));
-        assert_eq!(success.stdout, b"/tmp/scratch\n");
-        assert_eq!(success.stderr, b"warning");
-
-        assert!(
-            Redirection::retry_mkscratch_after_reap(
-                Path::new("/bin/sh"),
-                &["-c", "printf failure >&2; exit 7"].map(OsStr::new),
-            )
-            .is_err(),
-            "a failed retry must remain a failure",
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn test_mkscratch_recovery_avoids_atfork_callbacks() {
-        const CHILD_MODE: &str = "EDEN_MKSCRATCH_ATFORK_TEST";
-        const READY: &[u8] = b"mkscratch atfork observer ready\n";
-        const CALLED: &[u8] = b"mkscratch atfork observer called\n";
-        const DONE: &[u8] = b"mkscratch atfork observer done\n";
-
-        fn write_marker(marker: &[u8]) {
-            // SAFETY: The static bytes remain valid, write is async-signal-safe,
-            // and failure exits without unwinding across the callback's C ABI.
-            unsafe {
-                if libc::write(libc::STDERR_FILENO, marker.as_ptr().cast(), marker.len())
-                    != marker.len() as isize
-                {
-                    libc::_exit(101);
-                }
-            }
-        }
-
-        extern "C" fn observe_fork() {
-            write_marker(CALLED);
-        }
-
-        if let Ok(mode) = std::env::var(CHILD_MODE) {
-            // SAFETY: Only this isolated subprocess registers the static,
-            // async-signal-safe callback and changes its own alarm.
-            unsafe {
-                libc::alarm(30);
-                assert_eq!(libc::pthread_atfork(None, None, Some(observe_fork)), 0);
-            }
-            let (release, wait) = std::sync::mpsc::channel::<()>();
-            let worker = std::thread::spawn(move || wait.recv());
-            write_marker(READY);
-            match mode.as_str() {
-                "control" => {
-                    // SAFETY: The child only calls async-signal-safe _exit;
-                    // the parent waits for this exact child, retrying EINTR.
-                    unsafe {
-                        let pid = libc::fork();
-                        assert!(pid >= 0);
-                        if pid == 0 {
-                            libc::_exit(0);
-                        }
-                        let mut status = 0;
-                        loop {
-                            let waited = libc::waitpid(pid, &mut status, 0);
-                            if waited == -1
-                                && std::io::Error::last_os_error().kind() == ErrorKind::Interrupted
-                            {
-                                continue;
-                            }
-                            assert_eq!(waited, pid);
-                            assert_eq!(status, 0);
-                            break;
-                        }
-                    }
-                }
-                "recovery" => {
-                    let output = Redirection::retry_mkscratch_after_reap(
-                        Path::new("/bin/sh"),
-                        &["-c", "printf '/tmp/scratch\\n'; printf warning >&2"].map(OsStr::new),
-                    )
-                    .expect("recovery should retain the command output");
-                    assert!(matches!(
-                        output.status,
-                        MkscratchExitStatus::RecoveredAfterReap
-                    ));
-                    assert_eq!(output.stdout, b"/tmp/scratch\n");
-                    assert_eq!(output.stderr, b"warning");
-                }
-                _ => panic!("unexpected atfork test mode: {mode}"),
-            }
-            drop(release);
-            assert!(worker.join().unwrap().is_err());
-            write_marker(DONE);
-            std::process::exit(0);
-        }
-
-        for mode in ["control", "recovery"] {
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "redirect::tests::test_mkscratch_recovery_avoids_atfork_callbacks",
-                    "--nocapture",
-                ])
-                .env(CHILD_MODE, mode)
-                .output()
-                .unwrap();
-            assert!(output.status.success(), "{mode}: {output:?}");
-            for marker in [READY, DONE] {
-                assert!(
-                    output.stderr.windows(marker.len()).any(|w| w == marker),
-                    "{mode}: missing observer checkpoint: {output:?}",
-                );
-            }
-            let called = output.stderr.windows(CALLED.len()).any(|w| w == CALLED);
-            assert_eq!(called, mode == "control", "{mode}: {output:?}");
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_mkscratch_recovery_preserves_output_after_external_reap() {
-        for (script, succeeds) in [
-            ("printf '/tmp/scratch\\n'; printf warning >&2", true),
-            (
-                "printf '/tmp/scratch\\n'; printf warning >&2; exit 7",
-                false,
-            ),
-        ] {
-            let mut child = Command::new("/bin/sh")
-                .args(["-c", MKSCRATCH_WRAPPER, "--", "/bin/sh", "-c", script])
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .unwrap();
-            let mut status = 0;
-            loop {
-                // SAFETY: status is writable and waitpid targets only the
-                // child owned by this test, simulating the daemon's reaper.
-                let waited = unsafe { libc::waitpid(child.id() as libc::pid_t, &mut status, 0) };
-                if waited == -1 && io::Error::last_os_error().kind() == ErrorKind::Interrupted {
-                    continue;
-                }
-                assert_eq!(waited, child.id() as libc::pid_t);
-                break;
-            }
-            assert_eq!(ExitStatus::from_raw(status).success(), succeeds);
-            assert_eq!(child.wait().unwrap_err().raw_os_error(), Some(libc::ECHILD));
-            let mut pipes = [
-                child
-                    .stdout
-                    .take()
-                    .map(|pipe| File::from(OwnedFd::from(pipe))),
-                child
-                    .stderr
-                    .take()
-                    .map(|pipe| File::from(OwnedFd::from(pipe))),
-            ];
-            let output = Redirection::finish_mkscratch_recovery(
-                |output| Redirection::read_mkscratch_output(&mut pipes, output),
-                || child.wait(),
-            );
-            if succeeds {
-                let output = output.expect("ECHILD must not discard the captured success marker");
-                assert!(matches!(
-                    output.status,
-                    MkscratchExitStatus::RecoveredAfterReap
-                ));
-                assert_eq!(output.stdout, b"/tmp/scratch\n");
-                assert_eq!(output.stderr, b"warning");
-            } else {
-                let error = output.expect_err("ECHILD without a marker must not imply success");
-                assert!(error.to_string().contains("without a success marker"));
-            }
-            assert!(pipes.iter().all(Option::is_none));
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_mkscratch_recovery_drains_both_output_pipes() {
-        let output = Redirection::retry_mkscratch_after_reap(
-            Path::new("/bin/sh"),
-            &[
-                "-c",
-                "i=0; while [ \"$i\" -lt 16384 ]; do printf 'stdout\\n'; printf 'stderr\\n' >&2; i=$((i+1)); done",
-            ].map(OsStr::new),
-        )
-        .expect("both output pipes must be drained without deadlocking");
-        assert!(matches!(
-            output.status,
-            MkscratchExitStatus::RecoveredAfterReap
-        ));
-        assert_eq!(output.stdout, b"stdout\n".repeat(16384));
-        assert_eq!(output.stderr, b"stderr\n".repeat(16384));
     }
 
     #[test]
