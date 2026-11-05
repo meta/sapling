@@ -436,6 +436,37 @@ impl DiskUsageCmd {
         }
     }
 
+    /// Find the redirection targets in the scratch root that no registered
+    /// checkout uses.
+    ///
+    /// The scratch root holds the redirections of every checkout, so when `du`
+    /// runs on some mounts, the redirections of all the other checkouts are
+    /// collected too.
+    fn get_orphaned_redirections(
+        &self,
+        instance: &EdenFsInstance,
+        redirect_targets: &BTreeSet<PathBuf>,
+        skipped_mounts: &[PathBuf],
+    ) -> Result<Vec<PathBuf>> {
+        if self.mounts.is_empty() {
+            return redirect::scratch::get_orphaned_redirection_targets(
+                redirect_targets,
+                skipped_mounts,
+            );
+        }
+        let mounts: Vec<PathBuf> = instance
+            .get_configured_mounts_map()
+            .context("Failed to get EdenFS mounts")?
+            .into_keys()
+            .collect();
+        let (checkouts, skipped_mounts) =
+            get_checkouts(&mounts, instance, true).context("Failed to get EdenFS checkouts")?;
+        let (redirections, _) =
+            get_redirections(&checkouts).context("Failed to get EdenFS redirections")?;
+        let redirect_targets = redirections.into_iter().map(|(_, target)| target).collect();
+        redirect::scratch::get_orphaned_redirection_targets(&redirect_targets, &skipped_mounts)
+    }
+
     /// Remove all the fsck directories if --deep-clean is used.
     fn clean_fsck_directories(&self, fsck_dirs: Vec<PathBuf>) {
         if self.deep_clean {
@@ -771,10 +802,7 @@ impl crate::Subcommand for DiskUsageCmd {
         // `--clean`/`--deep-clean` still run their other cleanups and report the
         // scan failure at the end.
         let (orphaned_redirections, orphan_scan_error) =
-            match redirect::scratch::get_orphaned_redirection_targets(
-                &redirect_targets,
-                &skipped_mounts,
-            ) {
+            match self.get_orphaned_redirections(instance, &redirect_targets, &skipped_mounts) {
                 Ok(orphaned) => (orphaned, None),
                 Err(error) if self.clean_orphaned => {
                     return Err(error.context("Failed to find orphaned redirections for cleanup"));

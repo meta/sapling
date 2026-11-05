@@ -293,9 +293,7 @@ class DiskUsageTest(testcase.EdenRepoTest):
         self.eden.run_cmd("du", "--clean-orphaned", self.mount)
 
         self.assertFalse(orphan.exists())
-        # FIXME: The other checkout still uses its redirection, so its target
-        # should be kept.
-        self.assertFalse(other_target.exists())
+        self.assertEqual((other_target / "payload").read_text(), "keep")
 
     # Materialized files tests
     def test_du_materialized_increases_after_file_modification(self) -> None:
