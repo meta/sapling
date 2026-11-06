@@ -40,7 +40,7 @@ tokio-stream = { version = "0.1.19", features = ["fs", "io-util", "net", "signal
 tokio-util = { version = "0.7.20", features = ["full"] }
 topo_sort = { version = "0.1.0", path = "../../common/topo_sort" }
 unicode-truncate = "0.2"
-unicode-width = "0.2.2"
+unicode-width = "0.2.3"
 
 [dev-dependencies]
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }

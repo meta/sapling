@@ -18,7 +18,7 @@ mercurial_types = { version = "0.1.0", path = "../../mercurial/types" }
 mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 unicode-truncate = "0.2"
-unicode-width = "0.2.2"
+unicode-width = "0.2.3"
 
 [dev-dependencies]
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
