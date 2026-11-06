@@ -24,7 +24,7 @@ bytes = { version = "1.12.1", features = ["serde"] }
 cloned = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 commit_graph = { version = "0.1.0", path = "../../repo_attributes/commit_graph/commit_graph" }
 context = { version = "0.1.0", path = "../../servers/slapi/slapi_server/context" }
-encoding_rs = "0.8.42"
+encoding_rs = "0.8.44"
 filestore = { version = "0.1.0", path = "../../repo_attributes/filestore" }
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
 futures_stats = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
