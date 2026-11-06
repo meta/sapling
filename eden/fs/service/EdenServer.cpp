@@ -2590,6 +2590,13 @@ void EdenServer::addToMountPoints(std::shared_ptr<EdenMount> edenMount) {
           EdenErrorType::POSIX_ERROR,
           fmt::format("mount point \"{}\" is already mounted", mountPath));
     }
+    // Unmount recovery remounts a checkout that config.json lists and
+    // mountPoints_ does not, unless this marker is set, and unmount() sets
+    // the marker on a mount it finds here. Cleared before the insertion, the
+    // marker would leave a window for a recovery mount to win the race and
+    // fail this one as "already mounted"; cleared after the lock is released,
+    // it could erase the marker of an unmount that found the entry in between.
+    edenMount->getCheckoutConfig()->clearIntentionallyUnmountedFlag();
   }
 }
 
@@ -2785,8 +2792,6 @@ ImmediateFuture<std::shared_ptr<EdenMount>> EdenServer::mount(
     optional<TakeoverData::MountInfo>&& optionalTakeover) {
   folly::stop_watch<> mountStopWatch;
 
-  initialConfig->clearIntentionallyUnmountedFlag();
-
   auto bsType = toBackingStoreType(initialConfig->getRepoType());
   XLOGF(
       INFO, "Creating backing store of type: {}", toBackingStoreString(bsType));
@@ -2824,6 +2829,8 @@ ImmediateFuture<std::shared_ptr<EdenMount>> EdenServer::mount(
       std::nullopt,
       std::move(walkDetector));
   addToMountPoints(edenMount);
+  serverState_->getFaultInjector().check(
+      "mountRegistered", edenMount->getPath().view());
 
   if (fsckSemaphore_) {
     edenMount->getOverlay()->setFsckSemaphore(fsckSemaphore_.get());
