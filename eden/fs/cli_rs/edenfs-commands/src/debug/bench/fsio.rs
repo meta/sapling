@@ -8,6 +8,7 @@
 //! Filesystem I/O benchmarking
 
 mod comparison;
+mod daemon;
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -30,6 +31,8 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 pub(crate) use comparison::load_result;
+pub(crate) use daemon::DaemonSampler;
+use edenfs_client::instance::EdenFsInstance;
 #[cfg(target_os = "linux")]
 use edenfs_utils::trace_env;
 use hdrhistogram::Histogram;
@@ -232,6 +235,10 @@ struct PhaseResult {
     file_io: OperationResult,
     file_close: OperationResult,
     per_file_size: Vec<FileSizeResult>,
+    /// What the EdenFS daemon did during the phase; absent when the files
+    /// are not on EdenFS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    eden: Option<daemon::DaemonPhaseResult>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -261,6 +268,8 @@ struct RemoveResult {
     directories: u64,
     file_unlink: OperationResult,
     directory_remove: OperationResult,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    eden: Option<daemon::DaemonPhaseResult>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
@@ -455,10 +464,13 @@ impl FileAccumulator {
     }
 }
 
-pub(crate) fn bench_fs_io(
+/// Runs the benchmark. With an `instance`, the EdenFS daemon serving the
+/// files is sampled around each phase when the files are on EdenFS.
+pub(crate) async fn bench_fs_io(
     source: FsIoSource<'_>,
     options: FsIoOptions,
     baseline: Option<&FsIoResult>,
+    instance: Option<&EdenFsInstance>,
 ) -> Result<FsIoResult> {
     let read_only = source.read_only();
     let workload = match source {
@@ -472,6 +484,20 @@ pub(crate) fn bench_fs_io(
         // recorded with a different workload doesn't waste a full run.
         comparison::ensure_config_matches(&config, &baseline.config)?;
     }
+    let mut sampler = match instance {
+        Some(instance) => {
+            // Generated files do not exist yet; their directory does.
+            let path = match source {
+                FsIoSource::Generated(test_dir) | FsIoSource::Tree(test_dir) => &test_dir.path,
+                FsIoSource::FileList(_) => workload.files[0]
+                    .path
+                    .parent()
+                    .unwrap_or(&workload.files[0].path),
+            };
+            DaemonSampler::for_path(instance, path).await?
+        }
+        None => None,
+    };
 
     let write = if read_only {
         None
@@ -482,9 +508,14 @@ pub(crate) fn bench_fs_io(
             generate_paragraphs(CONTENT_BUFFER_SIZE + options.write_size.get(), 0).into_bytes();
         let write_progress =
             file_progress_bar("Write", workload.files.len(), options.show_progress);
-        let write = bench_write(&workload, &content, options, &write_progress);
+        let write = daemon::measure_phase(sampler.as_mut(), || {
+            bench_write(&workload, &content, options, &write_progress)
+        })
+        .await;
         write_progress.finish_and_clear();
-        Some(write?)
+        let (mut write, eden) = write?;
+        write.eden = eden;
+        Some(write)
     };
 
     // Only files this run wrote can have dirty pages to sync away.
@@ -500,18 +531,27 @@ pub(crate) fn bench_fs_io(
     let cache_preparation = cache_preparation?;
 
     let read_progress = file_progress_bar("Read", workload.files.len(), options.show_progress);
-    let read = bench_read(source, &workload, options, &read_progress);
+    let read = daemon::measure_phase(sampler.as_mut(), || {
+        bench_read(source, &workload, options, &read_progress)
+    })
+    .await;
     read_progress.finish_and_clear();
-    let read = read?;
+    let (mut read, eden) = read?;
+    read.eden = eden;
 
     let remove = if read_only {
         None
     } else {
         let remove_progress =
             file_progress_bar("Remove", workload.files.len(), options.show_progress);
-        let remove = bench_remove(&workload, options, &remove_progress);
+        let remove = daemon::measure_phase(sampler.as_mut(), || {
+            bench_remove(&workload, options, &remove_progress)
+        })
+        .await;
         remove_progress.finish_and_clear();
-        Some(remove?)
+        let (mut remove, eden) = remove?;
+        remove.eden = eden;
+        Some(remove)
     };
     Ok(FsIoResult {
         config,
@@ -589,6 +629,7 @@ fn bench_remove(
         directories: workload.directories.len() as u64,
         file_unlink: file_unlink.result(),
         directory_remove: directory_remove.result(),
+        eden: None,
     })
 }
 
@@ -1370,6 +1411,7 @@ fn phase_result(
             .into_iter()
             .map(FileSizeAccumulator::result)
             .collect(),
+        eden: None,
     }
 }
 
@@ -1548,7 +1590,11 @@ fn write_remove_phase(formatter: &mut fmt::Formatter<'_>, result: &RemoveResult)
         "operation", "calls", "sum", "avg", "p50", "p90", "p99"
     )?;
     write_operation(formatter, "file unlink", &result.file_unlink)?;
-    write_operation(formatter, "directory remove", &result.directory_remove)
+    write_operation(formatter, "directory remove", &result.directory_remove)?;
+    if let Some(eden) = &result.eden {
+        daemon::write_daemon(formatter, eden)?;
+    }
+    Ok(())
 }
 
 fn write_phase(
@@ -1600,6 +1646,10 @@ fn write_phase(
             format_duration_seconds(size.file_io.sum_seconds),
             format_duration_seconds(size.file_close.sum_seconds),
         )?;
+    }
+    if let Some(eden) = &result.eden {
+        writeln!(formatter)?;
+        daemon::write_daemon(formatter, eden)?;
     }
     Ok(())
 }
@@ -1872,8 +1922,8 @@ mod tests {
         assert_eq!(size_indexes, vec![0, 0, 1, 2, 3, 4, 5, 5, 6]);
     }
 
-    #[test]
-    fn read_only_run_reads_existing_files_and_skips_write_and_remove() {
+    #[tokio::test]
+    async fn read_only_run_reads_existing_files_and_skips_write_and_remove() {
         let root = TempDir::new().expect("temporary directory should be created");
         fs::create_dir(root.path().join("nested")).expect("nested directory should be created");
         fs::write(root.path().join("a.txt"), b"12345").expect("file should be written");
@@ -1897,7 +1947,8 @@ mod tests {
             show_progress: false,
         };
 
-        let result = bench_fs_io(FsIoSource::Tree(&test_dir), options, None)
+        let result = bench_fs_io(FsIoSource::Tree(&test_dir), options, None, None)
+            .await
             .expect("read-only run should succeed");
 
         assert!(result.write.is_none());
@@ -1928,15 +1979,17 @@ mod tests {
                 ..options
             },
             None,
+            None,
         )
+        .await
         .expect("capped read-only run should succeed");
 
         assert_eq!(capped.read.files, 2);
         assert_eq!(capped.config.number_of_files, 2);
     }
 
-    #[test]
-    fn file_list_run_reads_listed_files_in_order_and_skips_missing_paths() {
+    #[tokio::test]
+    async fn file_list_run_reads_listed_files_in_order_and_skips_missing_paths() {
         let root = TempDir::new().expect("temporary directory should be created");
         fs::create_dir(root.path().join("nested")).expect("nested directory should be created");
         fs::write(root.path().join("a.txt"), b"12345").expect("file should be written");
@@ -1965,7 +2018,8 @@ mod tests {
             show_progress: false,
         };
 
-        let result = bench_fs_io(FsIoSource::FileList(&list), options, None)
+        let result = bench_fs_io(FsIoSource::FileList(&list), options, None, None)
+            .await
             .expect("file-list run should succeed");
 
         assert!(result.config.read_only);
@@ -1994,7 +2048,9 @@ mod tests {
                 ..options
             },
             None,
+            None,
         )
+        .await
         .expect("capped file-list run should succeed");
 
         assert_eq!(capped.read.files, 1);

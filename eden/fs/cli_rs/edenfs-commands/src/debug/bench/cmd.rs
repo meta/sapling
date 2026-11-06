@@ -250,7 +250,9 @@ impl crate::Subcommand for BenchCmd {
                         show_progress: !*json && !*no_progress,
                     },
                     baseline.as_ref(),
-                );
+                    Some(crate::get_edenfs_instance()),
+                )
+                .await;
                 let cleanup_result = match source {
                     fsio::FsIoSource::Generated(bench_dir) => bench_dir.remove(),
                     fsio::FsIoSource::Tree(_) | fsio::FsIoSource::FileList(_) => Ok(()),

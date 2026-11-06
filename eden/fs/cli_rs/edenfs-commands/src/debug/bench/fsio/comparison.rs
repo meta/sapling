@@ -7,6 +7,7 @@
 
 //! Compare an fs-io run against a baseline recorded with `--json`.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::File;
 use std::io::BufReader;
@@ -23,6 +24,8 @@ use super::FsIoResult;
 use super::OperationResult;
 use super::PhaseResult;
 use super::RemoveResult;
+use super::daemon::DaemonPhaseResult;
+use super::daemon::flatten_counters;
 use super::format_byte_size;
 
 #[derive(Debug, Serialize)]
@@ -47,6 +50,25 @@ struct RemoveDiff {
     files_per_second_percent: Option<f64>,
     file_unlink: OperationDiff,
     directory_remove: OperationDiff,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    eden: Option<DaemonDiff>,
+}
+
+/// Change in what the EdenFS daemon did during a phase. Present only when
+/// both runs sampled the daemon.
+#[derive(Debug, Serialize)]
+struct DaemonDiff {
+    cpu_time_percent: Option<f64>,
+    rss_percent: Option<f64>,
+    /// Counters that were nonzero in either run.
+    counters: BTreeMap<String, CounterDiff>,
+}
+
+#[derive(Debug, Serialize)]
+struct CounterDiff {
+    baseline: u64,
+    current: u64,
+    percent: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -68,6 +90,8 @@ struct PhaseDiff {
     file_io: OperationDiff,
     file_close: OperationDiff,
     per_file_size: Vec<FileSizeDiff>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    eden: Option<DaemonDiff>,
 }
 
 #[derive(Debug, Serialize)]
@@ -176,7 +200,42 @@ impl RemoveDiff {
                 &current.directory_remove,
                 &baseline.directory_remove,
             ),
+            eden: DaemonDiff::new(current.eden.as_ref(), baseline.eden.as_ref()),
         }
+    }
+}
+
+impl DaemonDiff {
+    fn new(
+        current: Option<&DaemonPhaseResult>,
+        baseline: Option<&DaemonPhaseResult>,
+    ) -> Option<Self> {
+        let (current, baseline) = current.zip(baseline)?;
+        let current_counters = flatten_counters(&current.counters);
+        let baseline_counters = flatten_counters(&baseline.counters);
+        let counters = current_counters
+            .keys()
+            .chain(baseline_counters.keys())
+            .filter_map(|name| {
+                let current = current_counters.get(name).copied().unwrap_or(0);
+                let baseline = baseline_counters.get(name).copied().unwrap_or(0);
+                (current > 0 || baseline > 0).then(|| {
+                    (
+                        name.clone(),
+                        CounterDiff {
+                            baseline,
+                            current,
+                            percent: percent_change(current as f64, baseline as f64),
+                        },
+                    )
+                })
+            })
+            .collect();
+        Some(Self {
+            cpu_time_percent: percent_change(current.cpu_seconds, baseline.cpu_seconds),
+            rss_percent: percent_change(current.rss_bytes as f64, baseline.rss_bytes as f64),
+            counters,
+        })
     }
 }
 
@@ -217,6 +276,7 @@ impl PhaseDiff {
                 .zip(&baseline.per_file_size)
                 .map(|(current, baseline)| FileSizeDiff::new(current, baseline))
                 .collect(),
+            eden: DaemonDiff::new(current.eden.as_ref(), baseline.eden.as_ref()),
         }
     }
 }
@@ -445,7 +505,35 @@ fn write_remove_diff(formatter: &mut fmt::Formatter<'_>, diff: &RemoveDiff) -> f
     )?;
     write_operation_diff_header(formatter)?;
     write_operation_diff(formatter, "file unlink", &diff.file_unlink)?;
-    write_operation_diff(formatter, "directory remove", &diff.directory_remove)
+    write_operation_diff(formatter, "directory remove", &diff.directory_remove)?;
+    if let Some(eden) = &diff.eden {
+        write_daemon_diff(formatter, eden)?;
+    }
+    Ok(())
+}
+
+fn write_daemon_diff(formatter: &mut fmt::Formatter<'_>, diff: &DaemonDiff) -> fmt::Result {
+    writeln!(
+        formatter,
+        "EdenFS daemon: CPU {}, resident {}",
+        format_signed_change(diff.cpu_time_percent),
+        format_signed_change(diff.rss_percent)
+    )?;
+    writeln!(
+        formatter,
+        "{:<64} {:>12} {:>12} {:>16}",
+        "counter", "baseline", "current", "change"
+    )?;
+    for (name, counter) in &diff.counters {
+        writeln!(
+            formatter,
+            "{name:<64} {:>12} {:>12} {:>16}",
+            counter.baseline,
+            counter.current,
+            format_signed_change(counter.percent)
+        )?;
+    }
+    Ok(())
 }
 
 fn write_cache_preparation_diff(
@@ -508,6 +596,10 @@ fn write_phase_diff(
             format_change(size.close_sum_time_percent, false),
         )?;
     }
+    if let Some(eden) = &diff.eden {
+        writeln!(formatter)?;
+        write_daemon_diff(formatter, eden)?;
+    }
     Ok(())
 }
 
@@ -535,6 +627,17 @@ fn write_operation_diff(
         format_change(diff.p90_latency_percent, false),
         format_change(diff.p99_latency_percent, false),
     )
+}
+
+/// For counts and resource use, where neither direction is faster.
+fn format_signed_change(percent: Option<f64>) -> String {
+    let Some(percent) = percent else {
+        return "n/a".to_owned();
+    };
+    if percent.abs() < 0.05 {
+        return "unchanged".to_owned();
+    }
+    format!("{percent:+.1}%")
 }
 
 fn format_change(percent: Option<f64>, higher_is_better: bool) -> String {
@@ -586,6 +689,7 @@ mod tests {
             file_open: operation,
             file_io: operation,
             file_close: operation,
+            eden: None,
             per_file_size: vec![FileSizeResult {
                 size_bytes: 100,
                 files: 10,
@@ -638,6 +742,7 @@ mod tests {
                 directories: 2,
                 file_unlink: operation(scale),
                 directory_remove: operation(scale),
+                eden: None,
             }),
             diff: None,
         }
@@ -726,11 +831,74 @@ mod tests {
     }
 
     #[test]
+    fn compares_daemon_counters_when_both_runs_sampled_the_daemon() {
+        fn daemon(scale: u64) -> DaemonPhaseResult {
+            let counters = serde_json::from_value(serde_json::json!({
+                "fs_stats": {
+                    "syscall_open": 0, "syscall_read": 0, "syscall_readdir": 0,
+                    "syscall_readdirplus": 0, "syscall_write": 0, "syscall_statfs": 0,
+                    "syscall_getattr": 0, "syscall_setattr": 0, "syscall_lookup": 10 * scale,
+                    "syscall_access": 0, "syscall_mkdir": 0
+                },
+                "thrift_stats": {},
+                "backend_stats": { "fetch": {}, "prefetch": {} },
+                "local_cache_stats": { "fetch": {}, "prefetch": {} }
+            }))
+            .expect("counters should deserialize");
+            DaemonPhaseResult {
+                cpu_seconds: scale as f64,
+                rss_bytes: 1_000,
+                counters,
+            }
+        }
+        let mut baseline = result(1.0);
+        baseline.read.eden = Some(daemon(1));
+        let mut current = result(1.0);
+        current.read.eden = Some(daemon(2));
+
+        current
+            .add_diff(&baseline)
+            .expect("matching runs should compare");
+
+        let diff = current.diff.as_ref().expect("diff should be populated");
+        let eden = diff
+            .read
+            .eden
+            .as_ref()
+            .expect("both runs sampled the daemon");
+        assert_eq!(eden.cpu_time_percent, Some(100.0));
+        assert_eq!(eden.rss_percent, Some(0.0));
+        assert_eq!(
+            eden.counters.keys().collect::<Vec<_>>(),
+            vec!["fs_stats.syscall_lookup"],
+            "only counters that moved in either run are compared"
+        );
+        assert_eq!(
+            eden.counters["fs_stats.syscall_lookup"].percent,
+            Some(100.0)
+        );
+        assert!(
+            diff.write
+                .as_ref()
+                .expect("read-write runs have a write diff")
+                .eden
+                .is_none(),
+            "phases without daemon samples have no daemon diff"
+        );
+        let output = current.to_string();
+        assert!(output.contains("EdenFS daemon: CPU +100.0%, resident unchanged"));
+        assert!(output.contains("fs_stats.syscall_lookup"));
+    }
+
+    #[test]
     fn handles_zero_baselines_and_metric_directions() {
         assert_eq!(percent_change(0.0, 0.0), Some(0.0));
         assert_eq!(percent_change(1.0, 0.0), None);
         assert_eq!(format_change(Some(-10.0), false), "10.0% faster");
         assert_eq!(format_change(Some(10.0), true), "10.0% faster");
         assert_eq!(format_change(Some(10.0), false), "10.0% slower");
+        assert_eq!(format_signed_change(Some(-100.0)), "-100.0%");
+        assert_eq!(format_signed_change(Some(0.01)), "unchanged");
+        assert_eq!(format_signed_change(None), "n/a");
     }
 }
