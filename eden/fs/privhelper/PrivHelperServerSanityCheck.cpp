@@ -118,7 +118,10 @@ bool isOldEdenMount(const std::string& mountPoint) {
   }
 #else
   struct statfs* buf;
-  int count = getmntinfo(&buf, MNT_WAIT);
+  // MNT_NOWAIT returns the mount list the kernel keeps without asking any
+  // filesystem for fresh statistics, so the unresponsive mount being checked
+  // can't block it. The check only reads the mount point, type and source.
+  int count = getmntinfo(&buf, MNT_NOWAIT);
   if (count == 0) {
     XLOGF(ERR, "getmntinfo failed: {}", folly::errnoStr(errno));
   } else {
