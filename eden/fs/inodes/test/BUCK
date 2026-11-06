@@ -648,6 +648,7 @@ cpp_unittest(
         "fbsource//third-party/googletest:gtest",
         "fbsource//xplat/folly:exception",
         "fbsource//xplat/folly:random",
+        "fbsource//xplat/folly/coro:blocking_wait",
         "fbsource//xplat/folly/coro:gtest_helpers",
         "fbsource//xplat/folly/coro:invoke",
         "fbsource//xplat/folly/executors:manual_executor",

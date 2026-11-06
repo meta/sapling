@@ -109,24 +109,7 @@ class VirtualInode {
    * regular files and directories. So something like a FIFO or a socket would
    * fall into nullopt here.
    */
-  ImmediateFuture<std::optional<TreeEntryType>> getTreeEntryType(
-      RelativePathPiece path,
-      const ObjectFetchContextPtr& fetchContext) const;
-
   std::optional<TreeEntryType> tryGetTreeEntryType() const;
-
-  /**
-   * Get the VirtualInode object for a child of this directory.
-   *
-   * Unlike TreeInode::getOrLoadChild, this method avoids loading the child's
-   * inode if it is not already loaded, instead falling back to looking up the
-   * object in the ObjectStore.
-   */
-  ImmediateFuture<VirtualInode> getOrFindChild(
-      PathComponentPiece childName,
-      RelativePathPiece path,
-      const std::shared_ptr<ObjectStore>& objectStore,
-      const ObjectFetchContextPtr& fetchContext) const;
 
   /**
    * Get the VirtualInode object for a child of this directory.
@@ -171,13 +154,6 @@ class VirtualInode {
    * Note: we return error values for attributes in some cases. See
    * fs/service/eden.thrift for more details on error conditions for each type.
    */
-  ImmediateFuture<EntryAttributes> getEntryAttributes(
-      EntryAttributeFlags requestedAttributes,
-      RelativePathPiece path,
-      const std::shared_ptr<ObjectStore>& objectStore,
-      timespec lastCheckoutTime,
-      const ObjectFetchContextPtr& fetchContext) const;
-
   folly::coro::now_task<EntryAttributes> co_getEntryAttributes(
       EntryAttributeFlags requestedAttributes,
       RelativePathPiece path,
@@ -208,11 +184,6 @@ class VirtualInode {
    * ObjectStore/DirEntry/TreeEntry, and the st_mtim set to the passed in
    * lastCheckoutTime.
    */
-  ImmediateFuture<struct stat> stat(
-      const struct timespec& lastCheckoutTime,
-      const std::shared_ptr<ObjectStore>& objectStore,
-      const ObjectFetchContextPtr& fetchContext) const;
-
   folly::coro::now_task<struct stat> co_stat(
       const struct timespec& lastCheckoutTime,
       const std::shared_ptr<ObjectStore>& objectStore,
@@ -298,16 +269,6 @@ class VirtualInode {
   ImmediateFuture<std::optional<TreeAuxData>> getTreeAuxData(
       const std::shared_ptr<ObjectStore>& objectStore,
       const ObjectFetchContextPtr& fetchContext) const;
-
-  ImmediateFuture<EntryAttributes> getEntryAttributesForNonFile(
-      EntryAttributeFlags requestedAttributes,
-      RelativePathPiece path,
-      const std::shared_ptr<ObjectStore>& objectStore,
-      timespec lastCheckoutTime,
-      const ObjectFetchContextPtr& fetchContext,
-      std::optional<TreeEntryType> entryType,
-      int errorCode,
-      std::string_view additionalErrorContext = {}) const;
 
   /**
    * The main object this encapsulates

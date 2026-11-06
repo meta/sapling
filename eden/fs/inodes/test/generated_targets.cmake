@@ -531,6 +531,7 @@ eden_add_test(eden_fs_inodes_test_virtual_inode
     VirtualInodeTest.cpp
   DEPS
     ${LIBGMOCK_LIBRARIES}
+    Folly::folly_coro_blocking_wait
     Folly::folly_coro_gtest_helpers
     Folly::folly_coro_invoke
     Folly::folly_exception

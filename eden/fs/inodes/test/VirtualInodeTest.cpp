@@ -9,6 +9,7 @@
 
 #include <folly/Exception.h>
 #include <folly/Random.h>
+#include <folly/coro/BlockingWait.h>
 #include <folly/coro/GtestHelpers.h>
 #include <folly/coro/Invoke.h>
 #include <folly/executors/ManualExecutor.h>
@@ -43,6 +44,33 @@ using namespace facebook::eden;
 using namespace std::chrono_literals;
 
 namespace {
+
+/**
+ * Runs co_getEntryAttributes to completion. For tests whose data is already
+ * loaded, so the coroutine never suspends on a fetch.
+ */
+folly::Try<EntryAttributes> getEntryAttributesTry(
+    const VirtualInode& virtualInode,
+    EntryAttributeFlags requestedAttributes,
+    RelativePathPiece path,
+    TestMount& mount) {
+  return folly::coro::blockingWait(
+      folly::coro::co_awaitTry(virtualInode.co_getEntryAttributes(
+          requestedAttributes,
+          path,
+          mount.getEdenMount()->getObjectStore(),
+          mount.getEdenMount()->getLastCheckoutTime().toTimespec(),
+          ObjectFetchContext::getNullContext())));
+}
+
+EntryAttributes getEntryAttributes(
+    const VirtualInode& virtualInode,
+    EntryAttributeFlags requestedAttributes,
+    RelativePathPiece path,
+    TestMount& mount) {
+  return getEntryAttributesTry(virtualInode, requestedAttributes, path, mount)
+      .value();
+}
 using ContainedType = VirtualInode::ContainedType;
 std::string to_string(const ContainedType& ctype) {
   switch (ctype) {
@@ -428,8 +456,7 @@ void verifyTreeState(
     int line,
     TestMount& mount,
     TestFileDatabase& files,
-    int verify_flags = VERIFY_DEFAULT,
-    bool useCoroutines = false) {
+    int verify_flags = VERIFY_DEFAULT) {
   (void)filename;
   (void)line;
 
@@ -502,9 +529,18 @@ void verifyTreeState(
       // SHA1s are only computed for files
       if ((verify_flags & VERIFY_SHA1) &&
           virtualInode.getDtype() == dtype_t::Regular) {
-        auto sha1Fut = useCoroutines
-            ? // @lint-ignore CLANGTIDY
-              // facebook-folly-coro-return-captures-local-var
+        // @lint-ignore CLANGTIDY facebook-folly-coro-return-captures-local-var
+        auto sha1Fut =
+            folly::coro::co_invoke([&]() -> folly::coro::Task<Hash20> {
+              co_return co_await virtualInode.co_getSHA1(
+                  expected.path,
+                  mount.getEdenMount()->getObjectStore(),
+                  ObjectFetchContext::getNullContext());
+            })
+                .semi()
+                .via(mount.getServerExecutor().get());
+        // @lint-ignore CLANGTIDY facebook-folly-coro-return-captures-local-var
+        auto sha1AttrFut =
             folly::coro::co_invoke([&]() -> folly::coro::Task<Hash20> {
               auto attrs = co_await virtualInode.co_getEntryAttributes(
                   ENTRY_ATTRIBUTE_SHA1,
@@ -515,29 +551,31 @@ void verifyTreeState(
               co_return attrs.sha1.value().value();
             })
                 .semi()
-                .via(mount.getServerExecutor().get())
-            : // @lint-ignore CLANGTIDY
-              // facebook-folly-coro-return-captures-local-var
-            folly::coro::co_invoke([&]() -> folly::coro::Task<Hash20> {
-              co_return co_await virtualInode.co_getSHA1(
+                .via(mount.getServerExecutor().get());
+        mount.drainServerExecutor();
+        EXPECT_EQ(std::move(sha1Fut).get(0ms), expected.getSHA1())
+            << dbgMsg << " expected.contents=\"" << expected.getContents()
+            << "\"";
+        EXPECT_EQ(std::move(sha1AttrFut).get(0ms), expected.getSHA1())
+            << dbgMsg << " expected.contents=\"" << expected.getContents()
+            << "\"";
+      }
+
+      // Blake3 is only computed for files
+      if ((verify_flags & VERIFY_BLAKE3) &&
+          virtualInode.getDtype() == dtype_t::Regular) {
+        // @lint-ignore CLANGTIDY facebook-folly-coro-return-captures-local-var
+        auto blake3Fut =
+            folly::coro::co_invoke([&]() -> folly::coro::Task<Hash32> {
+              co_return co_await virtualInode.co_getBlake3(
                   expected.path,
                   mount.getEdenMount()->getObjectStore(),
                   ObjectFetchContext::getNullContext());
             })
                 .semi()
                 .via(mount.getServerExecutor().get());
-        mount.drainServerExecutor();
-        auto sha1 = std::move(sha1Fut).get(0ms);
-        EXPECT_EQ(sha1, expected.getSHA1()) << dbgMsg << " expected.contents=\""
-                                            << expected.getContents() << "\"";
-      }
-
-      // Blake3 is only computed for files
-      if ((verify_flags & VERIFY_BLAKE3) &&
-          virtualInode.getDtype() == dtype_t::Regular) {
-        auto blake3Fut = useCoroutines
-            ? // @lint-ignore CLANGTIDY
-              // facebook-folly-coro-return-captures-local-var
+        // @lint-ignore CLANGTIDY facebook-folly-coro-return-captures-local-var
+        auto blake3AttrFut =
             folly::coro::co_invoke([&]() -> folly::coro::Task<Hash32> {
               auto attrs = co_await virtualInode.co_getEntryAttributes(
                   ENTRY_ATTRIBUTE_BLAKE3,
@@ -548,29 +586,21 @@ void verifyTreeState(
               co_return attrs.blake3.value().value();
             })
                 .semi()
-                .via(mount.getServerExecutor().get())
-            : // @lint-ignore CLANGTIDY
-              // facebook-folly-coro-return-captures-local-var
-            folly::coro::co_invoke([&]() -> folly::coro::Task<Hash32> {
-              co_return co_await virtualInode.co_getBlake3(
-                  expected.path,
-                  mount.getEdenMount()->getObjectStore(),
-                  ObjectFetchContext::getNullContext());
-            })
-                .semi()
                 .via(mount.getServerExecutor().get());
         mount.drainServerExecutor();
-        auto blake3 = std::move(blake3Fut).get(0ms);
-        EXPECT_EQ(blake3, expected.getBlake3(blake3Key))
+        EXPECT_EQ(std::move(blake3Fut).get(0ms), expected.getBlake3(blake3Key))
+            << dbgMsg << " expected.contents=\"" << expected.getContents()
+            << "\"";
+        EXPECT_EQ(
+            std::move(blake3AttrFut).get(0ms), expected.getBlake3(blake3Key))
             << dbgMsg << " expected.contents=\"" << expected.getContents()
             << "\"";
       }
 
       if ((verify_flags & VERIFY_BLOB_AUX_DATA) &&
           virtualInode.getDtype() == dtype_t::Regular) {
-        auto auxDataFut = useCoroutines
-            ? // @lint-ignore CLANGTIDY
-              // facebook-folly-coro-return-captures-local-var
+        // @lint-ignore CLANGTIDY facebook-folly-coro-return-captures-local-var
+        auto auxDataFut =
             folly::coro::co_invoke([&]() -> folly::coro::Task<EntryAttributes> {
               co_return co_await virtualInode.co_getEntryAttributes(
                   ENTRY_ATTRIBUTE_SIZE | ENTRY_ATTRIBUTE_SHA1 |
@@ -582,18 +612,7 @@ void verifyTreeState(
                   ObjectFetchContext::getNullContext());
             })
                 .semi()
-                .via(mount.getServerExecutor().get())
-            : virtualInode
-                  .getEntryAttributes(
-                      ENTRY_ATTRIBUTE_SIZE | ENTRY_ATTRIBUTE_SHA1 |
-                          ENTRY_ATTRIBUTE_SOURCE_CONTROL_TYPE |
-                          ENTRY_ATTRIBUTE_BLAKE3 | ENTRY_ATTRIBUTE_DIGEST_SIZE,
-                      expected.path,
-                      mount.getEdenMount()->getObjectStore(),
-                      mount.getEdenMount()->getLastCheckoutTime().toTimespec(),
-                      ObjectFetchContext::getNullContext())
-                  .semi()
-                  .via(mount.getServerExecutor().get());
+                .via(mount.getServerExecutor().get());
         mount.drainServerExecutor();
         auto auxData = std::move(auxDataFut).get(0ms);
         EXPECT_EQ(auxData.sha1.value().value(), expected.getSHA1()) << dbgMsg;
@@ -616,9 +635,8 @@ void verifyTreeState(
         // TODO: choose random?
         auto lastCheckoutTime =
             mount.getEdenMount()->getLastCheckoutTime().toTimespec();
-        auto stFut = useCoroutines
-            ? // @lint-ignore CLANGTIDY
-              // facebook-folly-coro-return-captures-local-var
+        // @lint-ignore CLANGTIDY facebook-folly-coro-return-captures-local-var
+        auto stFut =
             folly::coro::co_invoke([&]() -> folly::coro::Task<struct stat> {
               co_return co_await virtualInode.co_stat(
                   lastCheckoutTime,
@@ -626,14 +644,7 @@ void verifyTreeState(
                   ObjectFetchContext::getNullContext());
             })
                 .semi()
-                .via(mount.getServerExecutor().get())
-            : virtualInode
-                  .stat(
-                      lastCheckoutTime,
-                      mount.getEdenMount()->getObjectStore(),
-                      ObjectFetchContext::getNullContext())
-                  .semi()
-                  .via(mount.getServerExecutor().get());
+                .via(mount.getServerExecutor().get());
         mount.drainServerExecutor();
         auto st = std::move(stFut).get(0ms);
 
@@ -665,9 +676,9 @@ void verifyTreeState(
 }
 
 #define VERIFY_TREE(flags) \
-  verifyTreeState(__FILE__, __LINE__, mount, files, flags, GetParam())
+  verifyTreeState(__FILE__, __LINE__, mount, files, flags)
 #define VERIFY_TREE_DEFAULT() \
-  verifyTreeState(__FILE__, __LINE__, mount, files, VERIFY_DEFAULT, GetParam())
+  verifyTreeState(__FILE__, __LINE__, mount, files, VERIFY_DEFAULT)
 
 // TODO: flesh this out, including deleted stuff, etc
 #define EXPECT_INODE_OR(_virtualInode, _info)             \
@@ -676,9 +687,7 @@ void verifyTreeState(
   } while (0)
 } // namespace
 
-class VirtualInodeTestBase : public ::testing::TestWithParam<bool> {};
-
-TEST_P(VirtualInodeTestBase, findDoesNotChangeState) {
+TEST(VirtualInodeTest, findDoesNotChangeState) {
   TestFileDatabase files;
   auto flags = VERIFY_DEFAULT ^ VERIFY_SHA1 ^ VERIFY_BLAKE3;
   auto mount = TestMount{MakeTestTreeBuilder(files)};
@@ -708,7 +717,7 @@ folly::coro::Task<void> testRootDirAChildren(TestMount& mount) {
   }
 }
 
-CO_TEST_P(VirtualInodeTestBase, getChildrenSimple) {
+CO_TEST(VirtualInodeTest, getChildrenSimple) {
   TestFileDatabase files;
   auto flags = VERIFY_DEFAULT ^ VERIFY_SHA1 ^ VERIFY_BLAKE3;
   auto mount = TestMount{MakeTestTreeBuilder(files)};
@@ -718,7 +727,7 @@ CO_TEST_P(VirtualInodeTestBase, getChildrenSimple) {
   VERIFY_TREE_DEFAULT();
 }
 
-CO_TEST_P(VirtualInodeTestBase, getLoaded) {
+CO_TEST(VirtualInodeTest, getLoaded) {
   TestFileDatabase files;
   auto flags = VERIFY_DEFAULT ^ VERIFY_SHA1 ^ VERIFY_BLAKE3;
   auto mount = TestMount{MakeTestTreeBuilder(files)};
@@ -730,7 +739,7 @@ CO_TEST_P(VirtualInodeTestBase, getLoaded) {
   VERIFY_TREE_DEFAULT();
 }
 
-CO_TEST_P(VirtualInodeTestBase, getChildrenMaterialized) {
+CO_TEST(VirtualInodeTest, getChildrenMaterialized) {
   TestFileDatabase files;
   auto flags = VERIFY_DEFAULT ^ VERIFY_SHA1 ^ VERIFY_BLAKE3;
   auto mount = TestMount{MakeTestTreeBuilder(files)};
@@ -745,7 +754,7 @@ CO_TEST_P(VirtualInodeTestBase, getChildrenMaterialized) {
   VERIFY_TREE_DEFAULT();
 }
 
-CO_TEST_P(VirtualInodeTestBase, getChildrenMaterializedUnloaded) {
+CO_TEST(VirtualInodeTest, getChildrenMaterializedUnloaded) {
   TestFileDatabase files;
   auto flags = VERIFY_DEFAULT ^ VERIFY_SHA1 ^ VERIFY_BLAKE3;
   auto mount = TestMount{MakeTestTreeBuilder(files)};
@@ -765,7 +774,7 @@ CO_TEST_P(VirtualInodeTestBase, getChildrenMaterializedUnloaded) {
   co_await testRootDirAChildren(mount);
 }
 
-CO_TEST_P(VirtualInodeTestBase, getChildrenDoesNotChangeState) {
+CO_TEST(VirtualInodeTest, getChildrenDoesNotChangeState) {
   TestFileDatabase files;
   auto flags = VERIFY_DEFAULT ^ VERIFY_SHA1 ^ VERIFY_BLAKE3;
   auto mount = TestMount{MakeTestTreeBuilder(files)};
@@ -785,7 +794,7 @@ CO_TEST_P(VirtualInodeTestBase, getChildrenDoesNotChangeState) {
   VERIFY_TREE(flags);
 }
 
-CO_TEST_P(VirtualInodeTestBase, getChildrenAttributes) {
+CO_TEST(VirtualInodeTest, getChildrenAttributes) {
   TestFileDatabase files;
   auto flags = VERIFY_DEFAULT ^ VERIFY_SHA1 ^ VERIFY_BLAKE3;
   auto mount = TestMount{MakeTestTreeBuilder(files)};
@@ -820,16 +829,11 @@ CO_TEST_P(VirtualInodeTestBase, getChildrenAttributes) {
               testing::Contains(
                   testing::Pair(
                       entryName,
-                      childVirtualInode
-                          .getEntryAttributes(
-                              attribute_request,
-                              child->path,
-                              mount.getEdenMount()->getObjectStore(),
-                              mount.getEdenMount()
-                                  ->getLastCheckoutTime()
-                                  .toTimespec(),
-                              ObjectFetchContext::getNullContext())
-                          .getTry())));
+                      getEntryAttributesTry(
+                          childVirtualInode,
+                          attribute_request,
+                          child->path,
+                          mount))));
         }
       }
     }
@@ -837,7 +841,7 @@ CO_TEST_P(VirtualInodeTestBase, getChildrenAttributes) {
   VERIFY_TREE(flags);
 }
 
-TEST_P(VirtualInodeTestBase, statDoesNotChangeState) {
+TEST(VirtualInodeTest, statDoesNotChangeState) {
   TestFileDatabase files;
   auto flags = VERIFY_DEFAULT | VERIFY_STAT;
   auto mount = TestMount{MakeTestTreeBuilder(files)};
@@ -851,7 +855,7 @@ TEST_P(VirtualInodeTestBase, statDoesNotChangeState) {
   VERIFY_TREE(flags);
 }
 
-CO_TEST_P(VirtualInodeTestBase, fileOpsOnCorrectObjectsOnly) {
+CO_TEST(VirtualInodeTest, fileOpsOnCorrectObjectsOnly) {
   TestFileDatabase files;
   auto mount = TestMount{MakeTestTreeBuilder(files)};
 
@@ -872,17 +876,12 @@ CO_TEST_P(VirtualInodeTestBase, fileOpsOnCorrectObjectsOnly) {
           << " on path " << info.getLogPath();
     }
 
-    auto auxDataTry =
-        virtualInode
-            .getEntryAttributes(
-                ENTRY_ATTRIBUTE_SIZE | ENTRY_ATTRIBUTE_SHA1 |
-                    ENTRY_ATTRIBUTE_SOURCE_CONTROL_TYPE |
-                    ENTRY_ATTRIBUTE_DIGEST_SIZE,
-                info.path,
-                mount.getEdenMount()->getObjectStore(),
-                mount.getEdenMount()->getLastCheckoutTime().toTimespec(),
-                ObjectFetchContext::getNullContext())
-            .getTry();
+    auto auxDataTry = getEntryAttributesTry(
+        virtualInode,
+        ENTRY_ATTRIBUTE_SIZE | ENTRY_ATTRIBUTE_SHA1 |
+            ENTRY_ATTRIBUTE_SOURCE_CONTROL_TYPE | ENTRY_ATTRIBUTE_DIGEST_SIZE,
+        info.path,
+        mount);
     if (info.isRegularFile()) {
       EXPECT_EQ(true, auxDataTry.hasValue())
           << " on path " << info.getLogPath();
@@ -917,16 +916,12 @@ CO_TEST_P(VirtualInodeTestBase, fileOpsOnCorrectObjectsOnly) {
       }
     }
 
-    auxDataTry =
-        virtualInode
-            .getEntryAttributes(
-                ENTRY_ATTRIBUTE_SIZE | ENTRY_ATTRIBUTE_SOURCE_CONTROL_TYPE |
-                    ENTRY_ATTRIBUTE_DIGEST_SIZE,
-                info.path,
-                mount.getEdenMount()->getObjectStore(),
-                mount.getEdenMount()->getLastCheckoutTime().toTimespec(),
-                ObjectFetchContext::getNullContext())
-            .getTry();
+    auxDataTry = getEntryAttributesTry(
+        virtualInode,
+        ENTRY_ATTRIBUTE_SIZE | ENTRY_ATTRIBUTE_SOURCE_CONTROL_TYPE |
+            ENTRY_ATTRIBUTE_DIGEST_SIZE,
+        info.path,
+        mount);
     if (info.isRegularFile()) {
       EXPECT_EQ(true, auxDataTry.hasValue())
           << " on path " << info.getLogPath();
@@ -964,7 +959,7 @@ CO_TEST_P(VirtualInodeTestBase, fileOpsOnCorrectObjectsOnly) {
   }
 }
 
-TEST_P(VirtualInodeTestBase, getEntryAttributesDoesNotChangeState) {
+TEST(VirtualInodeTest, getEntryAttributesDoesNotChangeState) {
   TestFileDatabase files;
   auto mount = TestMount{MakeTestTreeBuilder(files)};
 
@@ -976,7 +971,7 @@ TEST_P(VirtualInodeTestBase, getEntryAttributesDoesNotChangeState) {
   VERIFY_TREE(VERIFY_DEFAULT ^ VERIFY_SHA1 ^ VERIFY_BLAKE3);
 }
 
-TEST_P(VirtualInodeTestBase, underAclTracksAclRootForDirectoryFileAndSymlink) {
+TEST(VirtualInodeTest, underAclTracksAclRootForDirectoryFileAndSymlink) {
   FakeTreeBuilder builder;
   builder.setFile("regular/file.txt", "regular");
   builder.setFile("acl_dir/file.txt", "secret");
@@ -985,14 +980,11 @@ TEST_P(VirtualInodeTestBase, underAclTracksAclRootForDirectoryFileAndSymlink) {
   auto mount = TestMount{builder};
 
   auto getUnderAcl = [&](RelativePathPiece path) {
-    return mount.getVirtualInode(path)
-        .getEntryAttributes(
-            ENTRY_ATTRIBUTE_UNDER_ACL,
-            path,
-            mount.getEdenMount()->getObjectStore(),
-            mount.getEdenMount()->getLastCheckoutTime().toTimespec(),
-            ObjectFetchContext::getNullContext())
-        .get()
+    return getEntryAttributes(
+               mount.getVirtualInode(path),
+               ENTRY_ATTRIBUTE_UNDER_ACL,
+               path,
+               mount)
         .underAcl->value();
   };
 
@@ -1038,7 +1030,7 @@ CO_TEST(VirtualInodeTest, co_getChildrenAttributesPreservesInheritedUnderAcl) {
   EXPECT_TRUE(underAcl->value());
 }
 
-TEST_P(VirtualInodeTestBase, localUnderAclComputationCanBeDisabled) {
+TEST(VirtualInodeTest, localUnderAclComputationCanBeDisabled) {
   FakeTreeBuilder builder;
   builder.setFile("regular/file.txt", "regular");
   builder.setFile("acl_dir/file.txt", "secret");
@@ -1046,14 +1038,11 @@ TEST_P(VirtualInodeTestBase, localUnderAclComputationCanBeDisabled) {
   auto mount = TestMount{builder};
 
   auto getAttributes = [&](RelativePathPiece path) {
-    return mount.getVirtualInode(path)
-        .getEntryAttributes(
-            ENTRY_ATTRIBUTE_UNDER_ACL | ENTRY_ATTRIBUTE_ACLs,
-            path,
-            mount.getEdenMount()->getObjectStore(),
-            mount.getEdenMount()->getLastCheckoutTime().toTimespec(),
-            ObjectFetchContext::getNullContext())
-        .get();
+    return getEntryAttributes(
+        mount.getVirtualInode(path),
+        ENTRY_ATTRIBUTE_UNDER_ACL | ENTRY_ATTRIBUTE_ACLs,
+        path,
+        mount);
   };
 
   auto regularAttributes = getAttributes(RelativePathPiece{"regular/file.txt"});
@@ -1081,21 +1070,15 @@ TEST_P(VirtualInodeTestBase, localUnderAclComputationCanBeDisabled) {
   EXPECT_FALSE(restrictedAttributes.underAcl.has_value());
 }
 
-TEST_P(VirtualInodeTestBase, underAclUnavailableWhenAclMetadataIsUnknown) {
+TEST(VirtualInodeTest, underAclUnavailableWhenAclMetadataIsUnknown) {
   FakeTreeBuilder builder;
   builder.setFile("unknown_acl/file.txt", "secret");
   builder.setDirHasAclUnknown("unknown_acl");
   auto mount = TestMount{builder};
 
   auto getAttributes = [&](RelativePathPiece path) {
-    return mount.getVirtualInode(path)
-        .getEntryAttributes(
-            ENTRY_ATTRIBUTE_UNDER_ACL,
-            path,
-            mount.getEdenMount()->getObjectStore(),
-            mount.getEdenMount()->getLastCheckoutTime().toTimespec(),
-            ObjectFetchContext::getNullContext())
-        .get();
+    return getEntryAttributes(
+        mount.getVirtualInode(path), ENTRY_ATTRIBUTE_UNDER_ACL, path, mount);
   };
 
   EXPECT_FALSE(
@@ -1205,7 +1188,7 @@ CO_TEST(
   EXPECT_TRUE(attributes.aclInfo->value().acls.empty());
 }
 
-TEST_P(VirtualInodeTestBase, getEntryAttributesAttributeError) {
+TEST(VirtualInodeTest, getEntryAttributesAttributeError) {
   TestFileDatabase files;
   FakeTreeBuilder builder;
   files.build(builder);
@@ -1216,17 +1199,26 @@ TEST_P(VirtualInodeTestBase, getEntryAttributesAttributeError) {
 
   auto virtualInode = mount.getVirtualInode("root_dirA");
 
-  auto attributesFuture = virtualInode.getEntryAttributes(
-      ENTRY_ATTRIBUTE_SIZE | ENTRY_ATTRIBUTE_SHA1 |
-          ENTRY_ATTRIBUTE_SOURCE_CONTROL_TYPE | ENTRY_ATTRIBUTE_DIGEST_SIZE,
-      RelativePathPiece{"root_dirA"},
-      mount.getEdenMount()->getObjectStore(),
-      mount.getEdenMount()->getLastCheckoutTime().toTimespec(),
-      ObjectFetchContext::getNullContext());
+  // @lint-ignore CLANGTIDY facebook-folly-coro-return-captures-local-var
+  auto attributesFuture =
+      folly::coro::co_invoke([&]() -> folly::coro::Task<EntryAttributes> {
+        co_return co_await virtualInode.co_getEntryAttributes(
+            ENTRY_ATTRIBUTE_SIZE | ENTRY_ATTRIBUTE_SHA1 |
+                ENTRY_ATTRIBUTE_SOURCE_CONTROL_TYPE |
+                ENTRY_ATTRIBUTE_DIGEST_SIZE,
+            RelativePathPiece{"root_dirA"},
+            mount.getEdenMount()->getObjectStore(),
+            mount.getEdenMount()->getLastCheckoutTime().toTimespec(),
+            ObjectFetchContext::getNullContext());
+      })
+          .semi()
+          .via(mount.getServerExecutor().get());
+  mount.drainServerExecutor();
 
   builder.triggerError(
       "root_dirA/child1_fileA1", std::domain_error("fake error for testing"));
 
+  mount.drainServerExecutor();
   auto attributes = std::move(attributesFuture).get();
   EXPECT_TRUE(attributes.sha1.value().hasException());
   EXPECT_TRUE(attributes.size.value().hasException());
@@ -1234,7 +1226,7 @@ TEST_P(VirtualInodeTestBase, getEntryAttributesAttributeError) {
   EXPECT_FALSE(attributes.type.value().hasException());
 }
 
-CO_TEST_P(VirtualInodeTestBase, sha1DoesNotChangeState) {
+CO_TEST(VirtualInodeTest, sha1DoesNotChangeState) {
   TestFileDatabase files;
   auto mount = TestMount{MakeTestTreeBuilder(files)};
 
@@ -1268,7 +1260,7 @@ CO_TEST_P(VirtualInodeTestBase, sha1DoesNotChangeState) {
   }
 }
 
-TEST_P(VirtualInodeTestBase, unlinkMaterializesParents) {
+TEST(VirtualInodeTest, unlinkMaterializesParents) {
   TestFileDatabase files;
   auto builder = MakeTestTreeBuilder(files);
   auto mount = TestMount(builder, true);
@@ -1286,7 +1278,7 @@ TEST_P(VirtualInodeTestBase, unlinkMaterializesParents) {
 }
 
 // Materialization is different on Windows vs other platforms...
-TEST_P(VirtualInodeTestBase, materializationPropagation) {
+TEST(VirtualInodeTest, materializationPropagation) {
   // One by one, start with something fresh, load the one, and check the state
   TestFileDatabase files;
   for (const auto& info_ : files.getOriginalItems()) {
@@ -1343,7 +1335,7 @@ TEST_P(VirtualInodeTestBase, materializationPropagation) {
   }
 }
 
-TEST_P(VirtualInodeTestBase, loadPropagation) {
+TEST(VirtualInodeTest, loadPropagation) {
   const size_t C = 10;
 
   // One by one, start with something fresh, load the one, and check the state
@@ -1387,7 +1379,7 @@ TEST_P(VirtualInodeTestBase, loadPropagation) {
   VERIFY_TREE(VERIFY_INITIAL);
 }
 
-CO_TEST_P(VirtualInodeTestBase, getBlob) {
+CO_TEST(VirtualInodeTest, getBlob) {
   auto flags = VERIFY_DEFAULT ^ VERIFY_SHA1 ^ VERIFY_BLAKE3;
 
   TestFileDatabase files;
@@ -1443,7 +1435,6 @@ CO_TEST(VirtualInodeTest, co_statDoesNotChangeState) {
   TestFileDatabase files;
   auto flags = VERIFY_DEFAULT;
   auto mount = TestMount{MakeTestTreeBuilder(files)};
-  // Use verifyTreeState directly: VERIFY_TREE depends on GetParam().
   verifyTreeState(__FILE__, __LINE__, mount, files, flags);
   auto edenMount = mount.getEdenMount();
   auto objectStore = edenMount->getObjectStore();
@@ -1461,9 +1452,7 @@ CO_TEST(VirtualInodeTest, co_getEntryAttributesDoesNotChangeState) {
   TestFileDatabase files;
   auto flags = VERIFY_DEFAULT ^ VERIFY_SHA1 ^ VERIFY_BLAKE3;
   auto mount = TestMount{MakeTestTreeBuilder(files)};
-  // Use verifyTreeState directly: VERIFY_TREE depends on GetParam().
-  verifyTreeState(
-      __FILE__, __LINE__, mount, files, flags, /*useCoroutines=*/true);
+  verifyTreeState(__FILE__, __LINE__, mount, files, flags);
   auto edenMount = mount.getEdenMount();
   auto objectStore = edenMount->getObjectStore();
   auto lastCheckoutTime = edenMount->getLastCheckoutTime().toTimespec();
@@ -1477,17 +1466,14 @@ CO_TEST(VirtualInodeTest, co_getEntryAttributesDoesNotChangeState) {
         lastCheckoutTime,
         ObjectFetchContext::getNullContext());
   }
-  verifyTreeState(
-      __FILE__, __LINE__, mount, files, flags, /*useCoroutines=*/true);
+  verifyTreeState(__FILE__, __LINE__, mount, files, flags);
 }
 
 CO_TEST(VirtualInodeTest, co_getChildrenAttributesCoroutine) {
   TestFileDatabase files;
   auto flags = VERIFY_DEFAULT ^ VERIFY_SHA1 ^ VERIFY_BLAKE3;
   auto mount = TestMount{MakeTestTreeBuilder(files)};
-  // Use verifyTreeState directly: VERIFY_TREE depends on GetParam().
-  verifyTreeState(
-      __FILE__, __LINE__, mount, files, flags, /*useCoroutines=*/true);
+  verifyTreeState(__FILE__, __LINE__, mount, files, flags);
   auto edenMount = mount.getEdenMount();
   auto objectStore = edenMount->getObjectStore();
   auto lastCheckoutTime = edenMount->getLastCheckoutTime().toTimespec();
@@ -1505,8 +1491,7 @@ CO_TEST(VirtualInodeTest, co_getChildrenAttributesCoroutine) {
         ObjectFetchContext::getNullContext());
     EXPECT_GT(results.size(), 0);
   }
-  verifyTreeState(
-      __FILE__, __LINE__, mount, files, flags, /*useCoroutines=*/true);
+  verifyTreeState(__FILE__, __LINE__, mount, files, flags);
 }
 
 // Verify per-child error isolation: one failing child must not abort the
@@ -1547,30 +1532,16 @@ CO_TEST(VirtualInodeTest, co_getChildrenAttributesPropagatesPerChildErrors) {
   EXPECT_TRUE(sawSibling);
 }
 
-TEST(VirtualInodeTest, verifyTreeWithSHA1Coroutines) {
+TEST(VirtualInodeTest, verifyTreeWithSHA1) {
   TestFileDatabase files;
   auto flags = VERIFY_DEFAULT ^ VERIFY_BLAKE3;
   auto mount = TestMount{MakeTestTreeBuilder(files)};
-  // Use verifyTreeState with useCoroutines=true to test co_getSHA1 through
-  // co_getEntryAttributes
-  verifyTreeState(
-      __FILE__, __LINE__, mount, files, flags, /*useCoroutines=*/true);
+  verifyTreeState(__FILE__, __LINE__, mount, files, flags);
 }
 
-TEST(VirtualInodeTest, verifyTreeWithBlake3Coroutines) {
+TEST(VirtualInodeTest, verifyTreeWithBlake3) {
   TestFileDatabase files;
   auto flags = VERIFY_DEFAULT ^ VERIFY_SHA1;
   auto mount = TestMount{MakeTestTreeBuilder(files)};
-  // Use verifyTreeState with useCoroutines=true to test co_getBlake3 through
-  // co_getEntryAttributes
-  verifyTreeState(
-      __FILE__, __LINE__, mount, files, flags, /*useCoroutines=*/true);
+  verifyTreeState(__FILE__, __LINE__, mount, files, flags);
 }
-
-INSTANTIATE_TEST_SUITE_P(
-    VirtualInodeTestVariants,
-    VirtualInodeTestBase,
-    ::testing::Bool(),
-    [](const ::testing::TestParamInfo<bool>& info) {
-      return info.param ? "Coroutines" : "Futures";
-    });

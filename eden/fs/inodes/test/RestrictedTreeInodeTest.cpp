@@ -1527,14 +1527,6 @@ CO_TEST(RestrictedTreeInode, asyncDigestOfRestrictedDirectory) {
       attrs, "restricted"_relpath, objectStore, checkoutTime, context);
   EXPECT_FALSE(coroResult.digestSize.has_value());
   EXPECT_FALSE(coroResult.digestHash.has_value());
-
-  auto futureResult =
-      restricted
-          .getEntryAttributes(
-              attrs, "restricted"_relpath, objectStore, checkoutTime, context)
-          .get();
-  EXPECT_FALSE(futureResult.digestSize.has_value());
-  EXPECT_FALSE(futureResult.digestHash.has_value());
 }
 
 CO_TEST(RestrictedTreeInode, asyncDigestOfRestrictedDirectoryWithoutAuxData) {
