@@ -117,7 +117,7 @@ pub fn find_resource_locks(mount: &Path) -> Result<Vec<FileHandleEntry>, HandleE
 #[allow(dead_code)]
 pub fn get_process_tree() -> HashSet<u32> {
     let mut pid = process::id();
-    let s = System::new_all();
+    let s = System::new_all().expect("should be supported on this platform");
     let mut res = HashSet::new();
 
     while let Some(process) = s.process(Pid::from_u32(pid)) {
@@ -1063,7 +1063,7 @@ fn test_get_process_tree() {
     let ancestors = get_process_tree();
     let my_pid = process::id();
     assert!(ancestors.contains(&my_pid));
-    let s = System::new_all();
+    let s = System::new_all().unwrap();
     let process = s.process(Pid::from_u32(my_pid)).unwrap();
     assert!(ancestors.contains(&process.parent().unwrap().as_u32()));
 }

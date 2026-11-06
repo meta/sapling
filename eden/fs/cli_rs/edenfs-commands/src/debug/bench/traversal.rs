@@ -1223,7 +1223,7 @@ impl Traversal {
                 ));
 
                 let (mut system, pid) = if resource_usage {
-                    let mut sys = System::new_all();
+                    let mut sys = System::new_all().expect("should be supported on this platform");
                     let process_id = sysinfo::get_current_pid().ok();
                     sys.refresh_all();
                     (Some(sys), process_id)

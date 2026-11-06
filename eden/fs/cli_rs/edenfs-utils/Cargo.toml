@@ -12,7 +12,7 @@ anyhow = "1.0.104"
 byteorder = "1.5"
 edenfs-error = { version = "0.1.0", path = "../edenfs-error" }
 regex = "1.13.1"
-sysinfo = "0.39.6"
+sysinfo = "0.40.1"
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [dev-dependencies]

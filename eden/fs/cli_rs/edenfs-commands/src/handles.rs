@@ -52,7 +52,7 @@ impl HandlesCmd {
         let sys: Option<System> = if kill {
             Some(System::new_with_specifics(
                 RefreshKind::nothing().with_processes(ProcessRefreshKind::everything()),
-            ))
+            )?)
         } else {
             None
         };

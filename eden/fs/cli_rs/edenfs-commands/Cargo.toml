@@ -41,7 +41,7 @@ serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 strum = { version = "0.28.0", features = ["derive"] }
 subprocess = "0.2.15"
-sysinfo = "0.39.6"
+sysinfo = "0.40.1"
 tabular = "0.2.0"
 termwiz = { git = "https://github.com/wezterm/wezterm.git", rev = "05343b387085842b434d267f91b6b0ec157e4331", features = ["use_serde", "widgets"], default-features = false }
 tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }

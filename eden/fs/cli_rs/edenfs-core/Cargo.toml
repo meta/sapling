@@ -29,7 +29,7 @@ serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw
 shlex = "2.0.1"
 strum = { version = "0.28.0", features = ["derive"] }
 subprocess = "0.2.15"
-sysinfo = "0.39.6"
+sysinfo = "0.40.1"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tokio-uds-compat = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }

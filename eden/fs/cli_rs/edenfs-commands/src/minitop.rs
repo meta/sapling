@@ -419,7 +419,7 @@ impl crate::Subcommand for MinitopCmd {
         let client = instance.get_client();
         let mut tracked_processes = TrackedProcesses::new();
 
-        let mut system = System::new();
+        let mut system = System::new()?;
 
         // Setup rendering
         let mut attributes = TerminalAttributes::new()

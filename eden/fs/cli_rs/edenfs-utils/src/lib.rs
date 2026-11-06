@@ -174,7 +174,7 @@ pub fn get_env_with_buck_version(path: &Path) -> Result<Vec<(OsString, OsString)
 }
 
 pub fn get_executable(pid: sysinfo::Pid) -> Option<PathBuf> {
-    let mut system = sysinfo::System::new();
+    let mut system = sysinfo::System::new().ok()?;
 
     if system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true) > 0 {
         if let Some(process) = system.process(pid) {
