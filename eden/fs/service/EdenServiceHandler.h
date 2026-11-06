@@ -325,16 +325,12 @@ class EdenServiceHandler
       std::unique_ptr<std::vector<std::string>> paths,
       std::unique_ptr<SyncBehavior> sync);
 
-  folly::SemiFuture<std::unique_ptr<GetAttributesFromFilesResultV2>>
-  semifuture_getAttributesFromFilesV2(
+  folly::coro::Task<std::unique_ptr<GetAttributesFromFilesResultV2>>
+  co_getAttributesFromFilesV2(
       std::unique_ptr<GetAttributesFromFilesParams> params) override;
 
-  folly::SemiFuture<std::unique_ptr<GetAttributesFromFilesResultV2>>
-  semifuture_getAttributesFromFilesV2Impl(
-      std::unique_ptr<GetAttributesFromFilesParams> params);
-
   folly::coro::now_task<std::unique_ptr<GetAttributesFromFilesResultV2>>
-  co_getAttributesFromFilesV2Impl(
+  getAttributesFromFilesV2Impl(
       std::unique_ptr<GetAttributesFromFilesParams> params);
 
   folly::coro::Task<std::unique_ptr<ReaddirResult>> co_readdir(
@@ -733,45 +729,19 @@ class EdenServiceHandler
 
   void fillDaemonInfo(DaemonInfo& info);
 
-  /**
-   * Returns attributes requested by `reqBitmask` for each path in `paths`.
-   *
-   * The caller must ensure `edenMount` and `paths` stay alive for the duration
-   * of the operation.
-   */
-  ImmediateFuture<std::vector<folly::Try<EntryAttributes>>> getEntryAttributes(
-      const EdenMount& edenMount,
-      const std::vector<std::string>& paths,
-      EntryAttributeFlags reqBitmask,
-      AttributesRequestScope reqScope,
-      SyncBehavior sync,
-      const ObjectFetchContextPtr& fetchContext);
-  ImmediateFuture<std::vector<folly::Try<EntryAttributes>>>
-  getEntryAttributesImpl(
-      const EdenMount& edenMount,
-      const std::vector<std::string>& paths,
-      EntryAttributeFlags reqBitmask,
-      AttributesRequestScope reqScope,
-      SyncBehavior sync,
-      const ObjectFetchContextPtr& fetchContext);
-  ImmediateFuture<EntryAttributes> getEntryAttributesForPath(
-      const EdenMount& edenMount,
-      EntryAttributeFlags reqBitmask,
-      AttributesRequestScope reqScope,
-      std::string_view path,
-      const ObjectFetchContextPtr& fetchContext);
-  ImmediateFuture<EntryAttributes> getEntryAttributesForPathImpl(
-      const EdenMount& edenMount,
-      EntryAttributeFlags reqBitmask,
-      AttributesRequestScope reqScope,
-      std::string_view path,
-      const ObjectFetchContextPtr& fetchContext);
   folly::coro::now_task<EntryAttributes> co_getEntryAttributesForPath(
       const EdenMount& edenMount,
       EntryAttributeFlags reqBitmask,
       AttributesRequestScope reqScope,
       std::string_view path,
       const ObjectFetchContextPtr& fetchContext);
+
+  /**
+   * Returns attributes requested by `reqBitmask` for each path in `paths`.
+   *
+   * The caller must ensure `edenMount` and `paths` stay alive for the duration
+   * of the operation.
+   */
   folly::coro::now_task<std::vector<folly::Try<EntryAttributes>>>
   co_getEntryAttributes(
       const EdenMount& edenMount,

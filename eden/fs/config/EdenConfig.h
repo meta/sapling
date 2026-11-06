@@ -2123,15 +2123,6 @@ class EdenConfig : private ConfigSettingManager {
       false,
       this};
 
-  /**
-   * Controls whether EdenFS uses phase 10 coroutine implementations
-   * (getAttributesFromFilesV2).
-   */
-  ConfigSetting<bool> enableCoroutinesPhase10{
-      "coroutines:enable-phase10",
-      false,
-      this};
-
   // [blobcache]
 
   /**

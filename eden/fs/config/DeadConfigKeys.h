@@ -31,6 +31,7 @@ inline constexpr std::string_view kDeadConfigKeys[] = {
     "coroutines:enable-phase6",
     "coroutines:enable-phase8",
     "coroutines:enable-phase9",
+    "coroutines:enable-phase10",
     "coroutines:enable-phase11",
     "doctor:enable-kerberos-check",
     "experimental:batch-checkout-dir-mutations",
