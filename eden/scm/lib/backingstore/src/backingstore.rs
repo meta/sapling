@@ -103,7 +103,7 @@ pub(crate) struct Inner {
     last_reload: Instant,
 
     // Controlled by config "backingstore.reload-check-interval-secs".
-    // Sets the minimum delay before we check if we need to reload (defaults to 5s).
+    // Sets the minimum delay before we check if we need to reload (defaults to 3s).
     reload_check_interval: Duration,
 
     // Controlled by config "backingstore.reload-interval-secs".
@@ -251,7 +251,7 @@ impl BackingStore {
             last_reload: Instant::now(),
             reload_check_interval: config
                 .get_opt("backingstore", "reload-check-interval-secs")?
-                .unwrap_or(Duration::from_secs(5)),
+                .unwrap_or(Duration::from_secs(3)),
             reload_interval: config
                 .get_opt("backingstore", "reload-interval-secs")?
                 .unwrap_or(Duration::from_mins(5)),
@@ -465,7 +465,7 @@ impl BackingStore {
     // The main purpose of reloading is to allow a running EdenFS to pick up
     // Sapling config changes that affect fetching/caching.
     //
-    // We perform the check at most once every `reload_check_interval=5`
+    // We perform the check at most once every `reload_check_interval=3`
     // seconds. If we aren't reloading, we still swap out the Inner object
     // solely to reset the state we use to track the touch file (i.e. we keep
     // all the store objects the same). Any errors reloading are ignored and the
@@ -978,6 +978,43 @@ mod tests {
     use types::fetch_mode::FetchMode;
 
     use super::*;
+
+    #[test]
+    fn test_blob_read_reload_check_interval() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let repo = eagerepo::EagerRepo::open(dir.path())?;
+        drop(repo);
+
+        for (interval, elapsed_secs, should_check) in [
+            (None, 0, false),
+            (None, 4, true),
+            (Some("5"), 4, false),
+            (Some("0"), 0, true),
+        ] {
+            let configs = interval
+                .map(|value| format!("backingstore.reload-check-interval-secs={value}"))
+                .into_iter()
+                .collect::<Vec<_>>();
+            let store = BackingStore::new_with_config(dir.path(), &configs)?;
+            let mut inner = store.inner.load().soft_reload(touch_file_mtime());
+            // Advance the stored check age without sleeping or touching the host sentinel.
+            inner.create_time = Instant::now() - Duration::from_secs(elapsed_secs);
+            let before = Arc::new(inner);
+            store.inner.store(before.clone());
+
+            store.get_blob(
+                FetchContext::new(FetchMode::LocalOnly),
+                HgId::null_id().as_ref(),
+            )?;
+
+            assert_eq!(
+                !Arc::ptr_eq(&before, &store.inner.load()),
+                should_check,
+                "interval={interval:?}, elapsed_secs={elapsed_secs}"
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn test_get_cache_path_for_stats_joins_reponame_and_cachepath() {

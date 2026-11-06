@@ -92,6 +92,7 @@ sl_rust_library(
     test_deps = [
         "fbsource//third-party/rust:http",
         "fbsource//third-party/rust:rand_chacha",
+        "fbsource//third-party/rust:tempfile",
         "fbsource//third-party/rust:url",
     ],
     deps = [
