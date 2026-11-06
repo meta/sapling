@@ -1,0 +1,14 @@
+[default.extend-words]
+clen = "clen"
+keynode = "keynode"
+inself = "inself"
+EDN = "EDN"
+Chec = "Chec"
+WHT = "WHT"
+NIN = "NIN"
+punicode = "punicode"
+SEH = "SEH" # Structured Exception Handler
+bre = "bre"
+advices = "advices"
+Reserverd = "Reserverd" # copied from the SMB spec
+usefullness = "usefullness" # copied from RFC 1813
