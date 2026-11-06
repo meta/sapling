@@ -3815,40 +3815,20 @@ EdenServiceHandler::co_getEntryInformation(
       std::move(mountPoint), std::move(paths), std::move(sync));
 }
 
-folly::SemiFuture<std::unique_ptr<std::vector<FileInformationOrError>>>
-EdenServiceHandler::semifuture_getFileInformation(
+folly::coro::Task<std::unique_ptr<std::vector<FileInformationOrError>>>
+EdenServiceHandler::co_getFileInformation(
     std::unique_ptr<std::string> mountPoint,
     std::unique_ptr<std::vector<std::string>> paths,
     std::unique_ptr<SyncBehavior> sync) {
-  if (server_->getServerState()
-          ->getEdenConfig()
-          ->enableCoroutinesPhase9.getValue()) {
-    // @lint-ignore CLANGTIDY facebook-folly-coro-return-captures-local-var
-    return folly::coro::co_invoke(
-               [self = shared_from_this()](
-                   std::unique_ptr<std::string> mountPoint,
-                   std::unique_ptr<std::vector<std::string>> paths,
-                   std::unique_ptr<SyncBehavior> sync)
-                   -> folly::coro::Task<
-                       std::unique_ptr<std::vector<FileInformationOrError>>> {
-                 co_return co_await self->co_getFileInformationImpl(
-                     std::move(mountPoint), std::move(paths), std::move(sync));
-               },
-               std::move(mountPoint),
-               std::move(paths),
-               std::move(sync))
-        .semi();
-  }
-  return semifuture_getFileInformationImpl(
+  co_return co_await getFileInformationImpl(
       std::move(mountPoint), std::move(paths), std::move(sync));
 }
 
 folly::coro::now_task<std::unique_ptr<std::vector<FileInformationOrError>>>
-EdenServiceHandler::co_getFileInformationImpl(
+EdenServiceHandler::getFileInformationImpl(
     std::unique_ptr<std::string> mountPoint,
     std::unique_ptr<std::vector<std::string>> paths,
     std::unique_ptr<SyncBehavior> sync) {
-  XLOG(DBG6, "Using coroutine path for getFileInformation");
   auto helper = INSTRUMENT_THRIFT_CALL(
       DBG3, *mountPoint, getSyncTimeout(*sync), toLogArg(*paths));
   auto& fetchContext = helper->getFetchContext();
@@ -3895,74 +3875,6 @@ EdenServiceHandler::co_getFileInformationImpl(
   }
 
   co_return out;
-}
-
-folly::SemiFuture<std::unique_ptr<std::vector<FileInformationOrError>>>
-EdenServiceHandler::semifuture_getFileInformationImpl(
-    std::unique_ptr<std::string> mountPoint,
-    std::unique_ptr<std::vector<std::string>> paths,
-    std::unique_ptr<SyncBehavior> sync) {
-  auto helper = INSTRUMENT_THRIFT_CALL(
-      DBG3, *mountPoint, getSyncTimeout(*sync), toLogArg(*paths));
-  auto mountHandle = lookupMount(mountPoint);
-  auto& fetchContext = helper->getFetchContext();
-  auto lastCheckoutTime =
-      mountHandle.getEdenMount().getLastCheckoutTime().toTimespec();
-
-  return wrapImmediateFuture(
-             std::move(helper),
-             waitForPendingWrites(mountHandle.getEdenMount(), *sync)
-                 .thenValue([mountHandle,
-                             paths = std::move(paths),
-                             lastCheckoutTime,
-                             fetchContext = fetchContext.copy()](auto&&) {
-                   return applyToVirtualInode(
-                       mountHandle.getRootInode(),
-                       *paths,
-                       [mountHandle,
-                        lastCheckoutTime,
-                        fetchContext = fetchContext.copy()](
-                           const VirtualInode& inode, const RelativePath&) {
-                         return inode
-                             .stat(
-                                 lastCheckoutTime,
-                                 mountHandle.getObjectStorePtr(),
-                                 fetchContext)
-                             .thenValue([](struct stat st) {
-                               FileInformation info;
-                               info.size() = st.st_size;
-                               auto ts = stMtime(st);
-                               info.mtime()->seconds() = ts.tv_sec;
-                               info.mtime()->nanoSeconds() = ts.tv_nsec;
-                               info.mode() = st.st_mode;
-
-                               FileInformationOrError result;
-                               result.info() = info;
-
-                               return result;
-                             })
-                             .semi();
-                       },
-                       mountHandle.getObjectStorePtr(),
-                       fetchContext);
-                 })
-                 .thenValue([](vector<Try<FileInformationOrError>>&& done) {
-                   auto out =
-                       std::make_unique<vector<FileInformationOrError>>();
-                   out->reserve(done.size());
-                   for (auto& item : done) {
-                     if (item.hasException()) {
-                       FileInformationOrError result;
-                       result.error() = newEdenError(item.exception());
-                       out->emplace_back(std::move(result));
-                     } else {
-                       out->emplace_back(item.value());
-                     }
-                   }
-                   return out;
-                 }))
-      .ensure([mountHandle] {})
-      .semi();
 }
 
 namespace {
