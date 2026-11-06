@@ -404,6 +404,17 @@ class TestMount {
   bool hasMetadata(InodeNumber inodeNumber) const;
 
   /**
+   * Check out the mount's root to `snapshotId`. The returned future runs on
+   * the server executor: drain it with drainServerExecutor() to make the
+   * future ready.
+   */
+  folly::Future<CheckoutResult> checkout(
+      const RootId& snapshotId,
+      const ObjectFetchContextPtr& fetchContext,
+      folly::StringPiece thriftMethodCaller,
+      CheckoutMode checkoutMode = CheckoutMode::NORMAL);
+
+  /**
    * Returns number of functions executed.
    */
   size_t drainServerExecutor();

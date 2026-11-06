@@ -82,15 +82,8 @@ TEST(CheckoutContextTest, logsCheckoutErrorOnceAtBoundary) {
           "intentional checkout error"),
       1);
 
-  auto executor = testMount.getServerExecutor().get();
-  auto checkoutResult = testMount.getEdenMount()
-                            ->checkout(
-                                testMount.getRootInode(),
-                                RootId{"target"},
-                                ObjectFetchContext::getNullContext(),
-                                __func__)
-                            .semi()
-                            .via(executor);
+  auto checkoutResult = testMount.checkout(
+      RootId{"target"}, ObjectFetchContext::getNullContext(), __func__);
   testMount.drainServerExecutor();
   ASSERT_TRUE(checkoutResult.isReady());
   EXPECT_THROW(std::move(checkoutResult).get(), EdenError);

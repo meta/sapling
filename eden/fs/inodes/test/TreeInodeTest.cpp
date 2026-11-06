@@ -1572,15 +1572,8 @@ StoredId* addReadyCommit(
 }
 
 CheckoutResult checkoutTo(TestMount& testMount, RootId rootId) {
-  auto executor = testMount.getServerExecutor().get();
-  auto checkoutResult = testMount.getEdenMount()
-                            ->checkout(
-                                testMount.getRootInode(),
-                                std::move(rootId),
-                                ObjectFetchContext::getNullContext(),
-                                __func__)
-                            .semi()
-                            .via(executor);
+  auto checkoutResult = testMount.checkout(
+      std::move(rootId), ObjectFetchContext::getNullContext(), __func__);
   testMount.drainServerExecutor();
   return std::move(checkoutResult).get();
 }
@@ -1611,15 +1604,8 @@ TEST_P(TreeInodeTestBase, checkoutPropagatesIsRestricted) {
   auto commit2 = testMount.getBackingStore()->putCommit(RootId{"2"}, builder2);
   commit2->setReady();
 
-  auto executor = testMount.getServerExecutor().get();
-  auto checkoutResult = testMount.getEdenMount()
-                            ->checkout(
-                                testMount.getRootInode(),
-                                RootId{"2"},
-                                ObjectFetchContext::getNullContext(),
-                                __func__)
-                            .semi()
-                            .via(executor);
+  auto checkoutResult = testMount.checkout(
+      RootId{"2"}, ObjectFetchContext::getNullContext(), __func__);
   testMount.drainServerExecutor();
   ASSERT_TRUE(checkoutResult.isReady());
   auto result = std::move(checkoutResult).get();
@@ -1653,15 +1639,8 @@ TEST_P(TreeInodeTestBase, checkoutRemovesRestrictionWhenAclRemoved) {
   auto commit2 = testMount.getBackingStore()->putCommit(RootId{"2"}, builder2);
   commit2->setReady();
 
-  auto executor = testMount.getServerExecutor().get();
-  auto checkoutResult = testMount.getEdenMount()
-                            ->checkout(
-                                testMount.getRootInode(),
-                                RootId{"2"},
-                                ObjectFetchContext::getNullContext(),
-                                __func__)
-                            .semi()
-                            .via(executor);
+  auto checkoutResult = testMount.checkout(
+      RootId{"2"}, ObjectFetchContext::getNullContext(), __func__);
   testMount.drainServerExecutor();
   ASSERT_TRUE(checkoutResult.isReady());
   auto result = std::move(checkoutResult).get();
@@ -1698,15 +1677,8 @@ TEST_P(TreeInodeTestBase, checkoutClearsRestrictionButPreservesAclRoot) {
   }
   commit2->setReady();
 
-  auto executor = testMount.getServerExecutor().get();
-  auto checkoutResult = testMount.getEdenMount()
-                            ->checkout(
-                                testMount.getRootInode(),
-                                RootId{"2"},
-                                ObjectFetchContext::getNullContext(),
-                                __func__)
-                            .semi()
-                            .via(executor);
+  auto checkoutResult = testMount.checkout(
+      RootId{"2"}, ObjectFetchContext::getNullContext(), __func__);
   testMount.drainServerExecutor();
   ASSERT_TRUE(checkoutResult.isReady());
   auto result = std::move(checkoutResult).get();
@@ -1763,15 +1735,8 @@ TEST_P(TreeInodeTestBase, checkoutAddsRestrictionWhenAclAdded) {
   auto commit2 = testMount.getBackingStore()->putCommit(RootId{"2"}, builder2);
   commit2->setReady();
 
-  auto executor = testMount.getServerExecutor().get();
-  auto checkoutResult = testMount.getEdenMount()
-                            ->checkout(
-                                testMount.getRootInode(),
-                                RootId{"2"},
-                                ObjectFetchContext::getNullContext(),
-                                __func__)
-                            .semi()
-                            .via(executor);
+  auto checkoutResult = testMount.checkout(
+      RootId{"2"}, ObjectFetchContext::getNullContext(), __func__);
   testMount.drainServerExecutor();
   ASSERT_TRUE(checkoutResult.isReady());
   auto result = std::move(checkoutResult).get();
@@ -1825,16 +1790,11 @@ TEST_P(
   auto commit2 = testMount.getBackingStore()->putCommit(RootId{"2"}, builder2);
   commit2->setReady();
 
-  auto executor = testMount.getServerExecutor().get();
-  auto checkoutResult = testMount.getEdenMount()
-                            ->checkout(
-                                testMount.getRootInode(),
-                                RootId{"2"},
-                                ObjectFetchContext::getNullContext(),
-                                __func__,
-                                CheckoutMode::NORMAL)
-                            .semi()
-                            .via(executor);
+  auto checkoutResult = testMount.checkout(
+      RootId{"2"},
+      ObjectFetchContext::getNullContext(),
+      __func__,
+      CheckoutMode::NORMAL);
   testMount.drainServerExecutor();
   ASSERT_TRUE(checkoutResult.isReady());
   auto result = std::move(checkoutResult).get();
@@ -1871,16 +1831,11 @@ TEST_P(
 
   // Force mode should report the conflict AND still apply the transition
   // (matches the force-path semantics in processCheckoutEntryImpl).
-  auto executor = testMount.getServerExecutor().get();
-  auto checkoutResult = testMount.getEdenMount()
-                            ->checkout(
-                                testMount.getRootInode(),
-                                RootId{"2"},
-                                ObjectFetchContext::getNullContext(),
-                                __func__,
-                                CheckoutMode::FORCE)
-                            .semi()
-                            .via(executor);
+  auto checkoutResult = testMount.checkout(
+      RootId{"2"},
+      ObjectFetchContext::getNullContext(),
+      __func__,
+      CheckoutMode::FORCE);
   testMount.drainServerExecutor();
   ASSERT_TRUE(checkoutResult.isReady());
   auto result = std::move(checkoutResult).get();

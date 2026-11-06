@@ -527,15 +527,8 @@ TEST_F(
 
   // Perform checkout
   testMount_->drainServerExecutor();
-  auto executor = testMount_->getServerExecutor().get();
-  auto checkoutFuture = testMount_->getEdenMount()
-                            ->checkout(
-                                testMount_->getRootInode(),
-                                RootId{"2"},
-                                ObjectFetchContext::getNullContext(),
-                                __func__)
-                            .semi()
-                            .via(executor);
+  auto checkoutFuture = testMount_->checkout(
+      RootId{"2"}, ObjectFetchContext::getNullContext(), __func__);
   testMount_->drainServerExecutor();
   ASSERT_TRUE(checkoutFuture.isReady());
   auto checkoutResult = std::move(checkoutFuture).get();

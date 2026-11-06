@@ -552,6 +552,22 @@ bool TestMount::hasMetadata([[maybe_unused]] InodeNumber ino) const {
 #endif // !_WIN32
 }
 
+folly::Future<CheckoutResult> TestMount::checkout(
+    const RootId& snapshotId,
+    const ObjectFetchContextPtr& fetchContext,
+    folly::StringPiece thriftMethodCaller,
+    CheckoutMode checkoutMode) {
+  return edenMount_
+      ->checkout(
+          rootInode_,
+          snapshotId,
+          fetchContext,
+          thriftMethodCaller,
+          checkoutMode)
+      .semi()
+      .via(serverExecutor_.get());
+}
+
 size_t TestMount::drainServerExecutor() {
   return serverExecutor_->drain();
 }

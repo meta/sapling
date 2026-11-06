@@ -77,18 +77,11 @@ TEST_P(CheckoutCancellationTest, CheckoutLeavesInterruptedState) {
       0 // No expiration
   );
 
-  auto executor = testMount.getServerExecutor().get();
   testMount.drainServerExecutor();
 
   // Start the checkout operation - it will block on the fault
-  auto checkoutFuture = testMount.getEdenMount()
-                            ->checkout(
-                                testMount.getRootInode(),
-                                RootId{"2"},
-                                ObjectFetchContext::getNullContext(),
-                                __func__)
-                            .semi()
-                            .via(executor);
+  auto checkoutFuture = testMount.checkout(
+      RootId{"2"}, ObjectFetchContext::getNullContext(), __func__);
   testMount.drainServerExecutor();
 
   // Verify the future is not ready yet (blocked on fault)
@@ -119,14 +112,8 @@ TEST_P(CheckoutCancellationTest, CheckoutLeavesInterruptedState) {
 
   // Verify we can recover by performing another checkout
   auto recoveryFetchContext = ObjectFetchContext::getNullContext();
-  auto recoveryFuture = testMount.getEdenMount()
-                            ->checkout(
-                                testMount.getRootInode(),
-                                RootId{"2"},
-                                recoveryFetchContext,
-                                __func__)
-                            .semi()
-                            .via(executor);
+  auto recoveryFuture =
+      testMount.checkout(RootId{"2"}, recoveryFetchContext, __func__);
 
   testMount.drainServerExecutor();
   EXPECT_TRUE(recoveryFuture.isReady());
@@ -192,18 +179,11 @@ TEST_P(CheckoutCancellationTest, CancellationAtInodeCheckoutStage) {
       0 // No expiration
   );
 
-  auto executor = testMount.getServerExecutor().get();
   testMount.drainServerExecutor();
 
   // Start the checkout operation - it will block on the inodeCheckout fault
-  auto checkoutFuture = testMount.getEdenMount()
-                            ->checkout(
-                                testMount.getRootInode(),
-                                RootId{"2"},
-                                ObjectFetchContext::getNullContext(),
-                                __func__)
-                            .semi()
-                            .via(executor);
+  auto checkoutFuture = testMount.checkout(
+      RootId{"2"}, ObjectFetchContext::getNullContext(), __func__);
   testMount.drainServerExecutor();
 
   // Verify the future is not ready yet (blocked on inodeCheckout fault)
@@ -235,14 +215,8 @@ TEST_P(CheckoutCancellationTest, CancellationAtInodeCheckoutStage) {
 
   // Verify we can recover by performing another checkout
   auto recoveryFetchContext = ObjectFetchContext::getNullContext();
-  auto recoveryFuture = testMount.getEdenMount()
-                            ->checkout(
-                                testMount.getRootInode(),
-                                RootId{"2"},
-                                recoveryFetchContext,
-                                __func__)
-                            .semi()
-                            .via(executor);
+  auto recoveryFuture =
+      testMount.checkout(RootId{"2"}, recoveryFetchContext, __func__);
 
   testMount.drainServerExecutor();
   EXPECT_TRUE(recoveryFuture.isReady());
@@ -295,17 +269,10 @@ TEST_F(CheckoutCancellationTest, CancelledCheckoutLogsError) {
   testMount.getServerState()->getFaultInjector().injectBlockWithCancel(
       "checkout", ".*", cancellationToken, std::chrono::milliseconds{5000}, 0);
 
-  auto executor = testMount.getServerExecutor().get();
   testMount.drainServerExecutor();
 
-  auto checkoutFuture = testMount.getEdenMount()
-                            ->checkout(
-                                testMount.getRootInode(),
-                                RootId{"2"},
-                                ObjectFetchContext::getNullContext(),
-                                __func__)
-                            .semi()
-                            .via(executor);
+  auto checkoutFuture = testMount.checkout(
+      RootId{"2"}, ObjectFetchContext::getNullContext(), __func__);
   testMount.drainServerExecutor();
 
   cancelSource.requestCancellation();

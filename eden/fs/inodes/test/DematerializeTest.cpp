@@ -64,15 +64,12 @@ TEST(
 
   // Now checkout 2.
 
-  auto result = mount.getEdenMount()
-                    ->checkout(
-                        mount.getRootInode(),
+  auto result = mount
+                    .checkout(
                         RootId{"2"},
                         ObjectFetchContext::getNullContext(),
                         __func__,
                         CheckoutMode::FORCE)
-                    .semi()
-                    .via(executor)
                     .getVia(executor);
   EXPECT_TRUE(result.conflicts.empty());
 
@@ -126,15 +123,10 @@ TEST(Dematerialize, test_dematerialization_migrates_to_the_new_ID_scheme) {
 
   // Now checkout 2.
 
-  auto result = mount.getEdenMount()
-                    ->checkout(
-                        mount.getRootInode(),
-                        RootId{"2"},
-                        ObjectFetchContext::getNullContext(),
-                        __func__)
-                    .semi()
-                    .via(executor)
-                    .getVia(executor);
+  auto result =
+      mount
+          .checkout(RootId{"2"}, ObjectFetchContext::getNullContext(), __func__)
+          .getVia(executor);
 
   // There should be no conflicts, as the file is not modified.
   EXPECT_EQ(0, result.conflicts.size());

@@ -1220,11 +1220,7 @@ CO_TEST(
   testMount->getBackingStore()->putCommit(RootId{"2"}, builder2)->setReady();
 
   testMount->drainServerExecutor();
-  auto checkoutFuture =
-      testMount->getEdenMount()
-          ->checkout(testMount->getRootInode(), RootId{"2"}, context, __func__)
-          .semi()
-          .via(testMount->getServerExecutor().get());
+  auto checkoutFuture = testMount->checkout(RootId{"2"}, context, __func__);
   testMount->drainServerExecutor();
   CO_ASSERT_TRUE(checkoutFuture.isReady());
   EXPECT_EQ(0, std::move(checkoutFuture).get().conflicts.size());

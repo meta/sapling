@@ -121,14 +121,11 @@ void materializeFraction(
  */
 void runOneCheckout(TestMount& mount, RootId target) {
   auto executor = mount.getServerExecutor().get();
-  auto fut = mount.getEdenMount()
-                 ->checkout(
-                     mount.getRootInode(),
+  auto fut = mount
+                 .checkout(
                      target,
                      ObjectFetchContext::getNullContext(),
                      "checkout_benchmark")
-                 .semi()
-                 .via(executor)
                  .waitVia(executor);
   auto result = std::move(fut).get();
   folly::doNotOptimizeAway(result);
