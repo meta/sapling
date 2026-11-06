@@ -30,7 +30,7 @@ hostname = { version = "0.1.0", git = "https://github.com/facebookexperimental/r
 http = "1.5.0"
 http-body = "1.1.0"
 http-body-util = "0.1.5"
-hyper-openssl = { version = "0.10", features = ["client-legacy", "tokio"] }
+hyper-openssl = { version = "0.10.3", features = ["client-legacy", "tokio"] }
 hyper-util = { version = "0.1.21", features = ["client-legacy", "http1", "http2", "server-auto", "service", "tokio"] }
 justknobs_ext = { version = "0.1.0", path = "../../../common/rust/justknobs_ext" }
 lfs_protocol = { version = "0.1.0", path = "../../../common/lfs_protocol" }

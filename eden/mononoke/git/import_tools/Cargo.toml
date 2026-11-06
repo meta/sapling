@@ -35,7 +35,7 @@ gix-hash = { version = "0.26.2", features = ["sha1"] }
 gix-object = "0.64.1"
 http = "1.5.0"
 http-body-util = "0.1.5"
-hyper-openssl = { version = "0.10", features = ["client-legacy", "tokio"] }
+hyper-openssl = { version = "0.10.3", features = ["client-legacy", "tokio"] }
 hyper-proxy2 = { version = "0.1", features = ["rustls"], default-features = false }
 hyper-util = { version = "0.1.21", features = ["client-legacy", "http1", "http2", "server-auto", "service", "tokio"] }
 import_common = { version = "0.1.0", path = "../../features/import_common" }
