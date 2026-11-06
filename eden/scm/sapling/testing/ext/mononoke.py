@@ -501,6 +501,7 @@ def setup_configerator_configs(fs: ShellFS, env: Env) -> int:
         "changeset_path_history_context_new",
         "hg_augmented_manifest_write",
         "hg_augmented_tree_context_new_check_exists",
+        "check_manifest_permission",
         "fsnodes_write",
         "fsnodes_new_check_exists"
       ],

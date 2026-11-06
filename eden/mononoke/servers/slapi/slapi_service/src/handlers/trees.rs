@@ -79,7 +79,6 @@ use rate_limiting::Metric;
 use rate_limiting::Scope;
 use repo_blobstore::RepoBlobstoreRef;
 use repo_identity::RepoIdentityRef;
-use restricted_paths::RestrictedPathsArc;
 use serde::Deserialize;
 use stats::define_stats;
 use stats::prelude::DynamicHistogram;
@@ -788,72 +787,46 @@ impl SaplingRemoteApiHandler for CheckManifestPermissionHandler {
                         hg_manifest_id.into(),
                     )
                     .await?;
-                    let restriction_checks = restriction_ctx.restriction_check().await?;
-                    let has_access = restriction_checks
-                        .iter()
-                        .all(|check| check.has_authorization());
+                    let denial = restriction_ctx.check_fetch_access().await?.err();
+                    let has_access = denial.is_none();
 
-                    // TODO(T248658346): change the Eden API response to return
-                    // all permission request groups instead of only the first one.
-                    let permission_request_group = restriction_checks
-                        .iter()
-                        .find(|check| !check.has_authorization())
-                        .map(|check| {
-                            check
-                                .restriction_info()
-                                .permission_request_group
-                                .to_string()
-                        });
-
-                    for check in &restriction_checks {
-                        repo.ctx()
-                            .scuba()
-                            .clone()
-                            .add("repo", repo.repo().repo_identity().name())
-                            .add("edenapi_method", "check_manifest_permission")
-                            .add_opt(
-                                "edenapi_user",
-                                repo.ctx()
-                                    .metadata()
-                                    .identities()
-                                    .username()
-                                    .map(ToString::to_string),
-                            )
-                            .add(
-                                "unix_username",
-                                repo.ctx()
-                                    .metadata()
-                                    .identities()
-                                    .username()
-                                    .map(ToString::to_string),
-                            )
-                            .add(
-                                "restricted_path_acl",
-                                check.restriction_info().repo_region_acl.clone(),
-                            )
-                            .add("has_restricted_path_acl_access", check.has_acl_access())
-                            .add("is_allowlisted_tooling", check.is_allowlisted_tooling())
-                            .add("is_rollout_allowlisted", check.is_rollout_allowlisted())
-                            .add("has_restricted_path_access", check.has_authorization())
-                            .add("is_admin_bypass", check.is_admin_bypass())
-                            .log_with_msg("Checked manifest permission", None);
-                    }
-
-                    let denial_message = if has_access {
-                        None
-                    } else {
-                        repo.repo()
-                            .restricted_paths_arc()
-                            .config()
-                            .denial_message
-                            .clone()
-                    };
+                    repo.ctx()
+                        .scuba()
+                        .clone()
+                        .add("repo", repo.repo().repo_identity().name())
+                        .add("edenapi_method", "check_manifest_permission")
+                        .add_opt(
+                            "edenapi_user",
+                            repo.ctx()
+                                .metadata()
+                                .identities()
+                                .username()
+                                .map(ToString::to_string),
+                        )
+                        .add(
+                            "unix_username",
+                            repo.ctx()
+                                .metadata()
+                                .identities()
+                                .username()
+                                .map(ToString::to_string),
+                        )
+                        .add_opt(
+                            "restricted_path_acl",
+                            denial.as_ref().map(|d| d.repo_region_acl().to_string()),
+                        )
+                        .add("has_restricted_path_access", has_access)
+                        .log_with_msg("Checked manifest permission", None);
 
                     Ok(CheckManifestPermissionResponse {
                         manifest_id,
                         has_access,
-                        request_acl: permission_request_group,
-                        denial_message,
+                        request_acl: denial
+                            .as_ref()
+                            .map(|d| d.permission_request_group().to_string()),
+                        denial_message: denial
+                            .as_ref()
+                            .and_then(|d| d.denial_message().map(ToString::to_string)),
                     })
                 }
             })

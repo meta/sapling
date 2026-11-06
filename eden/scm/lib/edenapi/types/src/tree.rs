@@ -421,7 +421,8 @@ pub struct CheckManifestPermissionRequest {
 pub struct CheckManifestPermissionResponse {
     #[id(1)]
     pub manifest_id: HgId,
-    /// Whether the caller has access to this manifest.
+    /// Whether a fetch of this manifest would be served to the caller: the
+    /// server's enforcement decision for the request, not only authorization.
     #[id(2)]
     pub has_access: bool,
     /// ACL to request access through. Present when has_access is false.

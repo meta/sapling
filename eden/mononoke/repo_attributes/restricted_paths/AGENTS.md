@@ -125,7 +125,10 @@ group.
 ## Metadata APIs
 
 Restriction metadata and check APIs are implemented in `restriction_info.rs`
-and `restriction_check.rs`.
+and `restriction_check.rs`. They report restrictions and authorization, not
+enforcement. A client that asks whether a fetch would be served (SLAPI
+`check_manifest_permission`) goes through the manifest enforcement entry
+point instead, so its answer is the fetch's decision and logs as one.
 
 ## `.slacl` change validation
 

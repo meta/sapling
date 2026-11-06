@@ -20,6 +20,7 @@ rust_library(
         "//common/rust/shed/fbinit:fbinit-tokio",
         "//configerator/structs/scm/mononoke/ratelimiting:rate_limiting_config-rust",
         "//eden/mononoke/common/mononoke_macros:mononoke_macros",
+        "//eden/mononoke/repo_attributes/restricted_paths:restricted_paths",
         "//eden/mononoke/repo_factory:test_repo_factory",
     ]
     + ([] if rust_oss.is_oss_build() else ["//thrift/lib/rust:fbthrift"]),
@@ -87,7 +88,6 @@ rust_library(
         "//eden/mononoke/repo_attributes/filestore:filestore",
         "//eden/mononoke/repo_attributes/repo_blobstore:repo_blobstore",
         "//eden/mononoke/repo_attributes/repo_identity:repo_identity",
-        "//eden/mononoke/repo_attributes/restricted_paths:restricted_paths",
         "//eden/mononoke/repo_client:streaming_clone",
         "//eden/mononoke/servers/slapi/slapi_server/context:context",
         "//eden/scm/lib/cats/constants:cats_constants",

@@ -34,6 +34,8 @@ use restricted_paths::ManifestRestrictionCheckResult;
 use restricted_paths::ManifestType;
 use restricted_paths::RestrictedManifestId;
 use restricted_paths::RestrictedPathsArc;
+use restricted_paths::RestrictedPathsAuthorizationError;
+use restricted_paths::RestrictedPathsError;
 use revisionstore_types::Metadata;
 
 use super::HgDataContext;
@@ -417,6 +419,29 @@ impl<R: MononokeRepo> HgAugmentedTreeRestrictionContext<R> {
             .is_manifest_restricted(preloaded_child_is_restricted.unwrap_or(false))
             .await?;
         Ok((name, is_restricted))
+    }
+
+    /// Whether the caller may fetch this manifest: the enforcement decision a
+    /// tree fetch makes, made without fetching the manifest. `Ok(Err(_))` is
+    /// the denial the fetch would return.
+    pub async fn check_fetch_access(
+        &self,
+    ) -> Result<Result<(), RestrictedPathsAuthorizationError>, MononokeError> {
+        let manifest_id = RestrictedManifestId::new(self.manifest_id.as_bytes().into());
+        match restricted_paths::spawn_enforce_restricted_manifest_access(
+            self.repo_ctx.ctx(),
+            self.repo_ctx.repo().restricted_paths_arc().clone(),
+            manifest_id,
+            ManifestType::HgAugmented,
+            "check_manifest_permission",
+            None,
+        )
+        .await
+        {
+            Ok(()) => Ok(Ok(())),
+            Err(RestrictedPathsError::AuthorizationError(denial)) => Ok(Err(denial)),
+            Err(err) => Err(err.into()),
+        }
     }
 
     /// Query restriction and authorization check results for this manifest node.
