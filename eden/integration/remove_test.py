@@ -459,6 +459,42 @@ class RemoveTest(RemoveTestBase):
 
     @parameterized.expand(
         [
+            ("python", {"EDENFSCTL_SKIP_RUST": "1"}),
+        ]
+    )
+    def test_remove_cleans_up_a_leftover_mount_point(
+        self, impl: str, env: dict
+    ) -> None:
+        """A removal interrupted before the mount point was deleted leaves an
+        unregistered directory holding only EdenFS's README; a retry removes
+        it. A directory with other content is left alone."""
+        self.eden.run_cmd("remove", "--yes", self.mount, env=env)
+        os.mkdir(self.mount)
+        with open(os.path.join(self.mount, "README_EDEN.txt"), "w") as f:
+            f.write("not mounted\n")
+
+        self.eden.run_cmd("remove", "--yes", self.mount, env=env)
+        self.assertFalse(
+            os.path.exists(self.mount),
+            f"eden remove ({impl}) should delete a leftover mount point",
+        )
+
+        os.mkdir(self.mount)
+        user_file = os.path.join(self.mount, "notes.txt")
+        with open(user_file, "w") as f:
+            f.write("keep me\n")
+        result = self.eden.run_unchecked(
+            "remove", "--yes", self.mount, env=env, capture_output=True, text=True
+        )
+        self.assertNotEqual(
+            0,
+            result.returncode,
+            f"eden remove ({impl}) must not delete a directory with other content",
+        )
+        self.assertTrue(os.path.exists(user_file))
+
+    @parameterized.expand(
+        [
             ("rust", {"EDENFSCTL_ONLY_RUST": "1"}),
             ("python", {"EDENFSCTL_SKIP_RUST": "1"}),
         ]

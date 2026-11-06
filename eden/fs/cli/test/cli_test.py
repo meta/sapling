@@ -865,6 +865,73 @@ class ListTest(unittest.TestCase):
         )
 
 
+class LeftoverMountPointTest(unittest.TestCase, TemporaryDirectoryMixin):
+    def test_only_edenfs_leftovers_count(self) -> None:
+        tmp = Path(self.make_temporary_directory())
+        empty = tmp / "empty"
+        empty.mkdir()
+        readme_only = tmp / "readme-only"
+        readme_only.mkdir()
+        (readme_only / "README_EDEN.txt").write_text("")
+        with_content = tmp / "with-content"
+        with_content.mkdir()
+        (with_content / "README_EDEN.txt").write_text("")
+        (with_content / "notes.txt").write_text("")
+
+        self.assertTrue(main_mod._is_leftover_mount_point(str(empty)))
+        self.assertTrue(main_mod._is_leftover_mount_point(str(readme_only)))
+        self.assertFalse(main_mod._is_leftover_mount_point(str(with_content)))
+        self.assertFalse(main_mod._is_leftover_mount_point(str(tmp / "missing")))
+
+    def test_a_directory_inside_a_registered_checkout_is_not_a_leftover(self) -> None:
+        mounts = ["/data/users/me/fbsource", "/data/users/me/www/"]
+        self.assertTrue(
+            main_mod._inside_registered_checkout("/data/users/me/fbsource/sub", mounts)
+        )
+        self.assertTrue(
+            main_mod._inside_registered_checkout("/data/users/me/www/x", mounts)
+        )
+        self.assertFalse(
+            main_mod._inside_registered_checkout("/data/users/me/fbsource", mounts)
+        )
+        self.assertFalse(
+            main_mod._inside_registered_checkout("/data/users/me/fbsource2", mounts)
+        )
+
+    def test_cleanup_only_removal_never_deletes_other_content(self) -> None:
+        """The leftover check and the removal are two steps; a file written in
+        between fails the removal instead of being deleted with the directory."""
+        tmp = Path(self.make_temporary_directory())
+        leftover = tmp / "leftover"
+        leftover.mkdir()
+        (leftover / "README_EDEN.txt").write_text("")
+        result = main_mod.remove_checkout_impl(
+            MagicMock(),
+            str(leftover),
+            False,
+            TestOutput(),
+            skip_destroy=True,
+            cleanup_only=True,
+        )
+        self.assertIsNone(result.cleanup_error)
+        self.assertFalse(leftover.exists())
+
+        raced = tmp / "raced"
+        raced.mkdir()
+        (raced / "README_EDEN.txt").write_text("")
+        (raced / "notes.txt").write_text("written after the check")
+        result = main_mod.remove_checkout_impl(
+            MagicMock(),
+            str(raced),
+            False,
+            TestOutput(),
+            skip_destroy=True,
+            cleanup_only=True,
+        )
+        self.assertIsInstance(result.cleanup_error, OSError)
+        self.assertTrue((raced / "notes.txt").exists())
+
+
 class PathIsMissingTest(unittest.TestCase, TemporaryDirectoryMixin):
     def test_only_a_missing_path_is_missing(self) -> None:
         tmp = Path(self.make_temporary_directory())

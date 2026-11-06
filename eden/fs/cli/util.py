@@ -613,7 +613,9 @@ def get_eden_mount_name(path_arg: str) -> str:
             path = path_arg
             parent = os.path.dirname(path)
             while path != parent:
-                if os.path.isdir(os.path.join(path, ".eden")):
+                # A checkout's `.eden` holds a `config` file; the EdenFS state
+                # directory `~/.eden` is also named `.eden` and holds none.
+                if os.path.isfile(os.path.join(path, ".eden", "config")):
                     return os.path.realpath(path)
                 from . import hg_util
 

@@ -1862,6 +1862,7 @@ def remove_checkout_impl(
     use_force: bool = True,
     complain_about_redirections: bool = True,
     skip_destroy: bool = False,
+    cleanup_only: bool = False,
     debug: bool = False,
     proceed_on_unmount_failure: bool = True,
     aux_timeout: Optional[int] = None,
@@ -1881,6 +1882,9 @@ def remove_checkout_impl(
         use_force: If True, use force unmount
         complain_about_redirections: If True, log warnings about failing to unmount redirections
         skip_destroy: If True, skip the destroy_mount step
+        cleanup_only: If True, the mount point holds nothing but EdenFS's own leftovers
+            (the CLEANUP_ONLY case): only the README and the directory itself are
+            deleted, so that nothing written there since the check is lost
         debug: If True, include debug info in cleanup_mount
         proceed_on_unmount_failure: If True, continue with cleanup/destroy even if unmount fails.
             If False, return early with unmount_error set.
@@ -1927,7 +1931,10 @@ def remove_checkout_impl(
     # Note: This runs even when skip_destroy=True (e.g., CLEANUP_ONLY case)
     try:
         output.write(f"Cleaning up mount {path}...\n")
-        instance.cleanup_mount(Path(path), preserve_mount_point, debug)
+        if cleanup_only:
+            _remove_leftover_mount_point(Path(path), preserve_mount_point)
+        else:
+            instance.cleanup_mount(Path(path), preserve_mount_point, debug)
     except Exception as e:
         result.cleanup_error = e
         # Keep the checkout registered, so that a retry removes it
@@ -1960,6 +1967,14 @@ def _is_registered_checkout(path: str, configured_mounts: List[str]) -> bool:
     return path in configured_mounts or os.path.realpath(path) in configured_mounts
 
 
+def _inside_registered_checkout(path: str, configured_mounts: List[str]) -> bool:
+    """True when `path` lies under a checkout config.json lists. Such a path
+    belongs to the checkout even while the checkout is unmounted."""
+    return any(
+        path.startswith(mount.rstrip(os.sep) + os.sep) for mount in configured_mounts
+    )
+
+
 def _path_is_missing(path: str) -> bool:
     """True only when nothing exists at `path`: no entry, or a parent that is a
     plain file. `os.path.exists` is also False for a stale mount left by a dead
@@ -1972,6 +1987,28 @@ def _path_is_missing(path: str) -> bool:
     except OSError:
         return False
     return False
+
+
+def _is_leftover_mount_point(path: str) -> bool:
+    """True when the directory holds nothing but what EdenFS itself leaves at
+    a mount point: it is empty, or it holds only the not-mounted README."""
+    try:
+        entries = os.listdir(path)
+    except OSError:
+        return False
+    return all(entry == config_mod.NOT_MOUNTED_README_PATH for entry in entries)
+
+
+def _remove_leftover_mount_point(path: Path, preserve_mount_point: bool) -> None:
+    """Delete a leftover mount point: the README EdenFS put there, then the
+    directory itself. The removal is not recursive, so a file written into the
+    directory after `_is_leftover_mount_point` saw it empty makes the `rmdir`
+    fail instead of being deleted."""
+    if sys.platform != "win32":
+        path.chmod(0o755)
+    (path / config_mod.NOT_MOUNTED_README_PATH).unlink(missing_ok=True)
+    if not preserve_mount_point:
+        path.rmdir()
 
 
 # Types of removal
@@ -2228,6 +2265,12 @@ Do you still want to delete {path}?"""
                                                 FAILURE_KIND_CLEANUP,
                                                 f"Error: cannot remove contents of {path} even after trying to kill processes holding resources: {ex}",
                                             )
+                        elif _is_leftover_mount_point(
+                            path
+                        ) and not _inside_registered_checkout(
+                            mount_path, configured_mounts
+                        ):
+                            remove_type = RemoveType.CLEANUP_ONLY
                         else:
                             # We can't ask the user what their true intentions are,
                             # so let's fail by default.
@@ -2329,6 +2372,7 @@ Do you still want to delete {path}?"""
                         remove_type
                         in (RemoveType.CLEANUP_ONLY, RemoveType.ACTIVE_UNREGISTERED)
                     ),
+                    cleanup_only=(remove_type == RemoveType.CLEANUP_ONLY),
                     debug=args.debug,
                     proceed_on_unmount_failure=False,
                     aux_timeout=aux_timeout,
