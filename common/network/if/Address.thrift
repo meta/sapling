@@ -9,12 +9,14 @@ namespace py3 facebook.network
 
 include "thrift/annotation/cpp.thrift"
 include "thrift/annotation/thrift.thrift"
+include "thrift/annotation/python.thrift"
 
 package "facebook.com/network/address"
 
 # fbstring uses the small internal buffer to store the data
 # if the data is small enough (< 24 bytes).
-@cpp.Type{name = "::folly::fbstring"}
+@python.Py3EnableCppAdapter
+@cpp.Adapter{name = "::apache::thrift::StringTypeAdapter<::folly::fbstring>"}
 typedef binary fbbinary
 
 enum AddressType {
