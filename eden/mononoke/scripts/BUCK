@@ -40,6 +40,7 @@ python_binary(
     deps = [
         "//libfb/py/shardmanager:structs",
         "//libfb/py/shardmanager/client_factory:smclient",
+        "//libfb/py/shardmanager/client_factory:sourceproviders",
         "//shardmanager/smcli:param",
     ],
 )

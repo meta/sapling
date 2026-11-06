@@ -43,6 +43,7 @@ import time
 from typing import List, Optional, Tuple
 
 from libfb.py.shardmanager.client_factory.SMClient import SMClient
+from libfb.py.shardmanager.client_factory.SourceProvider import SourceProvider
 from libfb.py.shardmanager.structs import EntityID, EntityType, SourceType
 from shardmanager.smcli.param import PrefParamType
 
@@ -117,7 +118,9 @@ def _distribute_shards(
     return [(handles[i], buckets[i]) for i in range(len(handles)) if buckets[i]]
 
 
-async def _resolve_server_id(client, service: str, scope: str, handle: str):
+async def _resolve_server_id(
+    client: SourceProvider, service: str, scope: str, handle: str
+) -> int | None:
     """Resolve a TW task handle to its SM server id, or None if not found."""
     rows = await client.getServers(
         service=service,
@@ -152,7 +155,9 @@ async def _wait_until(deadline: float, stop_event: asyncio.Event) -> None:
             continue
 
 
-async def _cleanup(client, service: str, scope: str, pinned: List[int]) -> None:
+async def _cleanup(
+    client: SourceProvider, service: str, scope: str, pinned: List[int]
+) -> None:
     """Disable SM canary on every server we pinned. Best-effort."""
     logger.info("Cleanup: disabling SM canary on %d server(s)", len(pinned))
     for server_id in pinned:
@@ -165,7 +170,9 @@ async def _cleanup(client, service: str, scope: str, pinned: List[int]) -> None:
 
 
 async def _pin_shards(
-    client, args: argparse.Namespace, assignment: List[Tuple[str, List[str]]]
+    client: SourceProvider,
+    args: argparse.Namespace,
+    assignment: List[Tuple[str, List[str]]],
 ) -> List[int]:
     """Enable SM canary for each (handle, shards) pair. Returns pinned server ids."""
     pref_param = PrefParamType()
