@@ -14,7 +14,7 @@ exclude = ["BUCK"]
 name = "io"
 
 [dependencies]
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
+parking_lot = { version = "0.13.0", features = ["arc_lock", "send_guard", "serde"] }
 pipe = "0.2"
 sapling-configmodel = { version = "0.2.0", path = "../config/model" }
 sapling-hgplain = { version = "0.1.0", path = "../util/hgplain" }

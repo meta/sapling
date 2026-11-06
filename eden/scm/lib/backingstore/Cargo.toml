@@ -26,7 +26,7 @@ edenfs-telemetry = { path = "../../../fs/rust/edenfs-telemetry" }
 env_logger = { version = "0.11.11", features = ["color"] }
 flume = "0.11.1"
 log = { version = "0.4.34", features = ["kv_unstable", "kv_unstable_std"] }
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
+parking_lot = { version = "0.13.0", features = ["arc_lock", "send_guard", "serde"] }
 sapling-configloader = { version = "0.1.0", path = "../config/loader" }
 sapling-constructors = { version = "0.1.0", path = "../constructors", default-features = false }
 sapling-eagerepo = { version = "0.1.0", path = "../eagerepo" }

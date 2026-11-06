@@ -32,7 +32,7 @@ filetime = "0.2.29"
 hostcaps = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 log = { version = "0.4.34", features = ["kv_unstable", "kv_unstable_std"] }
 mime = "0.3.14"
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
+parking_lot = { version = "0.13.0", features = ["arc_lock", "send_guard", "serde"] }
 regex = "1.13.1"
 reqwest = { version = "0.13.5", features = ["blocking", "brotli", "charset", "cookies", "deflate", "gzip", "http2", "json", "multipart", "native-tls", "rustls", "socks", "stream", "system-proxy", "zstd"], default-features = false }
 sapling-configset = { version = "0.1.0", path = "../config/set" }

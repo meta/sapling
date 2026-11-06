@@ -18,7 +18,7 @@ anyhow = "1.0.104"
 edenfs-asserted-states-client = { version = "0.1.0", path = "../../../fs/rust/edenfs-asserted-states-client" }
 fail = { version = "0.5.1", features = ["failpoints"] }
 flume = "0.11.1"
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
+parking_lot = { version = "0.13.0", features = ["arc_lock", "send_guard", "serde"] }
 redacted = { version = "0.1.0", path = "../util/redacted" }
 sapling-async-runtime = { version = "0.1.0", path = "../async-runtime" }
 sapling-atexit = { version = "0.1.0", path = "../util/atexit" }

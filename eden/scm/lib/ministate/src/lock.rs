@@ -30,35 +30,44 @@ unsafe impl RawRwLockTrait for WrappedRwLock {
         on_unlock_exclusive: OnceLock::new(),
     };
 
-    type GuardMarker = GuardNoSend;
+    type SharedGuard = (<RawRwLock as RawRwLockTrait>::SharedGuard, GuardNoSend);
+    type ExclusiveGuard = (<RawRwLock as RawRwLockTrait>::ExclusiveGuard, GuardNoSend);
 
-    fn lock_shared(&self) {
-        self.inner.lock_shared()
+    fn lock_shared(&self) -> Self::SharedGuard {
+        (self.inner.lock_shared(), GuardNoSend::new())
     }
 
-    fn try_lock_shared(&self) -> bool {
-        self.inner.try_lock_shared()
+    fn try_lock_shared(&self) -> Option<Self::SharedGuard> {
+        Some((self.inner.try_lock_shared()?, GuardNoSend::new()))
     }
 
-    unsafe fn unlock_shared(&self) {
-        unsafe { self.inner.unlock_shared() }
+    unsafe fn unlock_shared(&self, guard: Self::SharedGuard) {
+        unsafe { self.inner.unlock_shared(guard.0) }
     }
 
-    fn lock_exclusive(&self) {
-        self.inner.lock_exclusive()
+    fn lock_exclusive(&self) -> Self::ExclusiveGuard {
+        (self.inner.lock_exclusive(), GuardNoSend::new())
     }
 
-    fn try_lock_exclusive(&self) -> bool {
-        self.inner.try_lock_exclusive()
+    fn try_lock_exclusive(&self) -> Option<Self::ExclusiveGuard> {
+        Some((self.inner.try_lock_exclusive()?, GuardNoSend::new()))
     }
 
-    unsafe fn unlock_exclusive(&self) {
+    unsafe fn unlock_exclusive(&self, guard: Self::ExclusiveGuard) {
         unsafe {
-            self.inner.unlock_exclusive();
+            self.inner.unlock_exclusive(guard.0);
             if let Some(f) = self.on_unlock_exclusive.get() {
                 f()
             }
         }
+    }
+
+    fn is_locked(&self) -> bool {
+        self.inner.is_locked()
+    }
+
+    fn is_locked_exclusive(&self) -> bool {
+        self.inner.is_locked_exclusive()
     }
 }
 

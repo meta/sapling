@@ -22,7 +22,7 @@ required-features = ["for-tests"]
 anyhow = "1.0.104"
 blob = { version = "0.1.0", path = "../blob" }
 num_cpus = "1.16"
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
+parking_lot = { version = "0.13.0", features = ["arc_lock", "send_guard", "serde"] }
 quickcheck = { version = "1.1", optional = true }
 rand = { version = "0.10.3", optional = true }
 sapling-bytescan = { version = "0.1.0", path = "../util/bytescan" }

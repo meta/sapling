@@ -17,7 +17,7 @@ name = "identity"
 anyhow = "1.0.104"
 derivative = "2.2"
 dirs = "7.0"
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
+parking_lot = { version = "0.13.0", features = ["arc_lock", "send_guard", "serde"] }
 sapling-util = { version = "0.2.0", path = "../util" }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 

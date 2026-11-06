@@ -14,7 +14,7 @@ use anyhow::Result;
 use ignore::Match;
 use ignore::gitignore;
 use ignore::gitignore::Glob;
-use parking_lot::RwLock;
+use parking_lot::RecursiveRwLock;
 use types::RepoPath;
 
 use crate::DirectoryMatch;
@@ -32,7 +32,7 @@ pub struct GitignoreMatcher {
     // PERF: Each Gitignore object stores "root" as "PathBuf" to support
     // matching against an absolute path. Since we enforce relative path
     // in the API, removing that "PathBuf" could reduce memory footprint.
-    submatchers: RwLock<HashMap<PathBuf, Box<GitignoreMatcher>>>,
+    submatchers: RecursiveRwLock<HashMap<PathBuf, Box<GitignoreMatcher>>>,
 
     // Whether this directory is ignored or not.
     ignored: bool,
@@ -102,7 +102,7 @@ impl GitignoreMatcher {
             .build()
             .unwrap_or_else(|_| gitignore::Gitignore::empty());
 
-        let submatchers = RwLock::new(HashMap::new());
+        let submatchers = RecursiveRwLock::new(HashMap::new());
         GitignoreMatcher {
             ignore,
             dir: root.to_path_buf(),
@@ -118,7 +118,7 @@ impl GitignoreMatcher {
         let dir_root_relative = dir
             .strip_prefix(&root.dir)
             .expect("should be a subdirectory of the root");
-        let submatchers = RwLock::new(HashMap::new());
+        let submatchers = RecursiveRwLock::new(HashMap::new());
         let (ignored, ignore) = if root.match_relative(dir_root_relative, true) {
             (true, gitignore::Gitignore::empty())
         } else {
@@ -203,7 +203,7 @@ impl GitignoreMatcher {
         explain: &mut Option<&mut Explain>,
     ) -> MatchResult {
         {
-            let submatchers = self.submatchers.read_recursive();
+            let submatchers = self.submatchers.read();
             if let Some(m) = submatchers.get(name) {
                 return m.as_ref().match_path(rest, is_dir, root, explain);
             }

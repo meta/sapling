@@ -16,7 +16,7 @@ name = "tracing_collector"
 [dependencies]
 indexmap = { version = "2.14.2", features = ["serde"] }
 libc = "0.2.186"
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
+parking_lot = { version = "0.13.0", features = ["arc_lock", "send_guard", "serde"] }
 sapling-ascii-tree = { version = "0.1.0", path = "../util/ascii-tree" }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }

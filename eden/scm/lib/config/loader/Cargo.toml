@@ -26,7 +26,7 @@ faccess = "0.2.4"
 filetime = { version = "0.2.29", optional = true }
 hostcaps = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 hostname = "0.4.2"
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
+parking_lot = { version = "0.13.0", features = ["arc_lock", "send_guard", "serde"] }
 regex = { version = "1.13.1", optional = true }
 sapling-config-remote-loader = { version = "0.1.0", path = "../remote-loader" }
 sapling-configmodel = { version = "0.2.0", path = "../model" }

@@ -27,7 +27,7 @@ use coarsetime as _; // silence "unused dependency" warning
 use coarsetime::Instant;
 #[cfg(test)]
 use mock_instant::Instant;
-use parking_lot::RwLock;
+use parking_lot::RecursiveRwLock;
 use tracing::Level;
 use types::RepoPath;
 use types::RepoPathBuf;
@@ -43,7 +43,7 @@ use walk_node::WalkNode;
 pub struct Detector {
     config: Config,
     root: Option<PathBuf>,
-    inner: Arc<RwLock<Inner>>,
+    inner: Arc<RecursiveRwLock<Inner>>,
 }
 
 struct Inner {
@@ -418,7 +418,7 @@ impl Detector {
         let walk_root = walk_root.as_ref();
         tracing::trace!(%walk_root, preload_count, "files_preloaded");
 
-        let inner = self.inner.read_recursive();
+        let inner = self.inner.read();
 
         if let Some(node) = inner.node.get_node(walk_root) {
             if let Some(walk) = node.get_walk_for_type(WalkType::File) {
@@ -449,7 +449,7 @@ impl Detector {
 
         // Readers must not queue behind a waiting writer: this runs on filesystem threads for
         // every read, while walk bookkeeping on the write lock is best effort.
-        let inner = self.inner.read_recursive();
+        let inner = self.inner.read();
 
         // Bump last_access, but don't insert any new nodes/walks.
         if let Some((walk_node, suffix)) = inner.node.get_owning_node(wt, dir) {

@@ -58,7 +58,7 @@ ctrlc = { version = "3.5.2", features = ["termination"] }
 flate2 = { version = "1.1.10", features = ["rust_backend"], default-features = false }
 hostname = "0.4.2"
 libc = "0.2.186"
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
+parking_lot = { version = "0.13.0", features = ["arc_lock", "send_guard", "serde"] }
 pycheckout = { version = "0.1.0", path = "../../saplingnative/bindings/modules/pycheckout" }
 pytracing = { version = "0.1.0", path = "../../saplingnative/bindings/modules/pytracing", default-features = false }
 pyworkingcopy = { version = "0.1.0", path = "../../saplingnative/bindings/modules/pyworkingcopy" }

@@ -17,7 +17,7 @@ name = "repo"
 anyhow = "1.0.104"
 fail = { version = "0.5.1", features = ["failpoints"] }
 fs-err = "3.3.2"
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
+parking_lot = { version = "0.13.0", features = ["arc_lock", "send_guard", "serde"] }
 sapling-agentdetect = { version = "0.1.0", path = "../agentdetect" }
 sapling-async-runtime = { version = "0.1.0", path = "../async-runtime" }
 sapling-cas-client = { version = "0.1.0", path = "../cas-client" }

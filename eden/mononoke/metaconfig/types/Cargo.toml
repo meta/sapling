@@ -17,7 +17,7 @@ derive_more = { version = "2.1.1", features = ["full"] }
 facet = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main", features = ["impl_never_type"] }
 mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
 mysql_common = { version = "0.31.0", features = ["chrono", "default"] }
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
+parking_lot = { version = "0.13.0", features = ["arc_lock", "send_guard", "serde"] }
 permission_checker = { version = "0.1.0", path = "../../common/permission_checker" }
 regex = "1.13.1"
 rusoto_core = "0.48.0"

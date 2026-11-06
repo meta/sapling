@@ -14,7 +14,7 @@ exclude = ["BUCK"]
 name = "tracing_runtime_callsite"
 
 [dependencies]
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
+parking_lot = { version = "0.13.0", features = ["arc_lock", "send_guard", "serde"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [dev-dependencies]

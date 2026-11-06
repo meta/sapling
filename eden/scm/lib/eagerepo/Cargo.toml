@@ -21,7 +21,7 @@ fail = { version = "0.5.1", features = ["failpoints"] }
 futures = { version = "0.3.34", features = ["async-await", "std"], default-features = false }
 http = "1.5.0"
 manifest-augmented-tree = { version = "0.1.0", path = "../manifest-augmented-tree" }
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
+parking_lot = { version = "0.13.0", features = ["arc_lock", "send_guard", "serde"] }
 sapling-dag = { version = "0.2.0", path = "../dag" }
 sapling-eagerepo-trait = { version = "0.1.0", path = "trait" }
 sapling-edenapi_trait = { version = "0.1.0", path = "../edenapi/trait" }

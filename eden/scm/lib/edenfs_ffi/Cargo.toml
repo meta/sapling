@@ -18,7 +18,7 @@ crate-type = ["lib", "staticlib"]
 anyhow = "1.0.104"
 cxx = "1.0.194"
 cxxerror = { version = "0.1.0", path = "cxxerror" }
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
+parking_lot = { version = "0.13.0", features = ["arc_lock", "send_guard", "serde"] }
 sapling-async-runtime = { version = "0.1.0", path = "../async-runtime" }
 sapling-configmodel = { version = "0.2.0", path = "../config/model" }
 sapling-filters = { version = "0.1.0", path = "../filters" }

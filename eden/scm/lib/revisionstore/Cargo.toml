@@ -26,7 +26,7 @@ http = "1.5.0"
 lfs_protocol = { version = "0.1.0", path = "../../../mononoke/common/lfs_protocol" }
 manifest-augmented-tree = { version = "0.1.0", path = "../manifest-augmented-tree" }
 moka = { version = "0.12.16", features = ["future", "sync"] }
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
+parking_lot = { version = "0.13.0", features = ["arc_lock", "send_guard", "serde"] }
 paste = "1.0.14"
 quickcheck = "1.1"
 quickcheck_arbitrary_derive = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }

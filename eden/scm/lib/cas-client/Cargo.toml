@@ -17,7 +17,7 @@ name = "cas_client"
 anyhow = "1.0.104"
 blob = { version = "0.1.0", path = "../blob" }
 futures = { version = "0.3.34", features = ["async-await", "std"], default-features = false }
-parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard", "serde"] }
+parking_lot = { version = "0.13.0", features = ["arc_lock", "send_guard", "serde"] }
 sapling-configmodel = { version = "0.2.0", path = "../config/model" }
 sapling-factory = { version = "0.1.0", path = "../util/factory" }
 sapling-metrics = { version = "0.1.0", path = "../metrics" }
