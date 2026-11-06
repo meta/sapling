@@ -373,10 +373,8 @@ pub enum Metric {
     TotalManifests,
     GetpackFiles,
     Commits,
-    CommitsPerAuthor,
     CommitsPerUser,
     EdenApiQps,
-    LocationToHashCount,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]

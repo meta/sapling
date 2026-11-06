@@ -271,10 +271,8 @@ struct LoadLimitsInner {
     regional_total_manifests: LoadLimitCounter,
     regional_getpack_files: LoadLimitCounter,
     regional_commits: LoadLimitCounter,
-    commits_per_author: LoadLimitCounter,
     commits_per_user: LoadLimitCounter,
     edenapi_qps: LoadLimitCounter,
-    location_to_hash_count: LoadLimitCounter,
 }
 
 impl LoadLimitsInner {
@@ -296,21 +294,13 @@ impl LoadLimitsInner {
                 category: category.clone(),
                 key: make_regional_limit_key("egress-commits"),
             },
-            commits_per_author: LoadLimitCounter {
-                category: category.clone(),
-                key: "commits_per_author".to_string(),
-            },
             commits_per_user: LoadLimitCounter {
                 category: category.clone(),
                 key: "commits_per_author".to_string(),
             },
             edenapi_qps: LoadLimitCounter {
-                category: category.clone(),
-                key: "edenapi_qps".to_string(),
-            },
-            location_to_hash_count: LoadLimitCounter {
                 category,
-                key: "location_to_hash_count".to_string(),
+                key: "edenapi_qps".to_string(),
             },
         }
     }
@@ -332,12 +322,8 @@ impl MononokeRateLimits {
             (Metric::TotalManifests, Scope::Regional) => &self.load_limits.regional_total_manifests,
             (Metric::GetpackFiles, Scope::Regional) => &self.load_limits.regional_getpack_files,
             (Metric::Commits, Scope::Regional) => &self.load_limits.regional_commits,
-            (Metric::CommitsPerAuthor, Scope::Global) => &self.load_limits.commits_per_author,
             (Metric::CommitsPerUser, Scope::Global) => &self.load_limits.commits_per_user,
             (Metric::EdenApiQps, Scope::Global) => &self.load_limits.edenapi_qps,
-            (Metric::LocationToHashCount, Scope::Global) => {
-                &self.load_limits.location_to_hash_count
-            }
             _ => panic!("Unsupported metric/scope combination"),
         }
     }

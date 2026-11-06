@@ -19,6 +19,7 @@ rust_library(
         "//eden/mononoke/common/memory:memory",
         "//eden/mononoke/common/metadata:metadata",
         "//eden/mononoke/common/observability:observability",
+        "//eden/mononoke/common/permission_checker:permission_checker",
         "//eden/mononoke/common/rust/artillery_http_ext:artillery_http_ext",
         "//eden/mononoke/common/scribe_ext:scribe_ext",
         "//eden/scm/lib/clientinfo:clientinfo",

@@ -21,7 +21,6 @@ use hickory_resolver::proto::rr::RData;
 use permission_checker::ClientCategory;
 use permission_checker::MononokeIdentitySet;
 use permission_checker::MononokeIdentitySetExt;
-use permission_checker::TenantInfo;
 use session_id::SessionId;
 use session_id::generate_session_id;
 use tokio::time::timeout;
@@ -56,7 +55,6 @@ impl ClientPathAclCompatibility {
 /// RIM attribution with a fixed workload/instance hierarchy.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RimTenancyPath {
-    region: Option<String>,
     category: ClientCategory,
     allocation: Option<String>,
     workload: String,
@@ -80,7 +78,6 @@ impl RimTenancyPath {
     /// Convert to the ordered components expected by the RIM client.
     pub fn into_vec(self) -> Vec<String> {
         once("root".to_owned())
-            .chain(self.region)
             .chain(once(self.category.as_str().to_owned()))
             .chain(self.allocation)
             .chain([self.workload, self.instance])
@@ -384,36 +381,8 @@ impl Metadata {
             .and_then(|ci| ci.request_info.as_ref())
     }
 
-    pub fn tenant_info(&self) -> TenantInfo {
-        let client_id = self
-            .client_request_info()
-            .and_then(|cri| cri.main_id.clone());
-
-        match self.identities.client_category(self.sandcastle_alias()) {
-            ClientCategory::HealthCheck => TenantInfo::HealthCheck { client_id },
-            ClientCategory::InteractiveDev => TenantInfo::InteractiveDev { client_id },
-            ClientCategory::DevEnv => TenantInfo::DevEnv { client_id },
-            ClientCategory::CiSandcastle => TenantInfo::CiSandcastle {
-                client_id,
-                ci_purpose: self.ci_purpose().map(str::to_owned),
-            },
-            ClientCategory::SandcastleAutomation => TenantInfo::SandcastleAutomation { client_id },
-            ClientCategory::Mast => TenantInfo::Mast { client_id },
-            ClientCategory::FaaS => TenantInfo::FaaS {
-                client_id,
-                atlas_env_id: self.clientinfo_atlas_env_id().map(str::to_owned),
-                atlas_rl: self.clientinfo_atlas_rl(),
-                atlas_purpose: self.clientinfo_atlas_purpose().map(str::to_owned),
-                faas_job_name: self.clientinfo_faas_job_name().map(str::to_owned),
-            },
-            ClientCategory::Automation => TenantInfo::Automation { client_id },
-            ClientCategory::Unknown => TenantInfo::Unknown { client_id },
-        }
-    }
-
     /// RIM workload/instance attribution, derived independently of request `main_id`.
-    /// An optional serving region groups categories under that region.
-    pub fn rim_tenancy_path(&self, region: Option<&str>) -> RimTenancyPath {
+    pub fn rim_tenancy_path(&self) -> RimTenancyPath {
         let category = self.identities.client_category(self.sandcastle_alias());
         let identity = |types: &[&str]| {
             types
@@ -475,7 +444,6 @@ impl Metadata {
             "default"
         };
         RimTenancyPath {
-            region: region.map(str::to_owned),
             category,
             allocation: None,
             workload,
@@ -607,13 +575,12 @@ mod tests {
             ("MACHINE", "od1.ldc.facebook.com"),
         ]);
         let expected = RimTenancyPath {
-            region: None,
             category: ClientCategory::DevEnv,
             allocation: None,
             workload: "www_fbsource_configerator".to_owned(),
             instance: "od1.ldc.facebook.com".to_owned(),
         };
-        assert_eq!(metadata.rim_tenancy_path(None), expected);
+        assert_eq!(metadata.rim_tenancy_path(), expected);
         for main_id in ["legacy-client-a", "legacy-client-b"] {
             metadata.add_client_info(ClientInfo {
                 request_info: Some(ClientRequestInfo {
@@ -623,8 +590,7 @@ mod tests {
                 }),
                 ..ClientInfo::default()
             });
-            assert_eq!(metadata.rim_tenancy_path(None), expected);
-            assert_eq!(metadata.tenant_info().client_id(), Some(main_id));
+            assert_eq!(metadata.rim_tenancy_path(), expected);
             assert_eq!(
                 metadata.client_request_info().unwrap().main_id.as_deref(),
                 Some(main_id)
@@ -640,14 +606,14 @@ mod tests {
                 ("MACHINE", machine),
             ]);
             assert_eq!(
-                metadata.rim_tenancy_path(None).into_vec(),
+                metadata.rim_tenancy_path().into_vec(),
                 vec!["root", "dev_env", "www_fbsource_configerator", machine]
             );
         }
         let missing_machine =
             metadata(&[("SERVICE_IDENTITY", "ondemand_www_fbsource_configerator")]);
         assert_eq!(
-            missing_machine.rim_tenancy_path(None).into_vec(),
+            missing_machine.rim_tenancy_path().into_vec(),
             vec!["root", "dev_env", "www_fbsource_configerator", "unknown"]
         );
     }
@@ -686,7 +652,7 @@ mod tests {
             (vec![], vec!["root", "unknown", "unknown", "default"]),
         ] {
             assert_eq!(
-                metadata(&identities).rim_tenancy_path(None).into_vec(),
+                metadata(&identities).rim_tenancy_path().into_vec(),
                 expected
             );
         }
@@ -706,7 +672,7 @@ mod tests {
         ] {
             let metadata = metadata.clone().set_fetch_cause(cause.map(str::to_owned));
             assert_eq!(
-                metadata.rim_tenancy_path(None).into_vec(),
+                metadata.rim_tenancy_path().into_vec(),
                 vec!["root", "ci_sandcastle", "CI_PURPOSE:land", "default"]
             );
         }
@@ -736,44 +702,22 @@ mod tests {
                 ("MACHINE", "od1.ldc.facebook.com"),
             ])
             .set_fetch_cause(cause.map(str::to_owned));
-            for region in [None, Some("ldc")] {
-                let expected: Vec<_> = once("root")
-                    .chain(region)
-                    .chain(["dev_env", workload, workload, "od1.ldc.facebook.com"])
-                    .collect();
-                assert_eq!(
-                    metadata
-                        .rim_tenancy_path(region)
-                        .with_workload_allocation(|category, name| {
-                            assert_eq!(category, "dev_env");
-                            assert_eq!(name, workload);
-                            true
-                        })
-                        .into_vec(),
-                    expected,
-                    "fetch cause: {cause:?}",
-                );
-            }
+            let expected: Vec<_> = once("root")
+                .chain(["dev_env", workload, workload, "od1.ldc.facebook.com"])
+                .collect();
+            assert_eq!(
+                metadata
+                    .rim_tenancy_path()
+                    .with_workload_allocation(|category, name| {
+                        assert_eq!(category, "dev_env");
+                        assert_eq!(name, workload);
+                        true
+                    })
+                    .into_vec(),
+                expected,
+                "fetch cause: {cause:?}",
+            );
         }
-    }
-
-    #[mononoke::test]
-    fn rim_groups_categories_under_the_serving_region() {
-        let metadata = metadata(&[
-            ("SERVICE_IDENTITY", "ondemand_www_fbsource_configerator"),
-            ("MACHINE", "od1.prn.facebook.com"),
-        ])
-        .set_client_hostname(Some("od1.prn.facebook.com".to_owned()));
-        assert_eq!(
-            metadata.rim_tenancy_path(Some("ldc")).into_vec(),
-            vec![
-                "root",
-                "ldc",
-                "dev_env",
-                "www_fbsource_configerator",
-                "od1.prn.facebook.com",
-            ]
-        );
     }
 
     #[mononoke::test]
@@ -784,26 +728,23 @@ mod tests {
                     ("SERVICE_IDENTITY", &format!("ondemand_{workload}")),
                     ("MACHINE", machine),
                 ]);
-                for region in [None, Some("ldc")] {
-                    let allocation = if workload == "registered" {
-                        workload
-                    } else {
-                        "__mononoke_remaining__"
-                    };
-                    let expected: Vec<_> = once("root")
-                        .chain(region)
-                        .chain(["dev_env", allocation, workload, machine])
-                        .collect();
-                    assert_eq!(
-                        metadata
-                            .rim_tenancy_path(region)
-                            .with_workload_allocation(|category, workload| {
-                                category == "dev_env" && workload == "registered"
-                            })
-                            .into_vec(),
-                        expected,
-                    );
-                }
+                let allocation = if workload == "registered" {
+                    workload
+                } else {
+                    "__mononoke_remaining__"
+                };
+                let expected: Vec<_> = once("root")
+                    .chain(["dev_env", allocation, workload, machine])
+                    .collect();
+                assert_eq!(
+                    metadata
+                        .rim_tenancy_path()
+                        .with_workload_allocation(|category, workload| {
+                            category == "dev_env" && workload == "registered"
+                        })
+                        .into_vec(),
+                    expected,
+                );
             }
         }
     }
@@ -813,7 +754,7 @@ mod tests {
         let metadata = metadata(&[("SERVICE_IDENTITY", "ondemand_registered")]);
         assert_eq!(
             metadata
-                .rim_tenancy_path(None)
+                .rim_tenancy_path()
                 .with_workload_allocation(|category, workload| {
                     category == "automation" && workload == "registered"
                 })

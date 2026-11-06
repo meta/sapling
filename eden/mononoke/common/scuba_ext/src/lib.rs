@@ -24,6 +24,7 @@ use metadata::Metadata;
 use observability::ObservabilityContext;
 use observability::ScubaLoggingDecisionFields;
 pub use observability::ScubaVerbosityLevel;
+use permission_checker::ClientCategory;
 pub use sampling::Sampling;
 #[cfg(fbcode_build)]
 pub use schematized_logging::CommonMetadata;
@@ -172,22 +173,24 @@ impl MononokeScubaSampleBuilder {
 
     /// Log the tenancy-relevant client fields to Scuba
     pub fn add_tenant_info(&mut self, metadata: &Metadata) -> &mut Self {
-        let tenant = metadata.tenant_info();
-
+        let path = metadata.rim_tenancy_path();
+        let category = path.category();
+        self.inner.add("client_category", category.as_str());
+        if category == ClientCategory::CiSandcastle {
+            self.inner.add_opt("ci_purpose", metadata.ci_purpose());
+        }
+        if category == ClientCategory::FaaS {
+            self.inner
+                .add_opt("client_atlas_env_id", metadata.clientinfo_atlas_env_id());
+            self.inner
+                .add_opt("client_atlas_rl", metadata.clientinfo_atlas_rl());
+            self.inner
+                .add_opt("client_atlas_purpose", metadata.clientinfo_atlas_purpose());
+            self.inner
+                .add_opt("client_faas_job_name", metadata.clientinfo_faas_job_name());
+        }
         self.inner
-            .add("client_category", tenant.category().as_str());
-        self.inner.add_opt("ci_purpose", tenant.ci_purpose());
-        self.inner
-            .add_opt("client_atlas_env_id", tenant.atlas_env_id());
-        self.inner.add_opt("client_atlas_rl", tenant.atlas_rl());
-        self.inner
-            .add_opt("client_atlas_purpose", tenant.atlas_purpose());
-        self.inner
-            .add_opt("client_faas_job_name", tenant.faas_job_name());
-        self.inner.add(
-            "rim_workload_tenancy_path",
-            metadata.rim_tenancy_path(None).into_vec().join("/"),
-        );
+            .add("rim_workload_tenancy_path", path.into_vec().join("/"));
         self
     }
 
@@ -577,6 +580,45 @@ mod tests {
         let expected: ScubaValue = "root/unknown/unknown/default".into();
         for scuba in [http, full] {
             assert_eq!(scuba.get("rim_workload_tenancy_path"), Some(&expected));
+        }
+    }
+
+    #[cfg(fbcode_build)]
+    #[mononoke::test]
+    fn tenant_logging_preserves_category_specific_fields() {
+        let client_info = clientinfo::ClientInfo::from_json(
+            r#"{"sandcastle_alias":"build","ci_purpose":"land","atlas_env_id":"env","atlas_rl":true,"atlas_purpose":"training","faas_job_name":"job"}"#,
+        )
+        .unwrap();
+        for (identity, category) in [
+            ("sandcastle.svn.push", "ci_sandcastle"),
+            ("faas", "faas"),
+            ("other", "automation"),
+        ] {
+            let mut metadata = Metadata::default().set_identities(
+                [permission_checker::MononokeIdentity::from_legacy_type_data(
+                    "SERVICE_IDENTITY",
+                    identity,
+                )]
+                .into(),
+            );
+            metadata.add_client_info(client_info.clone());
+            let mut scuba = MononokeScubaSampleBuilder::with_discard();
+            scuba.add_tenant_info(&metadata);
+            assert_eq!(scuba.get("client_category"), Some(&category.into()));
+            let purpose = ScubaValue::from("land");
+            assert_eq!(
+                scuba.get("ci_purpose"),
+                (category == "ci_sandcastle").then_some(&purpose)
+            );
+            for (key, value) in [
+                ("client_atlas_env_id", ScubaValue::from("env")),
+                ("client_atlas_rl", ScubaValue::from(true)),
+                ("client_atlas_purpose", ScubaValue::from("training")),
+                ("client_faas_job_name", ScubaValue::from("job")),
+            ] {
+                assert_eq!(scuba.get(key), (category == "faas").then_some(&value));
+            }
         }
     }
 }

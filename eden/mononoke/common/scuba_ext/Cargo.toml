@@ -16,6 +16,7 @@ hostname = { version = "0.1.0", git = "https://github.com/facebookexperimental/r
 memory = { version = "0.1.0", path = "../memory" }
 metadata = { version = "0.1.0", path = "../metadata" }
 observability = { version = "0.1.0", path = "../observability" }
+permission_checker = { version = "0.1.0", path = "../permission_checker" }
 sampling = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 sapling-clientinfo = { version = "0.1.0", path = "../../../scm/lib/clientinfo" }
 scribe_ext = { version = "0.1.0", path = "../scribe_ext" }

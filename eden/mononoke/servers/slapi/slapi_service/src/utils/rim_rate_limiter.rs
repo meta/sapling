@@ -60,7 +60,7 @@ pub(crate) fn request_attribution(
     metadata: &Metadata,
     config: &RimWorkloadConfig,
 ) -> (Vec<String>, Option<String>) {
-    let path = metadata.rim_tenancy_path(None);
+    let path = metadata.rim_tenancy_path();
     let selection_key = config
         .unit_of_work
         .get(path.category().as_str())
@@ -455,7 +455,6 @@ mod tests {
         let mut handle = None;
         for (version, named) in [(1, false), (2, true), (3, false)] {
             let config = RimWorkloadConfig {
-                request_cost: None,
                 allocation_backends: Default::default(),
                 unit_of_work: Default::default(),
                 named_workloads: if named {
