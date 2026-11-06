@@ -19,6 +19,7 @@ use context::CoreContext;
 use futures::future::TryFutureExt;
 use futures::stream;
 use futures::stream::Stream;
+use sql::Binary;
 use sql_ext::Connection;
 use sql_ext::mononoke_queries;
 use twox_hash::XxHash32;
@@ -124,7 +125,7 @@ mononoke_queries! {
         WHERE id = {id} AND creation_time = {old_ctime}"
     }
 
-    write InsertChunk(values: (id: &str, chunk_num: u32, value: &[u8])) {
+    write InsertChunk(values: (id: &str, chunk_num: u32, value: Binary<'_>)) {
         insert_or_ignore,
         "{insert_or_ignore} INTO chunk (
             id
@@ -491,7 +492,7 @@ impl ChunkSqlStore {
             InsertChunk::query(
                 conn,
                 ctx.sql_query_telemetry(),
-                &[(&key, &chunk_num, &value)],
+                &[(&key, &chunk_num, &Binary(value))],
             )
             .await?;
             if updated.affected_rows() > 0 {
