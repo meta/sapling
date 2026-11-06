@@ -93,7 +93,6 @@ sqlx-macros-core = { git = "https://github.com/transact-rs/sqlx", rev = "1998c0a
 sqlx-mysql = { git = "https://github.com/transact-rs/sqlx", rev = "1998c0a2f343d6a61a87531d26b43004f755a19f" }
 sqlx-postgres = { git = "https://github.com/transact-rs/sqlx", rev = "1998c0a2f343d6a61a87531d26b43004f755a19f" }
 sqlx-sqlite = { git = "https://github.com/transact-rs/sqlx", rev = "1998c0a2f343d6a61a87531d26b43004f755a19f" }
-tonic = { git = "https://github.com/grpc/grpc-rust", rev = "de65d0a48783869d89b7d8d4a65ce703f1612249" }
 vm-allocator = { git = "https://github.com/rust-vmm/vm-allocator", rev = "5fb545cc6e41fdc9f27d48d97ed26274a35bc6c6" }
 warp = { git = "https://github.com/jdthomas/warp.git", rev = "c794232d182abaa3add8184e7d661e084cc516c5" }
 wezterm-color-types = { git = "https://github.com/wezterm/wezterm.git", rev = "05343b387085842b434d267f91b6b0ec157e4331" }
