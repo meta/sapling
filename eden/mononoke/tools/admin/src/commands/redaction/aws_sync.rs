@@ -451,10 +451,7 @@ async fn deployment_template() -> Result<PodTemplateSpec> {
     }
     let deployment: Deployment = serde_json::from_slice(&output.stdout)
         .context("Failed to parse AWS deployment returned by kubectl")?;
-    deployment
-        .spec
-        .map(|spec| spec.template)
-        .ok_or_else(|| anyhow!("AWS deployment has no spec"))
+    Ok(deployment.spec.template)
 }
 
 fn build_job_manifest(
