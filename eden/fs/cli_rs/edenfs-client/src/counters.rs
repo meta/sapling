@@ -738,6 +738,12 @@ impl Sub for TelemetryCounters {
     }
 }
 
+/// The LFS cache reports keys and misses but no hits. Misses can exceed keys
+/// over a daemon's lifetime, so the difference is clamped rather than cast.
+fn lfs_cache_hits(keys: i64, misses: i64) -> u64 {
+    u64::try_from(keys - misses).unwrap_or(0)
+}
+
 impl EdenFsClient {
     pub async fn get_regex_counters(&self, arg_regex: &str) -> Result<BTreeMap<String, i64>> {
         self.with_thrift(|thrift| {
@@ -989,9 +995,10 @@ impl EdenFsClient {
                             as u64,
                     }),
                     sapling_lfs_cache: Some(SaplingLFSCacheTelemetryCounters {
-                        blobs_hits: (*counters.get(COUNTER_LFS_CACHE_BLOBS_KEYS).unwrap_or(&0)
-                            - *counters.get(COUNTER_LFS_CACHE_BLOBS_MISSES).unwrap_or(&0))
-                            as u64,
+                        blobs_hits: lfs_cache_hits(
+                            *counters.get(COUNTER_LFS_CACHE_BLOBS_KEYS).unwrap_or(&0),
+                            *counters.get(COUNTER_LFS_CACHE_BLOBS_MISSES).unwrap_or(&0),
+                        ),
                         blobs_misses: *counters.get(COUNTER_LFS_CACHE_BLOBS_MISSES).unwrap_or(&0)
                             as u64,
                     }),
@@ -1022,12 +1029,14 @@ impl EdenFsClient {
                             .unwrap_or(&0) as u64,
                     }),
                     sapling_lfs_cache: Some(SaplingLFSCacheTelemetryCounters {
-                        blobs_hits: (*counters
-                            .get(COUNTER_LFS_CACHE_PREFETCH_BLOBS_KEYS)
-                            .unwrap_or(&0)
-                            - *counters
+                        blobs_hits: lfs_cache_hits(
+                            *counters
+                                .get(COUNTER_LFS_CACHE_PREFETCH_BLOBS_KEYS)
+                                .unwrap_or(&0),
+                            *counters
                                 .get(COUNTER_LFS_CACHE_PREFETCH_BLOBS_MISSES)
-                                .unwrap_or(&0)) as u64,
+                                .unwrap_or(&0),
+                        ),
                         blobs_misses: *counters
                             .get(COUNTER_LFS_CACHE_PREFETCH_BLOBS_MISSES)
                             .unwrap_or(&0) as u64,
@@ -1122,6 +1131,12 @@ mod tests {
     use crate::use_case::UseCase;
     use crate::use_case::UseCaseId;
     use crate::utils::get_config_dir;
+
+    #[test]
+    fn lfs_cache_hits_are_zero_when_misses_exceed_keys() {
+        assert_eq!(lfs_cache_hits(10, 4), 6);
+        assert_eq!(lfs_cache_hits(13_347, 14_407), 0);
+    }
 
     fn filesystem_counters(value: u64) -> FilesystemTelemetryCounters {
         FilesystemTelemetryCounters {
