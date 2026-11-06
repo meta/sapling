@@ -24,6 +24,8 @@ use std::path::PathBuf;
 use std::process::Command;
 #[cfg(target_os = "linux")]
 use std::process::Stdio;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -51,7 +53,10 @@ const FILE_SIZE_STEP_UPPER_BOUNDS: &[u64] = &[
     511, 4_095, 16_383, 65_535, 262_143, 524_287, 1_048_575, 5_242_879, 20_971_520,
 ];
 const MAX_TRACKED_LATENCY_NANOSECONDS: u64 = 60 * 60 * 1_000_000_000;
-const PROGRESS_UPDATE_FILES: u64 = 256;
+/// Files a worker takes from the shared cursor at a time: enough to keep
+/// neighboring files on one thread, few enough that the threads finish
+/// together.
+const WORK_BATCH: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum KernelCacheDropMode {
@@ -638,21 +643,19 @@ fn run_unlink_workers(
     jobs: NonZeroUsize,
     progress: &ProgressBar,
 ) -> Result<OperationAccumulator> {
-    run_chunked_workers(
+    run_batched_workers(
         files,
         jobs,
-        |chunk| {
-            let mut accumulator = OperationAccumulator::default();
-            let mut pending_progress = 0;
-            for file in chunk {
+        OperationAccumulator::default,
+        |batch, accumulator| {
+            for file in batch {
                 let start = Instant::now();
                 fs::remove_file(&file.path)
                     .with_context(|| format!("failed to unlink {}", file.path.display()))?;
                 accumulator.record(start.elapsed());
-                advance_progress(progress, &mut pending_progress);
             }
-            progress.inc(pending_progress);
-            Ok(accumulator)
+            progress.inc(batch.len() as u64);
+            Ok(())
         },
         |workers| {
             let mut result = OperationAccumulator::default();
@@ -1257,18 +1260,16 @@ where
     F: Fn(&FileSpec, &mut FileAccumulator) -> Result<()> + Sync,
 {
     let file_sizes = &workload.file_sizes;
-    run_chunked_workers(
+    run_batched_workers(
         &workload.files,
         jobs,
-        |chunk| {
-            let mut accumulator = FileAccumulator::new(file_sizes);
-            let mut pending_progress = 0;
-            for file in chunk {
-                operation(file, &mut accumulator)?;
-                advance_progress(progress, &mut pending_progress);
+        || FileAccumulator::new(file_sizes),
+        |batch, accumulator| {
+            for file in batch {
+                operation(file, accumulator)?;
             }
-            progress.inc(pending_progress);
-            Ok(accumulator)
+            progress.inc(batch.len() as u64);
+            Ok(())
         },
         |workers| merge_file_accumulators(workers, file_sizes),
     )
@@ -1292,21 +1293,26 @@ fn run_read_workers(
         file_sizes,
         order,
     } = plan;
-    run_chunked_workers(
+    run_batched_workers(
         order,
         jobs,
-        |chunk| {
-            let mut accumulator = FileAccumulator::new(file_sizes);
-            let mut buffer = vec![0; read_size.get()];
-            let mut pending_progress = 0;
-            for index in chunk {
-                read_file(&files[*index], &mut buffer, &mut accumulator)?;
-                advance_progress(progress, &mut pending_progress);
+        || (FileAccumulator::new(file_sizes), vec![0; read_size.get()]),
+        |batch, (accumulator, buffer)| {
+            for index in batch {
+                read_file(&files[*index], buffer, accumulator)?;
             }
-            progress.inc(pending_progress);
-            Ok(accumulator)
+            progress.inc(batch.len() as u64);
+            Ok(())
         },
-        |workers| merge_file_accumulators(workers, file_sizes),
+        |workers| {
+            merge_file_accumulators(
+                workers
+                    .into_iter()
+                    .map(|(accumulator, _)| accumulator)
+                    .collect(),
+                file_sizes,
+            )
+        },
     )
 }
 
@@ -1321,49 +1327,52 @@ fn merge_file_accumulators(
     Ok(result)
 }
 
-fn advance_progress(progress: &ProgressBar, pending: &mut u64) {
-    *pending += 1;
-    if *pending == PROGRESS_UPDATE_FILES {
-        progress.inc(*pending);
-        *pending = 0;
-    }
-}
-
-/// Split `items` across up to `jobs` scoped threads, run `process_chunk` on
-/// each slice, and fold the per-thread results with `merge`.
-fn run_chunked_workers<T, A, P, M>(
+/// Hand `items` to up to `jobs` scoped threads in batches of `WORK_BATCH`
+/// taken from a shared cursor, so a slow stretch of files does not leave
+/// one thread working alone at the end. Each thread folds its batches into
+/// a state from `new_state`; `merge` combines the threads' states.
+fn run_batched_workers<T, S, R, N, P, M>(
     items: &[T],
     jobs: NonZeroUsize,
-    process_chunk: P,
+    new_state: N,
+    process_batch: P,
     merge: M,
-) -> Result<A>
+) -> Result<R>
 where
     T: Sync,
-    A: Send,
-    P: Fn(&[T]) -> Result<A> + Sync,
-    M: FnOnce(Vec<A>) -> Result<A>,
+    S: Send,
+    N: Fn() -> S + Sync,
+    P: Fn(&[T], &mut S) -> Result<()> + Sync,
+    M: FnOnce(Vec<S>) -> Result<R>,
 {
-    if jobs.get() == 1 || items.len() <= 1 {
-        return process_chunk(items);
-    }
-
-    let workers = jobs.get().min(items.len());
-    let items_per_worker = items.len().div_ceil(workers);
-    std::thread::scope(|scope| {
-        let mut handles = Vec::with_capacity(workers);
-        for chunk in items.chunks(items_per_worker) {
-            let process_chunk = &process_chunk;
-            handles.push(scope.spawn(move || process_chunk(chunk)));
+    let cursor = AtomicUsize::new(0);
+    let work = || -> Result<S> {
+        let mut state = new_state();
+        loop {
+            let begin = cursor.fetch_add(WORK_BATCH, Ordering::Relaxed);
+            if begin >= items.len() {
+                return Ok(state);
+            }
+            let end = (begin + WORK_BATCH).min(items.len());
+            process_batch(&items[begin..end], &mut state)?;
         }
-        let mut results = Vec::with_capacity(handles.len());
+    };
+
+    let workers = jobs.get().min(items.len().div_ceil(WORK_BATCH)).max(1);
+    if workers == 1 {
+        return merge(vec![work()?]);
+    }
+    std::thread::scope(|scope| {
+        let handles = (0..workers).map(|_| scope.spawn(work)).collect::<Vec<_>>();
+        let mut states = Vec::with_capacity(handles.len());
         for handle in handles {
-            results.push(
+            states.push(
                 handle
                     .join()
                     .map_err(|_| anyhow!("filesystem benchmark worker panicked"))??,
             );
         }
-        merge(results)
+        merge(states)
     })
 }
 
@@ -1711,6 +1720,38 @@ mod tests {
         assert_eq!(result.p50_nanoseconds, 50);
         assert_eq!(result.p90_nanoseconds, 90);
         assert_eq!(result.p99_nanoseconds, 100);
+    }
+
+    #[test]
+    fn batched_workers_process_every_item_once() {
+        let items = (0..1_000_u64).collect::<Vec<_>>();
+
+        let (sum, batches) = run_batched_workers(
+            &items,
+            NonZeroUsize::new(4).expect("test job count is nonzero"),
+            || (0_u64, 0_u64),
+            |batch, (sum, batches)| {
+                assert!(batch.len() <= WORK_BATCH);
+                *sum += batch.iter().sum::<u64>();
+                *batches += 1;
+                Ok(())
+            },
+            |workers| {
+                Ok(workers
+                    .iter()
+                    .fold((0, 0), |(sum, batches), (worker_sum, worker_batches)| {
+                        (sum + worker_sum, batches + worker_batches)
+                    }))
+            },
+        )
+        .expect("workers should succeed");
+
+        assert_eq!(
+            sum,
+            999 * 1_000 / 2,
+            "every item is handed out exactly once"
+        );
+        assert_eq!(batches, 16, "1,000 items make 16 batches of up to 64");
     }
 
     #[test]
