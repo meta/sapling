@@ -606,6 +606,8 @@ mod tests {
         FsIoResult {
             config: FsIoConfig {
                 read_only: false,
+                file_list: false,
+                skipped_files: 0,
                 number_of_files: 10,
                 files_per_dir: Some(5),
                 virtual_repo_factor: 0,

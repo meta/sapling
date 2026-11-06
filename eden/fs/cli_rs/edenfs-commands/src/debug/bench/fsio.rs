@@ -120,9 +120,29 @@ fn resolve_kernel_cache_drop_mode_for_platform(
     }
 }
 
+/// Where the files of a run come from.
+#[derive(Clone, Copy)]
+pub(crate) enum FsIoSource<'a> {
+    /// Files the run writes under the benchmark directory, reads back, and
+    /// removes.
+    Generated(&'a TestDir),
+    /// The regular files already under a directory, in listing order.
+    Tree(&'a TestDir),
+    /// The paths listed one per line in a file, in list order.
+    FileList(&'a Path),
+}
+
+impl FsIoSource<'_> {
+    fn read_only(self) -> bool {
+        !matches!(self, Self::Generated(_))
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct FsIoOptions {
-    pub(crate) number_of_files: NonZeroUsize,
+    /// Cap on the files in the run. `None` is the default count for
+    /// generated and tree runs and the whole list for a file list.
+    pub(crate) number_of_files: Option<NonZeroUsize>,
     pub(crate) files_per_dir: Option<NonZeroUsize>,
     pub(crate) file_size: Option<usize>,
     pub(crate) read_size: NonZeroUsize,
@@ -130,9 +150,13 @@ pub(crate) struct FsIoOptions {
     pub(crate) jobs: NonZeroUsize,
     pub(crate) drop_kernel_caches: KernelCacheDropMode,
     pub(crate) show_progress: bool,
-    /// Read the files already under the test directory instead of writing,
-    /// reading, and removing generated ones.
-    pub(crate) read_only: bool,
+}
+
+impl FsIoOptions {
+    fn default_file_count(self) -> usize {
+        self.number_of_files
+            .map_or(types::DEFAULT_NUMBER_OF_FILES, NonZeroUsize::get)
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -155,6 +179,12 @@ pub(crate) struct FsIoResult {
 struct FsIoConfig {
     #[serde(default)]
     read_only: bool,
+    /// The files came from a list rather than a directory tree.
+    #[serde(default)]
+    file_list: bool,
+    /// Listed paths that were not regular files when the run was planned.
+    #[serde(default)]
+    skipped_files: u64,
     number_of_files: usize,
     files_per_dir: Option<usize>,
     virtual_repo_factor: u8,
@@ -249,6 +279,8 @@ struct Workload {
     file_sizes: Vec<usize>,
     total_bytes: u64,
     virtual_repo_factor: u8,
+    /// Listed paths that were not regular files when the run was planned.
+    skipped_files: u64,
 }
 
 struct FileSpec {
@@ -424,23 +456,24 @@ impl FileAccumulator {
 }
 
 pub(crate) fn bench_fs_io(
-    test_dir: &TestDir,
+    source: FsIoSource<'_>,
     options: FsIoOptions,
     baseline: Option<&FsIoResult>,
 ) -> Result<FsIoResult> {
-    let workload = if options.read_only {
-        Workload::from_tree(&test_dir.path, options)?
-    } else {
-        Workload::new(test_dir, options)?
+    let read_only = source.read_only();
+    let workload = match source {
+        FsIoSource::Generated(test_dir) => Workload::new(test_dir, options)?,
+        FsIoSource::Tree(test_dir) => Workload::from_tree(&test_dir.path, options)?,
+        FsIoSource::FileList(list) => Workload::from_file_list(list, options)?,
     };
-    let config = fs_io_config(options, &workload);
+    let config = fs_io_config(source, options, &workload);
     if let Some(baseline) = baseline {
         // Fail before the benchmark runs rather than after, so a baseline
         // recorded with a different workload doesn't waste a full run.
         comparison::ensure_config_matches(&config, &baseline.config)?;
     }
 
-    let write = if options.read_only {
+    let write = if read_only {
         None
     } else {
         // Extend the buffer by one write so every chunk is a contiguous slice
@@ -455,11 +488,7 @@ pub(crate) fn bench_fs_io(
     };
 
     // Only files this run wrote can have dirty pages to sync away.
-    let files_to_sync: &[FileSpec] = if options.read_only {
-        &[]
-    } else {
-        &workload.files
-    };
+    let files_to_sync: &[FileSpec] = if read_only { &[] } else { &workload.files };
     let cache_progress = cache_drop_spinner(
         options.drop_kernel_caches,
         options.show_progress,
@@ -471,11 +500,11 @@ pub(crate) fn bench_fs_io(
     let cache_preparation = cache_preparation?;
 
     let read_progress = file_progress_bar("Read", workload.files.len(), options.show_progress);
-    let read = bench_read(test_dir, &workload, options, &read_progress);
+    let read = bench_read(source, &workload, options, &read_progress);
     read_progress.finish_and_clear();
     let read = read?;
 
-    let remove = if options.read_only {
+    let remove = if read_only {
         None
     } else {
         let remove_progress =
@@ -496,13 +525,15 @@ pub(crate) fn bench_fs_io(
 
 /// The run's configuration, derived from the planned workload before any
 /// I/O happens so a `--diff` baseline mismatch can be rejected up front.
-fn fs_io_config(options: FsIoOptions, workload: &Workload) -> FsIoConfig {
+fn fs_io_config(source: FsIoSource<'_>, options: FsIoOptions, workload: &Workload) -> FsIoConfig {
     let mut files_per_band = vec![0u64; workload.file_sizes.len()];
     for file in &workload.files {
         files_per_band[file.size_index] += 1;
     }
     FsIoConfig {
-        read_only: options.read_only,
+        read_only: source.read_only(),
+        file_list: matches!(source, FsIoSource::FileList(_)),
+        skipped_files: workload.skipped_files,
         number_of_files: workload.files.len(),
         files_per_dir: options.files_per_dir.map(NonZeroUsize::get),
         virtual_repo_factor: workload.virtual_repo_factor,
@@ -632,7 +663,7 @@ fn cache_drop_spinner(mode: KernelCacheDropMode, show_progress: bool, files: usi
 
 impl Workload {
     fn new(test_dir: &TestDir, options: FsIoOptions) -> Result<Self> {
-        let generated = generate_workload(options.number_of_files.get())?;
+        let generated = generate_workload(options.default_file_count())?;
         let sizes = generated
             .files
             .iter()
@@ -671,6 +702,7 @@ impl Workload {
             file_sizes,
             total_bytes,
             virtual_repo_factor: generated.factor_bits,
+            skipped_files: 0,
         })
     }
 
@@ -678,18 +710,56 @@ impl Workload {
     /// capped at `options.number_of_files`. Sizes come from an untimed stat so
     /// the read phase can verify and bucket each file like a generated one.
     fn from_tree(root: &Path, options: FsIoOptions) -> Result<Self> {
-        let listing = list_files(root, options.number_of_files.get())?;
+        let listing = list_files(root, options.default_file_count())?;
         if listing.files.is_empty() {
             return Err(anyhow!("no regular files found under {}", root.display()));
         }
-        let sizes = listing
-            .files
+        Self::from_listed_files(listing.files, listing.directories, 0)
+    }
+
+    /// The paths listed one per line in `list`, in list order and capped at
+    /// `options.number_of_files`. Paths that are not regular files are
+    /// skipped and counted, since a list recorded from a build names files
+    /// that come and go.
+    fn from_file_list(list: &Path, options: FsIoOptions) -> Result<Self> {
+        let contents = fs::read_to_string(list)
+            .with_context(|| format!("failed to read file list {}", list.display()))?;
+        let max_files = options
+            .number_of_files
+            .map_or(usize::MAX, NonZeroUsize::get);
+        let mut files = Vec::new();
+        let mut skipped_files = 0;
+        for line in contents.lines().filter(|line| !line.is_empty()) {
+            if files.len() == max_files {
+                break;
+            }
+            let path = PathBuf::from(line);
+            match fs::metadata(&path) {
+                Ok(metadata) if metadata.is_file() => files.push(ListedFile {
+                    path,
+                    size: usize::try_from(metadata.len())
+                        .context("file size does not fit usize")?,
+                }),
+                Ok(_) | Err(_) => skipped_files += 1,
+            }
+        }
+        if files.is_empty() {
+            return Err(anyhow!("no regular files listed in {}", list.display()));
+        }
+        Self::from_listed_files(files, Vec::new(), skipped_files)
+    }
+
+    fn from_listed_files(
+        listed: Vec<ListedFile>,
+        directories: Vec<PathBuf>,
+        skipped_files: u64,
+    ) -> Result<Self> {
+        let sizes = listed
             .iter()
             .map(|file| file.size as u64)
             .collect::<Vec<_>>();
         let (file_sizes, size_indexes) = file_size_steps(&sizes, None)?;
-        let files = listing
-            .files
+        let files = listed
             .into_iter()
             .zip(size_indexes)
             .map(|(file, size_index)| FileSpec {
@@ -702,10 +772,11 @@ impl Workload {
 
         Ok(Self {
             files,
-            directories: listing.directories,
+            directories,
             file_sizes,
             total_bytes,
             virtual_repo_factor: 0,
+            skipped_files,
         })
     }
 }
@@ -903,14 +974,21 @@ fn prepare_read_cache(
 }
 
 fn bench_read(
-    test_dir: &TestDir,
+    source: FsIoSource<'_>,
     workload: &Workload,
     options: FsIoOptions,
     progress: &ProgressBar,
 ) -> Result<PhaseResult> {
     let wall_start = Instant::now();
-    let (file_indexes, directory_operations) =
-        enumerate_files(&test_dir.path, workload, options.read_only)?;
+    let (file_indexes, directory_operations) = match source {
+        FsIoSource::Generated(test_dir) => enumerate_files(&test_dir.path, workload, false)?,
+        FsIoSource::Tree(test_dir) => enumerate_files(&test_dir.path, workload, true)?,
+        // A list is read in its own order, with no directory listing.
+        FsIoSource::FileList(_) => (
+            (0..workload.files.len()).collect(),
+            DirectoryOperations::default(),
+        ),
+    };
     let files = run_read_workers(
         ReadPlan {
             files: &workload.files,
@@ -1391,7 +1469,12 @@ fn format_duration_nanoseconds(nanoseconds: f64) -> String {
 impl fmt::Display for FsIoResult {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(formatter, "Filesystem I/O benchmark")?;
-        let directory_layout = if self.config.read_only {
+        let directory_layout = if self.config.file_list {
+            format!(
+                "from a file list ({} paths skipped), read only",
+                self.config.skipped_files
+            )
+        } else if self.config.read_only {
             "existing files, read only".to_owned()
         } else {
             self.config.files_per_dir.map_or_else(
@@ -1649,7 +1732,7 @@ mod tests {
         )
         .expect("benchmark directory should be created");
         let options = FsIoOptions {
-            number_of_files: NonZeroUsize::new(5).expect("test count is nonzero"),
+            number_of_files: Some(NonZeroUsize::new(5).expect("test count is nonzero")),
             files_per_dir: Some(NonZeroUsize::new(2).expect("test occupancy is nonzero")),
             file_size: Some(10),
             read_size: NonZeroUsize::new(4).expect("test read size is nonzero"),
@@ -1657,7 +1740,6 @@ mod tests {
             jobs: NonZeroUsize::new(1).expect("test job count is nonzero"),
             drop_kernel_caches: KernelCacheDropMode::Disabled,
             show_progress: false,
-            read_only: false,
         };
 
         let workload = Workload::new(&test_dir, options).expect("workload should be generated");
@@ -1695,7 +1777,7 @@ mod tests {
         )
         .expect("benchmark directory should be created");
         let options = FsIoOptions {
-            number_of_files: NonZeroUsize::new(1_000).expect("test count is nonzero"),
+            number_of_files: Some(NonZeroUsize::new(1_000).expect("test count is nonzero")),
             files_per_dir: None,
             file_size: None,
             read_size: NonZeroUsize::new(4).expect("test read size is nonzero"),
@@ -1703,7 +1785,6 @@ mod tests {
             jobs: NonZeroUsize::new(1).expect("test job count is nonzero"),
             drop_kernel_caches: KernelCacheDropMode::Disabled,
             show_progress: false,
-            read_only: false,
         };
 
         let workload = Workload::new(&test_dir, options).expect("workload should be generated");
@@ -1732,7 +1813,7 @@ mod tests {
         )
         .expect("benchmark directory should be created");
         let options = FsIoOptions {
-            number_of_files: NonZeroUsize::new(20).expect("test count is nonzero"),
+            number_of_files: Some(NonZeroUsize::new(20).expect("test count is nonzero")),
             files_per_dir: None,
             file_size: Some(10),
             read_size: NonZeroUsize::new(4).expect("test read size is nonzero"),
@@ -1740,15 +1821,19 @@ mod tests {
             jobs: NonZeroUsize::new(1).expect("test job count is nonzero"),
             drop_kernel_caches: KernelCacheDropMode::Disabled,
             show_progress: false,
-            read_only: false,
         };
         let workload = Workload::new(&test_dir, options).expect("workload should be generated");
         let progress = ProgressBar::hidden();
 
         let write = bench_write(&workload, b"natural text buffer", options, &progress)
             .expect("write benchmark should succeed");
-        let read = bench_read(&test_dir, &workload, options, &progress)
-            .expect("read benchmark should succeed");
+        let read = bench_read(
+            FsIoSource::Generated(&test_dir),
+            &workload,
+            options,
+            &progress,
+        )
+        .expect("read benchmark should succeed");
 
         assert_eq!(write.files, 20);
         assert_eq!(read.files, 20);
@@ -1802,7 +1887,7 @@ mod tests {
         )
         .expect("an existing directory should be accepted");
         let options = FsIoOptions {
-            number_of_files: NonZeroUsize::new(16).expect("test cap is nonzero"),
+            number_of_files: Some(NonZeroUsize::new(16).expect("test cap is nonzero")),
             files_per_dir: None,
             file_size: None,
             read_size: NonZeroUsize::new(1024).expect("test read size is nonzero"),
@@ -1810,10 +1895,10 @@ mod tests {
             jobs: NonZeroUsize::new(2).expect("test job count is nonzero"),
             drop_kernel_caches: KernelCacheDropMode::Disabled,
             show_progress: false,
-            read_only: true,
         };
 
-        let result = bench_fs_io(&test_dir, options, None).expect("read-only run should succeed");
+        let result = bench_fs_io(FsIoSource::Tree(&test_dir), options, None)
+            .expect("read-only run should succeed");
 
         assert!(result.write.is_none());
         assert!(result.remove.is_none());
@@ -1837,9 +1922,9 @@ mod tests {
         );
 
         let capped = bench_fs_io(
-            &test_dir,
+            FsIoSource::Tree(&test_dir),
             FsIoOptions {
-                number_of_files: NonZeroUsize::new(2).expect("test cap is nonzero"),
+                number_of_files: Some(NonZeroUsize::new(2).expect("test cap is nonzero")),
                 ..options
             },
             None,
@@ -1848,6 +1933,75 @@ mod tests {
 
         assert_eq!(capped.read.files, 2);
         assert_eq!(capped.config.number_of_files, 2);
+    }
+
+    #[test]
+    fn file_list_run_reads_listed_files_in_order_and_skips_missing_paths() {
+        let root = TempDir::new().expect("temporary directory should be created");
+        fs::create_dir(root.path().join("nested")).expect("nested directory should be created");
+        fs::write(root.path().join("a.txt"), b"12345").expect("file should be written");
+        fs::write(root.path().join("nested/b.txt"), vec![0_u8; 3000])
+            .expect("file should be written");
+        let list = root.path().join("files.txt");
+        fs::write(
+            &list,
+            format!(
+                "{}\n{}\n\n{}\n{}\n",
+                root.path().join("nested/b.txt").display(),
+                root.path().join("a.txt").display(),
+                root.path().join("missing.txt").display(),
+                root.path().join("nested").display(),
+            ),
+        )
+        .expect("file list should be written");
+        let options = FsIoOptions {
+            number_of_files: None,
+            files_per_dir: None,
+            file_size: None,
+            read_size: NonZeroUsize::new(1024).expect("test read size is nonzero"),
+            write_size: NonZeroUsize::new(1024).expect("test write size is nonzero"),
+            jobs: NonZeroUsize::new(1).expect("test job count is nonzero"),
+            drop_kernel_caches: KernelCacheDropMode::Disabled,
+            show_progress: false,
+        };
+
+        let result = bench_fs_io(FsIoSource::FileList(&list), options, None)
+            .expect("file-list run should succeed");
+
+        assert!(result.config.read_only);
+        assert!(result.config.file_list);
+        assert_eq!(
+            result.config.skipped_files, 2,
+            "the missing path and the directory are skipped"
+        );
+        assert_eq!(result.config.number_of_files, 2);
+        assert_eq!(result.read.files, 2);
+        assert_eq!(result.read.bytes, 3005);
+        assert_eq!(result.read.directories, 0);
+        assert_eq!(
+            result.read.directory_open.calls, 0,
+            "a file list is read without listing directories"
+        );
+        assert_eq!(
+            result.read.file_io.calls, 6,
+            "3000 bytes take 4 calls in list order, then 5 bytes take 2"
+        );
+
+        let capped = bench_fs_io(
+            FsIoSource::FileList(&list),
+            FsIoOptions {
+                number_of_files: Some(NonZeroUsize::new(1).expect("test cap is nonzero")),
+                ..options
+            },
+            None,
+        )
+        .expect("capped file-list run should succeed");
+
+        assert_eq!(capped.read.files, 1);
+        assert_eq!(
+            capped.read.bytes, 3000,
+            "the cap keeps the first listed file"
+        );
     }
 
     #[test]
@@ -1861,7 +2015,7 @@ mod tests {
         )
         .expect("benchmark directory should be created");
         let options = FsIoOptions {
-            number_of_files: NonZeroUsize::new(5).expect("test count is nonzero"),
+            number_of_files: Some(NonZeroUsize::new(5).expect("test count is nonzero")),
             files_per_dir: Some(NonZeroUsize::new(2).expect("test occupancy is nonzero")),
             file_size: Some(10),
             read_size: NonZeroUsize::new(4).expect("test read size is nonzero"),
@@ -1869,15 +2023,19 @@ mod tests {
             jobs: NonZeroUsize::new(2).expect("test job count is nonzero"),
             drop_kernel_caches: KernelCacheDropMode::Disabled,
             show_progress: false,
-            read_only: false,
         };
         let workload = Workload::new(&test_dir, options).expect("workload should be generated");
 
         let progress = ProgressBar::hidden();
         let write = bench_write(&workload, b"natural text buffer", options, &progress)
             .expect("write benchmark should succeed");
-        let read = bench_read(&test_dir, &workload, options, &progress)
-            .expect("read benchmark should succeed");
+        let read = bench_read(
+            FsIoSource::Generated(&test_dir),
+            &workload,
+            options,
+            &progress,
+        )
+        .expect("read benchmark should succeed");
 
         assert_eq!(
             write.directory_create.calls, 6,

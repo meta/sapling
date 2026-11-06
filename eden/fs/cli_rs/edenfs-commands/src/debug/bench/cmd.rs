@@ -36,9 +36,11 @@ pub enum BenchCmd {
         #[clap(long, default_value_t = std::env::temp_dir().to_str().unwrap().to_string())]
         test_dir: String,
 
-        /// Number of files to use for benchmarking
-        #[clap(long, default_value_t = NonZeroUsize::new(types::DEFAULT_NUMBER_OF_FILES).expect("default file count is nonzero"))]
-        number_of_files: NonZeroUsize,
+        /// Number of files to use for benchmarking. Defaults to 65,536 for
+        /// generated files and for --read-only; with --file-list the whole
+        /// list is read unless this caps it.
+        #[clap(long)]
+        number_of_files: Option<NonZeroUsize>,
 
         /// Override the Virtual Repo directory layout with fixed-size leaf directories
         #[clap(long)]
@@ -87,6 +89,12 @@ pub enum BenchCmd {
         /// default to mode 3 so lookups reach the filesystem.
         #[clap(long)]
         read_only: bool,
+
+        /// Read the paths listed one per line in this file, in list order,
+        /// instead of a directory tree. Implies --read-only; --test-dir is
+        /// not used. Paths that are not regular files are skipped.
+        #[clap(long)]
+        file_list: Option<PathBuf>,
     },
 
     #[clap(about = "Run database I/O benchmarks")]
@@ -205,85 +213,84 @@ impl crate::Subcommand for BenchCmd {
                 diff,
                 no_progress,
                 read_only,
+                file_list,
             } => {
+                let read_only = *read_only || file_list.is_some();
                 let drop_kernel_caches = fsio::resolve_kernel_cache_drop_mode(
                     *drop_kernel_caches,
-                    if *read_only {
+                    if read_only {
                         fsio::KernelCacheDropMode::PageCacheDentriesInodes
                     } else {
                         fsio::KernelCacheDropMode::PageCache
                     },
                 )?;
                 let baseline = diff.as_deref().map(fsio::load_result).transpose()?;
-                let test_dir = if *read_only {
-                    r#gen::TestDir::existing(test_dir)
-                } else {
-                    r#gen::TestDir::validate(test_dir)
-                };
-                match test_dir {
-                    Ok(test_dir) => {
-                        let result = fsio::bench_fs_io(
-                            &test_dir,
-                            fsio::FsIoOptions {
-                                number_of_files: *number_of_files,
-                                files_per_dir: *files_per_dir,
-                                file_size: *file_size,
-                                read_size: *read_size,
-                                write_size: *write_size,
-                                jobs: *jobs,
-                                drop_kernel_caches,
-                                show_progress: !*json && !*no_progress,
-                                read_only: *read_only,
-                            },
-                            baseline.as_ref(),
-                        );
-                        let cleanup_result = if *read_only {
-                            Ok(())
-                        } else {
-                            test_dir.remove()
-                        };
-                        let mut result = match result {
-                            Ok(result) => result,
-                            Err(error) => {
-                                if let Err(cleanup_error) = cleanup_result {
-                                    return Err(error.context(format!(
-                                        "benchmark data cleanup also failed: {cleanup_error:#}"
-                                    )));
-                                }
-                                return Err(error);
-                            }
-                        };
-                        // Print the measurements even when the baseline turns out
-                        // not to be comparable, so a long run is not thrown away.
-                        let diff_error = baseline
-                            .as_ref()
-                            .and_then(|baseline| result.add_diff(baseline).err());
-                        if *json {
-                            println!("{}", serde_json::to_string_pretty(&result)?);
-                        } else {
-                            println!("{result}");
-                        }
-                        let diff_error = diff_error.map(|error| {
-                            error.context(
-                                "benchmark completed but could not be compared with the baseline",
-                            )
-                        });
-                        match (diff_error, cleanup_result) {
-                            (None, Ok(())) => {}
-                            (Some(diff_error), Ok(())) => return Err(diff_error),
-                            (None, Err(cleanup_error)) => {
-                                return Err(cleanup_error.context(
-                                    "benchmark completed but benchmark data cleanup failed",
-                                ));
-                            }
-                            (Some(diff_error), Err(cleanup_error)) => {
-                                return Err(anyhow!(
-                                    "{diff_error:#}; benchmark data cleanup also failed: {cleanup_error:#}"
-                                ));
-                            }
-                        }
+                let bench_dir;
+                let source = match file_list {
+                    Some(list) => fsio::FsIoSource::FileList(list),
+                    None if read_only => {
+                        bench_dir = r#gen::TestDir::existing(test_dir)?;
+                        fsio::FsIoSource::Tree(&bench_dir)
                     }
-                    Err(e) => return Err(e),
+                    None => {
+                        bench_dir = r#gen::TestDir::validate(test_dir)?;
+                        fsio::FsIoSource::Generated(&bench_dir)
+                    }
+                };
+                let result = fsio::bench_fs_io(
+                    source,
+                    fsio::FsIoOptions {
+                        number_of_files: *number_of_files,
+                        files_per_dir: *files_per_dir,
+                        file_size: *file_size,
+                        read_size: *read_size,
+                        write_size: *write_size,
+                        jobs: *jobs,
+                        drop_kernel_caches,
+                        show_progress: !*json && !*no_progress,
+                    },
+                    baseline.as_ref(),
+                );
+                let cleanup_result = match source {
+                    fsio::FsIoSource::Generated(bench_dir) => bench_dir.remove(),
+                    fsio::FsIoSource::Tree(_) | fsio::FsIoSource::FileList(_) => Ok(()),
+                };
+                let mut result = match result {
+                    Ok(result) => result,
+                    Err(error) => {
+                        if let Err(cleanup_error) = cleanup_result {
+                            return Err(error.context(format!(
+                                "benchmark data cleanup also failed: {cleanup_error:#}"
+                            )));
+                        }
+                        return Err(error);
+                    }
+                };
+                // Print the measurements even when the baseline turns out
+                // not to be comparable, so a long run is not thrown away.
+                let diff_error = baseline
+                    .as_ref()
+                    .and_then(|baseline| result.add_diff(baseline).err());
+                if *json {
+                    println!("{}", serde_json::to_string_pretty(&result)?);
+                } else {
+                    println!("{result}");
+                }
+                let diff_error = diff_error.map(|error| {
+                    error.context("benchmark completed but could not be compared with the baseline")
+                });
+                match (diff_error, cleanup_result) {
+                    (None, Ok(())) => {}
+                    (Some(diff_error), Ok(())) => return Err(diff_error),
+                    (None, Err(cleanup_error)) => {
+                        return Err(cleanup_error
+                            .context("benchmark completed but benchmark data cleanup failed"));
+                    }
+                    (Some(diff_error), Err(cleanup_error)) => {
+                        return Err(anyhow!(
+                            "{diff_error:#}; benchmark data cleanup also failed: {cleanup_error:#}"
+                        ));
+                    }
                 }
             }
             Self::DbIo {
