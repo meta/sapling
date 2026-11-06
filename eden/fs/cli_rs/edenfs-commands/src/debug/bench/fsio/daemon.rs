@@ -67,10 +67,11 @@ impl DaemonSampler {
             .context("failed to reach the EdenFS daemon for counters")?;
         let pid = u32::try_from(daemon.pid)
             .map_err(|_| anyhow!("EdenFS reported an invalid pid {}", daemon.pid))?;
+        let system = System::new().context("failed to open the process table")?;
         Ok(Some(Self {
             client,
             pid: Pid::from_u32(pid),
-            system: System::new(),
+            system,
         }))
     }
 
