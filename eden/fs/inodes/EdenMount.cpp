@@ -172,26 +172,6 @@ class EdenMount::JournalDiffCallback : public DiffCallback {
         folly::exceptionStr(ew));
   }
 
-  [[nodiscard]] ImmediateFuture<StatsFetchContext> performDiff(
-      EdenMount* mount,
-      TreeInodePtr rootInode,
-      std::vector<std::shared_ptr<const Tree>> rootTrees,
-      std::shared_ptr<CheckoutContext> ctx) {
-    auto diffContext = mount->createDiffContext(
-        this, folly::CancellationToken{}, ctx->getFetchContext());
-    auto rawContext = diffContext.get();
-
-    return rootInode
-        ->diff(
-            rawContext,
-            RelativePathPiece{},
-            std::move(rootTrees),
-            rawContext->getToplevelIgnore(),
-            false)
-        .thenValue([diffContext = std::move(diffContext), rootInode](
-                       folly::Unit) { return diffContext->getStatsContext(); });
-  }
-
   [[nodiscard]] folly::coro::now_task<StatsFetchContext> co_performDiff(
       EdenMount* mount,
       TreeInodePtr rootInode,
@@ -914,13 +894,28 @@ ImmediateFuture<SetPathObjectIdResultAndTimes> EdenMount::setPathsToObjectIds(
                       stopWatch.elapsed();
                   auto [targetTreeInode, incomingTree] = results;
                   targetTreeInode->unloadChildrenUnreferencedByFs();
-                  return targetTreeInode
-                      ->checkout(ctx.get(), nullptr, incomingTree)
+                  // @lint-ignore CLANGTIDY
+                  // facebook-folly-coro-return-captures-local-var
+                  return folly::coro::co_invoke(
+                             [ctx,
+                              treeInode = std::move(targetTreeInode),
+                              tree = std::move(incomingTree)]()
+                                 -> folly::coro::Task<CheckoutSubtreeResult> {
+                               co_return co_await treeInode->co_checkout(
+                                   ctx.get(), nullptr, tree);
+                             })
                       .semi();
                 })
             .thenValue([ctx, setPathObjectIdTime, stopWatch](auto&&) {
               setPathObjectIdTime->didCheckout = stopWatch.elapsed();
-              return ctx->flush().semi();
+              // @lint-ignore CLANGTIDY
+              // facebook-folly-coro-return-captures-local-var
+              return folly::coro::co_invoke(
+                         [ctx]() -> folly::coro::Task<
+                                     std::vector<CheckoutConflict>> {
+                           co_return co_await ctx->co_flush();
+                         })
+                  .semi();
             })
             .thenValue([ctx, setPathObjectIdTime, stopWatch](
                            std::vector<CheckoutConflict>&& conflicts) {
@@ -1580,17 +1575,6 @@ ImmediateFuture<VirtualInode> EdenMount::getVirtualInode(
           .semi()};
 }
 
-ImmediateFuture<folly::Unit> EdenMount::waitForPendingWrites() const {
-  // DEPRECATED: use co_waitForPendingWrites directly. Kept only because
-  // checkout and diff paths still call this via ImmediateFuture chains;
-  // delete once those paths are migrated to coroutines.
-  return ImmediateFuture{
-      // @lint-ignore CLANGTIDY facebook-folly-coro-return-captures-local-var
-      folly::coro::co_invoke([this]() -> folly::coro::Task<folly::Unit> {
-        co_return co_await co_waitForPendingWrites();
-      }).semi()};
-}
-
 folly::coro::now_task<folly::Unit> EdenMount::co_waitForPendingWrites() const {
   co_await serverState_->getFaultInjector().co_checkAsync(
       "waitForPendingWrites", "");
@@ -2002,224 +1986,6 @@ folly::Try<CheckoutResult> EdenMount::finalizeCheckout(
   return result;
 }
 
-ImmediateFuture<CheckoutResult> EdenMount::checkout(
-    TreeInodePtr rootInode,
-    const RootId& snapshotId,
-    const ObjectFetchContextPtr& fetchContext,
-    folly::StringPiece thriftMethodCaller,
-    CheckoutMode checkoutMode) {
-  auto config = serverState_->getReloadableConfig()->getEdenConfig();
-  if (config->enableCoroutines.getValue() &&
-      config->enableCoroutinesPhase7.getValue()) {
-    return ImmediateFuture{
-        // @lint-ignore CLANGTIDY facebook-folly-coro-return-captures-local-var
-        folly::coro::co_invoke(
-            [self = shared_from_this()](
-                TreeInodePtr ri,
-                RootId sid,
-                ObjectFetchContextPtr fc,
-                std::string caller,
-                CheckoutMode mode) -> folly::coro::Task<CheckoutResult> {
-              co_return co_await self->co_checkout(
-                  std::move(ri), sid, fc, caller, mode);
-            },
-            std::move(rootInode),
-            snapshotId,
-            fetchContext.copy(),
-            thriftMethodCaller.str(),
-            checkoutMode)
-            .semi()};
-  }
-
-  const folly::stop_watch<> stopWatch;
-  auto checkoutTimes = std::make_shared<CheckoutTimes>();
-
-  auto setupTry =
-      beginCheckout(snapshotId, fetchContext, thriftMethodCaller, checkoutMode);
-  if (setupTry.hasException()) {
-    return makeFuture<CheckoutResult>(std::move(setupTry).exception());
-  }
-  auto setup = std::move(setupTry).value();
-  auto ctx = std::move(setup.ctx);
-  RootId oldParent = std::move(setup.oldParent);
-  ParentCommitState::CheckoutState oldState = std::move(setup.oldState);
-  ImmediateFuture<folly::Unit> firstFaultCheck =
-      std::move(setup.firstFaultCheck);
-
-  XLOGF(
-      DBG1,
-      "starting checkout for {}: {} to {}",
-      this->getPath(),
-      objectStore_->displayRootId(oldParent),
-      objectStore_->displayRootId(snapshotId));
-
-  // Update lastCheckoutTime_ before starting the checkout operation.
-  // This ensures that any inode objects created once the checkout starts will
-  // get the current checkout time, rather than the time from the previous
-  // checkout
-  setLastCheckoutTime(EdenTimestamp{clock_->getRealtime()});
-
-  setWalkDetectorParent(snapshotId);
-
-  auto journalDiffCallback = std::make_shared<JournalDiffCallback>();
-
-  using RootTreeTuple = std::
-      tuple<ObjectStore::GetRootTreeResult, ObjectStore::GetRootTreeResult>;
-
-  return std::move(firstFaultCheck)
-      .thenValue([this, ctx, parent1Id = oldParent, snapshotId](auto&&) {
-        XLOG(DBG7, "Checkout: getRoots");
-        auto fromTreeFuture =
-            objectStore_->getRootTree(parent1Id, ctx->getFetchContext());
-        auto toTreeFuture =
-            objectStore_->getRootTree(snapshotId, ctx->getFetchContext());
-        return collectAllSafe(fromTreeFuture, toTreeFuture);
-      })
-      .thenValue([this](RootTreeTuple treeResults) {
-        XLOG(DBG7, "Checkout: waitForPendingWrites");
-        return waitForPendingWrites().thenValue(
-            [treeResults = std::move(treeResults)](auto&&) {
-              return treeResults;
-            });
-      })
-      .thenValue(
-          [this,
-           rootInode,
-           ctx,
-           checkoutTimes,
-           stopWatch,
-           journalDiffCallback,
-           resumingCheckout =
-               std::holds_alternative<ParentCommitState::InterruptedCheckout>(
-                   oldState)](
-              RootTreeTuple treeResults) -> ImmediateFuture<RootTreeTuple> {
-            XLOG(DBG7, "Checkout: performDiff");
-            checkoutTimes->didLookupTrees = stopWatch.elapsed();
-            // Call JournalDiffCallback::performDiff() to compute the changes
-            // between the original working directory state and the source
-            // tree state.
-            //
-            // If we are doing a dry-run update we aren't going to create a
-            // journal entry, so we can skip this step entirely.
-            if (ctx->isDryRun()) {
-              return treeResults;
-            }
-
-            ctx->throwIfCanceled();
-
-            auto& fromTree = std::get<0>(treeResults);
-            auto trees = std::vector{fromTree.tree};
-            if (resumingCheckout) {
-              trees.push_back(std::get<1>(treeResults).tree);
-            }
-            auto diffSpan = ctx->createSpan("performDiff");
-            return journalDiffCallback
-                ->performDiff(this, rootInode, std::move(trees), ctx)
-                .thenValue([ctx,
-                            journalDiffCallback,
-                            treeResults,
-                            diffSpan = std::move(diffSpan)](
-                               const StatsFetchContext& diffFetchContext) {
-                  ctx->getStatsContext().merge(diffFetchContext);
-                  return treeResults;
-                });
-          })
-      .thenValue([this,
-                  rootInode,
-                  ctx,
-                  checkoutTimes,
-                  stopWatch,
-                  oldParent,
-                  snapshotId](RootTreeTuple treeResults) {
-        checkoutTimes->didDiff = stopWatch.elapsed();
-
-        // Perform the requested checkout operation after the journal diff
-        // completes. This also updates the SNAPSHOT file to make sure that an
-        // interrupted checkout can be properly detected.
-        RenameLock renameLock;
-        {
-          auto renameLockSpan = ctx->createSpan("acquireRenameLock");
-          renameLock = this->acquireRenameLock();
-        }
-        ctx->start(
-            std::move(renameLock),
-            parentState_.wlock(),
-            oldParent,
-            snapshotId,
-            std::get<1>(treeResults).tree);
-
-        checkoutTimes->didAcquireRenameLock = stopWatch.elapsed();
-
-        // If a significant number of tree inodes are loaded or referenced
-        // by FUSE, then checkout is slow, because Eden must precisely
-        // manage changes to each one, as if the checkout was actually
-        // creating and removing files in each directory. If a tree is
-        // unloaded and unmodified, Eden can pretend the checkout
-        // operation blew away the entire subtree and assigned new inode
-        // numbers to everything under it, which is much cheaper.
-        //
-        // To make checkout faster, enumerate all loaded, unreferenced
-        // inodes and unload them, allowing checkout to use the fast path.
-        //
-        // Note that this will not unload any inodes currently referenced
-        // by FUSE, including the kernel's cache, so rapidly switching
-        // between commits while working should not be materially
-        // affected.
-        //
-        // On Windows, most of the above is also true, but instead of files
-        // being referenced by the kernel, the files are actually on disk. All
-        // the files on disk must also be present in the overlay, and thus the
-        // checkout code will take care of doing the right invalidation for
-        // these.
-        //
-        {
-          auto unloadSpan = ctx->createSpan("unloadChildrenUnreferencedByFs");
-          rootInode->unloadChildrenUnreferencedByFs();
-        }
-
-        return serverState_->getFaultInjector()
-            .checkAsync("inodeCheckout", getPath().view())
-            .thenValue([ctx, treeResults = std::move(treeResults), rootInode](
-                           auto&&) mutable {
-              ctx->throwIfCanceled();
-
-              auto& [fromTree, toTree] = treeResults;
-              return rootInode->checkout(ctx.get(), fromTree.tree, toTree.tree);
-            });
-      })
-      .thenValue([ctx, checkoutTimes, stopWatch, snapshotId](auto&&) {
-        checkoutTimes->didCheckout = stopWatch.elapsed();
-
-        // Complete the checkout
-        return ctx->finish(snapshotId);
-      })
-      .thenTry([checkoutGuard =
-                    CheckoutInProgressGuard{
-                        *this, ctx, oldParent, snapshotId, oldState}](
-                   folly::Try<std::vector<CheckoutConflict>>&& res) mutable {
-        return checkoutGuard.finish(std::move(res));
-      })
-      .thenTry(
-          [this,
-           ctx,
-           checkoutMode,
-           checkoutTimes,
-           stopWatch,
-           oldParent,
-           snapshotId,
-           journalDiffCallback](Try<std::vector<CheckoutConflict>>&& result) {
-            return finalizeCheckout(
-                ctx,
-                checkoutMode,
-                *checkoutTimes,
-                stopWatch,
-                oldParent,
-                snapshotId,
-                journalDiffCallback.get(),
-                std::move(result));
-          });
-}
-
 folly::coro::now_task<CheckoutResult> EdenMount::co_checkout(
     TreeInodePtr rootInode,
     const RootId& snapshotId,
@@ -2324,6 +2090,7 @@ folly::coro::now_task<CheckoutResult> EdenMount::co_checkout(
         "inodeCheckout", getPath().view());
     ctx->throwIfCanceled();
 
+    XDCHECK(ctx->renameLock().owns_lock());
     co_await rootInode->co_checkout(
         ctx.get(), fromTreeRes.tree, toTreeRes.tree);
 

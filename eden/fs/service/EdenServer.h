@@ -367,14 +367,6 @@ class EdenServer : private TakeoverHandler {
    */
   EdenMountHandle getMount(AbsolutePathPiece mountPath) const;
 
-  ImmediateFuture<CheckoutResult> checkOutRevision(
-      AbsolutePathPiece mountPath,
-      std::string& rootId,
-      std::optional<folly::StringPiece> rootHgManifest,
-      const ObjectFetchContextPtr& fetchContext,
-      folly::StringPiece callerName,
-      CheckoutMode checkoutMode);
-
   folly::coro::now_task<CheckoutResult> co_checkOutRevision(
       AbsolutePathPiece mountPath,
       std::string& rootId,

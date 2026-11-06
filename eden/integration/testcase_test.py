@@ -242,7 +242,8 @@ class RepoTestVariantsTest(unittest.TestCase):
                     "FilteredHg" in label, case.backing_store_type == "filteredhg"
                 )
                 self.assertEqual(
-                    label.startswith("Coroutines"), bool(case.get_coroutines_configs())
+                    label.startswith("Coroutines"),
+                    isinstance(case, testcase.CoroutinesTestMixin),
                 )
 
     def test_case_sensitivity_composes_with_io_uring(self) -> None:

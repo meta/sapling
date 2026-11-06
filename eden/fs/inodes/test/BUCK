@@ -76,6 +76,7 @@ cpp_unittest(
         "fbsource//third-party/googletest:gmock",
         "fbsource//third-party/googletest:gtest",
         "fbsource//xplat/folly:scope_guard",
+        "fbsource//xplat/folly/coro:blocking_wait",
         "fbsource//xplat/folly/logging/test:test_handler",
         "//eden/common/utils:fault_injector",
         "//eden/fs/inodes:inodes",
@@ -214,6 +215,7 @@ cpp_unittest(
         "fbsource//xplat/folly:range",
         "fbsource//xplat/folly:scope_guard",
         "fbsource//xplat/folly/chrono:conv",
+        "fbsource//xplat/folly/coro:blocking_wait",
         "fbsource//xplat/folly/executors:manual_executor",
         "fbsource//xplat/folly/futures:core",
         "fbsource//xplat/folly/futures:future_splitter",
@@ -755,24 +757,6 @@ cpp_benchmark(
         "fbsource//xplat/folly:benchmark",
         "fbsource//xplat/folly/init:init",
         "//eden/fs/inodes:inodes",
-    ],
-)
-
-cpp_benchmark(
-    name = "checkout_benchmark",
-    srcs = ["CheckoutBenchmark.cpp"],
-    deps = [
-        "fbsource//third-party/fmt:fmt",
-        "fbsource//xplat/folly:benchmark",
-        "fbsource//xplat/folly/init:init",
-        "//eden/common/utils:path",
-        "//eden/fs/inodes:inodes",
-        "//eden/fs/model:model",
-        "//eden/fs/service:thrift-cpp2-types",
-        "//eden/fs/store:context",
-        "//eden/fs/store:store",
-        "//eden/fs/testharness:fake_backing_store_and_tree_builder",
-        "//eden/fs/testharness:test_mount",
     ],
 )
 

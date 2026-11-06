@@ -9,6 +9,7 @@
 
 #include <folly/Exception.h>
 #include <folly/FileUtil.h>
+#include <folly/coro/Invoke.h>
 #include <folly/executors/ManualExecutor.h>
 #include <folly/io/IOBuf.h>
 #include <folly/logging/xlog.h>
@@ -557,13 +558,20 @@ folly::Future<CheckoutResult> TestMount::checkout(
     const ObjectFetchContextPtr& fetchContext,
     folly::StringPiece thriftMethodCaller,
     CheckoutMode checkoutMode) {
-  return edenMount_
-      ->checkout(
-          rootInode_,
-          snapshotId,
-          fetchContext,
-          thriftMethodCaller,
-          checkoutMode)
+  return folly::coro::co_invoke(
+             [mount = edenMount_,
+              rootInode = rootInode_,
+              snapshotId,
+              fetchContext = fetchContext.copy(),
+              caller = thriftMethodCaller.str(),
+              checkoutMode]() mutable -> folly::coro::Task<CheckoutResult> {
+               co_return co_await mount->co_checkout(
+                   std::move(rootInode),
+                   snapshotId,
+                   fetchContext,
+                   caller,
+                   checkoutMode);
+             })
       .semi()
       .via(serverExecutor_.get());
 }

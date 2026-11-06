@@ -108,20 +108,17 @@ class DiffTest {
         {"toplevel.txt", "toplevel\n"},
     });
     mount_.initialize(builder_);
-    enableCoroutinesConfig(mount_);
   }
 
   explicit DiffTest(
       std::initializer_list<FakeTreeBuilder::FileInfo>&& fileArgs) {
     builder_.setFiles(std::move(fileArgs));
     mount_.initialize(builder_);
-    enableCoroutinesConfig(mount_);
   }
 
   explicit DiffTest(const FakeTreeBuilder& builder)
       : builder_{builder.clone()} {
     mount_.initialize(builder_);
-    enableCoroutinesConfig(mount_);
   }
 
   ScmStatus diff(

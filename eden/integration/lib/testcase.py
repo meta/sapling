@@ -336,11 +336,6 @@ class EdenTestCase(EdenTestCaseBase):
         if experimental_configs:
             configs["experimental"].extend(experimental_configs)
 
-        # Collect coroutines configs from mixins
-        coroutines_configs = self.get_coroutines_configs()
-        if coroutines_configs:
-            configs["coroutines"] = coroutines_configs
-
         if self.use_nfs():
             configs["clone"] = ['default-mount-protocol = "NFS"']
         # The number of concurrent APFS volumes we can create on macOS
@@ -511,10 +506,6 @@ class EdenTestCase(EdenTestCaseBase):
 
     def get_experimental_configs(self) -> List[str]:
         """Default implementation returns no additional configs."""
-        return []
-
-    def get_coroutines_configs(self) -> List[str]:
-        """Default implementation returns no additional coroutines configs."""
         return []
 
     def remove_fault(
@@ -1084,11 +1075,6 @@ class CoroutinesTestMixin:
     def get_experimental_configs(self) -> List[str]:
         return [
             "enable-coroutines-debug-get-blob = true",
-        ]
-
-    def get_coroutines_configs(self) -> List[str]:
-        return [
-            "enable-phase7 = true",
         ]
 
 

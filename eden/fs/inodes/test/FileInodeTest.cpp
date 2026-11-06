@@ -183,7 +183,7 @@ void basicAttrChecks(const FileInodePtr& inode, const struct stat& attr) {
   })
 } // namespace
 
-class FileInodeTest : public ::testing::TestWithParam<bool> {
+class FileInodeTest : public ::testing::Test {
  protected:
   void SetUp() override {
     // Default to a nonzero time.
@@ -196,10 +196,6 @@ class FileInodeTest : public ::testing::TestWithParam<bool> {
         {{"dir/a.txt", "This is a.txt.\n"},
          {"dir/sub/b.txt", "This is b.txt.\n"}});
     mount_.initialize(builder);
-
-    if (GetParam()) {
-      enableCoroutinesConfig(mount_);
-    }
   }
 
   /**
@@ -217,14 +213,14 @@ class FileInodeTest : public ::testing::TestWithParam<bool> {
   TestMount mount_;
 };
 
-TEST_P(FileInodeTest, getType) {
+TEST_F(FileInodeTest, getType) {
   auto dir = mount_.getTreeInode("dir/sub");
   auto regularFile = mount_.getFileInode("dir/a.txt");
   EXPECT_EQ(dtype_t::Dir, dir->getType());
   EXPECT_EQ(dtype_t::Regular, regularFile->getType());
 }
 
-TEST_P(FileInodeTest, overlayWriteFaultUsesInodeNumberBeforeChangingBytes) {
+TEST_F(FileInodeTest, overlayWriteFaultUsesInodeNumberBeforeChangingBytes) {
   auto inode = mount_.getFileInode("dir/a.txt");
   auto context = ObjectFetchContext::getNullContext();
   const auto original = inode->readAll(context).get();
@@ -245,7 +241,7 @@ TEST_P(FileInodeTest, overlayWriteFaultUsesInodeNumberBeforeChangingBytes) {
   EXPECT_EQ(original.size(), inode->write(original, 0, context).get());
 }
 
-TEST_P(FileInodeTest, journalFaultUsesMountInjectorBeforeAdvancingSequence) {
+TEST_F(FileInodeTest, journalFaultUsesMountInjectorBeforeAdvancingSequence) {
   auto inode = mount_.getFileInode("dir/a.txt");
   auto context = ObjectFetchContext::getNullContext();
   EXPECT_EQ(3, inode->write("old", 0, context).get());
@@ -265,7 +261,7 @@ TEST_P(FileInodeTest, journalFaultUsesMountInjectorBeforeAdvancingSequence) {
   EXPECT_EQ(sequence + 1, journal.peekLatest()->sequenceID);
 }
 
-TEST_P(FileInodeTest, getattrFromBlob) {
+TEST_F(FileInodeTest, getattrFromBlob) {
   auto inode = mount_.getFileInode("dir/a.txt");
   auto attr = getFileAttr(mount_, inode);
 
@@ -275,7 +271,7 @@ TEST_P(FileInodeTest, getattrFromBlob) {
   EXPECT_EQ(1, attr.st_blocks);
 }
 
-TEST_P(FileInodeTest, getattrFromOverlay) {
+TEST_F(FileInodeTest, getattrFromOverlay) {
   auto start = mount_.getClock().getTimePoint();
 
   mount_.addFile("dir/new_file.c", "hello\nworld\n");
@@ -305,11 +301,11 @@ void testSetattrTruncateAll(TestMount& mount) {
   EXPECT_FILE_INODE(inode, "", 0644);
 }
 
-TEST_P(FileInodeTest, setattrTruncateAll) {
+TEST_F(FileInodeTest, setattrTruncateAll) {
   testSetattrTruncateAll(mount_);
 }
 
-TEST_P(FileInodeTest, setattrTruncateAllMaterialized) {
+TEST_F(FileInodeTest, setattrTruncateAllMaterialized) {
   // Modify the inode before running the test, so that
   // it will be materialized in the overlay.
   auto inode = mount_.getFileInode("dir/a.txt");
@@ -323,7 +319,7 @@ TEST_P(FileInodeTest, setattrTruncateAllMaterialized) {
   testSetattrTruncateAll(mount_);
 }
 
-TEST_P(FileInodeTest, setattrTruncatePartial) {
+TEST_F(FileInodeTest, setattrTruncatePartial) {
   auto inode = mount_.getFileInode("dir/a.txt");
   DesiredMetadata desired;
   desired.size = 4;
@@ -336,7 +332,7 @@ TEST_P(FileInodeTest, setattrTruncatePartial) {
   EXPECT_FILE_INODE(inode, "This", 0644);
 }
 
-TEST_P(FileInodeTest, setattrBiggerSize) {
+TEST_F(FileInodeTest, setattrBiggerSize) {
   auto inode = mount_.getFileInode("dir/a.txt");
   DesiredMetadata desired;
   desired.size = 30;
@@ -353,7 +349,7 @@ TEST_P(FileInodeTest, setattrBiggerSize) {
   EXPECT_FILE_INODE(inode, expectedContents, 0644);
 }
 
-TEST_P(FileInodeTest, setattrPermissions) {
+TEST_F(FileInodeTest, setattrPermissions) {
   auto inode = mount_.getFileInode("dir/a.txt");
   DesiredMetadata desired;
 
@@ -368,7 +364,7 @@ TEST_P(FileInodeTest, setattrPermissions) {
   }
 }
 
-TEST_P(FileInodeTest, setattrFileType) {
+TEST_F(FileInodeTest, setattrFileType) {
   auto inode = mount_.getFileInode("dir/a.txt");
   DesiredMetadata desired;
 
@@ -383,7 +379,7 @@ TEST_P(FileInodeTest, setattrFileType) {
   EXPECT_FILE_INODE(inode, "This is a.txt.\n", 0755);
 }
 
-TEST_P(FileInodeTest, setattrAtime) {
+TEST_F(FileInodeTest, setattrAtime) {
   auto inode = mount_.getFileInode("dir/a.txt");
   DesiredMetadata desired;
 
@@ -443,11 +439,11 @@ void testSetattrMtime(TestMount& mount) {
       formatTimePoint(folly::to<FakeClock::time_point>(stMtime(attr))));
 }
 
-TEST_P(FileInodeTest, setattrMtime) {
+TEST_F(FileInodeTest, setattrMtime) {
   testSetattrMtime(mount_);
 }
 
-TEST_P(FileInodeTest, setattrMtimeMaterialized) {
+TEST_F(FileInodeTest, setattrMtimeMaterialized) {
   // Modify the inode before running the test, so that
   // it will be materialized in the overlay.
   auto inode = mount_.getFileInode("dir/a.txt");
@@ -461,7 +457,7 @@ TEST_P(FileInodeTest, setattrMtimeMaterialized) {
   testSetattrMtime(mount_);
 }
 
-TEST_P(FileInodeTest, writingMaterializesParent) {
+TEST_F(FileInodeTest, writingMaterializesParent) {
   auto inode = mount_.getFileInode("dir/sub/b.txt");
   auto parent = mount_.getTreeInode("dir/sub");
   auto grandparent = mount_.getTreeInode("dir");
@@ -477,7 +473,7 @@ TEST_P(FileInodeTest, writingMaterializesParent) {
   EXPECT_EQ(true, parent->isMaterialized());
 }
 
-TEST_P(FileInodeTest, truncatingMaterializesParent) {
+TEST_F(FileInodeTest, truncatingMaterializesParent) {
   auto inode = mount_.getFileInode("dir/sub/b.txt");
   auto parent = mount_.getTreeInode("dir/sub");
   auto grandparent = mount_.getTreeInode("dir");
@@ -493,7 +489,7 @@ TEST_P(FileInodeTest, truncatingMaterializesParent) {
   EXPECT_EQ(true, parent->isMaterialized());
 }
 
-TEST_P(FileInodeTest, addNewMaterializationsToInodeTraceBus) {
+TEST_F(FileInodeTest, addNewMaterializationsToInodeTraceBus) {
   auto& trace_bus = mount_.getEdenMount()->getInodeTraceBus();
 
   auto inode_a = mount_.getFileInode("dir/a.txt");
@@ -545,7 +541,7 @@ TEST_P(FileInodeTest, addNewMaterializationsToInodeTraceBus) {
 }
 
 #ifdef __linux__
-TEST_P(FileInodeTest, fallocate) {
+TEST_F(FileInodeTest, fallocate) {
   mount_.addFile("dir/fallocate_file", "");
   auto inode = mount_.getFileInode("dir/fallocate_file");
   inode->fallocate(0, 42, ObjectFetchContext::getNullContext()).get(0ms);
@@ -556,30 +552,18 @@ TEST_P(FileInodeTest, fallocate) {
 }
 #endif
 
-INSTANTIATE_TEST_SUITE_P(
-    FileInodeTestVariants,
-    FileInodeTest,
-    ::testing::Bool(),
-    [](const ::testing::TestParamInfo<bool>& info) {
-      return info.param ? "Coroutines" : "Futures";
-    });
-
-class FileInodeDuringLoadTest : public ::testing::TestWithParam<bool> {
+class FileInodeDuringLoadTest : public ::testing::Test {
  protected:
   void SetUp() override {
     FakeTreeBuilder builder;
     builder.setFiles({{"notready.txt", "Contents not ready.\n"}});
     mount_.initialize(builder, /*startReady=*/false);
-
-    if (GetParam()) {
-      enableCoroutinesConfig(mount_);
-    }
   }
 
   TestMount mount_;
 };
 
-TEST_P(FileInodeDuringLoadTest, truncatingDuringLoad) {
+TEST_F(FileInodeDuringLoadTest, truncatingDuringLoad) {
   auto inode = mount_.getFileInode("notready.txt");
   auto backingStore = mount_.getBackingStore();
   auto storedBlob = backingStore->getStoredBlob(*inode->getObjectId());
@@ -604,7 +588,7 @@ TEST_P(FileInodeDuringLoadTest, truncatingDuringLoad) {
   storedBlob->setReady();
 }
 
-TEST_P(FileInodeDuringLoadTest, concurrentReadAllDuringBlobLoading) {
+TEST_F(FileInodeDuringLoadTest, concurrentReadAllDuringBlobLoading) {
   auto contents = "Contents not ready.\n"_sp;
   auto inode = mount_.getFileInode("notready.txt");
   auto storedBlob =
@@ -631,15 +615,7 @@ TEST_P(FileInodeDuringLoadTest, concurrentReadAllDuringBlobLoading) {
   EXPECT_EQ(contents, std::move(readAllFuture2).get(0ms));
 }
 
-INSTANTIATE_TEST_SUITE_P(
-    FileInodeDuringLoadTestVariants,
-    FileInodeDuringLoadTest,
-    ::testing::Bool(),
-    [](const ::testing::TestParamInfo<bool>& info) {
-      return info.param ? "Coroutines" : "Futures";
-    });
-
-TEST_P(FileInodeDuringLoadTest, droppedReadDuringLoad) {
+TEST_F(FileInodeDuringLoadTest, droppedReadDuringLoad) {
   auto contents = "Contents not ready.\n"_sp;
   auto inode = mount_.getFileInode("notready.txt");
   auto storedBlob =

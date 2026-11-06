@@ -271,16 +271,6 @@ class FileInode final : public InodeBaseMetadata<FileInodeState> {
    */
   ImmediateFuture<bool> isSameAs(
       const ObjectId& blobID,
-      const Blob& blob,
-      TreeEntryType entryType,
-      const ObjectFetchContextPtr& fetchContext);
-  ImmediateFuture<bool> isSameAs(
-      const ObjectId& blobID,
-      const Hash20& blobSha1,
-      TreeEntryType entryType,
-      const ObjectFetchContextPtr& fetchContext);
-  ImmediateFuture<bool> isSameAs(
-      const ObjectId& blobID,
       TreeEntryType entryType,
       const ObjectFetchContextPtr& fetchContext);
 
@@ -643,17 +633,6 @@ class FileInode final : public InodeBaseMetadata<FileInodeState> {
    * std::nullopt otherwise. Costs at most an fstat of the overlay file.
    */
   std::optional<uint64_t> getMaterializedSize();
-
-  /**
-   * Helper function for isSameAs().
-   *
-   * This does the second portion of the check which requires an
-   * ImmediateFuture. Returns ImmediateFuture<bool> that checks the inodes
-   * Sha1 against the given Sha1.
-   */
-  ImmediateFuture<bool> isSameAsSlow(
-      const Hash20& expectedBlobSha1,
-      const ObjectFetchContextPtr& fetchContext);
 
 #ifndef _WIN32
   /**

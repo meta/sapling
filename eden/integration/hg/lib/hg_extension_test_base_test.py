@@ -96,7 +96,8 @@ class HgTestVariantsTest(unittest.TestCase):
                     case.backing_store_type,
                 )
                 self.assertEqual(
-                    label.startswith("Coroutines"), bool(case.get_coroutines_configs())
+                    label.startswith("Coroutines"),
+                    isinstance(case, testcase.CoroutinesTestMixin),
                 )
 
     def test_filteredhg_io_uring_variant_excludes_nfs(self) -> None:
@@ -121,7 +122,7 @@ class HgTestVariantsTest(unittest.TestCase):
                 self.assertEqual(label == "IoUring", case.use_io_uring())
                 self.assertFalse(case.use_nfs())
                 self.assertEqual(base.backing_store_type, case.backing_store_type)
-                self.assertFalse(case.get_coroutines_configs())
+                self.assertNotIsInstance(case, testcase.CoroutinesTestMixin)
 
     def test_cached_status_composes_with_each_hg_variant(self) -> None:
         variants = self._variants(hg_cached_status_test)

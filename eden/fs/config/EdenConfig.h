@@ -2103,26 +2103,6 @@ class EdenConfig : private ConfigSettingManager {
       false,
       this};
 
-  // [coroutines]
-
-  /**
-   * Master switch to enable/disable all coroutine-based implementations.
-   * When false, all coroutine implementations are disabled regardless of
-   * individual feature flags. When true, individual feature flags control
-   * each endpoint.
-   * Default is true to allow individual feature flags to work.
-   */
-  ConfigSetting<bool> enableCoroutines{"coroutines:enabled", true, this};
-
-  /**
-   * Controls whether EdenFS uses phase 7 coroutine implementations
-   * (the checkOutRevision thrift endpoint).
-   */
-  ConfigSetting<bool> enableCoroutinesPhase7{
-      "coroutines:enable-phase7",
-      false,
-      this};
-
   // [blobcache]
 
   /**

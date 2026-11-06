@@ -94,9 +94,6 @@ class CheckoutContext {
    * Returns the list of conflicts and errors that were encountered during the
    * operation.
    */
-  ImmediateFuture<std::vector<CheckoutConflict>> finish(
-      const RootId& newSnapshot);
-
   folly::coro::now_task<std::vector<CheckoutConflict>> co_finish(
       const RootId& newSnapshot);
 
@@ -105,8 +102,6 @@ class CheckoutContext {
    *
    * Return the list of conflicts and errors.
    */
-  ImmediateFuture<std::vector<CheckoutConflict>> flush();
-
   folly::coro::now_task<std::vector<CheckoutConflict>> co_flush();
 
   void addConflict(ConflictType type, RelativePathPiece path, dtype_t dtype);

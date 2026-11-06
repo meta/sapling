@@ -62,6 +62,7 @@ eden_add_test(eden_fs_inodes_test_checkout_context
     CheckoutContextTest.cpp
   DEPS
     ${LIBGMOCK_LIBRARIES}
+    Folly::folly_coro_blocking_wait
     Folly::folly_scope_guard
     Folly::folly_test_util
     eden_fs_inodes
@@ -172,6 +173,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WIN32)
     DEPS
       ${LIBGMOCK_LIBRARIES}
       Folly::folly_chrono_conv
+      Folly::folly_coro_blocking_wait
       Folly::folly_executors_manual_executor
       Folly::folly_file
       Folly::folly_futures_core

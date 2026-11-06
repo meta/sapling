@@ -195,26 +195,15 @@ class EdenServiceHandler
 
   void listMounts(std::vector<MountInfo>& results) override;
 
-  folly::SemiFuture<std::unique_ptr<std::vector<CheckoutConflict>>>
-  semifuture_checkOutRevision(
+  folly::coro::Task<std::unique_ptr<std::vector<CheckoutConflict>>>
+  co_checkOutRevision(
       std::unique_ptr<std::string> mountPoint,
       std::unique_ptr<std::string> hash,
       CheckoutMode checkoutMode,
       std::unique_ptr<CheckOutRevisionParams> params) override;
 
-  folly::SemiFuture<std::unique_ptr<std::vector<CheckoutConflict>>>
-  semifuture_checkOutRevisionImpl(
-      std::unique_ptr<std::string> mountPoint,
-      std::unique_ptr<std::string> hash,
-      CheckoutMode checkoutMode,
-      std::unique_ptr<CheckOutRevisionParams> params);
-
-  /**
-   * Coroutine implementation of `checkOutRevision`. Selected by
-   * `EdenConfig::enableCoroutinesPhase7`.
-   */
   folly::coro::now_task<std::unique_ptr<std::vector<CheckoutConflict>>>
-  co_checkOutRevisionImpl(
+  checkOutRevisionImpl(
       apache::thrift::Cpp2RequestContext* requestContext,
       std::unique_ptr<std::string> mountPoint,
       std::unique_ptr<std::string> hash,

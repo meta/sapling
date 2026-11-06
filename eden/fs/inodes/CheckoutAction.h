@@ -130,15 +130,10 @@ class CheckoutAction : public std::enable_shared_from_this<CheckoutAction> {
   /**
    * Run the CheckoutAction.
    *
-   * If this completes successfully, the result returned via the
-   * ImmediateFuture indicates if the change updated the parent directory's
-   * entries. Returns whether the caller is responsible for invalidating the
-   * directory's inode cache in the kernel.
+   * If this completes successfully, the result indicates if the change
+   * updated the parent directory's entries. Returns whether the caller is
+   * responsible for invalidating the directory's inode cache in the kernel.
    */
-  [[nodiscard]] ImmediateFuture<CheckoutActionResult> run(
-      CheckoutContext* ctx,
-      ObjectStore* store);
-
   [[nodiscard]] folly::coro::now_task<CheckoutActionResult> co_run(
       CheckoutContext* ctx,
       ObjectStore* store);
@@ -175,13 +170,10 @@ class CheckoutAction : public std::enable_shared_from_this<CheckoutAction> {
    */
   void handleOldTreeRestriction();
 
-  void allLoadsComplete() noexcept;
-  bool ensureDataReady() noexcept;
-  ImmediateFuture<bool> hasConflict();
   folly::coro::now_task<bool> co_hasConflict();
 
   /**
-   * Synchronous portion of `hasConflict()`. Handles the tree-side check,
+   * Synchronous portion of `co_hasConflict()`. Handles the tree-side check,
    * the blob nullptr check, and the no-old-entry tail. Returns the final
    * conflict result when no async work is required, or `std::nullopt` when
    * the caller must perform the async `FileInode::isSameAs` check and then
@@ -204,11 +196,6 @@ class CheckoutAction : public std::enable_shared_from_this<CheckoutAction> {
   /**
    * Return whether the directory's contents have changed and the
    * inode's readdir cache must be flushed.
-   */
-  [[nodiscard]] ImmediateFuture<CheckoutActionResult> doAction();
-
-  /**
-   * Coroutine implementation of `doAction`.
    */
   [[nodiscard]] folly::coro::now_task<CheckoutActionResult> co_doAction();
 

@@ -98,30 +98,6 @@ void CheckoutContext::start(
   }
 }
 
-ImmediateFuture<vector<CheckoutConflict>> CheckoutContext::finish(
-    const RootId& newSnapshot) {
-  finalizeBeforeFlush(newSnapshot);
-  return flush();
-}
-
-ImmediateFuture<vector<CheckoutConflict>> CheckoutContext::flush() {
-  if (!isDryRun()) {
-    // If we have a FUSE channel, flush all invalidations we sent to the kernel
-    // as part of the checkout operation.  This will ensure that other processes
-    // will see up-to-date data once we return.
-    //
-    // We do this after releasing the rename lock since some of the invalidation
-    // operations may be blocked waiting on FUSE unlink() and rename()
-    // operations complete.
-    return mount_->flushInvalidations().thenValue(
-        [this](auto&&) { return std::move(*conflicts_.wlock()); });
-  }
-
-  // Return conflicts_ via a move operation.  We don't need them any more, and
-  // can give ownership directly to our caller.
-  return std::move(*conflicts_.wlock());
-}
-
 folly::coro::now_task<vector<CheckoutConflict>> CheckoutContext::co_finish(
     const RootId& newSnapshot) {
   finalizeBeforeFlush(newSnapshot);
@@ -130,8 +106,18 @@ folly::coro::now_task<vector<CheckoutConflict>> CheckoutContext::co_finish(
 
 folly::coro::now_task<vector<CheckoutConflict>> CheckoutContext::co_flush() {
   if (!isDryRun()) {
+    // If we have a FUSE channel, flush all invalidations we sent to the kernel
+    // as part of the checkout operation.  This will ensure that other processes
+    // will see up-to-date data once we return.
+    //
+    // We do this after releasing the rename lock since some of the invalidation
+    // operations may be blocked waiting on FUSE unlink() and rename()
+    // operations complete.
     co_await mount_->co_flushInvalidations();
   }
+
+  // Return conflicts_ via a move operation.  We don't need them any more, and
+  // can give ownership directly to our caller.
   co_return std::move(*conflicts_.wlock());
 }
 

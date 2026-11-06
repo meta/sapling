@@ -1126,8 +1126,8 @@ void EdenServiceHandler::listMounts(std::vector<MountInfo>& results) {
   }
 }
 
-folly::SemiFuture<std::unique_ptr<std::vector<CheckoutConflict>>>
-EdenServiceHandler::semifuture_checkOutRevision(
+folly::coro::Task<std::unique_ptr<std::vector<CheckoutConflict>>>
+EdenServiceHandler::co_checkOutRevision(
     std::unique_ptr<std::string> mountPoint,
     std::unique_ptr<std::string> hash,
     CheckoutMode checkoutMode,
@@ -1135,43 +1135,19 @@ EdenServiceHandler::semifuture_checkOutRevision(
   // Noted when the checkout starts and again when it ends, so that a
   // graceful restart asked to wait for an idle daemon stays away from it.
   server_->noteActivity("checkOutRevision");
-  auto noteEnd = [this] { server_->noteActivity("checkOutRevision"); };
-  auto config = server_->getServerState()->getEdenConfig();
-  bool useCoroutines = config->enableCoroutines.getValue() &&
-      config->enableCoroutinesPhase7.getValue();
-  if (useCoroutines) {
-    auto requestContext = getRequestContext();
-    // @lint-ignore CLANGTIDY facebook-folly-coro-return-captures-local-var
-    return folly::coro::co_invoke(
-               [this](
-                   apache::thrift::Cpp2RequestContext* ctx,
-                   std::unique_ptr<std::string> mp,
-                   std::unique_ptr<std::string> h,
-                   CheckoutMode mode,
-                   std::unique_ptr<CheckOutRevisionParams> p)
-                   -> folly::coro::Task<
-                       std::unique_ptr<std::vector<CheckoutConflict>>> {
-                 co_return co_await co_checkOutRevisionImpl(
-                     ctx, std::move(mp), std::move(h), mode, std::move(p));
-               },
-               requestContext,
-               std::move(mountPoint),
-               std::move(hash),
-               checkoutMode,
-               std::move(params))
-        .semi()
-        .deferEnsure(noteEnd);
-  }
-  return semifuture_checkOutRevisionImpl(
-             std::move(mountPoint),
-             std::move(hash),
-             checkoutMode,
-             std::move(params))
-      .deferEnsure(noteEnd);
+  SCOPE_EXIT {
+    server_->noteActivity("checkOutRevision");
+  };
+  co_return co_await checkOutRevisionImpl(
+      getRequestContext(),
+      std::move(mountPoint),
+      std::move(hash),
+      checkoutMode,
+      std::move(params));
 }
 
 folly::coro::now_task<std::unique_ptr<std::vector<CheckoutConflict>>>
-EdenServiceHandler::co_checkOutRevisionImpl(
+EdenServiceHandler::checkOutRevisionImpl(
     apache::thrift::Cpp2RequestContext* requestContext,
     std::unique_ptr<std::string> mountPoint,
     std::unique_ptr<std::string> hash,
@@ -1214,54 +1190,6 @@ EdenServiceHandler::co_checkOutRevisionImpl(
       checkoutMode);
   co_return std::make_unique<std::vector<CheckoutConflict>>(
       std::move(result.conflicts));
-}
-
-folly::SemiFuture<std::unique_ptr<std::vector<CheckoutConflict>>>
-EdenServiceHandler::semifuture_checkOutRevisionImpl(
-    std::unique_ptr<std::string> mountPoint,
-    std::unique_ptr<std::string> hash,
-    CheckoutMode checkoutMode,
-    std::unique_ptr<CheckOutRevisionParams> params) {
-  auto rootIdOptions = params->rootIdOptions().ensure();
-  auto requestContext = getRequestContext();
-  auto helper = INSTRUMENT_THRIFT_CALL_WITH_CANCELLATION(
-      DBG1,
-      true,
-      requestContext,
-      *mountPoint,
-      logHash(*hash),
-      apache::thrift::util::enumName(checkoutMode, "(unknown)"),
-      params->hgRootManifest().has_value() ? logHash(*params->hgRootManifest())
-                                           : "(unspecified hg root manifest)",
-      rootIdOptions.fid().has_value() ? folly::hexlify(*rootIdOptions.fid())
-                                      : "no fid provided");
-  helper->getThriftFetchContext().fillClientRequestInfo(params->cri());
-  auto& fetchContext = helper->getFetchContext();
-
-  auto mountHandle = lookupMount(mountPoint);
-
-  // If we were passed a FilterID, create a RootID that contains the
-  // filter and a varint that indicates the length of the original id.
-  std::string parsedId =
-      resolveRootId(std::move(*hash), rootIdOptions, mountHandle);
-  hash.reset();
-
-  auto mountPath = absolutePathFromThrift(*mountPoint);
-  auto checkoutFuture = server_->checkOutRevision(
-      mountPath,
-      parsedId,
-      params->hgRootManifest().to_optional(),
-      fetchContext,
-      helper->getFunctionName(),
-      checkoutMode);
-
-  return wrapImmediateFuture(
-             std::move(helper),
-             std::move(checkoutFuture).thenValue([](CheckoutResult&& result) {
-               return std::make_unique<std::vector<CheckoutConflict>>(
-                   std::move(result.conflicts));
-             }))
-      .semi();
 }
 
 folly::SemiFuture<folly::Unit>

@@ -615,16 +615,9 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
    *     dry run. Used when a forced checkout replaces this directory with a
    *     file, which requires the directory to be empty.
    *
-   * @return Returns a future that will be fulfilled once this tree and all of
-   *     its children have been updated.
+   * @return Completes once this tree and all of its children have been
+   *     updated.
    */
-  [[nodiscard]] ImmediateFuture<CheckoutSubtreeResult> checkout(
-      CheckoutContext* ctx,
-      std::shared_ptr<const Tree> fromTree,
-      std::shared_ptr<const Tree> toTree,
-      bool reportLocalOnlyAsConflicts = false,
-      bool removeLocalOnly = false);
-
   [[nodiscard]] folly::coro::now_task<CheckoutSubtreeResult> co_checkout(
       CheckoutContext* ctx,
       std::shared_ptr<const Tree> fromTree,
@@ -823,17 +816,8 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
    *     This entry will refer to a tree if and only if the newTree parameter
    *     is non-null.
    * @param removeLocalOnly If the entry is a directory being removed, also
-   *     remove its local-only contents. See checkout().
+   *     remove its local-only contents. See co_checkout().
    */
-  [[nodiscard]] ImmediateFuture<CheckoutActionResult> checkoutUpdateEntry(
-      CheckoutContext* ctx,
-      PathComponentPiece name,
-      InodePtr inode,
-      std::shared_ptr<const Tree> oldTree,
-      std::shared_ptr<const Tree> newTree,
-      const std::optional<Tree::value_type>& newScmEntry,
-      bool removeLocalOnly);
-
   [[nodiscard]] folly::coro::now_task<CheckoutActionResult>
   co_checkoutUpdateEntry(
       CheckoutContext* ctx,
@@ -890,7 +874,7 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
       bool localOnlyRemains,
       std::vector<folly::Try<CheckoutActionResult>>& actionResults);
 
-  // Synchronous helpers for checkoutUpdateEntry. The caller must hold the
+  // Synchronous helpers for co_checkoutUpdateEntry. The caller must hold the
   // CheckoutContext's rename lock.
   [[nodiscard]] CheckoutActionResult replaceFileEntry(
       CheckoutContext* ctx,

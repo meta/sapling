@@ -742,47 +742,6 @@ std::optional<bool> FileInode::isSameAsFast(
   EDEN_BUG() << "unexpected ObjectComparison result";
 }
 
-ImmediateFuture<bool> FileInode::isSameAsSlow(
-    const Hash20& expectedBlobSha1,
-    const ObjectFetchContextPtr& fetchContext) {
-  return getSha1(fetchContext)
-      .thenTry([expectedBlobSha1](folly::Try<Hash20>&& try_) {
-        if (try_.hasException()) {
-          XLOGF(DBG2, "Assuming changed: {}", try_.exception());
-          return false;
-        } else {
-          return try_.value() == expectedBlobSha1;
-        }
-      });
-}
-
-ImmediateFuture<bool> FileInode::isSameAs(
-    const ObjectId& id,
-    const Blob& blob,
-    TreeEntryType entryType,
-    const ObjectFetchContextPtr& fetchContext) {
-  auto result = isSameAsFast(id, entryType);
-  if (result.has_value()) {
-    return result.value();
-  }
-
-  auto blobSha1 = Hash20::sha1(blob.getContents());
-  return isSameAsSlow(blobSha1, fetchContext);
-}
-
-ImmediateFuture<bool> FileInode::isSameAs(
-    const ObjectId& blobID,
-    const Hash20& blobSha1,
-    TreeEntryType entryType,
-    const ObjectFetchContextPtr& fetchContext) {
-  auto result = isSameAsFast(blobID, entryType);
-  if (result.has_value()) {
-    return result.value();
-  }
-
-  return isSameAsSlow(blobSha1, fetchContext);
-}
-
 ImmediateFuture<bool> FileInode::isSameAs(
     const ObjectId& blobID,
     TreeEntryType entryType,

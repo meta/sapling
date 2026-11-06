@@ -108,111 +108,6 @@ PathComponentPiece CheckoutAction::getEntryName() const {
   return localEntryName_.value();
 }
 
-ImmediateFuture<CheckoutActionResult> CheckoutAction::run(
-    CheckoutContext* ctx,
-    ObjectStore* store) {
-  ctx->throwIfCanceled();
-
-  std::vector<ImmediateFuture<folly::Unit>> loadFutures;
-  try {
-    // Load the Blob or Tree for the old TreeEntry.
-    if (oldScmEntry_.has_value()) {
-      const auto& oldEntry = oldScmEntry_.value();
-      if (oldEntry.second.isTree()) {
-        auto getTreeSpan = ctx->createSpan("getTree");
-        loadFutures.emplace_back(
-            store
-                ->getTree(oldEntry.second.getObjectId(), ctx->getFetchContext())
-                .thenValue(
-                    [self = shared_from_this(), span = std::move(getTreeSpan)](
-                        std::shared_ptr<const Tree> oldTree) mutable {
-                      self->setOldTree(std::move(oldTree));
-                    })
-                .thenError([self = shared_from_this()](exception_wrapper&& ew) {
-                  self->error("error getting old tree", std::move(ew));
-                }));
-      } else {
-        loadFutures.emplace_back(
-            store
-                ->getBlobSha1(
-                    oldEntry.second.getObjectId(), ctx->getFetchContext())
-                .thenValue([self = shared_from_this()](Hash20 oldBlobSha1) {
-                  self->setOldBlob(std::move(oldBlobSha1));
-                })
-                .thenError([self = shared_from_this()](exception_wrapper&& ew) {
-                  self->error("error getting old blob Sha1", std::move(ew));
-                }));
-      }
-    }
-
-    // If we have a new TreeEntry, load the corresponding Blob or Tree
-    if (newScmEntry_.has_value()) {
-      const auto& newEntry = newScmEntry_.value();
-      if (newEntry.second.isTree()) {
-        if (!newEntry.second.isRestricted()) {
-          auto getTreeSpan = ctx->createSpan("getTree");
-          loadFutures.emplace_back(
-              store
-                  ->getTree(
-                      newEntry.second.getObjectId(), ctx->getFetchContext())
-                  .thenValue([self = shared_from_this(),
-                              span = std::move(getTreeSpan)](
-                                 std::shared_ptr<const Tree> newTree) mutable {
-                    self->setNewTree(std::move(newTree));
-                  })
-                  .thenError(
-                      [self = shared_from_this()](exception_wrapper&& ew) {
-                        self->error("error getting new tree", std::move(ew));
-                      }));
-        }
-      } else {
-        // We don't actually compare the new blob to anything, so we don't need
-        // to fetch it. This just marks that the new inode will be a file.
-        setNewBlob();
-      }
-    }
-
-    // If we were constructed with a Future<InodePtr>, wait for it.
-    if (!inode_) {
-      XCHECK(inodeFuture_.valid());
-      loadFutures.emplace_back(
-          std::move(inodeFuture_)
-              .thenValue([self = shared_from_this()](InodePtr inode) {
-                self->setInode(std::move(inode));
-              })
-              .thenError([self = shared_from_this()](exception_wrapper&& ew) {
-                self->error("error getting inode", std::move(ew));
-              }));
-    }
-  } catch (...) {
-    auto ew = exception_wrapper{std::current_exception()};
-    error("error preparing to load data for checkout action", std::move(ew));
-  }
-
-  return collectAll(std::move(loadFutures))
-      .thenValue(
-          [self = shared_from_this()](
-              auto&&) -> ImmediateFuture<CheckoutActionResult> {
-            if (auto errors = self->errors_.copy(); !errors.empty()) {
-              // If multiple errors occurred, we log them all, but only
-              // propagate up the first one.  If necessary we could change this
-              // to create a single exception that contains all of the messages
-              // concatenated together.
-              XLOG(
-                  ERR,
-                  "multiple errors while attempting to load data for checkout action:");
-              for (const auto& ew : errors) {
-                XLOGF(ERR, "CheckoutAction error: {}", folly::exceptionStr(ew));
-              }
-              return makeImmediateFuture<CheckoutActionResult>(
-                  std::move(errors.front()));
-            }
-
-            self->handleOldTreeRestriction();
-            return self->doAction();
-          });
-}
-
 folly::coro::now_task<CheckoutActionResult> CheckoutAction::co_run(
     CheckoutContext* ctx,
     ObjectStore* store) {
@@ -415,118 +310,6 @@ void CheckoutAction::handleOldTreeRestriction() {
       EACCES, inode_, "old source tree became restricted during checkout");
 }
 
-ImmediateFuture<CheckoutActionResult> CheckoutAction::doAction() {
-  // All the data is ready and we're ready to go!
-
-  // Check for conflicts first.
-  return hasConflict().thenValue(
-      [self = shared_from_this()](
-          bool conflictWasAddedToCtx) -> ImmediateFuture<CheckoutActionResult> {
-        // Note that even if we know we are not going to apply the changes, we
-        // must still run hasConflict() first because we rely on its
-        // side-effects.
-        if (conflictWasAddedToCtx && !self->ctx_->forceUpdate()) {
-          // Since we aren't doing another checkoutUpdateEntry, the checkout
-          // from this inode won't be executed if it is a tree. In that case, we
-          // add that to our "completed" checkout for all of its descendants
-          auto treeInode = self->inode_.asTreeOrNull();
-          auto increase = treeInode ? treeInode->getInMemoryDescendants() : 0;
-          self->ctx_->increaseCheckoutCounter(1 + increase);
-          return CheckoutActionResult{
-              InvalidationRequired::No, /*hadConflicts=*/true};
-        }
-
-        if (!self->oldScmEntry_ && !self->newScmEntry_) {
-          auto treeInode = self->inode_.asTreePtrOrNull();
-          if (!self->ctx_->isDryRun() &&
-              (!treeInode || treeInode->isRestricted())) {
-            auto parent = self->inode_->getParent(self->ctx_->renameLock());
-            std::optional<RelativePath> removedPath;
-            if (!treeInode) {
-              removedPath = self->inode_->getPath();
-            }
-            auto dtype = self->inode_->getType();
-            auto* mount = self->inode_->getMount();
-            return parent
-                ->checkoutUpdateEntry(
-                    self->ctx_,
-                    self->getEntryName(),
-                    std::move(self->inode_),
-                    nullptr,
-                    nullptr,
-                    std::nullopt,
-                    /*removeLocalOnly=*/false)
-                .thenValue([conflictWasAddedToCtx,
-                            removedPath = std::move(removedPath),
-                            dtype,
-                            mount](CheckoutActionResult result) {
-                  journalRemovedFile(mount, removedPath, dtype, result);
-                  result.hadConflicts |= conflictWasAddedToCtx;
-                  return result;
-                });
-          }
-          if (!treeInode) {
-            return CheckoutActionResult{
-                InvalidationRequired::No, conflictWasAddedToCtx};
-          }
-          return treeInode
-              ->checkout(
-                  self->ctx_,
-                  nullptr,
-                  nullptr,
-                  /*reportLocalOnlyAsConflicts=*/true)
-              .thenValue(
-                  [self, conflictWasAddedToCtx](CheckoutSubtreeResult result)
-                      -> ImmediateFuture<CheckoutActionResult> {
-                    result.hadConflicts |= conflictWasAddedToCtx;
-                    if (!self->ctx_->isDryRun()) {
-                      auto parent =
-                          self->inode_->getParent(self->ctx_->renameLock());
-                      return parent
-                          ->checkoutUpdateEntry(
-                              self->ctx_,
-                              self->getEntryName(),
-                              std::move(self->inode_),
-                              nullptr,
-                              nullptr,
-                              std::nullopt,
-                              /*removeLocalOnly=*/false)
-                          .thenValue([hadConflicts = result.hadConflicts](
-                                         CheckoutActionResult actionResult) {
-                            actionResult.hadConflicts |= hadConflicts;
-                            return actionResult;
-                          });
-                    }
-                    return CheckoutActionResult{
-                        InvalidationRequired::No, result.hadConflicts};
-                  });
-        }
-
-        // Call TreeInode::checkoutUpdateEntry() to actually do the work.
-        //
-        // Note that we are moving most of our state into the
-        // checkoutUpdateEntry() arguments.  We have to be slightly careful
-        // here: getEntryName() returns a PathComponentPiece that is pointing
-        // into a PathComponent owned either by oldScmEntry_ or newScmEntry_.
-        // Therefore don't move these scm entries, to make sure we don't
-        // invalidate the PathComponentPiece data.
-        auto parent = self->inode_->getParent(self->ctx_->renameLock());
-        return parent
-            ->checkoutUpdateEntry(
-                self->ctx_,
-                self->getEntryName(),
-                std::move(self->inode_),
-                std::move(self->oldTree_),
-                std::move(self->newTree_),
-                self->newScmEntry_,
-                self->removeLocalOnly_)
-            .thenValue([conflictWasAddedToCtx](CheckoutActionResult result) {
-              result.hadConflicts |= conflictWasAddedToCtx;
-              return result;
-            });
-      });
-}
-
 folly::coro::now_task<CheckoutActionResult> CheckoutAction::co_doAction() {
   bool conflictWasAddedToCtx = co_await co_hasConflict();
 
@@ -553,16 +336,14 @@ folly::coro::now_task<CheckoutActionResult> CheckoutAction::co_doAction() {
       }
       auto dtype = inode_->getType();
       auto* mount = inode_->getMount();
-      auto result = co_await parent
-                        ->checkoutUpdateEntry(
-                            ctx_,
-                            getEntryName(),
-                            std::move(inode_),
-                            nullptr,
-                            nullptr,
-                            std::nullopt,
-                            /*removeLocalOnly=*/false)
-                        .semi();
+      auto result = co_await parent->co_checkoutUpdateEntry(
+          ctx_,
+          getEntryName(),
+          std::move(inode_),
+          nullptr,
+          nullptr,
+          std::nullopt,
+          /*removeLocalOnly=*/false);
       journalRemovedFile(mount, removedPath, dtype, result);
       result.hadConflicts |= conflictWasAddedToCtx;
       co_return result;
@@ -576,16 +357,14 @@ folly::coro::now_task<CheckoutActionResult> CheckoutAction::co_doAction() {
     bool hadConflicts = result.hadConflicts || conflictWasAddedToCtx;
     if (!ctx_->isDryRun()) {
       auto parent = inode_->getParent(ctx_->renameLock());
-      auto actionResult = co_await parent
-                              ->checkoutUpdateEntry(
-                                  ctx_,
-                                  getEntryName(),
-                                  std::move(inode_),
-                                  nullptr,
-                                  nullptr,
-                                  std::nullopt,
-                                  /*removeLocalOnly=*/false)
-                              .semi();
+      auto actionResult = co_await parent->co_checkoutUpdateEntry(
+          ctx_,
+          getEntryName(),
+          std::move(inode_),
+          nullptr,
+          nullptr,
+          std::nullopt,
+          /*removeLocalOnly=*/false);
       actionResult.hadConflicts |= hadConflicts;
       co_return actionResult;
     }
@@ -611,41 +390,6 @@ folly::coro::now_task<CheckoutActionResult> CheckoutAction::co_doAction() {
       removeLocalOnly_);
   result.hadConflicts |= conflictWasAddedToCtx;
   co_return result;
-}
-
-ImmediateFuture<bool> CheckoutAction::hasConflict() {
-  if (auto syncResult = checkSyncConflict()) {
-    return *syncResult;
-  }
-
-  // Compare the source first to avoid fetching the destination in the common
-  // case where the working copy is unmodified.
-  auto fileInode = inode_.asFilePtrOrNull();
-  return fileInode
-      ->isSameAs(
-          oldScmEntry_.value().second.getObjectId(),
-          oldBlobSha1_.value(),
-          oldScmEntry_.value().second.getType(),
-          ctx_->getFetchContext())
-      .thenValue(
-          [self = shared_from_this()](
-              bool isSameAsSource) -> ImmediateFuture<bool> {
-            if (isSameAsSource || !self->newBlobMarker_) {
-              return self->classifyFileContentConflict(isSameAsSource);
-            }
-
-            auto fileInode = self->inode_.asFilePtrOrNull();
-            const auto& destination = self->newScmEntry_.value().second;
-            return fileInode
-                ->isSameAs(
-                    destination.getObjectId(),
-                    destination.getType(),
-                    self->ctx_->getFetchContext())
-                .thenValue([self](bool isSameAsDestination) {
-                  return self->classifyFileDestinationConflict(
-                      isSameAsDestination);
-                });
-          });
 }
 
 std::optional<bool> CheckoutAction::checkSyncConflict() {

@@ -28,28 +28,18 @@
 
 namespace facebook::eden {
 
-class CheckoutCancellationTest : public ::testing::TestWithParam<bool> {
- protected:
-  /// Apply the parameterized coroutine variant config (if `GetParam()`)
-  /// to the given mount via the existing `enableCoroutinesConfig` bundle.
-  void applyParam(TestMount& mount) const {
-    if (GetParam()) {
-      enableCoroutinesConfig(mount);
-    }
-  }
-};
+class CheckoutCancellationTest : public ::testing::Test {};
 
 /**
  * Test that when a checkout is cancelled, the mount enters an interrupted
  * checkout state and can be recovered.
  */
-TEST_P(CheckoutCancellationTest, CheckoutLeavesInterruptedState) {
+TEST_F(CheckoutCancellationTest, CheckoutLeavesInterruptedState) {
   auto builder1 = FakeTreeBuilder();
   builder1.setFile("file1.txt", "content1\n");
   builder1.setFile("file2.txt", "content2\n");
   builder1.setFile("dir/file3.txt", "content3\n");
   TestMount testMount{builder1, true, true};
-  applyParam(testMount);
 
   auto builder2 = builder1.clone();
   builder2.replaceFile("file1.txt", "modified content1\n");
@@ -145,13 +135,12 @@ TEST_P(CheckoutCancellationTest, CheckoutLeavesInterruptedState) {
  * Test that cancellation works at the inodeCheckout stage (later in the
  * checkout flow, after diff computation and rename lock acquisition)
  */
-TEST_P(CheckoutCancellationTest, CancellationAtInodeCheckoutStage) {
+TEST_F(CheckoutCancellationTest, CancellationAtInodeCheckoutStage) {
   auto builder1 = FakeTreeBuilder();
   builder1.setFile("file1.txt", "content1\n");
   builder1.setFile("file2.txt", "content2\n");
   builder1.setFile("dir/file3.txt", "content3\n");
   TestMount testMount{builder1, true, true};
-  applyParam(testMount);
 
   auto builder2 = builder1.clone();
   builder2.replaceFile("file1.txt", "modified content1\n");
@@ -294,13 +283,5 @@ TEST_F(CheckoutCancellationTest, CancelledCheckoutLogsError) {
 
   testMount.getServerState()->getFaultInjector().removeFault("checkout", ".*");
 }
-
-INSTANTIATE_TEST_SUITE_P(
-    CheckoutCancellationTestVariants,
-    CheckoutCancellationTest,
-    ::testing::Values(false, true),
-    [](const ::testing::TestParamInfo<bool>& info) {
-      return info.param ? "Coroutines" : "Futures";
-    });
 
 } // namespace facebook::eden

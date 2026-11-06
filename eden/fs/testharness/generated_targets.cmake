@@ -11,6 +11,7 @@ eden_add_library(eden_fs_testharness_test_mount
   DEPS
     ${GFLAGS_LIBRARIES}
     ${LIBGMOCK_LIBRARIES}
+    Folly::folly_coro_invoke
     Folly::folly_exception
     Folly::folly_file_util
     Folly::folly_io_iobuf

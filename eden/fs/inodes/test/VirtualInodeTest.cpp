@@ -676,20 +676,12 @@ void verifyTreeState(
   } while (0)
 } // namespace
 
-class VirtualInodeTestBase : public ::testing::TestWithParam<bool> {
- protected:
-  void maybeEnableCoroutines(TestMount& mount) {
-    if (GetParam()) {
-      enableCoroutinesConfig(mount);
-    }
-  }
-};
+class VirtualInodeTestBase : public ::testing::TestWithParam<bool> {};
 
 TEST_P(VirtualInodeTestBase, findDoesNotChangeState) {
   TestFileDatabase files;
   auto flags = VERIFY_DEFAULT ^ VERIFY_SHA1 ^ VERIFY_BLAKE3;
   auto mount = TestMount{MakeTestTreeBuilder(files)};
-  maybeEnableCoroutines(mount);
   VERIFY_TREE(flags);
 
   for (const auto& info : files.getOriginalItems()) {
@@ -720,7 +712,6 @@ CO_TEST_P(VirtualInodeTestBase, getChildrenSimple) {
   TestFileDatabase files;
   auto flags = VERIFY_DEFAULT ^ VERIFY_SHA1 ^ VERIFY_BLAKE3;
   auto mount = TestMount{MakeTestTreeBuilder(files)};
-  maybeEnableCoroutines(mount);
   VERIFY_TREE(flags);
 
   co_await testRootDirAChildren(mount);
@@ -731,7 +722,6 @@ CO_TEST_P(VirtualInodeTestBase, getLoaded) {
   TestFileDatabase files;
   auto flags = VERIFY_DEFAULT ^ VERIFY_SHA1 ^ VERIFY_BLAKE3;
   auto mount = TestMount{MakeTestTreeBuilder(files)};
-  maybeEnableCoroutines(mount);
   VERIFY_TREE(flags);
   // load inode
   mount.getInode(RelativePathPiece{"root_dirA"});
@@ -744,7 +734,6 @@ CO_TEST_P(VirtualInodeTestBase, getChildrenMaterialized) {
   TestFileDatabase files;
   auto flags = VERIFY_DEFAULT ^ VERIFY_SHA1 ^ VERIFY_BLAKE3;
   auto mount = TestMount{MakeTestTreeBuilder(files)};
-  maybeEnableCoroutines(mount);
   VERIFY_TREE(flags);
   // materialize inode
   std::string path = "root_dirA/child1_fileA1";
@@ -760,7 +749,6 @@ CO_TEST_P(VirtualInodeTestBase, getChildrenMaterializedUnloaded) {
   TestFileDatabase files;
   auto flags = VERIFY_DEFAULT ^ VERIFY_SHA1 ^ VERIFY_BLAKE3;
   auto mount = TestMount{MakeTestTreeBuilder(files)};
-  maybeEnableCoroutines(mount);
   VERIFY_TREE(flags);
   // materialize inode
   std::string path = "root_dirA/child1_fileA1";
@@ -781,7 +769,6 @@ CO_TEST_P(VirtualInodeTestBase, getChildrenDoesNotChangeState) {
   TestFileDatabase files;
   auto flags = VERIFY_DEFAULT ^ VERIFY_SHA1 ^ VERIFY_BLAKE3;
   auto mount = TestMount{MakeTestTreeBuilder(files)};
-  maybeEnableCoroutines(mount);
   VERIFY_TREE(flags);
 
   for (const auto& info : files.getOriginalItems()) {
@@ -802,7 +789,6 @@ CO_TEST_P(VirtualInodeTestBase, getChildrenAttributes) {
   TestFileDatabase files;
   auto flags = VERIFY_DEFAULT ^ VERIFY_SHA1 ^ VERIFY_BLAKE3;
   auto mount = TestMount{MakeTestTreeBuilder(files)};
-  maybeEnableCoroutines(mount);
   VERIFY_TREE(flags);
   std::vector<EntryAttributeFlags> attribute_requests{
       ENTRY_ATTRIBUTE_SIZE | ENTRY_ATTRIBUTE_SHA1 |
@@ -855,7 +841,6 @@ TEST_P(VirtualInodeTestBase, statDoesNotChangeState) {
   TestFileDatabase files;
   auto flags = VERIFY_DEFAULT | VERIFY_STAT;
   auto mount = TestMount{MakeTestTreeBuilder(files)};
-  maybeEnableCoroutines(mount);
   VERIFY_TREE(flags);
 
   for (const auto& info : files.getOriginalItems()) {
@@ -869,7 +854,6 @@ TEST_P(VirtualInodeTestBase, statDoesNotChangeState) {
 CO_TEST_P(VirtualInodeTestBase, fileOpsOnCorrectObjectsOnly) {
   TestFileDatabase files;
   auto mount = TestMount{MakeTestTreeBuilder(files)};
-  maybeEnableCoroutines(mount);
 
   VERIFY_TREE(VERIFY_INITIAL);
   for (const auto& info_ : files.getOriginalItems()) {
@@ -983,7 +967,6 @@ CO_TEST_P(VirtualInodeTestBase, fileOpsOnCorrectObjectsOnly) {
 TEST_P(VirtualInodeTestBase, getEntryAttributesDoesNotChangeState) {
   TestFileDatabase files;
   auto mount = TestMount{MakeTestTreeBuilder(files)};
-  maybeEnableCoroutines(mount);
 
   for (const auto& info : files.getOriginalItems()) {
     VERIFY_TREE(VERIFY_DEFAULT ^ VERIFY_SHA1 ^ VERIFY_BLAKE3);
@@ -1061,7 +1044,6 @@ TEST_P(VirtualInodeTestBase, localUnderAclComputationCanBeDisabled) {
   builder.setFile("acl_dir/file.txt", "secret");
   builder.setDirHasAcl("acl_dir");
   auto mount = TestMount{builder};
-  maybeEnableCoroutines(mount);
 
   auto getAttributes = [&](RelativePathPiece path) {
     return mount.getVirtualInode(path)
@@ -1228,7 +1210,6 @@ TEST_P(VirtualInodeTestBase, getEntryAttributesAttributeError) {
   FakeTreeBuilder builder;
   files.build(builder);
   auto mount = TestMount{builder, false};
-  maybeEnableCoroutines(mount);
 
   builder.setReady("root_dirA");
   builder.setReady("root_dirA/child1_fileA2");
@@ -1256,7 +1237,6 @@ TEST_P(VirtualInodeTestBase, getEntryAttributesAttributeError) {
 CO_TEST_P(VirtualInodeTestBase, sha1DoesNotChangeState) {
   TestFileDatabase files;
   auto mount = TestMount{MakeTestTreeBuilder(files)};
-  maybeEnableCoroutines(mount);
 
   const std::vector<int> verify_flag_sets{
       VERIFY_DEFAULT ^ VERIFY_SHA1 ^ VERIFY_BLAKE3,
@@ -1292,7 +1272,6 @@ TEST_P(VirtualInodeTestBase, unlinkMaterializesParents) {
   TestFileDatabase files;
   auto builder = MakeTestTreeBuilder(files);
   auto mount = TestMount(builder, true);
-  maybeEnableCoroutines(mount);
 
   VERIFY_TREE(VERIFY_INITIAL);
 
@@ -1318,7 +1297,6 @@ TEST_P(VirtualInodeTestBase, materializationPropagation) {
 
     auto builder = MakeTestTreeBuilder(files);
     auto mount = TestMount(builder, true);
-    maybeEnableCoroutines(mount);
     auto edenMount = mount.getEdenMount();
     VERIFY_TREE(VERIFY_INITIAL);
 
@@ -1340,7 +1318,6 @@ TEST_P(VirtualInodeTestBase, materializationPropagation) {
   for (size_t iteration = 0; iteration < 20; ++iteration) {
     auto builder = MakeTestTreeBuilder(files);
     auto mount = TestMount(builder, true);
-    maybeEnableCoroutines(mount);
     auto edenMount = mount.getEdenMount();
 
     // TestFileDatabase files;
@@ -1373,7 +1350,6 @@ TEST_P(VirtualInodeTestBase, loadPropagation) {
   TestFileDatabase files;
   auto builder = MakeTestTreeBuilder(files);
   auto mount = TestMount(builder, true);
-  maybeEnableCoroutines(mount);
   auto edenMount = mount.getEdenMount();
   for (const auto& info_ : files.getOriginalItems()) {
     auto& info = *info_;
@@ -1417,7 +1393,6 @@ CO_TEST_P(VirtualInodeTestBase, getBlob) {
   TestFileDatabase files;
   auto builder = MakeTestTreeBuilder(files);
   auto mount = TestMount(builder, true);
-  maybeEnableCoroutines(mount);
   auto edenMount = mount.getEdenMount();
   VERIFY_TREE(flags);
 

@@ -13,6 +13,7 @@
 #include <folly/Range.h>
 #include <folly/ScopeGuard.h>
 #include <folly/chrono/Conv.h>
+#include <folly/coro/BlockingWait.h>
 #include <folly/executors/ManualExecutor.h>
 #include <folly/futures/FutureSplitter.h>
 #include <folly/futures/Promise.h>
@@ -1342,7 +1343,7 @@ TEST(EdenMount, waitForPendingWritesDuringDestroy) {
 
   auto bgThread = std::thread([&] {
     try {
-      rawMount->waitForPendingWrites().get(kTimeout);
+      folly::coro::blockingWait(rawMount->co_waitForPendingWrites());
     } catch (...) {
     }
   });
