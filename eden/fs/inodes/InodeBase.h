@@ -495,8 +495,8 @@ class InodeBase {
    * Force materialize a file or a tree and rely on the overlay as the source of
    * the files. If the inode is a symlink and followSymlink is true, its target
    * will be materialized if possible. If the inode is a tree, every child in
-   * this node will be recursively materialized. This function should be careful
-   * to be used and should be used by RECAS backing store only
+   * this node will be recursively materialized. Meant for debugging and
+   * benchmarking through the `ensureMaterialized` Thrift endpoint.
    */
   [[nodiscard]] virtual ImmediateFuture<folly::Unit> ensureMaterialized(
       const ObjectFetchContextPtr& context,

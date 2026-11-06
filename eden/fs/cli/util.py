@@ -497,23 +497,6 @@ class HgRepo(Repo):
         return out.strip().decode("utf-8")
 
 
-class ReCasRepo(Repo):
-    HEAD = "HEAD"
-
-    def __init__(self, source: str, working_dir: Optional[str] = None) -> None:
-        if working_dir is not None:
-            raise RuntimeError("ReCas Repo is not expected a working_dir")
-        super(ReCasRepo, self).__init__("recas", source, working_dir)
-
-    def __repr__(self) -> str:
-        return f"ReCasRepo(source={self.source!r})"
-
-    def get_commit_hash(self, commit: str) -> str:
-        raise NotImplementedError(
-            "get_commit_hash is not supposed to be called for ReCasRepo"
-        )
-
-
 class HttpRepo(Repo):
     HEAD = "HEAD"
 
@@ -567,14 +550,6 @@ def get_hg_repo(path: str, backing_type: Optional[str] = None) -> Optional[HgRep
     return HgRepo(repo_path, working_dir, backing_type)
 
 
-def get_recas_repo(path: str) -> Optional[ReCasRepo]:
-    """
-    If path points to a Re Cas dir, return a ReCasRepo object.
-    Otherwise, return None.
-    """
-    return ReCasRepo(path)
-
-
 def get_http_repo(path: str) -> Optional[HttpRepo]:
     """
     Return a HttpRepo object, with the source path.
@@ -590,11 +565,6 @@ def get_repo(path: str, backing_store_type: Optional[str] = None) -> Optional[Re
         # The repository for http is the server backend (host:port).
         # Skip checking if the local path exists with the repo source name.
         return get_http_repo(path)
-
-    if backing_store_type is not None and backing_store_type == "recas":
-        recas_repo = get_recas_repo(path)
-        if recas_repo is not None:
-            return recas_repo
 
     path = os.path.realpath(path)
     if not os.path.exists(path):

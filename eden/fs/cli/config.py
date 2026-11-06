@@ -109,12 +109,12 @@ CONFIG_JSON_LOCK = "config.json.lock"
 # in the Rust CLI at fs/cli_rs/edenfs-client/src/checkout.rs and the list in
 # the Daemon's CheckoutConfig at fs/config/CheckoutConfig.h.
 DEFAULT_REVISION = {  # supported repo name -> default bookmark
-    # The daemon no longer mounts "git" checkouts; the CLI keeps recognising
-    # the type so existing ones can still be listed and removed.
+    # The daemon no longer mounts "git" or "recas" checkouts; the CLI keeps
+    # recognising the types so existing ones can still be listed and removed.
     "git": "refs/heads/master",
+    "recas": "",
     "hg": "first(present(master) + .)",
     "filteredhg": "first(present(master) + .)",
-    "recas": "",
     "http": "",
 }
 
@@ -226,7 +226,6 @@ class CheckoutConfig(typing.NamedTuple):
     redirection_targets: Dict[str, str]
     active_prefetch_profiles: List[str]
     use_write_back_cache: bool
-    re_use_case: str
     inode_catalog_type: Optional[str]
     off_mount_repo_dir: bool
 
@@ -1580,9 +1579,6 @@ class EdenCheckout:
             "profiles": {
                 "active": checkout_config.active_prefetch_profiles,
             },
-            "recas": {
-                "use-case": checkout_config.re_use_case,
-            },
         }
 
         util.write_file_atomically(
@@ -1706,12 +1702,6 @@ class EdenCheckout:
         if not isinstance(use_write_back_cache, bool):
             use_write_back_cache = False
 
-        re_use_case = "buck2-default"
-        recas = config.get("recas")
-        if recas is not None:
-            if recas.get("use-case") is not None:
-                re_use_case = str(recas.get("use-case"))
-
         off_mount_repo_dir = repository.get("off-mount-repo-dir")
         if not isinstance(off_mount_repo_dir, bool):
             off_mount_repo_dir = False
@@ -1756,7 +1746,6 @@ class EdenCheckout:
             ),
             active_prefetch_profiles=prefetch_profiles,
             use_write_back_cache=use_write_back_cache,
-            re_use_case=re_use_case,
             inode_catalog_type=inode_catalog_type,
             off_mount_repo_dir=off_mount_repo_dir,
         )
@@ -2307,7 +2296,6 @@ def get_repo_info(
     case_sensitive: bool,
     overlay_type: Optional[str],
     backing_store_type: Optional[str] = None,
-    re_use_case: Optional[str] = None,
     off_mount_repo_dir: bool = False,
 ) -> Tuple[util.Repo, CheckoutConfig]:
     # Check to see if repo_arg points to an existing EdenFS mount
@@ -2339,7 +2327,6 @@ def get_repo_info(
         case_sensitive,
         overlay_type,
         backing_store_type=backing_store_type,
-        re_use_case=re_use_case,
         off_mount_repo_dir=off_mount_repo_dir,
     )
 
@@ -2353,7 +2340,6 @@ def create_checkout_config(
     case_sensitive: bool,
     overlay_type: Optional[str],
     backing_store_type: Optional[str] = None,
-    re_use_case: Optional[str] = None,
     off_mount_repo_dir: bool = False,
 ) -> CheckoutConfig:
     mount_protocol = util.get_protocol(nfs)
@@ -2399,7 +2385,6 @@ def create_checkout_config(
         redirection_targets={},
         active_prefetch_profiles=[],
         use_write_back_cache=False,
-        re_use_case=re_use_case or "buck2-default",
         inode_catalog_type=overlay_type,
         off_mount_repo_dir=off_mount_repo_dir,
     )

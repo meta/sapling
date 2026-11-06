@@ -108,7 +108,6 @@ cpp_binary(
         "DEFAULT": [],
         "ovr_config//os:linux": [
             "//eden/fs/store/facebook/http:http",
-            "//eden/fs/store/facebook/recas:recas",
             "//eden/fs/telemetry/facebook:activity_recorder",
             "//services_efficiency/heap:init",
         ],

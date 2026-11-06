@@ -33,7 +33,7 @@ class EmptyBackingStore final : public BijectiveBackingStore {
   int64_t dropAllPendingRequestsFromQueue() override {
     XLOG(
         WARN,
-        "dropAllPendingRequestsFromQueue() is not implemented for ReCasBackingStores");
+        "dropAllPendingRequestsFromQueue() is not implemented for EmptyBackingStore");
     return 0;
   }
 

@@ -15,8 +15,6 @@ BackingStoreType toBackingStoreType(std::string_view type) {
     return BackingStoreType::HG;
   } else if (type == "filteredhg") {
     return BackingStoreType::FILTEREDHG;
-  } else if (type == "recas") {
-    return BackingStoreType::RECAS;
   } else if (type == "http") {
     return BackingStoreType::HTTP;
   } else if (type.empty()) {
@@ -32,8 +30,6 @@ std::string_view toBackingStoreString(BackingStoreType type) {
       return "hg";
     case BackingStoreType::FILTEREDHG:
       return "filteredhg";
-    case BackingStoreType::RECAS:
-      return "recas";
     case BackingStoreType::HTTP:
       return "http";
     case BackingStoreType::EMPTY:

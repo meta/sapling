@@ -306,9 +306,6 @@ class ObjectFetchContext : public RefCounted {
     return fetchedSource_.load(std::memory_order_relaxed);
   }
 
-  // RequestInfo keys used by ReCasBackingStore
-  inline static const std::string kSessionIdField = "session-id";
-  inline static const std::string kCacheSessionIdField = "cache-session-id";
   // RequestInfo keys used by SaplingBackingStore
   inline static const std::string kClientCorrelator = "client-correlator";
   inline static const std::string kClientEntryPoint = "client-entrypoint";

@@ -551,7 +551,6 @@ class ListTest(unittest.TestCase):
                 redirection_targets={},
                 active_prefetch_profiles=[],
                 use_write_back_cache=False,
-                re_use_case="buck2-default",
                 inode_catalog_type=None,
                 off_mount_repo_dir=False,
             )
@@ -575,7 +574,6 @@ class ListTest(unittest.TestCase):
                 redirection_targets={},
                 active_prefetch_profiles=[],
                 use_write_back_cache=False,
-                re_use_case="buck2-default",
                 inode_catalog_type=None,
                 off_mount_repo_dir=False,
             )
@@ -599,7 +597,6 @@ class ListTest(unittest.TestCase):
                 redirection_targets={},
                 active_prefetch_profiles=[],
                 use_write_back_cache=False,
-                re_use_case="buck2-default",
                 inode_catalog_type=None,
                 off_mount_repo_dir=False,
             )
@@ -623,7 +620,6 @@ class ListTest(unittest.TestCase):
                 redirection_targets={},
                 active_prefetch_profiles=[],
                 use_write_back_cache=False,
-                re_use_case="buck2-default",
                 inode_catalog_type=None,
                 off_mount_repo_dir=False,
             )
@@ -647,7 +643,6 @@ class ListTest(unittest.TestCase):
                 redirection_targets={},
                 active_prefetch_profiles=[],
                 use_write_back_cache=False,
-                re_use_case="buck2-default",
                 inode_catalog_type=None,
                 off_mount_repo_dir=False,
             )
@@ -788,7 +783,6 @@ class ListTest(unittest.TestCase):
                 redirection_targets={},
                 active_prefetch_profiles=[],
                 use_write_back_cache=False,
-                re_use_case="buck2-default",
                 inode_catalog_type=None,
                 off_mount_repo_dir=False,
             )
@@ -812,7 +806,6 @@ class ListTest(unittest.TestCase):
                 redirection_targets={},
                 active_prefetch_profiles=[],
                 use_write_back_cache=False,
-                re_use_case="buck2-default",
                 inode_catalog_type=None,
                 off_mount_repo_dir=False,
             )

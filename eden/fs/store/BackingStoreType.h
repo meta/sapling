@@ -13,7 +13,7 @@
 
 namespace facebook::eden {
 
-enum BackingStoreType : uint8_t { EMPTY, HG, RECAS, HTTP, FILTEREDHG };
+enum BackingStoreType : uint8_t { EMPTY, HG, HTTP, FILTEREDHG };
 
 BackingStoreType toBackingStoreType(std::string_view type);
 

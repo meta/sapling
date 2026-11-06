@@ -343,6 +343,33 @@ prefetching-enable = true
 
         self.assertEqual({}, mounts)
 
+    def test_combine_mount_info_lists_types_the_daemon_no_longer_mounts(
+        self,
+    ) -> None:
+        checkouts = []
+        for scm_type in ("git", "recas"):
+            client_dir = self._state_dir / "clients" / f"{scm_type}-client"
+            client_dir.mkdir(parents=True)
+            (client_dir / "config.toml").write_text(
+                f"""
+[repository]
+path = "/backing-repo"
+type = "{scm_type}"
+"""
+            )
+            checkouts.append(
+                config_mod.EdenCheckout(
+                    self.get_config(), self.tmp_dir / f"{scm_type}-mount", client_dir
+                )
+            )
+
+        mounts = config_mod.EdenInstance._combine_mount_info([], checkouts)
+
+        self.assertEqual(
+            {self.tmp_dir / "git-mount", self.tmp_dir / "recas-mount"},
+            set(mounts.keys()),
+        )
+
     def test_combine_mount_info_preserves_invalid_config_errors(self) -> None:
         cfg = self.get_config()
         client_dir = self._state_dir / "clients" / "broken-client"

@@ -46,8 +46,6 @@ constexpr folly::StringPiece kMountProtocol{"protocol"};
 constexpr folly::StringPiece kInodeCatalogType{"inode-catalog-type"};
 constexpr folly::StringPiece kRequireUtf8Path{"require-utf8-path"};
 constexpr folly::StringPiece kUseWriteBackCache{"use-write-back-cache"};
-constexpr folly::StringPiece kReCas{"recas"};
-constexpr folly::StringPiece kReUseCase{"use-case"};
 #ifdef _WIN32
 constexpr folly::StringPiece kRepoGuid{"guid"};
 #endif
@@ -453,14 +451,6 @@ std::unique_ptr<CheckoutConfig> CheckoutConfig::loadFromClientDirectory(
 
   auto useWriteBackCache = repository->get_as<bool>(kUseWriteBackCache.str());
   config->useWriteBackCache_ = useWriteBackCache.value_or(false);
-
-  auto recas = configRoot->get_table(kReCas.str());
-  if (recas) {
-    auto re_use_case = recas->get_as<std::string>(kReUseCase.str());
-    if (re_use_case) {
-      config->reUseCase_ = *re_use_case;
-    }
-  }
 
 #ifdef _WIN32
   auto guid = repository->get_as<std::string>(kRepoGuid.str());

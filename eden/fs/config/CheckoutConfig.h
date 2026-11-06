@@ -27,7 +27,6 @@ namespace facebook::eden {
 // the Python CLI at fs/cli/config.py.
 constexpr BackingStoreType kSupportedRepositoryTypes[] = {
     BackingStoreType::HG,
-    BackingStoreType::RECAS,
     BackingStoreType::EMPTY,
     BackingStoreType::HTTP,
 };
@@ -125,8 +124,7 @@ class CheckoutConfig {
   /**
    * Get the repository type.
    *
-   * Currently supported types include "hg", "filteredhg", "empty", and
-   * "recas".
+   * Currently supported types include "hg", "filteredhg" and "empty".
    */
   const std::string& getRepoType() const {
     return repoType_;
@@ -203,10 +201,6 @@ class CheckoutConfig {
     return useWriteBackCache_;
   }
 
-  const std::string& getReUseCase() const {
-    return reUseCase_;
-  }
-
 #ifdef _WIN32
   /** Guid for that repository */
   Guid getRepoGuid() const {
@@ -225,8 +219,6 @@ class CheckoutConfig {
   bool requireUtf8Path_{true};
 
   bool useWriteBackCache_{false};
-
-  std::string reUseCase_{"buck2-default"};
 
 #ifdef _WIN32
   Guid repoGuid_;
