@@ -351,6 +351,24 @@ class RecoveryAfterTakeoverTest(RecoveryTestBase):
 
 @testcase.eden_repo_test(run_on_nfs=False, run_coroutines=False, run_io_uring=False)
 @unittest.skipIf(sys.platform != "linux", "exercised on Linux FUSE mounts")
+class StaleMountTest(RecoveryTestBase):
+    # Recovery is off, so an aborted connection leaves its kernel mount behind.
+
+    def test_eden_mount_replaces_a_stale_mount(self) -> None:
+        self.abort_fuse_connection()
+        poll_until(
+            lambda: True if self.mount_state() == "NOT_RUNNING" else None,
+            timeout=30,
+        )
+        self.assertTrue(self.eden.in_proc_mounts(self.mount))
+
+        self.eden.run_cmd("mount", self.mount)
+        self.assertEqual("RUNNING", self.mount_state())
+        self.assertEqual("hola\n", (Path(self.mount) / "hello").read_text())
+
+
+@testcase.eden_repo_test(run_on_nfs=False, run_coroutines=False, run_io_uring=False)
+@unittest.skipIf(sys.platform != "linux", "exercised on Linux FUSE mounts")
 class GracefulRestartRecoveryTest(RecoveryTestBase):
     def select_storage_engine(self) -> str:
         return "sqlite"

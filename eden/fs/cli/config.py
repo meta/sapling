@@ -963,42 +963,7 @@ Do you want to run `eden mount %s` instead?"""
         # Exception if the config is in an invalid state.
         checkout.get_config()
 
-        # Make sure the mount path exists
-        path.mkdir(parents=True, exist_ok=True)
-
-        # Check if it is already mounted.
-        try:
-            root = path / ".eden" / "root"
-            target = os.readlink(root)
-            if Path(target) == path:
-                print_stderr(
-                    f"ERROR: Mount point in use! {path} is already mounted by EdenFS."
-                )
-                return 1
-            else:
-                # If we are here, MOUNT/.eden/root is a symlink, but it does not
-                # point to MOUNT. This suggests `path` is a subdirectory of an
-                # existing mount, though we should never reach this point
-                # because _get_client_dir_for_mount_point() above should have
-                # already thrown an exception. We return non-zero here just in
-                # case.
-                print_stderr(
-                    f"ERROR: Mount point in use! "
-                    f"{path} is already mounted by EdenFS as part of {root}."
-                )
-                return 1
-        except OSError as ex:
-            # - ENOENT is expected if the mount is not mounted.
-            # - We'll get ENOTCONN if the directory was not properly unmounted from a
-            #   previous EdenFS instance.  Remounting over this directory is okay (even
-            #   though ideally we would unmount the old stale mount point to clean it
-            #   up).
-            # - EINVAL can happen if .eden/root isn't a symlink.  This isn't expected
-            #   in most circumstances, but it does mean that the directory isn't
-            #   currently an EdenFS checkout.
-            err = ex.errno
-            if err not in (errno.ENOENT, errno.ENOTCONN, errno.EINVAL):
-                raise
+        _make_mount_point_dir(path)
 
         # Ask eden to mount the path
         mount_info = MountArgument(
@@ -2223,6 +2188,20 @@ def _check_same_eden_directory(found_path: Path, path_arg: Path) -> None:
             f"{found_path}, which is different from the explicitly requested "
             f"instance at {path_arg}"
         )
+
+
+def _make_mount_point_dir(path: Path) -> None:
+    # Never stat an existing mount point: a stale mount left by an earlier
+    # EdenFS fails the stat, or the kernel answers it from cache. The
+    # privhelper detaches such a mount before mounting, and EdenFS rejects a
+    # path it already serves. The errnos match isErrnoFromHangingMount().
+    try:
+        path.mkdir(parents=True)
+    except FileExistsError:
+        pass
+    except OSError as ex:
+        if ex.errno not in (errno.ENOTCONN, errno.EIO, errno.ETIMEDOUT):
+            raise
 
 
 def _verify_mount_point(mount_point: str) -> None:
