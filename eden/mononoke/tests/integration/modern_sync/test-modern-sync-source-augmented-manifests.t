@@ -67,16 +67,16 @@ manifests and remove them: nothing may read them.
   $ mkdir "$TESTTMP/orig-hgmanifests"
   $ mv "$TESTTMP"/blobstore/blobs/blob-repo0000.hgmanifest.* "$TESTTMP/orig-hgmanifests"
 
-FIXME: modern sync still reads the source's Hg manifests, so the sync fails
-and the replica gets none of the trees.
+Modern sync reads the source's trees from its augmented manifests, and the
+replica gets the same trees the source's Hg manifests held.
   $ ( COMMON_ARGS=("${COMMON_ARGS[@]/#just_knobs.json/modern_sync_just_knobs.json}")
   >   mononoke_modern_sync "" sync-once orig dest --start-id 0 > "$TESTTMP/sync.out" 2>&1 ); echo "exit $?"
-  exit 1
+  exit 0
   $ grep -c 'Blob is missing: hgmanifest' "$TESTTMP/sync.out" || true
-  1
+  0
   $ mononoke_admin mutable-counters --repo-name orig get modern_sync
-  None
+  Some(2)
   $ for f in "$TESTTMP"/orig-hgmanifests/*; do
   >   cmp -s "$f" "$TESTTMP/blobstore/blobs/$(basename "$f" | sed 's/repo0000/repo0001/')" || echo "$f"
   > done | wc -l
-  7
+  0

@@ -46,7 +46,10 @@ use minibytes::Bytes;
 use mononoke_types::BonsaiChangeset;
 use mononoke_types::ChangesetId;
 use repo_blobstore::RepoBlobstore;
+use repo_blobstore::RepoBlobstoreRef;
+use repo_identity::RepoIdentityRef;
 
+use crate::Repo;
 use crate::sender::edenapi::BookmarkMove;
 use crate::sender::edenapi::EdenapiConfig;
 use crate::sender::edenapi::EdenapiSender;
@@ -58,6 +61,7 @@ pub struct DefaultEdenapiSenderBuilder {
     config: EdenapiConfig,
     reponame: String,
     repo_blobstore: RepoBlobstore,
+    source_repo_name: String,
 }
 
 impl DefaultEdenapiSenderBuilder {
@@ -65,13 +69,14 @@ impl DefaultEdenapiSenderBuilder {
         ctx: CoreContext,
         config: EdenapiConfig,
         reponame: String,
-        repo_blobstore: RepoBlobstore,
+        source_repo: &Repo,
     ) -> Self {
         Self {
             ctx,
             config,
             reponame,
-            repo_blobstore,
+            repo_blobstore: source_repo.repo_blobstore().clone(),
+            source_repo_name: source_repo.repo_identity().name().to_string(),
         }
     }
 
@@ -116,6 +121,7 @@ impl DefaultEdenapiSenderBuilder {
         Ok(DefaultEdenapiSender {
             ctx: self.ctx.clone(),
             repo_blobstore: self.repo_blobstore,
+            source_repo_name: self.source_repo_name,
             client,
         })
     }
@@ -125,6 +131,7 @@ pub struct DefaultEdenapiSender {
     ctx: CoreContext,
     client: Client,
     repo_blobstore: RepoBlobstore,
+    source_repo_name: String,
 }
 
 #[async_trait]
@@ -168,7 +175,10 @@ impl EdenapiSender for DefaultEdenapiSender {
             .map(|mf_id| {
                 let ctx = self.ctx.clone();
                 let repo_blobstore = self.repo_blobstore.clone();
-                async move { util::from_tree_to_entry(mf_id, &ctx, &repo_blobstore).await }
+                let source_repo_name = &self.source_repo_name;
+                async move {
+                    util::from_tree_to_entry(mf_id, &ctx, &repo_blobstore, source_repo_name).await
+                }
             })
             // Modern sync controls the size of the dequeue batch, so we
             // can read all the tree blobs concurrently.

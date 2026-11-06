@@ -41,12 +41,12 @@ use futures::channel::oneshot;
 use futures::future;
 use futures::stream;
 use manifest::Entry;
-use manifest::find_intersection_of_diffs;
 use mercurial_derivation::derive_hg_changeset::DeriveHgChangeset;
 use mercurial_types::HgChangesetId;
 use mercurial_types::HgFileNodeId;
 use mercurial_types::HgManifestId;
 use mercurial_types::blobs::HgBlobChangeset;
+use mercurial_types::sharded_augmented_manifest::find_intersection_of_hg_diffs;
 use metaconfig_types::ModernSyncConfig;
 use metadata::Metadata;
 use mononoke_app::MononokeApp;
@@ -60,7 +60,6 @@ use mononoke_types::sha1_hash::SHA1_HASH_LENGTH_BYTES;
 use mutable_counters::ArcMutableCounters;
 use mutable_counters::MutableCounters;
 use mutable_counters::MutableCountersArc;
-use repo_blobstore::RepoBlobstore;
 use repo_blobstore::RepoBlobstoreRef;
 use repo_derived_data::RepoDerivedDataRef;
 use repo_identity::RepoIdentityRef;
@@ -331,14 +330,8 @@ pub async fn sync(
             break initial_state;
         };
 
-        let sender = build_edenfs_client(
-            ctx.clone(),
-            &app_args,
-            &dest_repo_name,
-            &config,
-            repo_blobstore,
-        )
-        .await?;
+        let sender =
+            build_edenfs_client(ctx.clone(), &app_args, &dest_repo_name, &config, &repo).await?;
         let sender = if let Some(sender_decorator) = sender_decorator {
             sender_decorator(sender)
         } else {
@@ -511,7 +504,7 @@ pub async fn build_edenfs_client(
     app_args: &ModernSyncArgs,
     repo_name: &str,
     config: &ModernSyncConfig,
-    repo_blobstore: &RepoBlobstore,
+    source_repo: &Repo,
 ) -> Result<Arc<dyn EdenapiSender + Send + Sync>> {
     let url = if let Some(socket) = app_args.edenapi_args.dest_socket {
         // Only for integration tests
@@ -534,14 +527,9 @@ pub async fn build_edenfs_client(
     };
 
     Ok(Arc::new(RetryEdenapiSender::new(Arc::new(
-        DefaultEdenapiSenderBuilder::new(
-            ctx.clone(),
-            config,
-            repo_name.to_string(),
-            repo_blobstore.clone(),
-        )
-        .build()
-        .await?,
+        DefaultEdenapiSenderBuilder::new(ctx.clone(), config, repo_name.to_string(), source_repo)
+            .build()
+            .await?,
     ))))
 }
 
@@ -942,8 +930,7 @@ pub async fn process_one_changeset_contents(
     .await?;
 
     let hg_mf_id = hg_cs.manifestid();
-    let (mut mf_ids, file_ids) =
-        sort_manifest_changes(ctx, repo.repo_blobstore(), hg_mf_id, mf_ids_p).await?;
+    let (mut mf_ids, file_ids) = sort_manifest_changes(ctx, repo, hg_mf_id, mf_ids_p).await?;
     mf_ids.push(hg_mf_id);
 
     // Send files and trees
@@ -986,14 +973,20 @@ pub async fn process_one_changeset_contents(
 
 async fn sort_manifest_changes(
     ctx: &CoreContext,
-    repo_blobstore: &RepoBlobstore,
+    repo: &Repo,
     mf_id: HgManifestId,
     mf_ids_p: Vec<HgManifestId>,
 ) -> Result<(Vec<mercurial_types::HgManifestId>, Vec<HgFileNodeId>)> {
     let mut mf_ids: Vec<mercurial_types::HgManifestId> = vec![];
     let mut file_ids: Vec<HgFileNodeId> = vec![];
 
-    let entries = find_intersection_of_diffs(ctx.clone(), repo_blobstore.clone(), mf_id, mf_ids_p);
+    let entries = find_intersection_of_hg_diffs(
+        ctx,
+        repo.repo_blobstore().clone(),
+        repo.repo_identity().name(),
+        mf_id,
+        mf_ids_p,
+    );
     futures::pin_mut!(entries);
 
     while let Some((path, entry)) = entries.try_next().await? {

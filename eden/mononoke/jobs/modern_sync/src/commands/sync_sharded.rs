@@ -21,7 +21,6 @@ use executor_lib::RepoShardedProcess;
 use executor_lib::RepoShardedProcessExecutor;
 use mononoke_app::MononokeApp;
 use mononoke_app::args::SourceRepoArgs;
-use repo_blobstore::RepoBlobstoreRef;
 use sharding_ext::RepoShard;
 
 use crate::ModernSyncArgs;
@@ -97,19 +96,12 @@ impl RepoShardedProcess for ModernSyncProcess {
         let config = repo.repo_config.modern_sync_config.clone().ok_or(anyhow!(
             "No modern sync config found for repo {source_repo_name}"
         ))?;
-        let repo_blobstore = repo.repo_blobstore();
 
         // Check that we can connect to the target repo
         let app_args = self.app.args::<ModernSyncArgs>()?;
-        _ = crate::sync::build_edenfs_client(
-            ctx,
-            &app_args,
-            &target_repo_name,
-            &config,
-            repo_blobstore,
-        )
-        .await
-        .with_context(|| format!("checking that we can connect to {target_repo_name}"))?;
+        _ = crate::sync::build_edenfs_client(ctx, &app_args, &target_repo_name, &config, &repo)
+            .await
+            .with_context(|| format!("checking that we can connect to {target_repo_name}"))?;
 
         Ok(Arc::new(ModernSyncProcessExecutor {
             app: self.app.clone(),

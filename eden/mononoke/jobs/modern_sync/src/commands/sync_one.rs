@@ -83,14 +83,9 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
         };
 
         Arc::new(
-            DefaultEdenapiSenderBuilder::new(
-                ctx.clone(),
-                edenapi_config,
-                dest_repo,
-                repo.repo_blobstore().clone(),
-            )
-            .build()
-            .await?,
+            DefaultEdenapiSenderBuilder::new(ctx.clone(), edenapi_config, dest_repo, &repo)
+                .build()
+                .await?,
         )
     };
 
