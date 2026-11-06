@@ -35,3 +35,24 @@ eden debug bench fs-io --file-list=reads.txt --jobs=64 --drop-kernel-caches=0 --
 
 To use FUSE over io_uring, also set `[fuse]` `use-io-uring = "true"` and an
 `io-uring-kernel-release-regex` that matches the running kernel.
+
+## Continuous runs in ServiceLab
+
+`servicelab/` registers the ServiceLab benchmark `benchmark_edenfs_fsio`
+(`fbcode/eden/fs/benchmarks/facebook/BUCK`). Its fbpkg carries `edenfs`
+and both `edenfsctl` CLIs built at the revision under test; the benchmark
+starts a private daemon from them in the ServiceLab container, clones
+fbsource at a pinned commit, and runs the fs-io workloads in the clone. Each
+fs-io phase's timings and the daemon's counters become benchmark metrics.
+The Tupperware side of the job is `fbcode/tupperware/config/scm/eden/fsio_benchmark.cinc`.
+
+Run it locally in a Source Control container (one made by
+`scm-eden-container-clone`, such as an agent FaaS container) with the binaries
+in one directory:
+
+```
+buck2 build @fbcode//mode/opt //eden/fs/service:edenfs //eden/fs/cli_rs/edenfsctl:edenfsctl //eden/fs/cli:edenfsctl //eden/fs/benchmarks/facebook:edenfs_fsio
+# copy edenfs, edenfsctl, and the Python CLI as edenfsctl.real into $PKG
+EDENFS_FSIO_PACKAGE_DIR=$PKG EDENFS_FSIO_WORK_DIR=$HOME/fsio_work \
+  buck-out/.../edenfs_fsio.par --bm_regex 'clean_reads$' --json
+```
