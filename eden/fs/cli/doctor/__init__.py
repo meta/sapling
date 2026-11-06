@@ -767,6 +767,47 @@ class CheckoutConfigUnreadable(Problem):
         )
 
 
+class CheckoutStateDirMissing(FixableProblem):
+    """config.json lists a checkout whose client directory no longer exists: a
+    removal interrupted after the directory was deleted, or a hand-deleted
+    directory. EdenFS skips it at startup, and until D129321444 `eden rm` failed on
+    it. With no state left there is nothing to lose: unregister it."""
+
+    def __init__(self, checkout_info: CheckoutInfo, state_dir: Path) -> None:
+        self._instance = checkout_info.instance
+        self._path = checkout_info.path
+        self._state_dir = state_dir
+
+    def description(self) -> str:
+        return (
+            f"{self._path} is listed in Eden's configuration file, but its state "
+            f"directory {self._state_dir} does not exist, so EdenFS cannot mount it."
+        )
+
+    def dry_run_msg(self) -> str:
+        return f"Would remove {self._path} from Eden's configuration file"
+
+    def start_msg(self) -> str:
+        return f"Removing {self._path} from Eden's configuration file"
+
+    def perform_fix(self) -> None:
+        # Only the config.json entry, and only while it still names the missing
+        # state directory: `destroy_mount` would delete a client directory that
+        # another clone created under the same name since the check ran, and a
+        # replacement clone registered at the same path keeps its entry.
+        self._instance.unregister_checkout(self._path, self._state_dir)
+
+    def check_fix(self) -> bool:
+        # Fixed when the entry is gone, or when the path's entry names a state
+        # directory that exists (the original one recreated, or a replacement
+        # clone's) and the problem no longer exists. `get_checkouts` reads the
+        # directory map without reading each checkout's config.
+        for checkout in self._instance.get_checkouts():
+            if checkout.path == self._path:
+                return checkout.state_dir.is_dir()
+        return True
+
+
 class EdenCheckoutConfigCorruption(FixableProblem):
     _checkout_info: CheckoutInfo
     _ex: Exception
@@ -926,7 +967,15 @@ def check_mount(
     debug: bool,
     fast: bool,
 ) -> None:
-    if checkout.state is None and checkout.config_error is not None:
+    configured_state_dir = checkout.configured_state_dir
+    if (
+        checkout.state is None
+        and configured_state_dir is not None
+        and config_mod.path_is_missing(configured_state_dir)
+    ):
+        # Nothing of the checkout is left to mount or to lose.
+        tracker.add_problem(CheckoutStateDirMissing(checkout, configured_state_dir))
+    elif checkout.state is None and checkout.config_error is not None:
         # Remounting would fail the same way, so don't offer it as a fix.
         tracker.add_problem(CheckoutConfigUnreadable(checkout, checkout.config_error))
     elif checkout.state is None:

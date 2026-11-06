@@ -6,6 +6,7 @@
 
 # pyre-strict
 
+import shutil
 import sys
 from typing import Optional
 from unittest.mock import MagicMock, patch
@@ -116,6 +117,44 @@ Running "eden rm {edenfs_path2}" will remove this checkout.
             out.getvalue(),
         )
         self.assertEqual(1, exit_code)
+
+    def test_configured_checkout_without_state_dir_is_unregistered(self) -> None:
+        # A removal interrupted after the client directory was deleted leaves
+        # a config.json entry EdenFS cannot mount; doctor removes the entry.
+        instance = FakeEdenInstance(self.make_temporary_directory())
+        edenfs_path1 = instance.create_test_mount("path1").path
+        checkout2 = instance.create_test_mount("path2", active=False)
+        shutil.rmtree(checkout2.state_dir)
+
+        out = TestOutput()
+        exit_code = doctor.cure_what_ails_you(
+            # pyre-fixme[6]: For 1st param expected `EdenInstance` but got
+            #  `FakeEdenInstance`.
+            instance,
+            dry_run=False,
+            mount_table=instance.mount_table,
+            fs_util=FakeFsUtil(),
+            proc_utils=self.make_proc_utils(),
+            vscode_extensions_checker=getFakeVSCodeExtensionsChecker(),
+            network_checker=FakeNetworkChecker(),
+            out=out,
+        )
+
+        self.assertEqual(
+            f"""\
+Checking {edenfs_path1}
+Checking {checkout2.path}
+<yellow>- Found problem:<reset>
+{checkout2.path} is listed in Eden's configuration file, but its state directory {checkout2.state_dir} does not exist, so EdenFS cannot mount it.
+Removing {checkout2.path} from Eden's configuration file...<green>fixed<reset>
+
+<yellow>Successfully fixed 1 problem.<reset>
+""",
+            out.getvalue(),
+        )
+        self.assertEqual(0, exit_code)
+        self.assertEqual([str(checkout2.path)], instance.unregister_calls)
+        self.assertNotIn(str(checkout2.path), list(instance.get_mount_paths()))
 
     def test_unconfigured_mount_is_registered(self) -> None:
         # An `eden clone` that stopped between the mount and the directory-map

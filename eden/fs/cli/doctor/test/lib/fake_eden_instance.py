@@ -28,6 +28,7 @@ from eden.fs.cli.config import (
     EdenInstance,
     HealthStatus,
     ListMountInfo,
+    path_is_missing,
 )
 from fb303_core.thrift_types import fb303_status
 
@@ -93,6 +94,7 @@ class FakeEdenInstance(AbstractEdenInstance):
         # A map from mount path --> FakeCheckout
         self._checkouts_by_path: Dict[str, FakeCheckout] = {}
         self._unconfigured_checkouts: Dict[str, FakeCheckout] = {}
+        self.unregister_calls: List[str] = []
         self._hg_repo_by_path: Dict[Path, FakeHgRepo] = {}
         self.mount_table = FakeMountTable()
         self._next_dev_id = 10
@@ -212,6 +214,18 @@ class FakeEdenInstance(AbstractEdenInstance):
         self._unconfigured_checkouts[mount_path] = checkout
         if not keep_state_dir:
             shutil.rmtree(checkout.state_dir)
+
+    def unregister_checkout(self, path: Path, state_dir: Path) -> bool:
+        self.unregister_calls.append(str(path))
+        checkout = self._checkouts_by_path.get(str(path))
+        if (
+            checkout is None
+            or checkout.state_dir != state_dir
+            or not path_is_missing(state_dir)
+        ):
+            return False
+        self._checkouts_by_path.pop(str(path))
+        return True
 
     def can_register_running_mount(self, path: Path, client_dir: Path) -> bool:
         checkout = self._unconfigured_checkouts.get(str(path))

@@ -329,6 +329,20 @@ def _remove_client_dir(client_dir: Path) -> None:
         log.warning(f"Client directory {client_dir} was already removed")
 
 
+def path_is_missing(path: Path) -> bool:
+    """True only when nothing exists at `path`, the link itself included.
+    `Path.exists()` is also False for a dangling link or a directory that
+    cannot be reached right now, and those are not reasons to drop a checkout
+    from config.json."""
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
 class EdenInstance(AbstractEdenInstance):
     """This class contains information about a particular edenfs instance.
 
@@ -1360,6 +1374,26 @@ Do you want to run `eden mount %s` instead?"""
                 raise Exception(f"mount path {path} already exists.")
             config_data[path] = dir_name
             self._write_directory_map(config_data)
+
+    def unregister_checkout(self, path: Path, state_dir: Path) -> bool:
+        """Remove `path` from config.json and touch nothing on disk. For a
+        checkout whose state directory `state_dir` is gone; `destroy_mount` is
+        for one whose state directory must be deleted too.
+
+        The entry goes only while it still names `state_dir` and nothing
+        exists at that path, both checked under the config.json lock: a clone
+        that registered a replacement at `path` in the meantime keeps its
+        entry, and so does a directory that merely cannot be reached right
+        now. Returns whether the entry was removed."""
+        with self._directory_map_lock():
+            config_data = self._get_directory_map()
+            if config_data.get(path) != state_dir.name or not path_is_missing(
+                state_dir
+            ):
+                return False
+            del config_data[path]
+            self._write_directory_map(config_data)
+            return True
 
     def _remove_path_from_directory_map(self, path: Path) -> None:
         with self._directory_map_lock():

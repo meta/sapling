@@ -1042,6 +1042,70 @@ class ClonePrecheckTest(unittest.TestCase, TemporaryDirectoryMixin):
                     instance.clone(MagicMock(), mount_path, "0" * 40)
 
 
+class UnregisterCheckoutTest(unittest.TestCase, TemporaryDirectoryMixin):
+    """`unregister_checkout` removes a config.json entry only while it still
+    names the missing state directory, so a replacement clone registered at
+    the same path in the meantime keeps its entry."""
+
+    def make_instance(self) -> tuple[config_mod.EdenInstance, Path]:
+        tmp_dir = Path(self.make_temporary_directory())
+        state_dir = tmp_dir / "state"
+        (state_dir / "clients").mkdir(parents=True)
+        instance = config_mod.EdenInstance(
+            config_dir=state_dir,
+            etc_eden_dir=tmp_dir / "etc",
+            home_dir=tmp_dir / "home",
+        )
+        mount_path = tmp_dir / "mounts" / "repo"
+        instance._add_path_to_directory_map(mount_path, "repo")
+        return instance, mount_path
+
+    def test_entry_of_a_missing_state_dir_is_removed(self) -> None:
+        instance, mount_path = self.make_instance()
+        gone = instance._get_clients_dir() / "repo"
+        self.assertTrue(instance.unregister_checkout(mount_path, gone))
+        self.assertEqual([], instance.get_mount_paths())
+
+    def test_replacement_registered_since_the_check_is_kept(self) -> None:
+        instance, mount_path = self.make_instance()
+        client_dir = instance._get_clients_dir() / "repo"
+        # The replacement clone recreated the state directory under the same name.
+        client_dir.mkdir()
+        self.assertFalse(instance.unregister_checkout(mount_path, client_dir))
+        # Or registered the path with another state directory.
+        self.assertFalse(
+            instance.unregister_checkout(
+                mount_path, instance._get_clients_dir() / "repo-1"
+            )
+        )
+        self.assertEqual([str(mount_path)], instance.get_mount_paths())
+
+    def test_a_state_dir_that_cannot_be_reached_is_kept(self) -> None:
+        """Only `FileNotFoundError` means gone: a directory that cannot be
+        reached right now may still hold the checkout's state."""
+        instance, mount_path = self.make_instance()
+        client_dir = instance._get_clients_dir() / "repo"
+        real_lstat = os.lstat
+
+        def lstat(path, *args, **kwargs):
+            if Path(path) == client_dir:
+                raise PermissionError("not now")
+            return real_lstat(path, *args, **kwargs)
+
+        with patch.object(config_mod.os, "lstat", lstat):
+            self.assertFalse(instance.unregister_checkout(mount_path, client_dir))
+        self.assertEqual([str(mount_path)], instance.get_mount_paths())
+
+    def test_a_dangling_link_is_kept(self) -> None:
+        """A state directory that is a link to a missing target is still
+        something: doctor reports it instead of unregistering it."""
+        instance, mount_path = self.make_instance()
+        client_dir = instance._get_clients_dir() / "repo"
+        client_dir.symlink_to(instance._get_clients_dir() / "moved-away")
+        self.assertFalse(instance.unregister_checkout(mount_path, client_dir))
+        self.assertEqual([str(mount_path)], instance.get_mount_paths())
+
+
 class FsckThreadCountTest(unittest.TestCase):
     def test_error_discovery_threads_from_config(self) -> None:
         cmd = main_mod.FsckCmd(argparse.ArgumentParser())

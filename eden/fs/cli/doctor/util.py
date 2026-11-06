@@ -268,9 +268,12 @@ def get_checkouts_info(instance: EdenInstance) -> Dict[Path, CheckoutInfo]:
             checkout_info = checkouts.get(configured_checkout.path, None)
             if checkout_info is None:
                 checkout_info = CheckoutInfo(instance, configured_checkout.path)
-                checkout_info.configured_state_dir = configured_checkout.state_dir
                 checkouts[checkout_info.path] = checkout_info
 
+            # Set before the config is read: a listed checkout whose config
+            # cannot be read is still listed, and must not be reported as
+            # unregistered.
+            checkout_info.configured_state_dir = configured_checkout.state_dir
             if checkout_info.backing_repo is None:
                 try:
                     checkout_info.backing_repo = (
@@ -280,9 +283,6 @@ def get_checkouts_info(instance: EdenInstance) -> Dict[Path, CheckoutInfo]:
                     # Config file is missing or invalid, so the backing repo
                     # is unknown. Keep the checkout so callers can report it.
                     checkout_info.config_error = ex
-                    continue
-
-            checkout_info.configured_state_dir = configured_checkout.state_dir
         return checkouts
     except Exception as ex:
         print(f"An error occurred while getting checkouts info: {ex}", file=sys.stderr)
