@@ -1101,8 +1101,18 @@ def check_running_mount(
     fast: bool,
 ) -> None:
     if checkout_info.configured_state_dir is None:
-        tracker.add_problem(CheckoutNotConfigured(checkout_info))
-        return
+        running_state_dir = checkout_info.running_state_dir
+        if running_state_dir is None or not instance.can_register_running_mount(
+            checkout_info.path, running_state_dir
+        ):
+            tracker.add_problem(CheckoutNotConfiguredAndStateMissing(checkout_info))
+            return
+        problem = CheckoutNotConfigured(checkout_info, running_state_dir)
+        tracker.add_problem(problem)
+        if not problem.check_fix():
+            return
+        # Registered now: the remaining checks apply as to any running mount.
+        checkout_info.configured_state_dir = running_state_dir
     elif checkout_info.configured_state_dir != checkout_info.running_state_dir:
         try:
             configured_state_dir_inode = (
@@ -1219,19 +1229,48 @@ def check_running_mount(
                 ) from ex
 
 
-class CheckoutNotConfigured(Problem):
+class CheckoutNotConfigured(FixableProblem):
+    """A mount the daemon serves but config.json does not list: an `eden clone`
+    that stopped after the mount and before the directory-map write. EdenFS
+    would not remount it after a restart. Registering it with the client
+    directory the running mount uses restores the normal state."""
+
+    def __init__(self, checkout_info: CheckoutInfo, client_dir: Path) -> None:
+        self._instance = checkout_info.instance
+        self._path = checkout_info.path
+        self._client_dir = client_dir
+
+    def description(self) -> str:
+        return (
+            f"Checkout {self._path} is running but not listed in Eden's "
+            "configuration file, so EdenFS would not remount it after a restart."
+        )
+
+    def dry_run_msg(self) -> str:
+        return f"Would register {self._path} in Eden's configuration file"
+
+    def start_msg(self) -> str:
+        return f"Registering {self._path} in Eden's configuration file"
+
+    def perform_fix(self) -> None:
+        self._instance.register_running_mount(self._path, self._client_dir)
+
+    def check_fix(self) -> bool:
+        return str(self._path) in self._instance.get_mount_paths()
+
+
+class CheckoutNotConfiguredAndStateMissing(Problem):
+    """A mount the daemon serves whose client directory is gone or is not one
+    of this instance's: it cannot be registered, only removed."""
+
     def __init__(self, checkout_info: CheckoutInfo) -> None:
         msg = (
-            f"Checkout {checkout_info.path} is running but not "
-            "listed in Eden's configuration file."
+            f"Checkout {checkout_info.path} is running but not listed in Eden's "
+            "configuration file, and its state directory "
+            f"{checkout_info.running_state_dir} cannot be registered."
         )
-        # TODO: Maybe we could use some better suggestions here, depending on
-        # common cases that might lead to this situation.  (At the moment I believe this
-        # can occur if `eden clone` fails to set up the .hg directory after mounting.)
         quoted_path = shlex.quote(str(checkout_info.path))
-        remediation = (
-            f'Running "eden unmount {quoted_path}" will unmount this checkout.'
-        )
+        remediation = f'Running "eden rm {quoted_path}" will remove this checkout.'
         super().__init__(msg, remediation)
 
 

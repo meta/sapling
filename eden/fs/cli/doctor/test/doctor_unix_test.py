@@ -78,14 +78,16 @@ Checking {mount}
 
     # remove_checkout_configuration silently fails on Windows, leading to a test
     # failure.
-    def test_unconfigured_mounts_dont_crash(self) -> None:
+    def test_unconfigured_mount_without_state_dir_is_reported(self) -> None:
         # If EdenFS advertises that a mount is active, but it is not in the
-        # configuration, then at least don't throw an exception.
+        # configuration and its state directory is gone, report it with the
+        # removal remediation and don't throw an exception.
         instance = FakeEdenInstance(self.make_temporary_directory())
         edenfs_path1 = instance.create_test_mount("path1").path
         edenfs_path2 = instance.create_test_mount("path2").path
         # Remove path2 from the list of mounts in the instance
         instance.remove_checkout_configuration(str(edenfs_path2))
+        state_dir = instance.clients_path / "path2"
 
         dry_run = False
         out = TestOutput()
@@ -107,10 +109,49 @@ Checking {mount}
 Checking {edenfs_path1}
 Checking {edenfs_path2}
 <yellow>- Found problem:<reset>
-Checkout {edenfs_path2} is running but not listed in Eden's configuration file.
-Running "eden unmount {edenfs_path2}" will unmount this checkout.
+Checkout {edenfs_path2} is running but not listed in Eden's configuration file, and its state directory {state_dir} cannot be registered.
+Running "eden rm {edenfs_path2}" will remove this checkout.
 
 {get_support_suggestion()}""",
             out.getvalue(),
         )
         self.assertEqual(1, exit_code)
+
+    def test_unconfigured_mount_is_registered(self) -> None:
+        # An `eden clone` that stopped between the mount and the directory-map
+        # write leaves a running mount with its state directory but no
+        # config.json entry; doctor registers it.
+        instance = FakeEdenInstance(self.make_temporary_directory())
+        edenfs_path1 = instance.create_test_mount("path1").path
+        edenfs_path2 = instance.create_test_mount("path2").path
+        instance.remove_checkout_configuration(str(edenfs_path2), keep_state_dir=True)
+        self.assertNotIn(str(edenfs_path2), list(instance.get_mount_paths()))
+
+        out = TestOutput()
+        exit_code = doctor.cure_what_ails_you(
+            # pyre-fixme[6]: For 1st param expected `EdenInstance` but got
+            #  `FakeEdenInstance`.
+            instance,
+            dry_run=False,
+            mount_table=instance.mount_table,
+            fs_util=FakeFsUtil(),
+            proc_utils=self.make_proc_utils(),
+            vscode_extensions_checker=getFakeVSCodeExtensionsChecker(),
+            network_checker=FakeNetworkChecker(),
+            out=out,
+        )
+
+        self.assertEqual(
+            f"""\
+Checking {edenfs_path1}
+Checking {edenfs_path2}
+<yellow>- Found problem:<reset>
+Checkout {edenfs_path2} is running but not listed in Eden's configuration file, so EdenFS would not remount it after a restart.
+Registering {edenfs_path2} in Eden's configuration file...<green>fixed<reset>
+
+<yellow>Successfully fixed 1 problem.<reset>
+""",
+            out.getvalue(),
+        )
+        self.assertEqual(0, exit_code)
+        self.assertIn(str(edenfs_path2), list(instance.get_mount_paths()))
