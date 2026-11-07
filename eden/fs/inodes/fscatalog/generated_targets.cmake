@@ -24,7 +24,6 @@ eden_add_library(eden_fs_inodes_fscatalog_fsinodecatalog
     Folly::folly_varint
     eden_fs_model
     eden_fs_utils_eden_error
-    eden_service_thrift_cpp
   EXPORTED_DEPS
     Folly::folly_container_evicting_cache_map
     Folly::folly_file

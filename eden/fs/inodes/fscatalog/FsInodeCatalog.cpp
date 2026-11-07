@@ -2094,7 +2094,7 @@ void FsFileContentStore::validateHeader(
         " expected at least ",
         kHeaderLength,
         " bytes, expected headerId hex=",
-        folly::hexlify(headerId));
+        folly::hexlify(ByteRange{headerId}));
   }
 
   IOBuf buf(IOBuf::WRAP_BUFFER, ByteRange{contents});
@@ -2112,7 +2112,7 @@ void FsFileContentStore::validateHeader(
         " at offset 0: actual hex=",
         folly::hexlify(ByteRange{identifier}),
         " expected hex=",
-        folly::hexlify(headerId));
+        folly::hexlify(ByteRange{headerId}));
   }
 
   // Validate header version

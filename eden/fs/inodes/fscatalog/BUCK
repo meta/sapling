@@ -29,7 +29,6 @@ cpp_library(
         "//eden/common/utils:file_utils",
         "//eden/common/utils:throw",
         "//eden/fs/model:model",
-        "//eden/fs/service:thrift-cpp2-types",
         "//eden/fs/utils:eden_error",
         "//thrift/lib/cpp2/protocol:protocol",
     ],
@@ -43,7 +42,7 @@ cpp_library(
         "//eden/fs/inodes:file_content_store",
         "//eden/fs/inodes:inode_catalog",
         "//eden/fs/inodes:inode_number",
-        "//eden/fs/inodes/overlay:serialization-cpp2-types",
+        "//eden/fs/inodes/overlay:serialization-cpp2-serialization",
     ],
     external_deps = [
         ("boost", None, "boost_filesystem"),
