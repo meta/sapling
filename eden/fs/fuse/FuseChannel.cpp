@@ -1048,7 +1048,8 @@ FuseChannel::FuseChannel(
           numInvalidationThreads_,
           [this](InvalidationEntry& entry) { sendInvalidation(entry); },
           fmt::format("inval{}", mountPath.basename())},
-      processAccessLog_(std::move(processInfoCache)),
+      processAccessLog_(
+          std::make_shared<ProcessAccessLog>(std::move(processInfoCache))),
       traceDetailedArguments_(std::make_shared<std::atomic<size_t>>(0)),
       traceBus_(
           TraceBus<FuseTraceEvent>::create(
@@ -2254,7 +2255,7 @@ void FuseChannel::dispatchRequest(
   }
 
   auto* handlerEntry = lookupFuseHandlerEntry(header.opcode);
-  processAccessLog_.recordAccess(
+  processAccessLog_->recordAccess(
       header.pid,
       handlerEntry ? handlerEntry->accessType : AccessType::FsChannelOther);
 

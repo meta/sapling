@@ -668,7 +668,7 @@ class FuseChannel final : public FsChannel {
     return *traceBus_;
   }
 
-  ProcessAccessLog& getProcessAccessLog() override {
+  const std::shared_ptr<ProcessAccessLog>& getProcessAccessLog() override {
     return processAccessLog_;
   }
 
@@ -1167,7 +1167,7 @@ class FuseChannel final : public FsChannel {
   // process them concurrently.
   InvalidationQueue<InvalidationEntry> invalidationQueue_;
 
-  ProcessAccessLog processAccessLog_;
+  std::shared_ptr<ProcessAccessLog> processAccessLog_;
 
   // this tracks metrics for live FUSE requests, this is a thread local
   // to avoid contention between the FuseWorkerThreads as they kick off

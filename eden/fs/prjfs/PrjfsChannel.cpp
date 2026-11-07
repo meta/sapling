@@ -342,7 +342,7 @@ PrjfsChannelInner::PrjfsChannelInner(
     const folly::Logger* straceLogger,
     const std::shared_ptr<EdenFsEventsLogger>& edenFsEventsLogger,
     FaultInjector& faultInjector,
-    ProcessAccessLog& processAccessLog,
+    std::shared_ptr<ProcessAccessLog> processAccessLog,
     std::shared_ptr<ReloadableConfig>& config,
     folly::Promise<folly::Unit> deletedPromise,
     std::shared_ptr<Notifier> notifier,
@@ -357,7 +357,7 @@ PrjfsChannelInner::PrjfsChannelInner(
           std::make_shared<
               folly::Synchronized<std::chrono::steady_clock::time_point>>()),
       notifier_(std::move(notifier)),
-      processAccessLog_(processAccessLog),
+      processAccessLog_(std::move(processAccessLog)),
       config_(config),
       deletedPromise_(std::move(deletedPromise)),
       traceDetailedArguments_(std::make_shared<std::atomic<size_t>>(0)),
@@ -1523,7 +1523,8 @@ PrjfsChannel::PrjfsChannel(
     : mountPath_(mountPath),
       mountId_(std::move(guid)),
       enableSymlinks_(enableWindowsSymlinks),
-      processAccessLog_(std::move(processInfoCache)),
+      processAccessLog_(
+          std::make_shared<ProcessAccessLog>(std::move(processInfoCache))),
       config_{std::move(config)} {
   auto [innerDeletedPromise, innerDeletedFuture] =
       folly::makePromiseContract<folly::Unit>();

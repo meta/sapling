@@ -26,7 +26,8 @@ using namespace facebook::eden;
  * uid/gid through its ObjectFetchContext accessors.
  */
 struct NfsRequestContextTest : ::testing::Test {
-  ProcessAccessLog processAccessLog{std::make_shared<ProcessInfoCache>()};
+  std::shared_ptr<ProcessAccessLog> processAccessLog{
+      std::make_shared<ProcessAccessLog>(std::make_shared<ProcessInfoCache>())};
 
   std::unique_ptr<NfsRequestContext> makeContext(
       const std::optional<authsys_parms>& authSysCreds) {

@@ -401,7 +401,7 @@ class Nfsd3 final : public FsChannel {
    */
   StopFuture getStopFuture();
 
-  ProcessAccessLog& getProcessAccessLog() override {
+  const std::shared_ptr<ProcessAccessLog>& getProcessAccessLog() override {
     return processAccessLog_;
   }
 
@@ -448,8 +448,9 @@ class Nfsd3 final : public FsChannel {
 
   folly::Promise<FsStopDataPtr> stopPromise_;
   EdenStatsPtr stats_;
+  // Copied into the RpcServerProcessor that server_ owns, so declared first.
+  std::shared_ptr<ProcessAccessLog> processAccessLog_;
   std::shared_ptr<RpcServer> server_;
-  ProcessAccessLog processAccessLog_;
   std::shared_ptr<EdenFsEventsLogger> edenFsEventsLogger_;
   std::atomic<size_t> traceDetailedArguments_;
   std::shared_ptr<TraceBus<NfsTraceEvent>> traceBus_;

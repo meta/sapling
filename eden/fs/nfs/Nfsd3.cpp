@@ -178,7 +178,7 @@ class Nfsd3ServerProcessor final : public RpcServerProcessor {
       uint32_t readIoSize,
       uint32_t writeIoSize,
       folly::Promise<FsStopDataPtr>& stopPromise,
-      ProcessAccessLog& processAccessLog,
+      std::shared_ptr<ProcessAccessLog> processAccessLog,
       std::atomic<size_t>& traceDetailedArguments,
       std::shared_ptr<TraceBus<NfsTraceEvent>>& traceBus,
       NfsRequestTracker& requestTracker,
@@ -195,7 +195,7 @@ class Nfsd3ServerProcessor final : public RpcServerProcessor {
         readIoSize_(readIoSize),
         writeIoSize_(writeIoSize),
         stopPromise_{stopPromise},
-        processAccessLog_{processAccessLog},
+        processAccessLog_{std::move(processAccessLog)},
         traceDetailedArguments_(traceDetailedArguments),
         metadataSizeMismatchLogged_(false),
         traceBus_(traceBus),
@@ -365,7 +365,7 @@ class Nfsd3ServerProcessor final : public RpcServerProcessor {
   // lifetime of  nfs3d. The way we currently enforce this is by waiting for
   // this promise to be set before destroying of the nfs3d.
   folly::Promise<FsStopDataPtr>& stopPromise_;
-  ProcessAccessLog& processAccessLog_;
+  std::shared_ptr<ProcessAccessLog> processAccessLog_;
   std::atomic_int32_t numberOfClients_;
   std::atomic<size_t>& traceDetailedArguments_;
   // TODO(T136422586): Remove once we've identified the cause of mismatched file
@@ -2870,6 +2870,8 @@ Nfsd3::Nfsd3(
       mountPath_{std::move(mountPath)},
       faultInjector_{faultInjector},
       stats_{dispatcher->getStats().copy()},
+      processAccessLog_(
+          std::make_shared<ProcessAccessLog>(std::move(processInfoCache))),
       server_([&]() {
         auto proc = std::make_shared<Nfsd3ServerProcessor>(
             std::move(dispatcher),
@@ -2902,7 +2904,6 @@ Nfsd3::Nfsd3(
             config ? config->getEdenConfig()->nfsSocketBufferSize.getValue()
                    : 0);
       }()),
-      processAccessLog_(std::move(processInfoCache)),
       edenFsEventsLogger_{edenFsEventsLogger},
       traceDetailedArguments_{0},
       traceBus_{TraceBus<NfsTraceEvent>::create("NfsTrace", traceBusCapacity)},

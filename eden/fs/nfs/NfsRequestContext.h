@@ -32,7 +32,7 @@ class NfsRequestContext : public RequestContext {
   explicit NfsRequestContext(
       uint32_t xid,
       nfsv3Procs proc,
-      ProcessAccessLog& processAccessLog,
+      std::shared_ptr<ProcessAccessLog> processAccessLog,
       std::shared_ptr<EdenFsEventsLogger> edenFsEventsLogger,
       std::chrono::nanoseconds longRunningFsRequestThreshold,
       const std::optional<authsys_parms>& authSysCreds = std::nullopt);

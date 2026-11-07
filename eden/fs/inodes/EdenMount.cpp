@@ -1367,7 +1367,7 @@ ProcessAccessLog& EdenMount::getProcessAccessLog() const {
     EDEN_BUG() << "cannot call getProcessAccessLog() before "
                   "EdenMount has started or unmounted";
   }
-  return ch->getProcessAccessLog();
+  return *ch->getProcessAccessLog();
 }
 
 const AbsolutePath& EdenMount::getPath() const {

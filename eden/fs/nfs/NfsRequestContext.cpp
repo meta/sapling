@@ -45,11 +45,11 @@ using NfsObjectFetchContextPtr = RefPtr<NfsObjectFetchContext>;
 NfsRequestContext::NfsRequestContext(
     uint32_t xid,
     nfsv3Procs proc,
-    ProcessAccessLog& processAccessLog,
+    std::shared_ptr<ProcessAccessLog> processAccessLog,
     std::shared_ptr<EdenFsEventsLogger> edenFsEventsLogger,
     std::chrono::nanoseconds longRunningFsRequestThreshold,
     const std::optional<authsys_parms>& authSysCreds)
-    : RequestContext{processAccessLog, std::move(edenFsEventsLogger), longRunningFsRequestThreshold, makeRefPtr<NfsObjectFetchContext>(proc, authSysCreds ? std::optional{authSysCreds->uid} : std::nullopt, authSysCreds ? std::optional{authSysCreds->gid} : std::nullopt)},
+    : RequestContext{std::move(processAccessLog), std::move(edenFsEventsLogger), longRunningFsRequestThreshold, makeRefPtr<NfsObjectFetchContext>(proc, authSysCreds ? std::optional{authSysCreds->uid} : std::nullopt, authSysCreds ? std::optional{authSysCreds->gid} : std::nullopt)},
       xid_{xid} {}
 
 } // namespace facebook::eden

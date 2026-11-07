@@ -172,7 +172,7 @@ class PrjfsChannelInner {
       const folly::Logger* straceLogger,
       const std::shared_ptr<EdenFsEventsLogger>& edenFsEventsLogger,
       FaultInjector& faultInjector,
-      ProcessAccessLog& processAccessLog,
+      std::shared_ptr<ProcessAccessLog> processAccessLog,
       std::shared_ptr<ReloadableConfig>& config,
       folly::Promise<folly::Unit> deletedPromise,
       std::shared_ptr<Notifier> notifier,
@@ -365,7 +365,7 @@ class PrjfsChannelInner {
       RelativePath relPath,
       const ObjectFetchContextPtr& context);
 
-  ProcessAccessLog& getProcessAccessLog() {
+  const std::shared_ptr<ProcessAccessLog>& getProcessAccessLog() {
     return processAccessLog_;
   }
 
@@ -481,9 +481,7 @@ class PrjfsChannelInner {
 
   std::shared_ptr<Notifier> notifier_;
 
-  // The processAccessLog_ is owned by PrjfsChannel which is guaranteed to have
-  // its lifetime be longer than that of PrjfsChannelInner.
-  ProcessAccessLog& processAccessLog_;
+  std::shared_ptr<ProcessAccessLog> processAccessLog_;
 
   std::shared_ptr<ReloadableConfig> config_;
 
@@ -626,7 +624,7 @@ class PrjfsChannel : public FsChannel {
 
   void flushNegativePathCache();
 
-  ProcessAccessLog& getProcessAccessLog() override {
+  const std::shared_ptr<ProcessAccessLog>& getProcessAccessLog() override {
     return processAccessLog_;
   }
 
@@ -648,7 +646,7 @@ class PrjfsChannel : public FsChannel {
   folly::Promise<FsStopDataPtr> stopPromise_{
       folly::Promise<FsStopDataPtr>::makeEmpty()};
 
-  ProcessAccessLog processAccessLog_;
+  std::shared_ptr<ProcessAccessLog> processAccessLog_;
 
   std::shared_ptr<ReloadableConfig> config_;
 

@@ -12,6 +12,7 @@
 #include <string_view>
 
 #include <folly/coro/safe/NowTask.h>
+#include <memory>
 #include "eden/common/utils/ImmediateFuture.h"
 #include "eden/fs/privhelper/PrivHelper.h"
 #include "eden/fs/utils/FsChannelTypes.h"
@@ -139,9 +140,10 @@ class FsChannel {
 
   /**
    * Returns the ProcessAccessLog used to track this channel's filesystem
-   * accesses.
+   * accesses. Requests hold a copy, so a request that finishes after its
+   * channel is destroyed can still record into the log.
    */
-  virtual ProcessAccessLog& getProcessAccessLog() = 0;
+  virtual const std::shared_ptr<ProcessAccessLog>& getProcessAccessLog() = 0;
 
   /**
    * Some user-space filesystem implementations (notably Projected FS, but also

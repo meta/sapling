@@ -115,12 +115,12 @@ using FsObjectFetchContextPtr = RefPtr<FsObjectFetchContext>;
 class RequestContext {
  public:
   explicit RequestContext(
-      ProcessAccessLog& pal,
+      std::shared_ptr<ProcessAccessLog> pal,
       std::shared_ptr<EdenFsEventsLogger> edenFsEventsLogger,
       std::chrono::nanoseconds longRunningFsRequestThreshold,
       FsObjectFetchContextPtr fsObjectFetchContext) noexcept
       : longRunningFsRequestThreshold_{longRunningFsRequestThreshold},
-        pal_{pal},
+        pal_{std::move(pal)},
         edenFsEventsLogger_{std::move(edenFsEventsLogger)},
         fsObjectFetchContext_{std::move(fsObjectFetchContext)} {}
   virtual ~RequestContext() noexcept;
@@ -181,7 +181,9 @@ class RequestContext {
   RequestMetricsScope requestMetricsScope_;
   std::shared_ptr<RequestMetricsScope::LockedRequestWatchList>
       requestWatchList_;
-  ProcessAccessLog& pal_;
+  // Shared with the channel: the destructor records into the log, and a
+  // request can be destroyed after its channel.
+  std::shared_ptr<ProcessAccessLog> pal_;
   std::shared_ptr<EdenFsEventsLogger> edenFsEventsLogger_;
 
   const FsObjectFetchContextPtr fsObjectFetchContext_;
