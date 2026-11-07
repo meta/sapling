@@ -297,7 +297,7 @@ folly::coro::now_task<std::optional<Hash32>> VirtualInode::co_getDigestHash(
   // real ObjectId, so dispatching below would fetch the backing store's tree
   // aux data and leak a digest of contents the server refused to serve. Report
   // "no digest" instead.
-  if (FOLLY_UNLIKELY(isRestricted())) {
+  if (isRestricted()) [[unlikely]] {
     co_return std::nullopt;
   }
 

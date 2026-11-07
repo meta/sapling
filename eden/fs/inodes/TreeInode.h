@@ -1167,7 +1167,7 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
    * after a permission check determines the user lacks access.
    */
   void checkAccess() const {
-    if (FOLLY_UNLIKELY(isRestricted())) {
+    if (isRestricted()) [[unlikely]] {
       throwRestrictedAccess();
     }
   }

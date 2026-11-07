@@ -458,7 +458,7 @@ void TreeInode::witnessLoadedSize() {
 }
 
 struct stat TreeInode::statWithCurrentRestrictionState() const {
-  if (FOLLY_UNLIKELY(isRestricted())) {
+  if (isRestricted()) [[unlikely]] {
     struct stat st{};
     st.st_ino = folly::to_narrow(getNodeId().get());
     st.st_mode = S_IFDIR; // directory with zero permission bits
@@ -715,7 +715,7 @@ ImmediateFuture<struct stat> TreeInode::stat(
     const ObjectFetchContextPtr& context) {
   logAccess(*context);
 
-  if (FOLLY_UNLIKELY(isRestricted())) {
+  if (isRestricted()) [[unlikely]] {
     return recheckPermissionIfExpired(context).thenValue(
         [self = inodePtrFromThis()](folly::Unit) {
           return self->statWithCurrentRestrictionState();
@@ -732,7 +732,7 @@ folly::coro::now_task<struct stat> TreeInode::co_stat(
   auto self = inodePtrFromThis();
   logAccess(*context);
 
-  if (FOLLY_UNLIKELY(isRestricted())) {
+  if (isRestricted()) [[unlikely]] {
     co_await recheckPermissionIfExpired(context).semi();
   }
   co_return statWithCurrentRestrictionState();
@@ -937,7 +937,7 @@ ImmediateFuture<VirtualInode> TreeInode::getOrFindChild(
         .ensure([b = std::move(block)]() mutable { b.close(); });
   };
 
-  if (FOLLY_UNLIKELY(isRestricted())) {
+  if (isRestricted()) [[unlikely]] {
     return recheckPermissionIfExpired(context).thenValue(
         std::move(doGetOrFindChild));
   }
@@ -993,7 +993,7 @@ folly::coro::now_task<VirtualInode> TreeInode::co_getOrFindChild(
 
   // If restricted, recheck permission before throwing EACCES — the restriction
   // may have expired.
-  if (FOLLY_UNLIKELY(isRestricted())) {
+  if (isRestricted()) [[unlikely]] {
     auto recheck = recheckPermissionIfExpired(context);
     if (recheck.isReady()) {
       std::move(recheck).getTry().throwUnlessValue();
@@ -1174,7 +1174,7 @@ TreeInode::co_getChildrenAttributes(
     std::optional<bool> ancestorUnderAcl) {
   auto self = inodePtrFromThis();
 
-  if (FOLLY_UNLIKELY(isRestricted())) {
+  if (isRestricted()) [[unlikely]] {
     co_await recheckPermissionIfExpired(context).semi();
   }
 
@@ -1272,7 +1272,7 @@ ImmediateFuture<InodePtr> TreeInode::getOrLoadChildIfExists(
 #ifndef _WIN32
   dotEden = name == kDotEdenName && getNodeId() != kRootNodeId;
 #endif
-  if (FOLLY_UNLIKELY(dotEden || isRestricted())) {
+  if (dotEden || isRestricted()) [[unlikely]] {
     // Both have their own handling in getOrFindChild(), and neither is a
     // path where misses are common.
     return getOrLoadChild(name, context);
@@ -2371,7 +2371,7 @@ std::optional<ObjectId> TreeInode::getObjectId() const {
 
 folly::coro::now_task<std::optional<Hash32>> TreeInode::co_getDigestHash(
     const ObjectFetchContextPtr& fetchContext) {
-  if (FOLLY_UNLIKELY(isRestricted())) {
+  if (isRestricted()) [[unlikely]] {
     co_return std::nullopt;
   }
   logAccess(*fetchContext);
@@ -2390,7 +2390,7 @@ folly::coro::now_task<std::optional<Hash32>> TreeInode::co_getDigestHash(
 
 ImmediateFuture<std::optional<uint64_t>> TreeInode::getDigestSize(
     const ObjectFetchContextPtr& fetchContext) {
-  if (FOLLY_UNLIKELY(isRestricted())) {
+  if (isRestricted()) [[unlikely]] {
     return std::optional<uint64_t>(std::nullopt);
   }
   logAccess(*fetchContext);
@@ -2408,7 +2408,7 @@ ImmediateFuture<std::optional<uint64_t>> TreeInode::getDigestSize(
 
 ImmediateFuture<std::optional<TreeAuxData>> TreeInode::getTreeAuxData(
     const ObjectFetchContextPtr& fetchContext) {
-  if (FOLLY_UNLIKELY(isRestricted())) {
+  if (isRestricted()) [[unlikely]] {
     return std::optional<TreeAuxData>(std::nullopt);
   }
   logAccess(*fetchContext);
@@ -2430,7 +2430,7 @@ folly::coro::now_task<std::optional<TreeAuxData>> TreeInode::co_getTreeAuxData(
   // Mirrors getTreeAuxData() — restricted directories must not expose
   // aux data, and materialized trees do not have backing-store aux data
   // available.
-  if (FOLLY_UNLIKELY(isRestricted())) {
+  if (isRestricted()) [[unlikely]] {
     co_return std::nullopt;
   }
   logAccess(*fetchContext);
@@ -7718,7 +7718,7 @@ TreeInode::invalidateChildrenNotMaterializedPrjFS(
 }
 
 void TreeInode::updateAtime() {
-  if (FOLLY_UNLIKELY(isRestricted())) {
+  if (isRestricted()) [[unlikely]] {
     return;
   }
   auto lock = lockContentsWrite();
@@ -7729,7 +7729,7 @@ void TreeInode::forceMetadataUpdate() {
   // Restricted inodes have synthetic zeroed metadata (from stat()), so
   // timestamp updates are meaningless. Silent skip also prevents EACCES
   // from propagating through the NFS invalidation Thrift path.
-  if (FOLLY_UNLIKELY(isRestricted())) {
+  if (isRestricted()) [[unlikely]] {
     return;
   }
   auto contents = lockContentsWrite();
