@@ -30,7 +30,7 @@ anyhow = "1.0.104"
 base64 = { version = "0.23.1", features = ["alloc"] }
 filetime = "0.2.29"
 hostcaps = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
-log = { version = "0.4.34", features = ["kv_unstable", "kv_unstable_std"] }
+log = { version = "0.4.35", features = ["kv_unstable", "kv_unstable_std"] }
 mime = "0.3.14"
 parking_lot = { version = "0.13.0", features = ["arc_lock", "send_guard", "serde"] }
 regex = "1.13.1"
