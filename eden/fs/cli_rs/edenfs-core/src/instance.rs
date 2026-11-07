@@ -800,6 +800,37 @@ impl EdenFsInstance {
         Ok(())
     }
 
+    /// Register `path` as the checkout whose state is the client directory `client_name`,
+    /// as `eden clone` does. Fails if config.json already lists the path.
+    pub fn add_path_to_directory_map(&self, path: &Path, client_name: &str) -> Result<()> {
+        let lock_file_path = self.config_dir.join(CONFIG_JSON_LOCK);
+        let config_file_path = self.config_dir.join(CONFIG_JSON);
+        let _lock = PathLock::exclusive(&lock_file_path).with_context(|| {
+            format!("Failed to open the lock file {}", lock_file_path.display())
+        })?;
+
+        let entry_key = dunce::simplified(path);
+        let mut all_checkout_map = self.get_configured_mounts_map()?;
+        if all_checkout_map
+            .keys()
+            .any(|existing| dunce::simplified(existing) == entry_key)
+        {
+            return Err(anyhow!("{} is already listed in config.json", path.display()).into());
+        }
+        all_checkout_map.insert(entry_key.to_path_buf(), client_name.to_owned());
+        atomic_write(&config_file_path, CONFIG_JSON_MODE, true, |f| {
+            serde_json::to_writer_pretty(f, &all_checkout_map)?;
+            Ok(())
+        })
+        .with_context(|| {
+            format!(
+                "Failed to write updated config JSON back to {}",
+                config_file_path.display()
+            )
+        })?;
+        Ok(())
+    }
+
     /// Removes a path from the EdenFS directory map.
     ///
     /// This method acquires an exclusive lock on the configuration file, reads the

@@ -924,6 +924,26 @@ struct WindowsEdenConfig {
     config: WindowsEdenConfigInner,
 }
 
+/// The client directory a mount's `.eden` metadata names: the `.eden/client` link on
+/// Unix, the `client` key of `.eden/config` on Windows. `None` when the metadata is
+/// absent or unreadable.
+pub fn dot_eden_client_dir(path: &Path) -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        let config = std::fs::read_to_string(path.join(".eden").join("config")).ok()?;
+        Some(
+            toml::from_str::<WindowsEdenConfig>(&config)
+                .ok()?
+                .config
+                .client,
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        fs::read_link(path.join(".eden").join("client")).ok()
+    }
+}
+
 #[cfg(windows)]
 fn get_checkout_root_state(path: &Path) -> Result<(Option<PathBuf>, Option<PathBuf>)> {
     let mut checkout_root = None;
