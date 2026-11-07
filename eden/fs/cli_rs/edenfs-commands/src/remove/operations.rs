@@ -5,6 +5,7 @@
  * GNU General Public License version 2.
  */
 
+use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -21,60 +22,106 @@ use super::types::RemoveContext;
 use super::utils;
 use crate::get_edenfs_instance;
 
+/// What `remove` decided about one path argument.
+pub enum Classification {
+    /// Remove the canonicalized path as the given type.
+    Remove(PathBuf, PathType),
+    /// The path is not an EdenFS checkout and the command may not ask: nothing is removed,
+    /// and `remove` exits `EX_NOINPUT` so that the DSU pipeline does not count it as an
+    /// EdenFS failure.
+    Refuse(String),
+}
+
 // Validate and canonicalize the given path into absolute path with the type of PathBuf.
 // Then determine a type for this path.
 //
-// Returns a tuple of:
-//   1. Canonicalized path
-//   2. Type of path
-pub async fn classify_path(path: &str) -> Result<(PathBuf, PathType)> {
+// `non_interactive` is `--yes`: a plain file or a directory with content that is not a
+// checkout cannot be confirmed, so it is refused instead of deleted.
+pub async fn classify_path(path: &str, non_interactive: bool) -> Result<Classification> {
     let path_buf = PathBuf::from(path);
 
-    match path_buf.canonicalize() {
-        // A registered checkout whose folder is gone can still be removed.
+    let canonicalized_path = match path_buf.canonicalize() {
+        // A registered checkout whose folder is gone can still be removed. Any other
+        // missing path is not an EdenFS checkout.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let Ok(path) = edenfs_remove::canonicalize_checkout_path(&path_buf).await else {
-                return Err(e.into());
-            };
-            match edenfs_remove::classify_checkout(get_edenfs_instance(), &path).await {
-                Ok(LocalCheckoutState::Inactive) => Ok((path, PathType::InactiveEdenMount)),
-                Err(error) => Err(error),
-                _ => Err(e.into()),
+            if let Ok(path) = edenfs_remove::canonicalize_checkout_path(&path_buf).await
+                && let LocalCheckoutState::Inactive =
+                    edenfs_remove::classify_checkout(get_edenfs_instance(), &path).await?
+            {
+                return Ok(Classification::Remove(path, PathType::InactiveEdenMount));
             }
+            return Ok(Classification::Refuse(format!(
+                "error: {path} is neither an EdenFS mount nor an existing directory"
+            )));
         }
-        Err(e) => Err(e.into()),
-        Ok(canonicalized_path) => {
-            let path = canonicalized_path.as_path();
-            if path.is_file() {
-                return Ok((
-                    path_to_remove_for_file(&path_buf, canonicalized_path)?,
-                    PathType::RegularFile,
-                ));
-            }
-
-            if !path.is_dir() {
-                // This is rare, but when it happens we should warn it.
-                warn!(
-                    "path {} is not a file or directory, please make sure it exists and you have permission to it.",
-                    path.display()
-                );
-                return Err(anyhow!("Not a file or directory"));
-            }
-
-            debug!("{} is determined as a directory", path.display());
-
-            let path_type =
-                match edenfs_remove::classify_checkout(get_edenfs_instance(), path).await? {
-                    LocalCheckoutState::Active => PathType::ActiveEdenMount,
-                    LocalCheckoutState::Inactive => PathType::InactiveEdenMount,
-                    // A directory that is not listed inside config.json. We don't know how
-                    // to handle it properly, so try to handle it from here with best efforts.
-                    LocalCheckoutState::Unknown => PathType::Unknown,
-                };
-            debug!("path {} is determined to be {}", path.display(), path_type);
-            Ok((canonicalized_path, path_type))
+        Err(e) => return Err(e.into()),
+        Ok(canonicalized_path) => canonicalized_path,
+    };
+    let path = canonicalized_path.as_path();
+    if path.is_file() {
+        if non_interactive {
+            return Ok(Classification::Refuse(format!(
+                "error: {} exists but it's a file; remove it manually.",
+                path.display()
+            )));
         }
+        return Ok(Classification::Remove(
+            path_to_remove_for_file(&path_buf, canonicalized_path)?,
+            PathType::RegularFile,
+        ));
     }
+
+    if !path.is_dir() {
+        // This is rare, but when it happens we should warn it.
+        warn!(
+            "path {} is not a file or directory, please make sure it exists and you have permission to it.",
+            path.display()
+        );
+        return Err(anyhow!("Not a file or directory"));
+    }
+
+    debug!("{} is determined as a directory", path.display());
+
+    let path_type = match edenfs_remove::classify_checkout(get_edenfs_instance(), path).await? {
+        LocalCheckoutState::Active => PathType::ActiveEdenMount,
+        LocalCheckoutState::Inactive => PathType::InactiveEdenMount,
+        // A directory that is not listed inside config.json. We don't know how
+        // to handle it properly, so try to handle it from here with best efforts.
+        LocalCheckoutState::Unknown => PathType::Unknown,
+        LocalCheckoutState::InsideCheckout { root } => {
+            return Ok(Classification::Refuse(format!(
+                "error: {} is not the root of checkout {}, not removing",
+                path.display(),
+                root.display()
+            )));
+        }
+    };
+    debug!("path {} is determined to be {}", path.display(), path_type);
+    if path_type == PathType::Unknown && non_interactive && !is_leftover_mount_point(path) {
+        // The prompt that protects the directory's content cannot be shown.
+        return Ok(Classification::Refuse(format!(
+            "error: {} is not an EdenFS mount and is not empty; refusing to delete it without confirmation",
+            path.display()
+        )));
+    }
+    Ok(Classification::Remove(canonicalized_path, path_type))
+}
+
+/// True when the directory holds nothing but what EdenFS itself leaves at a mount point:
+/// it is empty, or it holds only the not-mounted README as a plain file. An entry that
+/// cannot be read counts as content: the directory is deleted only when every entry is known.
+/// The Python CLI uses the same rule.
+fn is_leftover_mount_point(path: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(path) else {
+        return false;
+    };
+    entries.into_iter().all(|entry| {
+        let Ok(entry) = entry else {
+            return false;
+        };
+        entry.file_name() == "README_EDEN.txt"
+            && entry.file_type().is_ok_and(|file_type| file_type.is_file())
+    })
 }
 
 fn path_to_remove_for_file(given_path: &Path, canonicalized_path: PathBuf) -> Result<PathBuf> {
@@ -173,12 +220,14 @@ mod tests {
             )
         });
 
-        let result = classify_path(file_path_buf.to_str().unwrap()).await;
+        let result = classify_path(file_path_buf.to_str().unwrap(), false).await;
         assert!(
             result.is_ok(),
             "path of a regular file should be classified"
         );
-        let (p, t) = result.unwrap();
+        let Classification::Remove(p, t) = result.unwrap() else {
+            panic!("an interactive run should offer to remove a regular file");
+        };
         assert!(
             p == file_path_buf.canonicalize().unwrap(),
             "path of a regular file should be canonicalized"
@@ -186,6 +235,59 @@ mod tests {
         assert!(
             matches!(t, PathType::RegularFile),
             "path of a regular file should be classified as RegFile"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_classify_path_refuses_a_regular_file_without_a_prompt() {
+        let temp_dir = prepare_directory();
+        let file_path_buf = temp_dir.path().join("temporary-file.txt");
+        fs::write(file_path_buf.as_path(), "anything").unwrap();
+
+        let result = classify_path(file_path_buf.to_str().unwrap(), true)
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, Classification::Refuse(_)),
+            "--yes must not delete a plain file"
+        );
+        assert!(file_path_buf.exists(), "the file must be left alone");
+    }
+
+    #[test]
+    fn test_leftover_mount_point_holds_only_edenfs_leftovers() {
+        let temp_dir = prepare_directory();
+        let empty = temp_dir.path().join("empty");
+        fs::create_dir(&empty).unwrap();
+        let readme_only = temp_dir.path().join("readme-only");
+        fs::create_dir(&readme_only).unwrap();
+        fs::write(readme_only.join("README_EDEN.txt"), "").unwrap();
+        let with_content = temp_dir.path().join("with-content");
+        fs::create_dir(&with_content).unwrap();
+        fs::write(with_content.join("README_EDEN.txt"), "").unwrap();
+        fs::write(with_content.join("notes.txt"), "keep me").unwrap();
+        let readme_dir = temp_dir.path().join("readme-dir");
+        fs::create_dir_all(readme_dir.join("README_EDEN.txt")).unwrap();
+
+        assert!(
+            is_leftover_mount_point(&empty),
+            "an empty directory is a leftover"
+        );
+        assert!(
+            is_leftover_mount_point(&readme_only),
+            "only EdenFS's README is a leftover"
+        );
+        assert!(
+            !is_leftover_mount_point(&readme_dir),
+            "a directory named like the README is content"
+        );
+        assert!(
+            !is_leftover_mount_point(&with_content),
+            "other content is not a leftover"
+        );
+        assert!(
+            !is_leftover_mount_point(&temp_dir.path().join("missing")),
+            "a missing directory is not a leftover"
         );
     }
 
@@ -198,7 +300,11 @@ mod tests {
         let link = temp_dir.path().join("link-to-target");
         std::os::unix::fs::symlink(&target, &link).unwrap();
 
-        let (p, t) = classify_path(link.to_str().unwrap()).await.unwrap();
+        let Classification::Remove(p, t) =
+            classify_path(link.to_str().unwrap(), false).await.unwrap()
+        else {
+            panic!("an interactive run should offer to remove a symlink to a file");
+        };
         assert!(matches!(t, PathType::RegularFile));
         assert_eq!(
             p,

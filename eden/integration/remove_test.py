@@ -414,6 +414,7 @@ class RemoveTest(RemoveTestBase):
 
     @parameterized.expand(
         [
+            ("rust", {"EDENFSCTL_ONLY_RUST": "1"}),
             ("python", {"EDENFSCTL_SKIP_RUST": "1"}),
         ]
     )
@@ -460,6 +461,7 @@ class RemoveTest(RemoveTestBase):
 
     @parameterized.expand(
         [
+            ("rust", {"EDENFSCTL_ONLY_RUST": "1"}),
             ("python", {"EDENFSCTL_SKIP_RUST": "1"}),
         ]
     )

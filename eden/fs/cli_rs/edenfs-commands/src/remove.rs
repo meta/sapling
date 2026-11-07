@@ -22,9 +22,14 @@ mod operations;
 mod types;
 mod utils;
 
+use operations::Classification;
 use types::Messenger;
 use types::PathType;
 use types::RemoveContext;
+
+/// `EX_NOINPUT`: the path is not an EdenFS checkout. The same value the Python CLI returns
+/// (`eden/fs/cli/main.py`), so the DSU pipeline can tell a caller error from a failed removal.
+const EX_NOINPUT: ExitCode = 66;
 
 #[derive(Parser, Debug)]
 #[clap(name = "remove", about = "Remove an EdenFS checkout")]
@@ -93,7 +98,16 @@ impl Subcommand for RemoveCmd {
             edenfs_remove::auxiliary_process_timeout(self.timeout.map(Duration::from_secs));
 
         for path in &self.paths {
-            let (canonicalized_path, path_type) = operations::classify_path(path).await?;
+            let (canonicalized_path, path_type) =
+                match operations::classify_path(path, self.skip_prompt).await? {
+                    Classification::Remove(canonicalized_path, path_type) => {
+                        (canonicalized_path, path_type)
+                    }
+                    Classification::Refuse(message) => {
+                        messenger.error(message);
+                        return Ok(EX_NOINPUT);
+                    }
+                };
 
             let context = RemoveContext::new(
                 path.clone(),

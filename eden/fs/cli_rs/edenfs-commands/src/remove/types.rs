@@ -7,11 +7,13 @@
 
 use std::fmt;
 use std::fs;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use crossterm::style::Color;
 use crossterm::style::Stylize;
 use dialoguer::Confirm;
 use edenfs_remove::BackingCleanupPolicy;
@@ -153,6 +155,9 @@ pub struct Messenger {
     logger: TermLogger,
     skip_prompt: bool,
     answer_no: bool,
+    /// Color is for a terminal; a pipe, a log file or a `.t` test gets plain text.
+    color_stdout: bool,
+    color_stderr: bool,
 }
 
 impl Messenger {
@@ -161,6 +166,8 @@ impl Messenger {
             logger: TermLogger::new(&io).with_quiet(suppress_output),
             skip_prompt,
             answer_no,
+            color_stdout: std::io::stdout().is_terminal(),
+            color_stderr: std::io::stderr().is_terminal(),
         }
     }
 
@@ -173,16 +180,18 @@ impl Messenger {
     }
 
     pub fn warn(&self, msg: String) {
-        self.logger.warn(msg.yellow().to_string());
+        self.logger
+            .warn(colored(msg, Color::Yellow, self.color_stderr));
     }
 
-    #[allow(dead_code)]
     pub fn error(&self, msg: String) {
-        self.logger.warn(msg.red().to_string());
+        self.logger
+            .warn(colored(msg, Color::Red, self.color_stderr));
     }
 
     pub fn success(&self, msg: String) {
-        self.logger.info(msg.green().to_string());
+        self.logger
+            .info(colored(msg, Color::Green, self.color_stdout));
     }
 
     pub fn done(&self) {
@@ -200,5 +209,13 @@ impl Messenger {
             return Ok(res);
         }
         Ok(true)
+    }
+}
+
+fn colored(msg: String, color: Color, on_terminal: bool) -> String {
+    if on_terminal {
+        msg.with(color).to_string()
+    } else {
+        msg
     }
 }

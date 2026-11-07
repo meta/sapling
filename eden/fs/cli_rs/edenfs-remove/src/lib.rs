@@ -1138,7 +1138,7 @@ pub fn clean_mount_point(path: &Path) -> Result<()> {
 
 /// What a directory is to EdenFS, decided from checkout-local metadata and the
 /// directory map without talking to the daemon.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LocalCheckoutState {
     /// The directory carries live checkout metadata. On Windows that metadata outlives
     /// an unmount, so removal still has to find the checkout in the directory map.
@@ -1147,10 +1147,12 @@ pub enum LocalCheckoutState {
     Inactive,
     /// Unregistered and not recognizably a checkout.
     Unknown,
+    /// Inside a mounted checkout whose root is `root`: not something `remove` takes.
+    InsideCheckout { root: PathBuf },
 }
 
-/// Classify `path` before removing it. Fails if `path` lies inside a mounted checkout
-/// rather than being its root.
+/// Classify `path` before removing it. A `path` inside a mounted checkout rather than at
+/// its root is `InsideCheckout`, which the caller refuses.
 pub async fn classify_checkout(
     instance: &EdenFsInstance,
     path: &Path,
@@ -1165,11 +1167,9 @@ pub async fn classify_checkout(
         .skip(1)
         .find(|ancestor| is_active_eden_mount(ancestor))
     {
-        return Err(anyhow!(
-            "{} is not the root of checkout {}, not removing",
-            path.display(),
-            root.display()
-        ));
+        return Ok(LocalCheckoutState::InsideCheckout {
+            root: root.to_path_buf(),
+        });
     }
     if registered_client(instance, &path)?.is_some() {
         return Ok(LocalCheckoutState::Inactive);
@@ -1554,12 +1554,12 @@ mod tests {
             LocalCheckoutState::Active,
             "a nested checkout root is a mount, not a directory inside its parent"
         );
-        let error = classify_checkout(&instance, &inside)
+        let state = classify_checkout(&instance, &inside)
             .await
-            .expect_err("a directory inside a mounted checkout must be rejected");
+            .expect("a directory inside a mounted checkout is classified, not an error");
         assert!(
-            error.to_string().contains("is not the root of checkout"),
-            "{error:#}"
+            matches!(state, LocalCheckoutState::InsideCheckout { ref root } if root == &checkout),
+            "{state:?}"
         );
     }
 

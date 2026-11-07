@@ -87,6 +87,11 @@ pub(super) fn run_direct_eden_remove(
             "refusing to delete {}: it is not a registered EdenFS checkout",
             path.display()
         ),
+        LocalCheckoutState::InsideCheckout { root } => bail!(
+            "refusing to delete {}: it is not the root of checkout {}",
+            path.display(),
+            root.display()
+        ),
     }
     Ok(true)
 }

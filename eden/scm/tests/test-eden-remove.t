@@ -26,13 +26,14 @@ the file is still there
   $ ls $TESTTMP/wcrepo/file.txt | wc -l
   1
 
-eden remove this file, skip prompt with "yes"
+eden remove this file with "yes": a file is refused, not deleted
   $ EDENFSCTL_ONLY_RUST=true eden remove -q -y $TESTTMP/wcrepo/file.txt
+  error: $TESTTMP/wcrepo/file.txt exists but it's a file; remove it manually.
+  [66]
 
-file is now gone
-  $ ls $TESTTMP/wcrepo/file.txt
-  ls: $TESTTMP/wcrepo/file.txt: $ENOENT$
-  [1]
+the file is still there
+  $ ls $TESTTMP/wcrepo/file.txt | wc -l
+  1
 
 create a directory outside of any eden repo
   $ mkdir $TESTTMP/i-am-not-eden
@@ -60,13 +61,15 @@ create the directory outside of any eden repo again
 this time, put some files into it
   $ touch $TESTTMP/i-am-not-eden/file
 
-eden remove this directory, answer "yes" when there is prompt
+eden remove this directory with "yes": a non-empty directory that is not a
+checkout is refused, because the prompt that protects its content is skipped
   $ EDENFSCTL_ONLY_RUST=true eden remove -q -y $TESTTMP/i-am-not-eden
+  error: $TESTTMP/i-am-not-eden is not an EdenFS mount and is not empty; refusing to delete it without confirmation
+  [66]
 
-the directory should also be gone now
+the directory and its file are still there
   $ ls $TESTTMP/i-am-not-eden
-  ls: $TESTTMP/i-am-not-eden: $ENOENT$
-  [1]
+  file
 
 create a test directory inside eden
 
@@ -74,8 +77,8 @@ create a test directory inside eden
 
 eden remove this directory should just give error since it's not the root dir
   $ EDENFSCTL_ONLY_RUST=true eden remove -q -y $TESTTMP/wcrepo/test_dir
-  Error: $TESTTMP/wcrepo/test_dir is not the root of checkout $TESTTMP/wcrepo, not removing
-  [1]
+  error: $TESTTMP/wcrepo/test_dir is not the root of checkout $TESTTMP/wcrepo, not removing
+  [66]
 
 eden list should give two repos
   $ eden list | wc -l
