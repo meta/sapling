@@ -839,6 +839,13 @@ std::optional<uint64_t> FileInode::getMaterializedSize() {
   if (state->tag != State::MATERIALIZED_IN_OVERLAY) {
     return std::nullopt;
   }
+#ifdef _WIN32
+  // The size of a symlink's target does not match the size of the blob, which
+  // holds the link's path; getFileSha1 hashes that path instead.
+  if (isSymlink()) {
+    return std::nullopt;
+  }
+#endif // _WIN32
   return state->materializedState.getSize(*this);
 }
 

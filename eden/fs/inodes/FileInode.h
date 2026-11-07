@@ -630,7 +630,8 @@ class FileInode final : public InodeBaseMetadata<FileInodeState> {
 
   /**
    * Returns the size of the file's contents if it is materialized, and
-   * std::nullopt otherwise. Costs at most an fstat of the overlay file.
+   * std::nullopt otherwise, or for a symlink on Windows. Costs at most an
+   * fstat of the overlay file.
    */
   std::optional<uint64_t> getMaterializedSize();
 
