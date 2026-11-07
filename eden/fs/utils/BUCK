@@ -182,11 +182,11 @@ cpp_library(
     deps = [
         "fbsource//xplat/folly:exception",
         "fbsource//xplat/folly:micro_lock",
-        "fbsource//xplat/folly:thread_local",
         "//eden/common/utils:process_info_cache",
     ],
     exported_deps = [
         "fbsource//xplat/folly:synchronized",
+        "fbsource//xplat/folly:thread_local",
         "//eden/common/utils:enum",
         "//eden/common/utils:utils",
         "//eden/fs/service:thrift-cpp2-types",

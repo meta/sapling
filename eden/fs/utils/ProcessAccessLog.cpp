@@ -9,7 +9,6 @@
 
 #include <folly/Exception.h>
 #include <folly/MicroLock.h>
-#include <folly/ThreadLocal.h>
 
 #include "eden/common/utils/ProcessInfoCache.h"
 
@@ -17,10 +16,11 @@ namespace facebook::eden {
 
 struct ThreadLocalBucket {
   explicit ThreadLocalBucket(ProcessAccessLog* processAccessLog)
-      : state_{std::in_place, processAccessLog} {}
+      : owner_{processAccessLog} {}
 
   ~ThreadLocalBucket() {
-    // This thread is going away, so merge our data into the parent.
+    // Either this thread or the owner is going away, so merge our data into
+    // the owner.
     mergeUpstream();
   }
 
@@ -31,13 +31,13 @@ struct ThreadLocalBucket {
       uint64_t secondsSinceStart,
       pid_t pid,
       ProcessAccessLog::AccessType type) {
-    auto state = state_.lock();
+    auto buckets = buckets_.lock();
 
     // isNewPid must be initialized because BucketedLog::add will not call
     // Bucket::add if secondsSinceStart is too old and the sample is dropped.
     // (In that case, it's unnecessary to record the process name.)
     bool isNewPid = false;
-    state->buckets.add(secondsSinceStart, pid, isNewPid, type);
+    buckets->add(secondsSinceStart, pid, isNewPid, type);
     return isNewPid;
   }
 
@@ -45,31 +45,23 @@ struct ThreadLocalBucket {
       uint64_t secondsSinceStart,
       pid_t pid,
       std::chrono::nanoseconds duration) {
-    auto state = state_.lock();
+    auto buckets = buckets_.lock();
 
     bool isNewPid = false;
-    state->buckets.add(secondsSinceStart, pid, isNewPid, duration);
+    buckets->add(secondsSinceStart, pid, isNewPid, duration);
     return isNewPid;
   }
 
   void mergeUpstream() {
-    auto state = state_.lock();
-    if (!state->owner) {
-      return;
-    }
-    state->owner->state_.withWLock(
-        [&](auto& ownerState) { ownerState.buckets.merge(state->buckets); });
-    state->buckets.clear();
-  }
-
-  void clearOwnerIfMe(ProcessAccessLog* owner) {
-    auto state = state_.lock();
-    if (state->owner == owner) {
-      state->owner = nullptr;
-    }
+    auto buckets = buckets_.lock();
+    owner_->state_.withWLock(
+        [&](auto& ownerState) { ownerState.buckets.merge(*buckets); });
+    buckets->clear();
   }
 
  private:
+  ProcessAccessLog* const owner_;
+
   /**
    * Sadly, because getAllAccesses needs to access all of the buckets, it
    * needs a mechanism to stop writers for the duration of the read.
@@ -82,19 +74,8 @@ struct ThreadLocalBucket {
    *
    * This lock must always be acquired before the owner's buckets lock.
    */
-  struct State {
-    explicit State(ProcessAccessLog* pal) : owner{pal} {}
-    ProcessAccessLog::Buckets buckets;
-    ProcessAccessLog* owner;
-  };
-
-  folly::Synchronized<State, folly::MicroLock> state_;
+  folly::Synchronized<ProcessAccessLog::Buckets, folly::MicroLock> buckets_;
 };
-
-namespace {
-struct BucketTag;
-folly::ThreadLocalPtr<ThreadLocalBucket, BucketTag> threadLocalBucketPtr;
-} // namespace
 
 void ProcessAccessLog::Bucket::clear() {
   accessCountsByPid.clear();
@@ -135,17 +116,13 @@ ProcessAccessLog::ProcessAccessLog(
   XCHECK(processInfoCache_) << "Process info cache is mandatory";
 }
 
-ProcessAccessLog::~ProcessAccessLog() {
-  for (auto& tlb : threadLocalBucketPtr.accessAllThreads()) {
-    tlb.clearOwnerIfMe(this);
-  }
-}
+ProcessAccessLog::~ProcessAccessLog() = default;
 
 ThreadLocalBucket* ProcessAccessLog::getTlb() {
-  auto tlb = threadLocalBucketPtr.get();
+  auto* tlb = threadLocalBucket_.get();
   if (!tlb) {
-    threadLocalBucketPtr.reset(std::make_unique<ThreadLocalBucket>(this));
-    tlb = threadLocalBucketPtr.get();
+    threadLocalBucket_.reset(std::make_unique<ThreadLocalBucket>(this));
+    tlb = threadLocalBucket_.get();
   }
   return tlb;
 }
@@ -195,8 +172,8 @@ void ProcessAccessLog::recordDuration(
 std::unordered_map<pid_t, AccessCounts> ProcessAccessLog::getAccessCounts(
     std::chrono::seconds lastNSeconds) {
   auto secondCount = lastNSeconds.count();
-  // First, merge all the thread-local buckets into their owners, including us.
-  for (auto& tlb : threadLocalBucketPtr.accessAllThreads()) {
+  // First, merge all the thread-local buckets into us.
+  for (auto& tlb : threadLocalBucket_.accessAllThreads()) {
     // This must be done outside of acquiring our own state_ lock.
     tlb.mergeUpstream();
   }

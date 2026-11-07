@@ -78,6 +78,8 @@ cpp_unittest(
     deps = [
         "fbsource//third-party/googletest:gmock",
         "fbsource//third-party/googletest:gtest",
+        "fbsource//xplat/folly:thread_local",
+        "fbsource//xplat/folly/synchronization:baton",
         "//eden/common/utils:process_info_cache",
         "//eden/fs/utils:process_access_log",
     ],

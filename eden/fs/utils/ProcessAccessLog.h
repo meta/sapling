@@ -8,6 +8,7 @@
 #pragma once
 
 #include <folly/Synchronized.h>
+#include <folly/ThreadLocal.h>
 #include <type_traits>
 
 #include "eden/common/utils/BucketedLog.h"
@@ -18,15 +19,20 @@ namespace facebook::eden {
 
 class ProcessInfoCache;
 struct ThreadLocalBucket;
+struct ThreadLocalBucketTag;
+// Strict mode makes destroying a log wait for a thread that is exiting at the
+// same time: in the default mode the exiting thread unlinks its bucket before
+// running the bucket's destructor, so that destructor could merge into a log
+// that is already gone.
+using ThreadLocalBucketAccessMode = folly::AccessModeStrict;
 
 /**
  * An inexpensive mechanism for counting accesses by pids. Intended for counting
  * channel and Thrift calls from external processes.
  *
- * The first time a thread calls recordAccess, that thread is then coupled to
- * this particular ProcessAccessLog, even if it calls recordAccess on another
- * ProcessAccessLog instance. Thus, use one ProcessAccessLog per pool of
- * threads.
+ * Each thread keeps one bucket per ProcessAccessLog it records into, so a
+ * thread pool may serve several ProcessAccessLog instances. A caller must keep
+ * the ProcessAccessLog alive while it records into it.
  */
 class ProcessAccessLog {
  public:
@@ -44,9 +50,7 @@ class ProcessAccessLog {
   ~ProcessAccessLog();
 
   /**
-   * Records an access by a process ID. The first call to recordAccess by a
-   * particular thread binds that thread to this access log. Future recordAccess
-   * calls on that thread will accumulate within this access log.
+   * Records an access by a process ID.
    *
    * Process IDs passed to recordAccess are also inserted into the
    * ProcessInfoCache.
@@ -98,6 +102,13 @@ class ProcessAccessLog {
 
   const std::shared_ptr<ProcessInfoCache> processInfoCache_;
   folly::Synchronized<State> state_;
+  // Declared after state_: destroying it merges every thread's bucket into
+  // state_.
+  folly::ThreadLocalPtr<
+      ThreadLocalBucket,
+      ThreadLocalBucketTag,
+      ThreadLocalBucketAccessMode>
+      threadLocalBucket_;
 
   uint64_t getSecondsSinceEpoch();
   ThreadLocalBucket* getTlb();

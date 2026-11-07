@@ -61,6 +61,8 @@ eden_add_test(eden_fs_utils_test_process_access_log
     ProcessAccessLogTest.cpp
   DEPS
     ${LIBGMOCK_LIBRARIES}
+    Folly::folly_synchronization_baton
+    Folly::folly_thread_local
     eden_fs_utils_process_access_log
     edencommon::edencommon_utils
 )

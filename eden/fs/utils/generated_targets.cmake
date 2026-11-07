@@ -119,9 +119,9 @@ eden_add_library(eden_fs_utils_process_access_log
   DEPS
     Folly::folly_exception
     Folly::folly_micro_lock
-    Folly::folly_thread_local
   EXPORTED_DEPS
     Folly::folly_synchronized
+    Folly::folly_thread_local
     eden_service_thrift_cpp
     edencommon::edencommon_utils
     sigbus_memops
