@@ -318,6 +318,8 @@ fn dispatch_command(
                     config,
                     already_ran_pre_hooks,
                 )
+            } else if is_broken_pipe(&err) {
+                BROKEN_PIPE_EXIT_CODE
             } else {
                 if exiting_via_signal.load(Ordering::Acquire) {
                     // If were were interrupted (e.g. SIGINT), atexit handlers running async in
@@ -353,6 +355,9 @@ fn dispatch_command(
 
     if !fell_back {
         if let Err(err) = io.wait_pager().context("error flushing command output") {
+            if is_broken_pipe(&err) {
+                return BROKEN_PIPE_EXIT_CODE;
+            }
             errors::print_error(
                 &err,
                 io,
@@ -403,6 +408,18 @@ fn dispatch_command(
     }
 
     exit_code
+}
+
+/// Exit code when the reader closes our output early (`sl log | head`):
+/// 128 + SIGPIPE, what a shell reports for git and other tools killed by
+/// SIGPIPE. It stays non-zero, but callers can tell it from a real error (255).
+const BROKEN_PIPE_EXIT_CODE: i32 = 128 + 13;
+
+fn is_broken_pipe(err: &anyhow::Error) -> bool {
+    err.chain().any(|e| {
+        e.downcast_ref::<io::Error>()
+            .is_some_and(|e| e.kind() == io::ErrorKind::BrokenPipe)
+    })
 }
 
 /// Similar to `std::env::current_dir`. But does some extra things:
