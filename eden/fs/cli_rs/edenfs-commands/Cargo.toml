@@ -13,7 +13,7 @@ async-trait = "0.1.92"
 blake3 = { version = "=1.8.6", features = ["mmap", "rayon", "traits-preview"] }
 clap = { version = "4.6.2", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 colored = "3.1.1"
-comfy-table = { version = "7.2.2", features = ["custom_styling"] }
+comfy-table = { version = "8.0.1", features = ["custom_styling"] }
 crossterm = { version = "0.29", features = ["event-stream", "serde"] }
 ctrlc = { version = "3.5.2", features = ["termination"] }
 dialoguer = { version = "0.12.0", features = ["fuzzy-select"] }

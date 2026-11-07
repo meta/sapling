@@ -218,7 +218,7 @@ fn format_size(size: u64) -> String {
 impl fmt::Display for AggregatedUsageCounts {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut table = Table::new();
-        table.load_preset(comfy_table::presets::NOTHING);
+        table.load_style(comfy_table::presets::NOTHING);
 
         let is_clean_mode = matches!(
             self.display_mode,

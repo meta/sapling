@@ -509,7 +509,7 @@ impl crate::Subcommand for MinitopCmd {
             // Render aggregated processes
             let mut table = Table::new();
             table.set_header(COLUMN_TITLES);
-            table.load_preset(UTF8_BORDERS_ONLY);
+            table.load_style(UTF8_BORDERS_ONLY);
             table.set_content_arrangement(ContentArrangement::Dynamic);
             for aggregated_process in aggregate_processes(&tracked_processes, &system) {
                 let mut row = Row::from(vec![
