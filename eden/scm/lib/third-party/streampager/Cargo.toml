@@ -17,7 +17,7 @@ edition = "2021"
 [dependencies]
 dirs = "7.0"
 enum_dispatch = "0.3.13"
-lru = { version = "0.18.5", default-features = false }
+lru = { version = "0.19.0", default-features = false }
 memmap2 = "0.9.12"
 notify = { version = "9.0.0-rc.6", optional = true }
 regex = "1.13.1"
