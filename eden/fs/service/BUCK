@@ -115,6 +115,9 @@ cpp_binary(
             "//eden/fs/telemetry/facebook:activity_recorder",
         ],
     }),
+    external_deps = [
+        "gflags",
+    ],
 )
 
 cpp_binary(

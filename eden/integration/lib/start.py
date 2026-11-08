@@ -11,7 +11,7 @@ import contextlib
 import os
 import pathlib
 import subprocess
-from typing import Generator, List
+from typing import Generator, List, Optional, Sequence
 
 from .find_executables import FindExe
 
@@ -21,6 +21,7 @@ def run_eden_start_with_real_daemon(
     eden_dir: pathlib.Path,
     etc_eden_dir: pathlib.Path,
     home_dir: pathlib.Path,
+    daemon_args: Optional[Sequence[str]] = None,
 ) -> Generator[None, None, None]:
     edenfsctl, edenfsctl_env = FindExe.get_edenfsctl_env()
     env = dict(os.environ)
@@ -41,7 +42,7 @@ def run_eden_start_with_real_daemon(
         FindExe.EDEN_DAEMON,
     ]
 
-    extra_daemon_args = []
+    extra_daemon_args = list(daemon_args or [])
 
     privhelper = FindExe.EDEN_PRIVHELPER
     if privhelper is not None:
