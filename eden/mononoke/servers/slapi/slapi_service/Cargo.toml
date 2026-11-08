@@ -44,7 +44,7 @@ maplit = "1.0"
 mercurial_types = { version = "0.1.0", path = "../../../mercurial/types" }
 metaconfig_types = { version = "0.1.0", path = "../../../metaconfig/types" }
 metadata = { version = "0.1.0", path = "../../../common/metadata" }
-mime = "0.3.14"
+mime = "0.3.18"
 mononoke_api = { version = "0.1.0", path = "../../../mononoke_api" }
 mononoke_api_hg = { version = "0.1.0", path = "../../../mononoke_api_hg" }
 mononoke_macros = { version = "0.1.0", path = "../../../common/mononoke_macros" }

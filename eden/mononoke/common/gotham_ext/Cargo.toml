@@ -35,7 +35,7 @@ hyper-util = { version = "0.1.21", features = ["client-legacy", "http1", "http2"
 justknobs_ext = { version = "0.1.0", path = "../rust/justknobs_ext" }
 metaconfig_types = { version = "0.1.0", path = "../../metaconfig/types" }
 metadata = { version = "0.1.0", path = "../metadata" }
-mime = "0.3.14"
+mime = "0.3.18"
 mononoke_macros = { version = "0.1.0", path = "../mononoke_macros" }
 openssl = "0.10.80"
 percent-encoding = "2.1"

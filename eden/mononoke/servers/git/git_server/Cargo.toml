@@ -48,7 +48,7 @@ memory_profiling = { version = "0.1.0", path = "../../../common/memory_profiling
 metaconfig_parser = { version = "0.1.0", path = "../../../metaconfig/parser" }
 metaconfig_types = { version = "0.1.0", path = "../../../metaconfig/types" }
 metadata = { version = "0.1.0", path = "../../../common/metadata" }
-mime = "0.3.14"
+mime = "0.3.18"
 mononoke_api = { version = "0.1.0", path = "../../../mononoke_api" }
 mononoke_app = { version = "0.1.0", path = "../../../cmdlib/mononoke_app" }
 mononoke_macros = { version = "0.1.0", path = "../../../common/mononoke_macros" }
