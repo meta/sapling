@@ -45,6 +45,7 @@ bf-tree = { git = "https://github.com/fbsource/bf-tree", rev = "da3f2364e8f9fe00
 bindgen = { git = "https://github.com/jsgf/rust-bindgen", rev = "4d385d21c160e6ee1f443aeb7e00528a1dc7fd44" }
 bindgen-cli = { git = "https://github.com/jsgf/rust-bindgen", rev = "4d385d21c160e6ee1f443aeb7e00528a1dc7fd44" }
 c2pa = { git = "https://github.com/peekmoar/c2pa-rs", rev = "bc2e763f3333eb7aaa1f169b045c9bbf60b146f7" }
+console-api = { git = "https://github.com/tokio-rs/console", rev = "b59758e5a6effe3a9df3ec84a2f28d319d178234" }
 cxx = { git = "https://github.com/facebookexperimental/cxx.git", rev = "b835645da52253df462725516fbd460ef000d496" }
 cxx-build = { git = "https://github.com/facebookexperimental/cxx.git", rev = "b835645da52253df462725516fbd460ef000d496" }
 darwin-libproc = { git = "https://github.com/fbsource/darwin-libproc", rev = "f73ddb1002d51ae74c1b41670fae56bd5896b7a3" }
