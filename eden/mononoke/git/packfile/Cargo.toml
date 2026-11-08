@@ -29,7 +29,7 @@ weight_observer = { version = "0.1.0", git = "https://github.com/facebookexperim
 bytes = { version = "1.12.1", features = ["serde"] }
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
-flate2 = { version = "1.1.10", features = ["rust_backend"], default-features = false }
+flate2 = { version = "1.1.11", features = ["rust_backend"], default-features = false }
 git_delta = { version = "0.1.0", path = "../../third_party/git_delta" }
 gix-features = { version = "0.49.1", features = ["parallel"] }
 gix-object = "0.64.1"

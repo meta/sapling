@@ -55,7 +55,7 @@ cmdversion = { version = "0.1.0", path = "commands/cmdversion" }
 cmdwhereami = { version = "0.1.0", path = "commands/cmdwhereami" }
 cmdworktree = { version = "0.1.0", path = "commands/cmdworktree" }
 ctrlc = { version = "3.5.2", features = ["termination"] }
-flate2 = { version = "1.1.10", features = ["rust_backend"], default-features = false }
+flate2 = { version = "1.1.11", features = ["rust_backend"], default-features = false }
 hostname = "0.4.2"
 libc = "0.2.186"
 parking_lot = { version = "0.13.0", features = ["arc_lock", "send_guard", "serde"] }

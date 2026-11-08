@@ -68,7 +68,7 @@ fbthrift = { version = "0.0.1", git = "https://github.com/facebook/fbthrift.git"
 fileblob = { version = "0.1.0", path = "../../blobstore/fileblob" }
 filenodes = { version = "0.1.0", path = "../../repo_attributes/filenodes" }
 filestore = { version = "0.1.0", path = "../../repo_attributes/filestore" }
-flate2 = { version = "1.1.10", features = ["rust_backend"], default-features = false }
+flate2 = { version = "1.1.11", features = ["rust_backend"], default-features = false }
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
 futures_stats = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 git_ref_content_mapping = { version = "0.1.0", path = "../../repo_attributes/git_ref_content_mapping" }
