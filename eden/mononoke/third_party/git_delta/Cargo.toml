@@ -15,7 +15,7 @@ libz-sys = "1.1.31"
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
 
 [build-dependencies]
-cc = "1.10.0"
+cc = "1.11.1"
 
 [lints]
 workspace = true

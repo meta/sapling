@@ -14,7 +14,7 @@ sapling-configloader = { version = "0.1.0", path = "../../lib/config/loader" }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [build-dependencies]
-cc = "1.10.0"
+cc = "1.11.1"
 sapling-python-sysconfig = { version = "0.1.0", path = "../../lib/util/python-sysconfig" }
 
 [target.'cfg(target_os = "linux")'.dependencies]

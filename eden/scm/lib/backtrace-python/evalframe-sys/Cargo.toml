@@ -18,5 +18,5 @@ name = "evalframe_sys"
 libc = "0.2.186"
 
 [build-dependencies]
-cc = "1.10.0"
+cc = "1.11.1"
 sapling-python-sysconfig = { version = "0.1.0", path = "../../util/python-sysconfig" }

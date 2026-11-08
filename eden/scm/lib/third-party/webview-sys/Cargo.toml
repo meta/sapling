@@ -21,4 +21,4 @@ doctest = false
 edition = "2021"
 
 [build-dependencies]
-cc = "1.10.0"
+cc = "1.11.1"

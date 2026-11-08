@@ -18,4 +18,4 @@ name = "xdiff_sys_bin"
 path = "src/bin/xdiff-sys-bin.rs"
 
 [build-dependencies]
-cc = "1.10.0"
+cc = "1.11.1"
