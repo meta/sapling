@@ -14,7 +14,7 @@ hex = { version = "0.4.3", features = ["alloc"] }
 sapling-identity = { version = "0.1.0", path = "../../lib/identity" }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 sha2 = "0.10.6"
-toml = { version = "1.1.8", features = ["preserve_order"] }
+toml = { version = "1.2.1", features = ["preserve_order"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

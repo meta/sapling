@@ -13,4 +13,4 @@ stack-config-derive = { version = "0.1.0", path = "../stack-config-derive" }
 
 [dev-dependencies]
 serde = { version = "1.0.229", features = ["derive", "rc"] }
-toml = { version = "1.1.8", features = ["preserve_order"] }
+toml = { version = "1.2.1", features = ["preserve_order"] }

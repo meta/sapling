@@ -13,7 +13,7 @@ metaconfig_types = { version = "0.1.0", path = "../../metaconfig/types" }
 mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
 permission_checker = { version = "0.1.0", path = "../../common/permission_checker" }
 repos = { version = "0.1.0", path = "../../../../configerator/structs/scm/mononoke/repos/repos" }
-toml = { version = "1.1.8", features = ["preserve_order"] }
+toml = { version = "1.2.1", features = ["preserve_order"] }
 
 [dev-dependencies]
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }

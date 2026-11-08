@@ -27,7 +27,7 @@ smallvec = { version = "1.16.4", default-features = false }
 terminfo = "0.9"
 termwiz = { version = "0.23.3", default-features = false }
 thiserror = "2.0.21"
-toml = { version = "1.1.8", features = ["preserve_order"], optional = true }
+toml = { version = "1.2.1", features = ["preserve_order"], optional = true }
 unicode-segmentation = "1.13.3"
 unicode-width = "0.2.3"
 vec_map = "0.8"

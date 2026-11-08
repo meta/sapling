@@ -32,7 +32,7 @@ mononoke_types-mocks = { version = "0.1.0", path = "../../mononoke_types/mocks" 
 pretty_assertions = { version = "1.4.1", features = ["alloc"], default-features = false }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_ignored = "0.1.14"
-toml = { version = "1.1.8", features = ["preserve_order"] }
+toml = { version = "1.2.1", features = ["preserve_order"] }
 
 [lints]
 workspace = true
