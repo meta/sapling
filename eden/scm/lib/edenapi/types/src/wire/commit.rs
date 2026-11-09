@@ -653,6 +653,7 @@ impl Arbitrary for WireEphemeralExtendResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wire::WireToApiConversionError;
     use crate::wire::tests::wire_json_hashes;
 
     #[test]
@@ -688,7 +689,7 @@ mod tests {
                 1141721279096408187,
                 14010494320882792131,
                 9918051020421534234,
-                14735951688500724157,
+                2143453491971505427,
                 1084558840362791376,
                 18239180058534398051,
                 9408360552512158447,
@@ -700,6 +701,19 @@ mod tests {
                 3944835397023904073,
                 6607109132335058288
             ]
+        );
+    }
+
+    #[test]
+    fn test_ephemeral_extend_request_without_snapshot_id() {
+        let wire: WireEphemeralExtendRequest =
+            serde_json::from_str(r#"{"1": 5, "2": 3600}"#).expect("should deserialize");
+        assert!(
+            matches!(
+                wire.to_api(),
+                Err(WireToApiConversionError::MissingField("snapshot_id"))
+            ),
+            "a request that carries only a bubble id should fail to convert"
         );
     }
 }

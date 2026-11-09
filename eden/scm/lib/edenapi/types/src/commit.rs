@@ -395,8 +395,7 @@ pub enum BubbleStrategy {
         bubble_id: NonZeroU64,
         #[serde(default)]
         keep_ttl: bool,
-        #[serde(default)]
-        snapshot_id: Option<BonsaiChangesetId>,
+        snapshot_id: BonsaiChangesetId,
     },
 }
 
@@ -575,12 +574,11 @@ pub struct EphemeralPrepareResponse {
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[cfg_attr(any(test, feature = "for-tests"), derive(Arbitrary))]
 pub struct EphemeralExtendRequest {
-    #[id(1)]
-    pub bubble_id: Option<NonZeroU64>,
     #[id(2)]
     pub custom_duration_secs: Option<u64>,
     #[id(3)]
-    pub snapshot_id: Option<BonsaiChangesetId>,
+    #[wire_option]
+    pub snapshot_id: BonsaiChangesetId,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]

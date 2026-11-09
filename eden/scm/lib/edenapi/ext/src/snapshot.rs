@@ -240,7 +240,6 @@ async fn prepare_ephemeral_bubble(
                     // Only bubbles without labels that have expired will cause the request to fail.
                     let extend_response = api
                         .ephemeral_extend(EphemeralExtendRequest {
-                            bubble_id: snapshot_id.is_none().then_some(*reuse_bubble_id),
                             custom_duration_secs: bubble_properties.lifetime_secs,
                             snapshot_id: *snapshot_id,
                         })

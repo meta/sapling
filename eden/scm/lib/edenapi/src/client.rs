@@ -880,14 +880,12 @@ impl Client {
     ) -> Result<EphemeralExtendResponse, SaplingRemoteApiError> {
         if let Some(duration) = request.custom_duration_secs {
             tracing::info!(
-                "Extending ephemeral bubble ttl to {duration} seconds; bubble_id={:?}, snapshot_id={:?}",
-                request.bubble_id,
+                "Extending ephemeral bubble ttl to {duration} seconds; snapshot_id={:?}",
                 request.snapshot_id
             );
         } else {
             tracing::info!(
-                "Extending ephemeral bubble ttl; bubble_id={:?}, snapshot_id={:?}",
-                request.bubble_id,
+                "Extending ephemeral bubble ttl; snapshot_id={:?}",
                 request.snapshot_id
             );
         }
