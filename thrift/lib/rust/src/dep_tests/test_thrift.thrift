@@ -196,3 +196,7 @@ const SubStruct CUSTOM_SUBSTRUCT = {
   "key_map": {{"num": 4, "two": 2}: 42},
   "bin": "0123456789",
 };
+
+const set<double> DOUBLE_SET = [1.5];
+
+const map<float, i32> FLOAT_KEY_MAP = {1.5: 1};
