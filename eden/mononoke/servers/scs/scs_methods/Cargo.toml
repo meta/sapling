@@ -33,7 +33,7 @@ diff_service_if = { version = "0.1.0", path = "../../diff_service/if" }
 diff_service_if_clients = { version = "0.1.0", path = "../../diff_service/if/clients" }
 environment = { version = "0.1.0", path = "../../../cmdlib/environment" }
 ephemeral_blobstore = { version = "0.1.0", path = "../../../blobstore/ephemeral_blobstore" }
-faster-hex = "0.8.1"
+faster-hex = "0.9.0"
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
 futures-util = { version = "0.3.34", features = ["compat"] }
