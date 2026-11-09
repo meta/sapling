@@ -9,7 +9,7 @@ license = "GPLv2+"
 
 [dependencies]
 anyhow = "1.0.104"
-arc-swap = { version = "1.9.3", features = ["weak"] }
+arc-swap = { version = "1.9.4", features = ["weak"] }
 arg_extensions = { version = "0.1.0", path = "../extensions" }
 async-trait = "0.1.92"
 base_app = { version = "0.1.0", path = "../base_app" }

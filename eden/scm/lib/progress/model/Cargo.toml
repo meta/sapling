@@ -14,7 +14,7 @@ exclude = ["BUCK"]
 name = "progress_model"
 
 [dependencies]
-arc-swap = { version = "1.9.3", features = ["weak"] }
+arc-swap = { version = "1.9.4", features = ["weak"] }
 parking_lot = { version = "0.13.0", features = ["arc_lock", "send_guard", "serde"] }
 paste = "1.0.14"
 thread_local = "1.1.10"

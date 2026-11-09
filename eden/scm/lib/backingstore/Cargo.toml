@@ -17,7 +17,7 @@ crate-type = ["lib", "staticlib"]
 
 [dependencies]
 anyhow = "1.0.104"
-arc-swap = { version = "1.9.3", features = ["weak"] }
+arc-swap = { version = "1.9.4", features = ["weak"] }
 blob = { version = "0.1.0", path = "../blob" }
 crossfire = "3.1.22"
 cxx = "1.0.194"

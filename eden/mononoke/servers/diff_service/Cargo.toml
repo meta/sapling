@@ -62,7 +62,7 @@ tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [dev-dependencies]
-arc-swap = { version = "1.9.3", features = ["weak"] }
+arc-swap = { version = "1.9.4", features = ["weak"] }
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
 mononoke_repos = { version = "0.1.0", path = "../../common/mononoke_repos" }
 tempfile = "3.27.0"

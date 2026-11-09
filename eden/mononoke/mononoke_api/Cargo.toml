@@ -10,7 +10,7 @@ license = "GPLv2+"
 [dependencies]
 acl_regions = { version = "0.1.0", path = "../common/acl_regions" }
 anyhow = "1.0.104"
-arc-swap = { version = "1.9.3", features = ["weak"] }
+arc-swap = { version = "1.9.4", features = ["weak"] }
 async-trait = "0.1.92"
 basename_suffix_skeleton_manifest_v3 = { version = "0.1.0", path = "../derived_data/basename_suffix_skeleton_manifest_v3" }
 blame = { version = "0.1.0", path = "../derived_data/blame" }
