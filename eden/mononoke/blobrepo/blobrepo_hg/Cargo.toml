@@ -37,7 +37,7 @@ sorted_vector_map = { version = "0.2.1", git = "https://github.com/facebookexper
 stats = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 thiserror = "2.0.21"
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
-uuid = { version = "1.28.0", features = ["rng-getrandom", "serde", "v4", "v5", "v6", "v7", "v8"] }
+uuid = { version = "1.29.1", features = ["rng-getrandom", "serde", "v4", "v5", "v6", "v7", "v8"] }
 
 [dev-dependencies]
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
