@@ -11,7 +11,7 @@ license = "GPL-2.0-only"
 exclude = ["BUCK"]
 
 [dependencies]
-phf = { version = "0.11", features = ["macros"] }
+phf = { version = "0.12.1", features = ["macros"] }
 sapling-zstdelta = { version = "0.1.0", path = "../zstdelta" }
 
 [build-dependencies]
