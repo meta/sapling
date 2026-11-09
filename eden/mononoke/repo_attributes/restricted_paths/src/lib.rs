@@ -1715,10 +1715,11 @@ mod tests {
         handles: &SourceHandles<PathRestrictionCheckResult>,
         exemption_matched: bool,
     ) -> Result<AccessEnforcementOutcome> {
+        let (fetch_config, fetch_acl_manifest, reconcile_sources) = (true, true, true);
         enforce_with_source_handles(
-            true,
-            true,
-            true,
+            fetch_config,
+            fetch_acl_manifest,
+            reconcile_sources,
             handles,
             PreFilteredRequest {
                 conditions: PreFilterResult::DefiniteMatch { candidates: vec![] },
