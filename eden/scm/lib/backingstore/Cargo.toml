@@ -47,7 +47,7 @@ sapling-testutil = { version = "0.1.0", path = "../util/testutil" }
 sapling-types = { version = "0.1.0", path = "../types" }
 sapling-walkdetector = { version = "0.1.0", path = "../walkdetector" }
 serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
-smallvec = { version = "1.16.4", default-features = false }
+smallvec = { version = "1.16.5", default-features = false }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 tracing-subscriber = { version = "0.3.23", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
 

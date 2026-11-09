@@ -11,4 +11,4 @@ license = "MIT"
 exclude = ["BUCK"]
 
 [dependencies]
-smallvec = { version = "1.16.4", default-features = false }
+smallvec = { version = "1.16.5", default-features = false }

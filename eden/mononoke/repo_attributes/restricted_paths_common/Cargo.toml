@@ -33,7 +33,7 @@ tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 [dev-dependencies]
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
-smallvec = { version = "1.16.4", features = ["const_generics", "impl_bincode", "serde", "specialization", "union", "write"] }
+smallvec = { version = "1.16.5", features = ["const_generics", "impl_bincode", "serde", "specialization", "union", "write"] }
 
 [lints]
 workspace = true

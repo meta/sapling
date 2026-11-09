@@ -113,7 +113,7 @@ sapling-xdiff = { version = "0.1.0", path = "../../scm/lib/xdiff" }
 scuba_ext = { version = "0.1.0", path = "../common/scuba_ext" }
 skeleton_manifest = { version = "0.1.0", path = "../derived_data/skeleton_manifest" }
 skeleton_manifest_v2 = { version = "0.1.0", path = "../derived_data/skeleton_manifest_v2" }
-smallvec = { version = "1.16.4", features = ["const_generics", "impl_bincode", "serde", "specialization", "union", "write"] }
+smallvec = { version = "1.16.5", features = ["const_generics", "impl_bincode", "serde", "specialization", "union", "write"] }
 sorted_vector_map = { version = "0.2.1", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 sql_commit_graph_storage = { version = "0.1.0", path = "../repo_attributes/commit_graph/sql_commit_graph_storage" }
 sql_query_config = { version = "0.1.0", path = "../repo_attributes/sql_query_config" }

@@ -23,7 +23,7 @@ futures = { version = "0.3.34", features = ["async-await", "compat"] }
 manifest = { version = "0.1.0", path = "../../manifest" }
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
 mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
-smallvec = { version = "1.16.4", features = ["const_generics", "impl_bincode", "serde", "specialization", "union", "write"] }
+smallvec = { version = "1.16.5", features = ["const_generics", "impl_bincode", "serde", "specialization", "union", "write"] }
 thiserror = "2.0.21"
 unodes = { version = "0.1.0", path = "../unodes" }
 

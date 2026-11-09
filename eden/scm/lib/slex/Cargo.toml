@@ -25,7 +25,7 @@ num_cpus = "1.16"
 parking_lot = { version = "0.13.0", features = ["arc_lock", "send_guard", "serde"] }
 sapling-async-runtime = { version = "0.1.0", path = "../async-runtime" }
 slex-items = { version = "0.1.0", path = "items" }
-smallvec = { version = "1.16.4", default-features = false }
+smallvec = { version = "1.16.5", default-features = false }
 tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 
 [dev-dependencies]

@@ -21,7 +21,7 @@ maplit = "1.0"
 mononoke_types = { version = "0.1.0", path = "../../../mononoke_types" }
 repo_identity = { version = "0.1.0", path = "../../repo_identity" }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
-smallvec = { version = "1.16.4", features = ["const_generics", "impl_bincode", "serde", "specialization", "union", "write"] }
+smallvec = { version = "1.16.5", features = ["const_generics", "impl_bincode", "serde", "specialization", "union", "write"] }
 vec1 = { version = "1.12.1", features = ["serde"] }
 
 [dev-dependencies]

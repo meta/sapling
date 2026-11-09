@@ -22,7 +22,7 @@ sapling-storemodel = { version = "0.1.0", path = "../storemodel" }
 sapling-types = { version = "0.1.0", path = "../types" }
 sapling-vfs = { version = "0.1.0", path = "../vfs" }
 slex = { version = "0.1.0", path = "../slex" }
-smallvec = { version = "1.16.4", default-features = false }
+smallvec = { version = "1.16.5", default-features = false }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [dev-dependencies]
