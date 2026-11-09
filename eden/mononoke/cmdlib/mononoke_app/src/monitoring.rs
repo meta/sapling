@@ -130,3 +130,25 @@ impl Fb303Service for ReadyFlagService {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use mononoke_macros::mononoke;
+
+    use super::*;
+
+    #[mononoke::test]
+    fn ready_flag_preserves_exported_status_contract() {
+        let service = ReadyFlagService::new();
+        let clone = service.clone();
+        assert_eq!(service.getStatus(), FbStatus::Starting);
+        clone.set_ready();
+        assert_eq!(service.getStatus(), FbStatus::Alive);
+    }
+
+    #[mononoke::test]
+    fn alive_service_preserves_exported_boxed_trait_contract() {
+        let service: Box<dyn Fb303Service> = AliveService::new();
+        assert_eq!(service.getStatus(), FbStatus::Alive);
+    }
+}
