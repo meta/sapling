@@ -378,15 +378,17 @@ pub(crate) fn log_source_results_to_scuba_with_enforcement<T: SourceRestrictionC
         return Ok(());
     };
 
-    let reconciled = (reconcile_sources && acl_manifest_mode == AclManifestMode::Both)
-        .then(|| successful_source_check_pair(config_result, acl_manifest_result))
-        .flatten()
-        .map(|(config, acl_manifest)| {
-            restriction_check::ReconciledAuthorization::new_with_detail(
+    let reconciled = match (config_result, acl_manifest_result) {
+        (Ok(config), Some(Ok(acl_manifest)))
+            if reconcile_sources && acl_manifest_mode == AclManifestMode::Both =>
+        {
+            Some(restriction_check::ReconciledAuthorization::new_with_detail(
                 config.as_ref(),
                 acl_manifest.as_ref(),
-            )
-        });
+            ))
+        }
+        _ => None,
+    };
     let aggregate_summary = match reconciled.as_ref() {
         Some((reconciled, _)) => Some(reconciled.to_source_summary()),
         None => aggregate_summary_for_source_results(
@@ -562,8 +564,8 @@ fn both_mode_source_summary<T: SourceRestrictionCheck>(
     config_result: &SourceRestrictionResult<T>,
     acl_manifest_result: Option<&SourceRestrictionResult<T>>,
 ) -> SourceRestrictionSummary {
-    match successful_source_check_pair(config_result, acl_manifest_result) {
-        Some((config, acl_manifest)) if reconcile_sources => {
+    match (config_result, acl_manifest_result) {
+        (Ok(config), Some(Ok(acl_manifest))) if reconcile_sources => {
             restriction_check::ReconciledAuthorization::new(config.as_ref(), acl_manifest.as_ref())
                 .to_source_summary()
         }
@@ -572,20 +574,6 @@ fn both_mode_source_summary<T: SourceRestrictionCheck>(
                 .chain(successful_source_checks(acl_manifest_result)),
         ),
     }
-}
-
-/// The checks of both sources, when both reads succeeded.
-fn successful_source_check_pair<'a, T: SourceRestrictionCheck>(
-    config_result: &'a SourceRestrictionResult<T>,
-    acl_manifest_result: Option<&'a SourceRestrictionResult<T>>,
-) -> Option<(
-    &'a SourceRestrictionChecks<T>,
-    &'a SourceRestrictionChecks<T>,
-)> {
-    Some((
-        config_result.as_ref().ok()?,
-        acl_manifest_result?.as_ref().ok()?,
-    ))
 }
 
 fn successful_source_checks<T: SourceRestrictionCheck>(
