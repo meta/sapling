@@ -335,6 +335,46 @@ fn test_reconcile_same_root_requires_both_acls_and_falls_back_to_config_rollout(
     Ok(())
 }
 
+/// What it tests: top-level factor fields report every mechanism that
+/// contributed to a successful mixed-factor request.
+/// Expected: ACL and rollout are both true when separate restrictions are
+/// authorized by those respective factors.
+#[mononoke::test]
+fn test_reconciled_factor_flags_report_mixed_contributions() -> Result<()> {
+    let checks = [
+        check_with_factors(
+            "tent_a",
+            "REPO_REGION:acl_a",
+            FactorResult::Authorized,
+            FactorResult::NotSet,
+            None,
+        )?,
+        check_with_factors(
+            "tent_b",
+            "REPO_REGION:acl_b",
+            FactorResult::Unauthorized,
+            FactorResult::Authorized,
+            Some("GROUP:tent_b_rollout"),
+        )?,
+    ];
+
+    let reconciled = super::ReconciledAuthorization::new(&checks, &[]);
+
+    assert!(
+        reconciled.has_authorization,
+        "each restriction is authorized by one factor: {reconciled:#?}",
+    );
+    assert!(
+        reconciled.authorization.has_acl_access(),
+        "ACL access authorized tent_a: {reconciled:#?}",
+    );
+    assert!(
+        reconciled.authorization.is_rollout_allowlisted(),
+        "rollout authorized tent_b: {reconciled:#?}",
+    );
+    Ok(())
+}
+
 /// What it tests: an AclManifest rollout observation takes precedence when
 /// config names a different rollout group for the same root.
 /// Expected: AclManifest authorization grants even when config's rollout group

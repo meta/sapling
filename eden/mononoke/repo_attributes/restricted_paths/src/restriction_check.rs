@@ -172,10 +172,12 @@ pub struct RestrictionCheckResult {
     pub restriction_roots: Vec<NonRootMPath>,
 }
 
-/// Authorization flags produced by evaluating the caller against one source.
+/// Authorization factors from evaluating the caller against one restriction
+/// check, or aggregated over a request (see `SourceRestrictionSummary` for
+/// what an aggregate factor means).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AuthorizationCheckResult {
-    /// Whether the caller has direct read access to every matching path ACL.
+    /// Whether the caller has direct read access to the restriction's ACL.
     has_acl_access: FactorResult,
     /// Whether the caller is in the tooling allowlist group.
     is_allowlisted_tooling: FactorResult,
@@ -546,9 +548,11 @@ impl SourceRestrictionCheck for ManifestRestrictionCheckResult {
 /// Logging derives authorization, ACL, and restriction-root summaries from
 /// this type. `has_authorization` is the decision for the checks that loaded,
 /// made as enforcement makes it: every restriction is authorized by at least
-/// one of its own factors. The factor fields aggregate each factor on its own,
-/// so a request can be authorized even when no single factor covers every
-/// restriction.
+/// one of its own factors. For one source, or the union of the checks that
+/// loaded when a source failed, ACL access and rollout hold only when they
+/// hold for every restriction. For a reconciled request they hold when they
+/// authorize at least one restriction, so they report the factors that
+/// contributed. Tooling and admin are repo-wide in both.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SourceRestrictionSummary {
     has_authorization: bool,
@@ -652,11 +656,10 @@ impl ReconciledAuthorization {
             .all(|(_, result)| result.has_authorization());
         let has_acl_access = group_results
             .iter()
-            .all(|(_, result)| result.acl_result().is_authorized());
-        let is_rollout_allowlisted = !group_results.is_empty()
-            && group_results
-                .iter()
-                .all(|(_, result)| result.rollout_result().is_authorized());
+            .any(|(_, result)| result.acl_result().is_authorized());
+        let is_rollout_allowlisted = group_results
+            .iter()
+            .any(|(_, result)| result.rollout_result().is_authorized());
 
         Self {
             has_authorization,
