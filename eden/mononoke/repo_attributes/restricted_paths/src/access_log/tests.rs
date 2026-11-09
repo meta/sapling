@@ -5,6 +5,7 @@
  * GNU General Public License version 2.
  */
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -15,6 +16,9 @@ use anyhow::anyhow;
 use context::CoreContext;
 use context::SessionContainer;
 use fbinit::FacebookInit;
+use justknobs::test_helpers::JustKnobsInMemory;
+use justknobs::test_helpers::KnobVal;
+use justknobs::test_helpers::with_just_knobs;
 use metaconfig_types::AclManifestMode;
 use metadata::ClientPathAclCompatibility;
 use metadata::Metadata;
@@ -510,6 +514,51 @@ async fn test_both_aggregate_fields_union_source_results(fb: FacebookInit) -> Re
     assert_eq!(
         sample_field(sample, "shadow_mismatch"),
         Some("true".to_string())
+    );
+    Ok(())
+}
+
+/// What it tests: reconciled Both-mode rows log `authorization_detail` only
+/// when its sampling JustKnob passes.
+/// Expected: a row the knob samples out keeps the reconciled aggregate fields
+/// and omits the detail.
+#[mononoke::fbinit_test]
+async fn test_both_sampled_out_row_omits_authorization_detail(fb: FacebookInit) -> Result<()> {
+    let fixture = ShadowComparisonFieldFixture::new(
+        fb,
+        restricted_path_result(false, false, "config_acl", "shared/restricted")?,
+        Some(restricted_path_result(
+            true,
+            true,
+            "acl_manifest_acl",
+            "shared/restricted",
+        )?),
+        full_path_access_data()?,
+    )?
+    .with_acl_manifest_mode(AclManifestMode::Both);
+
+    let samples = with_just_knobs(
+        JustKnobsInMemory::new(HashMap::from([(
+            "scm/mononoke:path_acls_log_authorization_detail".to_string(),
+            KnobVal::Bool(false),
+        )])),
+        || fixture.log(),
+    )?;
+
+    assert_eq!(samples.len(), 1);
+    let sample = &samples[0];
+    assert_eq!(sample_field(sample, "authorization_detail"), None);
+    assert_eq!(
+        sample_field(sample, "has_authorization"),
+        Some("false".to_string()),
+        "the reconciled decision still needs config's ACL",
+    );
+    assert_eq!(
+        sample_array(sample, "acls"),
+        vec![
+            "REPO_REGION:acl_manifest_acl".to_string(),
+            "REPO_REGION:config_acl".to_string(),
+        ]
     );
     Ok(())
 }

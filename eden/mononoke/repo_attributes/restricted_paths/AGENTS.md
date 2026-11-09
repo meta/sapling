@@ -153,7 +153,9 @@ Rows are built in `access_log.rs` and written to `ACCESS_LOG_SCUBA_TABLE` and
 the schematized logger. A new or renamed column must be added to both.
 Exception: `authorization_detail`, the per-restriction JSON of a reconciled
 Both-mode access, is raw Scuba only. It is a free-form debug column for the
-reconciliation rollout.
+reconciliation rollout, logged on the share of rows set by the sample rate of
+`LOG_AUTHORIZATION_DETAIL_JK` (`access_log.rs`); the other columns stay
+unsampled.
 Logged enum values come from `strum::AsRefStr` derives; renaming a variant
 changes logged data.
 

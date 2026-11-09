@@ -325,6 +325,11 @@ pub(crate) fn spawn_log_source_results_with_enforcement<T>(
     });
 }
 
+/// Bool JustKnob evaluated once per reconciled row, without a hash, so its
+/// sample rate is the share of reconciled rows that log
+/// `authorization_detail`. The aggregate fields are logged on every row.
+const LOG_AUTHORIZATION_DETAIL_JK: &str = "scm/mononoke:path_acls_log_authorization_detail";
+
 /// Log compact source-comparison results to Scuba.
 ///
 /// This emits one row when a source-comparison lookup either finds a
@@ -382,10 +387,22 @@ pub(crate) fn log_source_results_to_scuba_with_enforcement<T: SourceRestrictionC
         (Ok(config), Some(Ok(acl_manifest)))
             if reconcile_sources && acl_manifest_mode == AclManifestMode::Both =>
         {
-            Some(restriction_check::ReconciledAuthorization::new_with_detail(
-                config.as_ref(),
-                acl_manifest.as_ref(),
-            ))
+            let (config, acl_manifest) = (config.as_ref(), acl_manifest.as_ref());
+            Some(
+                if justknobs::eval(LOG_AUTHORIZATION_DETAIL_JK, None, None) {
+                    let (reconciled, detail) =
+                        restriction_check::ReconciledAuthorization::new_with_detail(
+                            config,
+                            acl_manifest,
+                        );
+                    (reconciled, Some(detail))
+                } else {
+                    (
+                        restriction_check::ReconciledAuthorization::new(config, acl_manifest),
+                        None,
+                    )
+                },
+            )
         }
         _ => None,
     };
@@ -438,7 +455,10 @@ pub(crate) fn log_source_results_to_scuba_with_enforcement<T: SourceRestrictionC
             enforcement_decision,
             acl_manifest_mode: None,
             source_comparison: Some(source_comparison),
-            authorization_detail: reconciled.as_ref().map(|(_, detail)| detail.to_string()),
+            authorization_detail: reconciled
+                .as_ref()
+                .and_then(|(_, detail)| detail.as_ref())
+                .map(ToString::to_string),
         },
         scuba,
     )?;
