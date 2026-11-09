@@ -647,12 +647,73 @@ impl<'a, T: SourceRestrictionCheck> RestrictionGroup<'a, T> {
     }
 }
 
+/// Both sources' checks grouped by restriction, each group with its
+/// authorization, plus the request-wide allowlist factors they used.
+struct EvaluatedGroups<'a, T> {
+    allowlist: AllowlistAuthorization,
+    groups: Vec<(RestrictionGroup<'a, T>, AuthorizationCheckResult)>,
+}
+
+impl<'a, T: SourceRestrictionCheck> EvaluatedGroups<'a, T> {
+    fn new(config: &'a [T], acl_manifest: &'a [T]) -> Self {
+        let allowlist = repo_wide_allowlist(config.iter().chain(acl_manifest));
+        let groups = RestrictionGroup::from_sources(config, acl_manifest)
+            .into_iter()
+            .map(|group| {
+                let authorization = group.authorization(allowlist);
+                (group, authorization)
+            })
+            .collect();
+        Self { allowlist, groups }
+    }
+}
+
 impl ReconciledAuthorization {
     pub(crate) fn new<T: SourceRestrictionCheck>(config: &[T], acl_manifest: &[T]) -> Self {
-        let allowlist = repo_wide_allowlist(config.iter().chain(acl_manifest));
-        let group_results = RestrictionGroup::from_sources(config, acl_manifest)
-            .into_iter()
-            .map(|group| (group.root, group.authorization(allowlist)))
+        Self::from_evaluated(
+            config,
+            acl_manifest,
+            &EvaluatedGroups::new(config, acl_manifest),
+        )
+    }
+
+    /// Reconcile both sources and also return the raw-Scuba detail of each
+    /// restriction (see `authorization_detail`).
+    pub(crate) fn new_with_detail<T: SourceRestrictionCheck>(
+        config: &[T],
+        acl_manifest: &[T],
+    ) -> (Self, Value) {
+        let evaluated = EvaluatedGroups::new(config, acl_manifest);
+        (
+            Self::from_evaluated(config, acl_manifest, &evaluated),
+            authorization_detail(config, acl_manifest, &evaluated),
+        )
+    }
+
+    pub(crate) fn to_source_summary(&self) -> SourceRestrictionSummary {
+        SourceRestrictionSummary {
+            has_authorization: self.has_authorization,
+            authorization: self.authorization,
+            repo_region_acls: self
+                .repo_region_acls
+                .iter()
+                .map(ToString::to_string)
+                .sorted()
+                .collect(),
+            restriction_roots: self.root_authorization.keys().cloned().collect(),
+        }
+    }
+
+    fn from_evaluated<T: SourceRestrictionCheck>(
+        config: &[T],
+        acl_manifest: &[T],
+        evaluated: &EvaluatedGroups<'_, T>,
+    ) -> Self {
+        let allowlist = evaluated.allowlist;
+        let group_results = evaluated
+            .groups
+            .iter()
+            .map(|(group, result)| (group.root, *result))
             .collect::<Vec<_>>();
         let has_authorization = group_results
             .iter()
@@ -675,32 +736,6 @@ impl ReconciledAuthorization {
                 .into_iter()
                 .filter_map(|(root, result)| root.map(|root| (root.clone(), result)))
                 .collect(),
-        }
-    }
-
-    /// Reconcile both sources and also return the raw-Scuba detail of each
-    /// restriction (see `authorization_detail`).
-    pub(crate) fn new_with_detail<T: SourceRestrictionCheck>(
-        config: &[T],
-        acl_manifest: &[T],
-    ) -> (Self, Value) {
-        (
-            Self::new(config, acl_manifest),
-            authorization_detail(config, acl_manifest),
-        )
-    }
-
-    pub(crate) fn to_source_summary(&self) -> SourceRestrictionSummary {
-        SourceRestrictionSummary {
-            has_authorization: self.has_authorization,
-            authorization: self.authorization,
-            repo_region_acls: self
-                .repo_region_acls
-                .iter()
-                .map(ToString::to_string)
-                .sorted()
-                .collect(),
-            restriction_roots: self.root_authorization.keys().cloned().collect(),
         }
     }
 
@@ -2020,17 +2055,21 @@ fn compare_reconciled_denials<T: SourceRestrictionCheck>(
 /// tri-state observations. A source absent from a restriction reports
 /// `not_set` for ACL and rollout and keeps its request-wide tooling and admin
 /// observations.
-fn authorization_detail<T: SourceRestrictionCheck>(config: &[T], acl_manifest: &[T]) -> Value {
-    let allowlist = repo_wide_allowlist(config.iter().chain(acl_manifest));
+fn authorization_detail<T: SourceRestrictionCheck>(
+    config: &[T],
+    acl_manifest: &[T],
+    evaluated: &EvaluatedGroups<'_, T>,
+) -> Value {
+    let allowlist = evaluated.allowlist;
     let source_allowlist = |source| match source {
         RestrictionSource::Config => repo_wide_allowlist(config.iter()),
         RestrictionSource::AclManifest => repo_wide_allowlist(acl_manifest.iter()),
     };
     Value::Array(
-        RestrictionGroup::from_sources(config, acl_manifest)
+        evaluated
+            .groups
             .iter()
-            .map(|group| {
-                let result = group.authorization(allowlist);
+            .map(|(group, result)| {
                 let contributing_factors = [
                     ("acl", result.acl_result()),
                     ("rollout_allowlist", result.rollout_result()),
