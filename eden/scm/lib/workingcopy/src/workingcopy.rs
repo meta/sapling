@@ -313,6 +313,23 @@ impl WorkingCopy {
         locker: Arc<RepoLocker>,
         watchman_client: Arc<DeferredWatchmanClient>,
     ) -> Result<BoxFileSystem> {
+        // Read-only status crawls the filesystem without updating Watchman clocks
+        // or treestate metadata. Classification still uses the shared status engine.
+        if config.get_or_default::<bool>("workingcopy", "status-read-only")?
+            && matches!(
+                file_system_type,
+                FileSystemType::Normal | FileSystemType::Watchman
+            )
+        {
+            return Ok(Box::new(PhysicalFileSystem::new_with_read_only(
+                vfs,
+                dot_dir,
+                tree_resolver,
+                store,
+                locker,
+                true,
+            )?));
+        }
         Ok(match file_system_type {
             FileSystemType::Normal => Box::new(PhysicalFileSystem::new(
                 vfs.clone(),

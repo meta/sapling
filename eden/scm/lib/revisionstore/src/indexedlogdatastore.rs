@@ -216,6 +216,17 @@ impl Entry {
         Ok(())
     }
 
+    /// Serialized content length, including any Hg copy header, without decoding.
+    pub(crate) fn content_size(&self) -> Result<usize> {
+        if let Some(content) = self.content.get() {
+            Ok(content.len())
+        } else if let Some(compressed) = &self.compressed_content {
+            Ok(lz4_pyframe::decompress_size(compressed)?)
+        } else {
+            bail!("No content")
+        }
+    }
+
     pub fn content(&self) -> Result<Bytes> {
         self.calculate_content()
     }
@@ -508,6 +519,70 @@ mod tests {
     use crate::scmstore::FileAttributes;
     use crate::scmstore::FileStore;
     use crate::testutil::*;
+
+    #[test]
+    fn content_size_does_not_decompress_large_blobs() -> Result<()> {
+        for size in [0, 17, 2 << 20, (2 << 20) + 1] {
+            let mut entry = Entry::new(
+                key("a", "1").hgid,
+                vec![b'x'; size].into(),
+                Metadata::default(),
+            );
+            assert_eq!(entry.content_size()?, size);
+            entry.compress_content()?;
+            assert!(entry.content.get().is_none());
+            assert_eq!(entry.content_size()?, size);
+            assert!(
+                entry.content.get().is_none(),
+                "size lookup decoded the blob"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn file_store_size_bound_handles_local_drafts_without_tree_aux() -> Result<()> {
+        use storemodel::FileStore as _;
+        let tempdir = TempDir::new()?;
+        let config = IndexedLogHgIdDataStoreConfig {
+            max_log_count: None,
+            max_bytes_per_log: None,
+            max_bytes: None,
+            btrfs_compression: false,
+        };
+        let log = Arc::new(IndexedLogHgIdDataStore::new(
+            &BTreeMap::<&str, &str>::new(),
+            &tempdir,
+            &config,
+            StoreType::Permanent,
+            SerializationFormat::Hg,
+        )?);
+        let mut store = FileStore::empty();
+        store.indexedlog_local = Some(log.clone());
+        store.flush_on_drop = false;
+        let store = crate::trait_impls::ArcFileStore(Arc::new(store));
+        for (name, id, size) in [
+            (".arcconfig", "1", 17),
+            ("config.ts", "2", 2 << 20),
+            ("large", "3", (2 << 20) + 1),
+        ] {
+            let key = key(name, id);
+            log.put_entry(Entry::new(
+                key.hgid,
+                vec![b'x'; size].into(),
+                Metadata::default(),
+            ))?;
+            assert_eq!(
+                store.get_content_size_bound(
+                    FetchContext::sapling_default(),
+                    &key.path,
+                    key.hgid
+                )?,
+                Some(size as u64)
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn test_serialize_uncompressed_after_precompression() -> Result<()> {

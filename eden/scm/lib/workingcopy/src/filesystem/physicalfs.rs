@@ -57,6 +57,7 @@ pub struct PhysicalFileSystem {
     pub(crate) treestate: Arc<Mutex<TreeState>>,
     pub(crate) locker: Arc<RepoLocker>,
     pub(crate) dot_dir: String,
+    read_only: bool,
 }
 
 impl PhysicalFileSystem {
@@ -67,8 +68,19 @@ impl PhysicalFileSystem {
         store: ArcFileStore,
         locker: Arc<RepoLocker>,
     ) -> Result<Self> {
+        Self::new_with_read_only(vfs, dot_dir, tree_resolver, store, locker, false)
+    }
+
+    pub(crate) fn new_with_read_only(
+        vfs: VFS,
+        dot_dir: &Path,
+        tree_resolver: ArcTreeResolver,
+        store: ArcFileStore,
+        locker: Arc<RepoLocker>,
+        read_only: bool,
+    ) -> Result<Self> {
         let ident = identity::must_sniff_dir(vfs.root())?;
-        let treestate = create_treestate(dot_dir, vfs.case_sensitive())?;
+        let treestate = create_treestate(dot_dir, vfs.case_sensitive(), read_only)?;
         let treestate = Arc::new(Mutex::new(treestate));
         Ok(PhysicalFileSystem {
             vfs,
@@ -77,11 +89,12 @@ impl PhysicalFileSystem {
             treestate,
             locker,
             dot_dir: ident.dot_dir().to_string(),
+            read_only,
         })
     }
 }
 
-fn create_treestate(dot_dir: &Path, case_sensitive: bool) -> Result<TreeState> {
+fn create_treestate(dot_dir: &Path, case_sensitive: bool, read_only: bool) -> Result<TreeState> {
     // Default implementation.
     let dirstate_path = dot_dir.join("dirstate");
     let treestate_path = dot_dir.join("treestate");
@@ -102,6 +115,7 @@ fn create_treestate(dot_dir: &Path, case_sensitive: bool) -> Result<TreeState> {
         tracing::trace!("loading treestate {filename} {root_id:?}");
         TreeState::open(&treestate_path.join(filename), root_id, case_sensitive)
     } else {
+        anyhow::ensure!(!read_only, "read-only status requires an existing dirstate");
         tracing::trace!("creating treestate");
         let (treestate, root_id) = TreeState::new(&treestate_path, case_sensitive)?;
 
@@ -161,6 +175,7 @@ impl FileSystem for PhysicalFileSystem {
             matcher,
             ignore_matcher,
             include_ignored,
+            read_only: self.read_only,
             treestate: self.treestate.clone(),
             stage: PendingChangesStage::Walk,
             seen: HashSet::new(),
@@ -199,6 +214,7 @@ pub struct PendingChanges<M: Matcher + Clone + Send + Sync + 'static> {
     matcher: M,
     ignore_matcher: M,
     include_ignored: bool,
+    read_only: bool,
     treestate: Arc<Mutex<TreeState>>,
     stage: PendingChangesStage,
     seen: HashSet<RepoPathBuf>,
@@ -447,6 +463,9 @@ impl<M: Matcher + Clone + Send + Sync + 'static> Iterator for PendingChanges<M> 
 
 impl<M: Matcher + Clone + Send + Sync + 'static> PendingChanges<M> {
     fn update_treestate_mtimes(&mut self) -> Result<()> {
+        if self.read_only {
+            return Ok(());
+        }
         let mut ts = self.treestate.lock();
         let was_dirty = ts.dirty();
 

@@ -225,6 +225,17 @@ pub trait KeyStore: Send + Sync {
 
 /// A store for files.
 pub trait FileStore: KeyStore + 'static {
+    /// Get an upper bound on file content size without loading or hashing content.
+    /// The bound may include a serialized copy header. None means unsupported.
+    fn get_content_size_bound(
+        &self,
+        _fctx: FetchContext,
+        _path: &RepoPath,
+        _id: HgId,
+    ) -> anyhow::Result<Option<u64>> {
+        Ok(None)
+    }
+
     /// Read rename metadata of specified files.
     ///
     /// The result is a vector of (key, rename_from_key) pairs for files with

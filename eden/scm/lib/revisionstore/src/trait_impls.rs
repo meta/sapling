@@ -144,6 +144,37 @@ impl storemodel::KeyStore for ArcFileStore {
 }
 
 impl storemodel::FileStore for ArcFileStore {
+    fn get_content_size_bound(
+        &self,
+        fctx: FetchContext,
+        path: &RepoPath,
+        id: HgId,
+    ) -> anyhow::Result<Option<u64>> {
+        // Local draft files may have neither remote nor augmented-tree aux data.
+        for store in [&self.0.indexedlog_cache, &self.0.indexedlog_local]
+            .into_iter()
+            .flatten()
+        {
+            if let Some(entry) = store.get_entry(&id)? {
+                // A pointer's length does not bound its LFS payload.
+                if !entry.metadata().is_lfs() {
+                    return Ok(Some(entry.content_size()? as u64));
+                }
+            }
+        }
+        let mut metadata_store = (*self.0).clone();
+        metadata_store.compute_aux_data = false;
+        metadata_store.flush_on_drop = false;
+        let key = Key::new(path.to_owned(), id);
+        let mut fetched = metadata_store
+            .fetch(fctx, [key], FileAttributes::AUX)
+            .into_iter();
+        match fetched.next() {
+            Some(entry) => Ok(Some(entry?.1.aux_data()?.total_size)),
+            None => Ok(None),
+        }
+    }
+
     fn get_rename_iter(
         &self,
         keys: Vec<Key>,
