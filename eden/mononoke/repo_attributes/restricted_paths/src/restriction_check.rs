@@ -1242,13 +1242,7 @@ pub(crate) fn authoritative_sources_enforcement_outcome(
 /// are available. Rootless manifest checks sort after rooted checks, and the
 /// permission request group breaks ties.
 fn compare_denied_checks<T: SourceRestrictionCheck>(left: &T, right: &T) -> Ordering {
-    match (left.restriction_root(), right.restriction_root()) {
-        (Some(left_root), Some(right_root)) => left_root.cmp(right_root),
-        (Some(_), None) => Ordering::Less,
-        (None, Some(_)) => Ordering::Greater,
-        (None, None) => Ordering::Equal,
-    }
-    .then_with(|| {
+    compare_restriction_roots(left, right).then_with(|| {
         left.permission_request_group()
             .cmp(right.permission_request_group())
     })
@@ -1541,18 +1535,13 @@ fn completed_source_enforcement_outcome<T>(
 where
     T: SourceRestrictionCheck,
 {
-    let any_match = match pre_filter_variant {
-        PreFilterVariant::Definite => true,
-        PreFilterVariant::NeedsFetch => {
-            let restriction_acls = result
-                .iter()
-                .map(SourceRestrictionCheck::repo_region_identity)
-                .collect::<Vec<_>>();
-            condition_sets_match_restriction_acls(candidates, &restriction_acls)
-        }
-    };
-
-    if !any_match {
+    if !enforcement_applies(
+        candidates,
+        pre_filter_variant,
+        result
+            .iter()
+            .map(SourceRestrictionCheck::repo_region_identity),
+    ) {
         return AccessEnforcementOutcome::NotEnforced;
     }
 
@@ -1570,4 +1559,32 @@ where
         });
 
     AccessEnforcementOutcome::Enforced { denial }
+}
+
+/// Whether enforcement applies to restrictions with these ACLs: always after a
+/// definite pre-filter match, otherwise only when an active condition set
+/// matches one of them.
+fn enforcement_applies<'a>(
+    candidates: &[&EnforcementConditionSet],
+    pre_filter_variant: &PreFilterVariant,
+    restriction_acls: impl IntoIterator<Item = &'a MononokeIdentity>,
+) -> bool {
+    match pre_filter_variant {
+        PreFilterVariant::Definite => true,
+        PreFilterVariant::NeedsFetch => condition_sets_match_restriction_acls(
+            candidates,
+            &restriction_acls.into_iter().collect::<Vec<_>>(),
+        ),
+    }
+}
+
+/// Order checks by restriction root: known roots by path, then rootless
+/// checks.
+fn compare_restriction_roots<T: SourceRestrictionCheck>(left: &T, right: &T) -> Ordering {
+    match (left.restriction_root(), right.restriction_root()) {
+        (Some(left_root), Some(right_root)) => left_root.cmp(right_root),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
 }
