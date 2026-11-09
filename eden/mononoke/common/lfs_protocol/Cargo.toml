@@ -9,7 +9,7 @@ license = "GPLv2+"
 
 [dependencies]
 anyhow = "1.0.104"
-faster-hex = "0.9.0"
+faster-hex = "0.10.1"
 http = "1.5.0"
 mime = "0.3.18"
 quickcheck = "1.1"

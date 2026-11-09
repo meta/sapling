@@ -23,7 +23,7 @@ commit_graph = { version = "0.1.0", path = "../../repo_attributes/commit_graph/c
 connection_security_checker = { version = "0.1.0", path = "../../common/connection_security_checker" }
 context = { version = "0.1.0", path = "../slapi/slapi_server/context" }
 facet = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main", features = ["impl_never_type"] }
-faster-hex = "0.9.0"
+faster-hex = "0.10.1"
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 filestore = { version = "0.1.0", path = "../../repo_attributes/filestore" }
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
