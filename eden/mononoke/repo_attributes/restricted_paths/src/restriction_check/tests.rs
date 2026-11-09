@@ -593,7 +593,8 @@ fn test_summary_rollout_allowlist_requires_every_check() -> Result<()> {
 
 /// What it tests: `from_check_union` applies the same unanimity rule as
 /// `from_checks` when merging checks reported by several sources.
-/// Expected: one non-allowlisted check in the union denies the whole request.
+/// Expected: one non-allowlisted check makes the union not rollout-allowlisted,
+/// and with no ACL access that check denies the whole request.
 #[mononoke::test]
 fn test_summary_union_rollout_allowlist_requires_every_check() -> Result<()> {
     let allowlisted = AuthorizationCheckResult::new(false, false, true, false);
@@ -608,11 +609,55 @@ fn test_summary_union_rollout_allowlist_requires_every_check() -> Result<()> {
     );
 
     let denied_check = check_with_authorization("tent_b", not_allowlisted)?;
+    let summary = SourceRestrictionSummary::from_check_union([&allowlisted_check, &denied_check]);
     assert!(
-        !SourceRestrictionSummary::from_check_union([&allowlisted_check, &denied_check])
-            .is_rollout_allowlisted(),
-        "one non-allowlisted check in the union denies the whole request",
+        !summary.is_rollout_allowlisted(),
+        "one non-allowlisted check in the union is not rollout-allowlisted",
     );
+    assert!(
+        !summary.has_authorization(),
+        "with no ACL access, tent_b has no authorizing factor, so the request is denied",
+    );
+    Ok(())
+}
+
+/// What it tests: the request decision for restrictions that are each
+/// authorized by a different factor: `tent_a` by ACL and `tent_b` by its
+/// rollout group.
+/// Expected: both `from_checks` and `from_check_union` report the request as
+/// authorized, as enforcement allows it, while ACL access and the rollout
+/// group are each reported false because neither covers both restrictions.
+#[mononoke::test]
+fn test_summary_authorizes_restrictions_with_different_factors() -> Result<()> {
+    let acl_only = check_with_authorization(
+        "tent_a",
+        AuthorizationCheckResult::new(true, false, false, false),
+    )?;
+    let rollout_only = check_with_authorization(
+        "tent_b",
+        AuthorizationCheckResult::new(false, false, true, false),
+    )?;
+    let checks = [acl_only, rollout_only];
+
+    let summaries = [
+        SourceRestrictionSummary::from_checks(&checks),
+        SourceRestrictionSummary::from_check_union(&checks),
+    ];
+
+    for summary in summaries {
+        assert!(
+            summary.has_authorization(),
+            "every restriction is authorized by one of its factors: {summary:#?}",
+        );
+        assert!(
+            !summary.has_acl_access(),
+            "ACL access covers only tent_a: {summary:#?}",
+        );
+        assert!(
+            !summary.is_rollout_allowlisted(),
+            "the rollout group covers only tent_b: {summary:#?}",
+        );
+    }
     Ok(())
 }
 

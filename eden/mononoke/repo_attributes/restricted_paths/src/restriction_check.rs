@@ -523,11 +523,15 @@ impl SourceRestrictionCheck for ManifestRestrictionCheckResult {
 
 /// Aggregate view over one source's typed restriction checks.
 ///
-/// Logging and enforcement derive authorization, ACL, and restriction-root
-/// summaries from this shared type so their source aggregation semantics stay in
-/// sync.
+/// Logging derives authorization, ACL, and restriction-root summaries from
+/// this type. `has_authorization` is the decision for the checks that loaded,
+/// made as enforcement makes it: every restriction is authorized by at least
+/// one of its own factors. The factor fields aggregate each factor on its own,
+/// so a request can be authorized even when no single factor covers every
+/// restriction.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SourceRestrictionSummary {
+    has_authorization: bool,
     authorization: AuthorizationCheckResult,
     repo_region_acls: Vec<String>,
     restriction_roots: Vec<NonRootMPath>,
@@ -535,6 +539,7 @@ pub(crate) struct SourceRestrictionSummary {
 
 impl SourceRestrictionSummary {
     pub(crate) fn from_checks(checks: &[impl SourceRestrictionCheck]) -> Self {
+        let has_authorization = all_checks_authorized(checks);
         let authorization = aggregate_single_source_authorization(checks);
         let repo_region_acls = checks
             .iter()
@@ -547,6 +552,7 @@ impl SourceRestrictionSummary {
             .collect();
 
         Self {
+            has_authorization,
             authorization,
             repo_region_acls,
             restriction_roots,
@@ -558,6 +564,7 @@ impl SourceRestrictionSummary {
         T: SourceRestrictionCheck + 'a,
     {
         let checks = checks.into_iter().collect::<Vec<_>>();
+        let has_authorization = all_checks_authorized(checks.iter().copied());
         let has_acl_access = checks
             .iter()
             .all(|check| check.authorization().has_acl_access());
@@ -586,6 +593,7 @@ impl SourceRestrictionSummary {
             .collect();
 
         Self {
+            has_authorization,
             authorization: AuthorizationCheckResult::new(
                 has_acl_access,
                 is_allowlisted_tooling,
@@ -598,7 +606,7 @@ impl SourceRestrictionSummary {
     }
 
     pub(crate) fn has_authorization(&self) -> bool {
-        self.authorization.has_authorization()
+        self.has_authorization
     }
 
     pub(crate) fn has_acl_access(&self) -> bool {
@@ -1518,6 +1526,15 @@ fn aggregate_single_source_authorization(
 fn all_rollout_allowlisted(flags: impl IntoIterator<Item = bool>) -> bool {
     let mut flags = flags.into_iter().peekable();
     flags.peek().is_some() && flags.all(|allowlisted| allowlisted)
+}
+
+/// Whether every restriction is authorized by at least one of its own factors.
+fn all_checks_authorized<'a, T: SourceRestrictionCheck + 'a>(
+    checks: impl IntoIterator<Item = &'a T>,
+) -> bool {
+    checks
+        .into_iter()
+        .all(|check| check.authorization().has_authorization())
 }
 
 /// Calculate enforcement after one source fetch has completed successfully.
