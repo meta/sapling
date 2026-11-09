@@ -759,6 +759,7 @@ async fn build_restricted_repo(
     let scuba = MononokeScubaSampleBuilder::with_discard();
 
     let restricted_paths = Arc::new(RestrictedPaths::new(
+        "repo".to_string(),
         config_based,
         acl_provider,
         scuba,

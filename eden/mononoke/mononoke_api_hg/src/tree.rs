@@ -760,6 +760,7 @@ mod tests {
         ));
 
         let restricted_paths = Arc::new(RestrictedPaths::new(
+            "repo".to_string(),
             config_based,
             acl_provider,
             scuba,

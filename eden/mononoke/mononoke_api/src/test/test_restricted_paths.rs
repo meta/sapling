@@ -1297,6 +1297,7 @@ async fn create_test_restricted_paths_with_mode(
     let repo_derived_data = test_repo.repo_derived_data_arc();
 
     Ok(Arc::new(RestrictedPaths::new(
+        "repo".to_string(),
         config_based,
         acl_provider,
         scuba,
@@ -1408,6 +1409,7 @@ async fn create_both_mode_test_changeset_with_config_metadata(
     let repo: Repo = factory.build().await?;
     let repo_derived_data = repo.repo_derived_data_arc();
     let restricted_paths = Arc::new(RestrictedPaths::new(
+        "repo".to_string(),
         config_based,
         acl_provider,
         scuba,

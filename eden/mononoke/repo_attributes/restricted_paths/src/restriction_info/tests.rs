@@ -600,6 +600,7 @@ fn restricted_paths_for_repo_with_mode_and_path_acls(
         None,
     ));
     RestrictedPaths::new(
+        "repo".to_string(),
         config_based,
         DummyAclProvider::new(fb)?,
         MononokeScubaSampleBuilder::with_discard(),

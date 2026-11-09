@@ -609,6 +609,7 @@ mod tests {
         let repo_derived_data = test_repo.repo_derived_data_arc();
 
         Ok(Arc::new(RestrictedPaths::new(
+            "repo".to_string(),
             config_based,
             acl_provider,
             scuba,
@@ -641,6 +642,7 @@ mod tests {
         let mut factory = TestRepoFactory::new(fb)?;
         let repo: Repo = factory.build().await?;
         let restricted = Arc::new(RestrictedPaths::new(
+            "repo".to_string(),
             Arc::new(RestrictedPathsConfigBased::new(
                 config,
                 manifest_id_store,
@@ -1415,6 +1417,7 @@ mod tests {
         ));
         let derived_data_repo: Repo = TestRepoFactory::new(fb)?.build().await?;
         let restricted_paths = Arc::new(RestrictedPaths::new(
+            "repo".to_string(),
             config_based,
             DummyAclProvider::new(fb)?,
             MononokeScubaSampleBuilder::with_discard(),

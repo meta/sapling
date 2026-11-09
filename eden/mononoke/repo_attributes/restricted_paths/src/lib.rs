@@ -209,10 +209,13 @@ pub struct RestrictedPaths {
     scuba: MononokeScubaSampleBuilder,
     /// Repo derived data for deriving ACL manifests.
     repo_derived_data: ArcRepoDerivedData,
+    /// Repo name, the switch value of this repo's JustKnobs.
+    repo_name: String,
 }
 
 impl RestrictedPaths {
     pub fn new(
+        repo_name: String,
         config_based: Arc<RestrictedPathsConfigBased>,
         acl_provider: Arc<dyn AclProvider>,
         scuba: MononokeScubaSampleBuilder,
@@ -232,6 +235,7 @@ impl RestrictedPaths {
             acl_provider,
             scuba,
             repo_derived_data,
+            repo_name,
         })
     }
 
@@ -244,6 +248,7 @@ impl RestrictedPaths {
             acl_provider: self.acl_provider.clone(),
             scuba: self.scuba.clone(),
             repo_derived_data: Arc::new(self.repo_derived_data.for_bubble(bubble)),
+            repo_name: self.repo_name.clone(),
         }
     }
 

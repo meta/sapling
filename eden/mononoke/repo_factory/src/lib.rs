@@ -1504,7 +1504,7 @@ impl RepoFactory {
     /// Restricted paths
     pub fn restricted_paths(
         &self,
-        _repo_identity: &ArcRepoIdentity,
+        repo_identity: &ArcRepoIdentity,
         restricted_paths_config_based: &ArcRestrictedPathsConfigBased,
         repo_derived_data: &ArcRepoDerivedData,
     ) -> Result<ArcRestrictedPaths> {
@@ -1518,6 +1518,7 @@ impl RepoFactory {
         };
 
         let restricted_paths = RestrictedPaths::new(
+            repo_identity.name().to_string(),
             restricted_paths_config_based.clone(),
             self.env.acl_provider.clone(),
             scuba_builder,

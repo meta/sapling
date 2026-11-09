@@ -1435,6 +1435,7 @@ async fn setup_test_repo(
     let repo_derived_data = repo.repo_derived_data_arc();
 
     let repo_restricted_paths = Arc::new(RestrictedPaths::new(
+        "repo".to_string(),
         config_based,
         acl_provider,
         scuba_builder,

@@ -127,7 +127,13 @@ pub(crate) async fn build_test_restricted_paths_with_options(
         None,
     ));
 
-    RestrictedPaths::new(config_based, acl_provider, scuba, repo_derived_data)
+    RestrictedPaths::new(
+        "repo".to_string(),
+        config_based,
+        acl_provider,
+        scuba,
+        repo_derived_data,
+    )
 }
 
 pub(crate) async fn add_manifest_entry(

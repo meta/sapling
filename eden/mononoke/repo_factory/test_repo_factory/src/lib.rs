@@ -841,6 +841,7 @@ impl TestRepoFactory {
     /// Restricted paths
     pub fn restricted_paths(
         &self,
+        repo_identity: &ArcRepoIdentity,
         restricted_paths_config_based: &ArcRestrictedPathsConfigBased,
         repo_derived_data: &ArcRepoDerivedData,
     ) -> Result<ArcRestrictedPaths> {
@@ -857,6 +858,7 @@ impl TestRepoFactory {
         let scuba_builder = MononokeScubaSampleBuilder::with_discard();
 
         Ok(Arc::new(RestrictedPaths::new(
+            repo_identity.name().to_string(),
             restricted_paths_config_based.clone(),
             acl_provider,
             scuba_builder,
