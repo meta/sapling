@@ -103,9 +103,37 @@ Test max-file-size limit skips formatting:
   $ echo "this is a long line that exceeds the size limit" > g.txt
   $ sl add g.txt
   $ sl amend
+  code formatter: leaving out files over 10 bytes: g.txt
   $ cat g.txt
   this is a long line that exceeds the size limit
+
+Test max-file-size limit leaves out only the large files, in one line:
+  $ echo "this is another line that exceeds the size limit" > big.txt
+  $ echo "this is a third line that exceeds the size limit" > big2.txt
+  $ echo "small" > k.txt
+  $ sl add big.txt big2.txt k.txt
+  $ sl amend
+  code formatter: leaving out files over 10 bytes: big.txt, big2.txt
+  running code formatter: '*' (glob)
+  code formatter completed successfully in * secs (glob)
+  $ cat big.txt
+  this is another line that exceeds the size limit
+  $ cat k.txt
+  ===formatted===
+  small
   $ setconfig 'fix.code-format-max-file-size=500KB'
+
+Test an unreadable file (broken symlink) is left out and the rest are formatted:
+  $ ln -s missing-target broken-link
+  $ echo "readable" > l.txt
+  $ sl add broken-link l.txt
+  $ sl amend
+  code formatter: leaving out broken-link: * (glob)
+  running code formatter: '*' (glob)
+  code formatter completed successfully in * secs (glob)
+  $ cat l.txt
+  ===formatted===
+  readable
 
 Test mode=on skips formatting in automation (HGPLAIN):
   $ HGPLAIN=1 sl amend
