@@ -9,7 +9,7 @@
 //! tips) and emits them as ODS gauges, plus a heartbeat.
 //!
 //! The selection comes from a central Configerator file (see
-//! `scm/mononoke/repo_state_logger`), re-read every iteration so config
+//! `scm/mononoke/repo_state_logger/repo_state_logger`), re-read every iteration so config
 //! edits apply without a restart. Repos are selected by ID; emitted series use
 //! the repo's canonical name. `--source` offers the same selection as CLI args
 //! for tests and manual runs.
@@ -98,7 +98,7 @@ pub struct Repo {
 #[derive(Parser)]
 struct LoggerArgs {
     /// Configerator path of the selection config,
-    /// e.g. scm/mononoke/repo_state_logger
+    /// e.g. scm/mononoke/repo_state_logger/repo_state_logger
     #[clap(long)]
     selection_config: Option<String>,
     /// Source specs `repo:counter:<name>` or `repo:bookmark_tip:<name>`, where
