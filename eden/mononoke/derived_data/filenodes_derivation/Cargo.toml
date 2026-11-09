@@ -34,6 +34,9 @@ fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rus
 fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 filestore = { version = "0.1.0", path = "../../repo_attributes/filestore" }
 fixtures = { version = "0.1.0", path = "../../tests/fixtures" }
+justknobs_ext = { version = "0.1.0", path = "../../common/rust/justknobs_ext" }
+maplit = "1.0"
+memblob = { version = "0.1.0", path = "../../blobstore/memblob" }
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
 repo_blobstore = { version = "0.1.0", path = "../../repo_attributes/repo_blobstore" }
 repo_derived_data = { version = "0.1.0", path = "../../repo_attributes/repo_derived_data" }

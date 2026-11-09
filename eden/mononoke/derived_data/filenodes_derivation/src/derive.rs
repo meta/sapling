@@ -5,8 +5,12 @@
  * GNU General Public License version 2.
  */
 
+use std::sync::Arc;
+
+use anyhow::Context;
 use anyhow::Result;
 use anyhow::format_err;
+use blobstore::KeyedBlobstore;
 use blobstore::Loadable;
 use context::CoreContext;
 use derived_data_manager::DerivationContext;
@@ -23,13 +27,17 @@ use futures::stream;
 use itertools::Either;
 use itertools::Itertools;
 use manifest::Entry;
+use manifest::ManifestLeaf;
 use manifest::find_intersection_of_diffs_and_parents;
 use mercurial_derivation::MappedHgChangesetId;
+use mercurial_types::HgAugmentedManifestId;
 use mercurial_types::HgChangesetId;
 use mercurial_types::HgFileEnvelope;
 use mercurial_types::HgFileNodeId;
-use mercurial_types::HgManifestEnvelope;
+use mercurial_types::HgManifestId;
+use mercurial_types::HgNodeHash;
 use mercurial_types::blobs::File;
+use mercurial_types::blobs::hg_manifests_read_from_augmented;
 use mercurial_types::fetch_manifest_envelope;
 use mercurial_types::nodehash::NULL_HASH;
 use mononoke_types::BonsaiChangeset;
@@ -120,6 +128,11 @@ pub(crate) async fn prepare_filenodes_for_cs(
 /// Pre-condition: HgChangeset for this bcs has already been derived by this point.
 /// This is enforced when interacting with this through this crate's API:
 /// the BonsaiDerivable implementation in mapping.rs
+///
+/// With `scm/mononoke:hgmanifest_read_from_augmented` on for the repo, the
+/// augmented manifests of this commit and its parents must exist too. Filenodes
+/// depend only on Hg changesets, so nothing guarantees that until Hg changesets
+/// depend on augmented manifests. The switch must stay off until then.
 pub(crate) async fn generate_all_filenodes(
     ctx: &CoreContext,
     derivation_ctx: &DerivationContext,
@@ -156,6 +169,22 @@ pub(crate) async fn generate_all_filenodes(
     .await?;
     let linknode = hg_id;
 
+    if hg_manifests_read_from_augmented(derivation_ctx.repo_name()) {
+        filenodes_from_augmented_manifests(ctx, blobstore, root_mf, parents, linknode).await
+    } else {
+        filenodes_from_hg_manifests(ctx, blobstore, root_mf, parents, linknode).await
+    }
+}
+
+/// The filenodes that the commit with root manifest `root_mf` adds to its
+/// parents' root manifests `parents`, read from stored Hg manifests.
+async fn filenodes_from_hg_manifests(
+    ctx: &CoreContext,
+    blobstore: &Arc<dyn KeyedBlobstore>,
+    root_mf: HgManifestId,
+    parents: Vec<HgManifestId>,
+    linknode: HgChangesetId,
+) -> Result<Vec<PreparedFilenode>> {
     (async_stream::stream! {
         let s = find_intersection_of_diffs_and_parents(
             ctx.clone(),
@@ -163,27 +192,15 @@ pub(crate) async fn generate_all_filenodes(
             root_mf,
             parents.clone(),
         )
-        .try_filter_map(|(path, entry, parent_entries)| {
-            async move {
-                // file entry has file type and file node id. If file type is different but filenode is
-                // the same we don't want to create a new filenode, and this filter removes
-                // all entries where at least one parent has the same filenode id.
-                if let Entry::Leaf((_, hg_filenode_id)) = entry {
-                    for parent_entry in parent_entries {
-                        if let Entry::Leaf((_, parent_filenode_id)) = parent_entry {
-                            if parent_filenode_id == hg_filenode_id {
-                                return Ok(None);
-                            }
-                        }
-                    }
-                }
-                Ok(Some((path, entry)))
-            }
+        .try_filter_map(|(path, entry, parent_entries)| async move {
+            Ok((!reuses_parent_filenode(&entry, &parent_entries)).then_some((path, entry)))
         })
         .map_ok(move |(path, entry)| {
             match entry {
                 Entry::Tree(hg_mf_id) => fetch_manifest_envelope(ctx, blobstore, hg_mf_id)
-                    .map_ok(move |envelope| create_manifest_filenode(path, envelope, linknode))
+                    .map_ok(move |envelope| {
+                        create_manifest_filenode(path, envelope.node_id(), envelope.parents(), linknode)
+                    })
                     .left_future(),
                 Entry::Leaf((_, hg_filenode_id)) => async move {
                     let envelope = hg_filenode_id.load(ctx, blobstore).await?;
@@ -201,6 +218,74 @@ pub(crate) async fn generate_all_filenodes(
     })
     .try_collect()
     .await
+}
+
+/// Like `filenodes_from_hg_manifests`, but reads the augmented manifest stored
+/// under each Hg tree id instead of the Hg tree. Directory records take the
+/// tree id and Hg parents from the augmented manifest; file records still come
+/// from Hg file versions. A missing augmented manifest fails the derivation.
+async fn filenodes_from_augmented_manifests(
+    ctx: &CoreContext,
+    blobstore: &Arc<dyn KeyedBlobstore>,
+    root_mf: HgManifestId,
+    parents: Vec<HgManifestId>,
+    linknode: HgChangesetId,
+) -> Result<Vec<PreparedFilenode>> {
+    // The null manifest has no augmented manifest. It is an empty tree, so a
+    // null parent rules out no entry.
+    let parents = parents
+        .into_iter()
+        .filter(|id| id.into_nodehash() != NULL_HASH)
+        .map(HgAugmentedManifestId::from)
+        .collect();
+
+    find_intersection_of_diffs_and_parents(
+        ctx.clone(),
+        blobstore.clone(),
+        HgAugmentedManifestId::from(root_mf),
+        parents,
+    )
+    .try_filter_map(|(path, entry, parent_entries)| async move {
+        Ok((!reuses_parent_filenode(&entry, &parent_entries)).then_some((path, entry)))
+    })
+    .map_ok(|(path, entry)| async move {
+        match entry {
+            Entry::Tree(augmented_mf_id) => {
+                let envelope = augmented_mf_id.load(ctx, blobstore).await?;
+                let manifest = envelope.augmented_manifest();
+                Ok(create_manifest_filenode(
+                    path,
+                    manifest.hg_node_id(),
+                    (manifest.p1(), manifest.p2()),
+                    linknode,
+                ))
+            }
+            Entry::Leaf(leaf) => {
+                let envelope = HgFileNodeId::new(leaf.filenode)
+                    .load(ctx, blobstore)
+                    .await?;
+                create_file_filenode(path, envelope, linknode)
+            }
+        }
+    })
+    .try_buffer_unordered(100)
+    .try_collect()
+    .await
+    .context("While deriving filenodes from augmented manifests")
+}
+
+/// Whether `entry` is a file with the same filenode as in one of its parents.
+/// Such a file gets no new filenode, even if its file type changed.
+fn reuses_parent_filenode<TreeId, Leaf: ManifestLeaf>(
+    entry: &Entry<TreeId, Leaf>,
+    parent_entries: &[Entry<TreeId, Leaf>],
+) -> bool {
+    let Entry::Leaf(leaf) = entry else {
+        return false;
+    };
+    parent_entries.iter().any(
+        |parent_entry| matches!(parent_entry, Entry::Leaf(parent_leaf) if leaf.reuses(parent_leaf)),
+    )
 }
 
 pub(crate) fn classify_filenode(
@@ -229,15 +314,15 @@ pub(crate) fn classify_filenode(
 
 fn create_manifest_filenode(
     path: MPath,
-    envelope: HgManifestEnvelope,
+    node_id: HgNodeHash,
+    (p1, p2): (Option<HgNodeHash>, Option<HgNodeHash>),
     linknode: HgChangesetId,
 ) -> PreparedFilenode {
     let path = match Option::<NonRootMPath>::from(path) {
         Some(path) => RepoPath::DirectoryPath(path),
         None => RepoPath::RootPath,
     };
-    let filenode = HgFileNodeId::new(envelope.node_id());
-    let (p1, p2) = envelope.parents();
+    let filenode = HgFileNodeId::new(node_id);
     let p1 = p1.map(HgFileNodeId::new);
     let p2 = p2.map(HgFileNodeId::new);
 
@@ -305,8 +390,14 @@ mod tests {
     use filestore::FilestoreConfig;
     use fixtures::Linear;
     use fixtures::TestRepoFixture;
+    use justknobs::test_helpers::JustKnobsInMemory;
+    use justknobs::test_helpers::KnobVal;
+    use justknobs::test_helpers::override_just_knobs;
     use manifest::ManifestOps;
+    use maplit::hashmap;
+    use memblob::Memblob;
     use mercurial_derivation::DeriveHgChangeset;
+    use mercurial_derivation::RootHgAugmentedManifestId;
     use mononoke_macros::mononoke;
     use mononoke_types::FileType;
     use repo_blobstore::RepoBlobstore;
@@ -315,6 +406,7 @@ mod tests {
     use repo_identity::RepoIdentity;
     use test_repo_factory::TestRepoFactory;
     use tests_utils::CreateCommitContext;
+    use tests_utils::hg_manifest_reads::HgManifestReadBlocker;
     use tests_utils::resolve_cs_id;
     use tracing::info;
 
@@ -780,6 +872,332 @@ mod tests {
             .derive::<FilenodesOnlyPublic>(&ctx, target, None, DerivationPriority::LOW)
             .await?;
 
+        Ok(())
+    }
+
+    /// Sets `hgmanifest_read_from_augmented` for every task on this thread,
+    /// including derivation tasks the test spawns. Hg changesets are derived
+    /// without their augmented manifests, which the tests derive explicitly.
+    fn set_read_from_augmented(read_from_augmented: bool) {
+        override_just_knobs(JustKnobsInMemory::new(hashmap! {
+            "scm/mononoke:hgmanifest_read_from_augmented".to_string() => KnobVal::Bool(read_from_augmented),
+            "scm/mononoke:derive_hg_augmented_manifest_with_hg_changeset".to_string() => KnobVal::Bool(false),
+        }));
+    }
+
+    /// A repo whose stored Hg manifests can no longer be read once the
+    /// returned blocker is armed.
+    async fn repo_with_hg_manifest_blocker(
+        fb: FacebookInit,
+    ) -> Result<(TestRepo, Arc<HgManifestReadBlocker>)> {
+        let (blobstore, blocker) = HgManifestReadBlocker::wrap(Memblob::default());
+        let repo = TestRepoFactory::new(fb)?
+            .with_blobstore(blobstore)
+            .build()
+            .await?;
+        Ok((repo, blocker))
+    }
+
+    /// Derives the Hg changeset and the augmented manifest of each commit.
+    /// Both read Hg manifests, so this runs before the blocker is armed.
+    async fn derive_hg_and_augmented(
+        ctx: &CoreContext,
+        repo: &TestRepo,
+        cs_ids: &[ChangesetId],
+    ) -> Result<()> {
+        for cs_id in cs_ids {
+            repo.derive_hg_changeset(ctx, *cs_id).await?;
+            repo.repo_derived_data()
+                .derive::<RootHgAugmentedManifestId>(ctx, *cs_id, DerivationPriority::LOW)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// The filenodes generated for `cs_id`, in a stable order.
+    async fn sorted_filenodes(
+        ctx: &CoreContext,
+        repo: &TestRepo,
+        cs_id: ChangesetId,
+    ) -> Result<Vec<PreparedFilenode>> {
+        let bonsai = cs_id.load(ctx, &repo.repo_blobstore).await?;
+        let mut filenodes = generate_all_filenodes(
+            ctx,
+            &repo.repo_derived_data().manager().derivation_context(None),
+            &bonsai,
+        )
+        .await?;
+        filenodes.sort_by_key(|filenode| format!("{filenode:?}"));
+        Ok(filenodes)
+    }
+
+    struct Commits {
+        /// Every commit, parents before children.
+        all: Vec<ChangesetId>,
+        type_change: ChangesetId,
+        merge: ChangesetId,
+    }
+
+    /// An empty root, then commits that change files in nested directories,
+    /// change a file's type but not its filenode, change nothing, merge two
+    /// branches that both changed a directory, and merge three parents.
+    async fn create_commits(ctx: &CoreContext, repo: &TestRepo) -> Result<Commits> {
+        let empty_root = CreateCommitContext::new_root(ctx, repo).commit().await?;
+        let base = CreateCommitContext::new(ctx, repo, vec![empty_root])
+            .add_file("a", "a")
+            .add_file("dir/b", "b")
+            .add_file("dir/sub/c", "c")
+            .commit()
+            .await?;
+        let child = CreateCommitContext::new(ctx, repo, vec![base])
+            .add_file("dir/sub/c", "c2")
+            .add_file("new/d", "d")
+            .commit()
+            .await?;
+        let type_change = CreateCommitContext::new(ctx, repo, vec![child])
+            .add_file_with_type("a", "a", FileType::Executable)
+            .commit()
+            .await?;
+        let empty = CreateCommitContext::new(ctx, repo, vec![type_change])
+            .commit()
+            .await?;
+        let left = CreateCommitContext::new(ctx, repo, vec![empty])
+            .add_file("dir/b", "left")
+            .commit()
+            .await?;
+        let right = CreateCommitContext::new(ctx, repo, vec![empty])
+            .add_file("dir/b", "right")
+            .add_file("dir/sub/e", "e")
+            .commit()
+            .await?;
+        let merge = CreateCommitContext::new(ctx, repo, vec![left, right])
+            .add_file("dir/b", "merged")
+            .commit()
+            .await?;
+        let other_root = CreateCommitContext::new_root(ctx, repo)
+            .add_file("other/f", "f")
+            .commit()
+            .await?;
+        let third_root = CreateCommitContext::new_root(ctx, repo)
+            .add_file("third/h", "h")
+            .commit()
+            .await?;
+        let octopus = CreateCommitContext::new(ctx, repo, vec![merge, other_root, third_root])
+            .add_file("dir/g", "g")
+            .commit()
+            .await?;
+        Ok(Commits {
+            all: vec![
+                empty_root,
+                base,
+                child,
+                type_change,
+                empty,
+                left,
+                right,
+                merge,
+                other_root,
+                third_root,
+                octopus,
+            ],
+            type_change,
+            merge,
+        })
+    }
+
+    #[mononoke::fbinit_test]
+    async fn filenodes_from_augmented_match_hg(fb: FacebookInit) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let (repo, blocker) = repo_with_hg_manifest_blocker(fb).await?;
+        set_read_from_augmented(false);
+        let commits = create_commits(&ctx, &repo).await?;
+        derive_hg_and_augmented(&ctx, &repo, &commits.all).await?;
+
+        // Given: the filenodes generated from Hg manifests.
+        let mut from_hg = HashMap::new();
+        for cs_id in &commits.all {
+            from_hg.insert(*cs_id, sorted_filenodes(&ctx, &repo, *cs_id).await?);
+        }
+
+        // When: Hg manifests can no longer be read, and the switch is on.
+        blocker.arm();
+        set_read_from_augmented(true);
+
+        // Then: the filenodes generated from augmented manifests are the same.
+        for cs_id in &commits.all {
+            let from_augmented = sorted_filenodes(&ctx, &repo, *cs_id).await?;
+            assert_eq!(
+                from_augmented, from_hg[cs_id],
+                "filenodes of commit {cs_id} differ"
+            );
+        }
+        assert_eq!(blocker.reads(), 0, "no Hg manifest is read");
+
+        // And: the commits cover the cases they are meant to.
+        assert_eq!(
+            from_hg[&commits.type_change]
+                .iter()
+                .map(|filenode| &filenode.path)
+                .collect::<Vec<_>>(),
+            vec![&RepoPath::RootPath],
+            "a type change that keeps the filenode adds only the root filenode"
+        );
+        let merged_dir = from_hg[&commits.merge]
+            .iter()
+            .find(|filenode| filenode.path == RepoPath::dir("dir").unwrap())
+            .expect("the merge adds a filenode for dir");
+        assert!(
+            merged_dir.info.p1.is_some() && merged_dir.info.p2.is_some(),
+            "the merged directory has two parents: {merged_dir:?}"
+        );
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn filenodes_from_augmented_with_null_parent_manifest(fb: FacebookInit) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let (repo, blocker) = repo_with_hg_manifest_blocker(fb).await?;
+        set_read_from_augmented(false);
+        let parent = CreateCommitContext::new_root(&ctx, &repo)
+            .add_file("a", "a")
+            .add_file("dir/b", "b")
+            .commit()
+            .await?;
+        let child = CreateCommitContext::new(&ctx, &repo, vec![parent])
+            .add_file("dir/b", "b2")
+            .add_file("new/c", "c")
+            .commit()
+            .await?;
+        derive_hg_and_augmented(&ctx, &repo, &[parent, child]).await?;
+        let derivation_ctx = repo.repo_derived_data().manager().derivation_context(None);
+        let blobstore = derivation_ctx.blobstore();
+        let linknode = repo.derive_hg_changeset(&ctx, child).await?;
+        let child_mf = linknode
+            .load(&ctx, &repo.repo_blobstore)
+            .await?
+            .manifestid();
+        let parent_mf = repo
+            .derive_hg_changeset(&ctx, parent)
+            .await?
+            .load(&ctx, &repo.repo_blobstore)
+            .await?
+            .manifestid();
+
+        // Given: the null manifest as the only, first or second parent of a
+        // non-empty manifest, and the filenodes read from Hg manifests.
+        let null_mf = HgManifestId::new(NULL_HASH);
+        let parent_lists = [
+            vec![null_mf],
+            vec![null_mf, parent_mf],
+            vec![parent_mf, null_mf],
+        ];
+        let mut from_hg = Vec::new();
+        for parents in &parent_lists {
+            let mut filenodes =
+                filenodes_from_hg_manifests(&ctx, blobstore, child_mf, parents.clone(), linknode)
+                    .await?;
+            filenodes.sort_by_key(|filenode| format!("{filenode:?}"));
+            from_hg.push(filenodes);
+        }
+
+        // When: Hg manifests can no longer be read.
+        blocker.arm();
+
+        // Then: augmented manifests give the same filenodes. The null manifest
+        // has no augmented manifest; it reads as an empty tree.
+        for (parents, from_hg) in parent_lists.iter().zip(from_hg) {
+            let mut from_augmented = filenodes_from_augmented_manifests(
+                &ctx,
+                blobstore,
+                child_mf,
+                parents.clone(),
+                linknode,
+            )
+            .await?;
+            from_augmented.sort_by_key(|filenode| format!("{filenode:?}"));
+            assert_eq!(from_augmented, from_hg, "parents {parents:?}");
+        }
+        assert_eq!(blocker.reads(), 0, "no Hg manifest is read");
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn filenodes_from_augmented_fail_without_augmented_manifest(
+        fb: FacebookInit,
+    ) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let (repo, blocker) = repo_with_hg_manifest_blocker(fb).await?;
+        set_read_from_augmented(false);
+        let commit = CreateCommitContext::new_root(&ctx, &repo)
+            .add_file("dir/a", "a")
+            .commit()
+            .await?;
+
+        // Given: a commit with an Hg changeset but no augmented manifest.
+        repo.derive_hg_changeset(&ctx, commit).await?;
+        blocker.arm();
+
+        // When: filenodes are generated with the switch on.
+        set_read_from_augmented(true);
+        let err = sorted_filenodes(&ctx, &repo, commit)
+            .await
+            .expect_err("a missing augmented manifest is an error");
+
+        // Then: the error names the missing augmented manifest, and nothing
+        // fell back to the Hg manifest.
+        assert!(
+            format!("{err:#}").contains("hgaugmentedmanifest.sha1."),
+            "the error names the missing augmented manifest: {err:#}"
+        );
+        assert_eq!(blocker.reads(), 0, "no Hg manifest is read");
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn derive_filenodes_from_augmented_matches_hg(fb: FacebookInit) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        set_read_from_augmented(false);
+
+        // Given: the same commits in two repos, one with filenodes derived
+        // from Hg manifests.
+        let hg_repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+        let commits = create_commits(&ctx, &hg_repo).await?;
+        let (augmented_repo, blocker) = repo_with_hg_manifest_blocker(fb).await?;
+        let augmented_commits = create_commits(&ctx, &augmented_repo).await?;
+        assert_eq!(augmented_commits.all, commits.all);
+        let head = *commits.all.last().expect("commits are not empty");
+        hg_repo
+            .repo_derived_data()
+            .derive::<FilenodesOnlyPublic>(&ctx, head, DerivationPriority::LOW)
+            .await?;
+
+        // When: the other repo derives them from augmented manifests.
+        derive_hg_and_augmented(&ctx, &augmented_repo, &commits.all).await?;
+        blocker.arm();
+        set_read_from_augmented(true);
+        augmented_repo
+            .repo_derived_data()
+            .derive::<FilenodesOnlyPublic>(&ctx, head, DerivationPriority::LOW)
+            .await?;
+        assert_eq!(blocker.reads(), 0, "no Hg manifest is read");
+
+        // Then: both repos have the same derived data and filenodes for every
+        // commit, the empty ones included.
+        let from_hg = hg_repo
+            .repo_derived_data()
+            .manager()
+            .fetch_derived_batch::<FilenodesOnlyPublic>(&ctx, commits.all.clone(), None)
+            .await?;
+        let from_augmented = augmented_repo
+            .repo_derived_data()
+            .manager()
+            .fetch_derived_batch::<FilenodesOnlyPublic>(&ctx, commits.all.clone(), None)
+            .await?;
+        assert_eq!(from_augmented.len(), commits.all.len());
+        assert_eq!(from_augmented, from_hg);
+        for cs_id in commits.all {
+            compare_filenodes(&ctx, &hg_repo, &augmented_repo, cs_id).await?;
+        }
         Ok(())
     }
 }
