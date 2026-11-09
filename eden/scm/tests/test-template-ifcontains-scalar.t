@@ -18,9 +18,11 @@ An empty list (reviewers of the working copy) contains nothing:
   $ hg log -r 'wdir()' -T '{ifcontains("x", reviewers, "yes", "no")}\n'
   no
 
-BUG: an integer haystack crashes with a Python traceback:
+An integer haystack is a parse error, like "{rev % ...}" is:
 
-  $ hg log -r $A -T '{ifcontains(rev, rev, "yes", "no")}\n' 2>&1 | grep -E '^TypeError'
-  TypeError: argument of type 'int' is not iterable
-  $ hg log -r $A -T "{ifcontains('1', 1, 'yes', 'no')}\n" 2>&1 | grep -E '^TypeError'
-  TypeError: argument of type 'int' is not iterable
+  $ hg log -r $A -T '{ifcontains(rev, rev, "yes", "no")}\n'
+  hg: parse error: keyword 'rev' is not iterable
+  [255]
+  $ hg log -r $A -T "{ifcontains('1', 1, 'yes', 'no')}\n"
+  hg: parse error: 1 is not iterable
+  [255]

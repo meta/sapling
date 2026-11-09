@@ -941,9 +941,16 @@ def ifcontains(context, mapping, args):
             )
         finally:
             scmutil.revf64encode = origf64encode
-        found = needle in haystack
     except error.ParseError:
         found = False
+    else:
+        try:
+            found = needle in haystack
+        except TypeError:
+            sym = findsymbolicname(args[1])
+            if sym:
+                raise error.ParseError(_("keyword '%s' is not iterable") % sym)
+            raise error.ParseError(_("%r is not iterable") % (haystack,))
 
     if found:
         yield evalrawexp(context, mapping, args[2])
