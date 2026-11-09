@@ -40,6 +40,8 @@ use permission_checker::AclProvider;
 use permission_checker::MononokeIdentity;
 use permission_checker::MononokeIdentitySet;
 use permission_checker::PermissionCheckerBuilder;
+use serde_json::Value;
+use serde_json::json;
 use tokio::task::JoinHandle;
 
 use crate::DenyingRestriction;
@@ -194,7 +196,8 @@ pub(crate) struct AuthorizationCheckResult {
 /// `NotSet` represents absent policy, while `Unauthorized` represents a
 /// configured policy that the caller did not satisfy. Fetch and evaluation
 /// failures remain errors and never become factor observations.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, strum::AsRefStr)]
+#[strum(serialize_all = "snake_case")]
 enum FactorResult {
     NotSet,
     Authorized,
@@ -673,6 +676,18 @@ impl ReconciledAuthorization {
                 .filter_map(|(root, result)| root.map(|root| (root.clone(), result)))
                 .collect(),
         }
+    }
+
+    /// Reconcile both sources and also return the raw-Scuba detail of each
+    /// restriction (see `authorization_detail`).
+    pub(crate) fn new_with_detail<T: SourceRestrictionCheck>(
+        config: &[T],
+        acl_manifest: &[T],
+    ) -> (Self, Value) {
+        (
+            Self::new(config, acl_manifest),
+            authorization_detail(config, acl_manifest),
+        )
     }
 
     pub(crate) fn to_source_summary(&self) -> SourceRestrictionSummary {
@@ -1997,4 +2012,68 @@ fn compare_reconciled_denials<T: SourceRestrictionCheck>(
                 .repo_region_identity()
                 .cmp(right.check.repo_region_identity())
         })
+}
+
+/// Raw-Scuba detail of reconciled checks: one object per restriction, in
+/// `RestrictionGroup::from_sources` order, recording its root, sorted `acls`,
+/// whether it is `authorized`, the `contributing_factors`, and each source's
+/// tri-state observations. A source absent from a restriction reports
+/// `not_set` for ACL and rollout and keeps its request-wide tooling and admin
+/// observations.
+fn authorization_detail<T: SourceRestrictionCheck>(config: &[T], acl_manifest: &[T]) -> Value {
+    let allowlist = repo_wide_allowlist(config.iter().chain(acl_manifest));
+    let source_allowlist = |source| match source {
+        RestrictionSource::Config => repo_wide_allowlist(config.iter()),
+        RestrictionSource::AclManifest => repo_wide_allowlist(acl_manifest.iter()),
+    };
+    Value::Array(
+        RestrictionGroup::from_sources(config, acl_manifest)
+            .iter()
+            .map(|group| {
+                let result = group.authorization(allowlist);
+                let contributing_factors = [
+                    ("acl", result.acl_result()),
+                    ("rollout_allowlist", result.rollout_result()),
+                    ("tooling_allowlist", allowlist.is_allowlisted_tooling),
+                    ("admin_bypass", allowlist.is_admin_bypass),
+                ]
+                .into_iter()
+                .filter_map(|(name, factor)| factor.is_authorized().then_some(name))
+                .collect::<Vec<_>>();
+                let source_observation = |source: RestrictionSource| {
+                    let factor = |result: fn(&AuthorizationCheckResult) -> FactorResult| {
+                        reduce_configured_factor(
+                            group
+                                .checks
+                                .iter()
+                                .filter(|named| named.source == source)
+                                .map(|named| result(named.check.authorization())),
+                        )
+                    };
+                    let allowlist = source_allowlist(source);
+                    json!({
+                        "acl": factor(AuthorizationCheckResult::acl_result).as_ref(),
+                        "rollout_allowlist": factor(AuthorizationCheckResult::rollout_result).as_ref(),
+                        "tooling_allowlist": allowlist.is_allowlisted_tooling.as_ref(),
+                        "admin_bypass": allowlist.is_admin_bypass.as_ref(),
+                    })
+                };
+                let acls = group
+                    .checks
+                    .iter()
+                    .map(|named| named.check.repo_region_identity().to_string())
+                    .collect::<BTreeSet<_>>();
+                json!({
+                    "restriction_root": group.root.map(ToString::to_string),
+                    "acls": acls,
+                    "authorized": result.has_authorization(),
+                    "contributing_factors": contributing_factors,
+                    "sources": {
+                        "config": source_observation(RestrictionSource::Config),
+                        "acl_manifest": source_observation(RestrictionSource::AclManifest),
+                    },
+                })
+            })
+            .collect(),
+    )
 }

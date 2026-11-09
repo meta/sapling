@@ -151,6 +151,9 @@ re-implement its checks at call sites.
 
 Rows are built in `access_log.rs` and written to `ACCESS_LOG_SCUBA_TABLE` and
 the schematized logger. A new or renamed column must be added to both.
+Exception: `authorization_detail`, the per-restriction JSON of a reconciled
+Both-mode access, is raw Scuba only. It is a free-form debug column for the
+reconciliation rollout.
 Logged enum values come from `strum::AsRefStr` derives; renaming a variant
 changes logged data.
 

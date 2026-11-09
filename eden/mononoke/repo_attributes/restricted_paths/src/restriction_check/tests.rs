@@ -311,7 +311,8 @@ fn test_reconcile_same_root_requires_both_acls_and_falls_back_to_config_rollout(
     )?;
 
     let (config, acl_manifest) = ([config], [acl_manifest]);
-    let reconciled = super::ReconciledAuthorization::new(&config, &acl_manifest);
+    let (reconciled, detail) =
+        super::ReconciledAuthorization::new_with_detail(&config, &acl_manifest);
 
     assert!(
         reconciled.has_authorization,
@@ -331,6 +332,146 @@ fn test_reconcile_same_root_requires_both_acls_and_falls_back_to_config_rollout(
             "REPO_REGION:config_acl".to_string(),
             "REPO_REGION:manifest_acl".to_string(),
         ]
+    );
+    assert_eq!(
+        detail,
+        serde_json::json!([
+            {
+                "restriction_root": "tent",
+                "acls": ["REPO_REGION:config_acl", "REPO_REGION:manifest_acl"],
+                "authorized": true,
+                "contributing_factors": ["rollout_allowlist"],
+                "sources": {
+                    "config": {
+                        "acl": "unauthorized",
+                        "rollout_allowlist": "authorized",
+                        "tooling_allowlist": "not_set",
+                        "admin_bypass": "not_set"
+                    },
+                    "acl_manifest": {
+                        "acl": "authorized",
+                        "rollout_allowlist": "not_set",
+                        "tooling_allowlist": "not_set",
+                        "admin_bypass": "not_set"
+                    }
+                }
+            }
+        ])
+    );
+    Ok(())
+}
+
+/// What it tests: authorization detail retains source-wide factors when a
+/// source has no check in a rootless restriction group.
+/// Expected: the absent config check reports ACL and rollout as `not_set`, but
+/// its tooling grant remains visible and explains the rootless authorization.
+#[mononoke::test]
+fn test_authorization_detail_includes_absent_source_with_repo_wide_grant() -> Result<()> {
+    let acl = MononokeIdentity::from_str("REPO_REGION:acl")?;
+    let config = super::ManifestRestrictionCheckResult::new(
+        ManifestRestrictionInfo {
+            restriction_root: Some(NonRootMPath::new("config_only")?),
+            repo_region_acl: acl.to_string(),
+            permission_request_group: acl.clone(),
+            rollout_allowlist_group: None,
+        },
+        AuthorizationCheckResult {
+            has_acl_access: FactorResult::Unauthorized,
+            is_allowlisted_tooling: FactorResult::Authorized,
+            is_rollout_allowlisted: FactorResult::NotSet,
+            is_admin_bypass: FactorResult::NotSet,
+        },
+        acl.clone(),
+    );
+    let acl_manifest = super::ManifestRestrictionCheckResult::new(
+        ManifestRestrictionInfo {
+            restriction_root: None,
+            repo_region_acl: acl.to_string(),
+            permission_request_group: acl.clone(),
+            rollout_allowlist_group: None,
+        },
+        AuthorizationCheckResult {
+            has_acl_access: FactorResult::Unauthorized,
+            is_allowlisted_tooling: FactorResult::NotSet,
+            is_rollout_allowlisted: FactorResult::NotSet,
+            is_admin_bypass: FactorResult::NotSet,
+        },
+        acl,
+    );
+
+    let (_reconciled, detail) =
+        super::ReconciledAuthorization::new_with_detail(&[config], &[acl_manifest]);
+    let rootless = detail
+        .as_array()
+        .context("authorization detail should be an array")?
+        .iter()
+        .find(|entry| entry["restriction_root"].is_null())
+        .context("expected rootless authorization detail")?;
+
+    assert_eq!(rootless["authorized"], serde_json::json!(true));
+    assert_eq!(
+        rootless["contributing_factors"],
+        serde_json::json!(["tooling_allowlist"])
+    );
+    assert_eq!(
+        rootless["sources"]["config"],
+        serde_json::json!({
+            "acl": "not_set",
+            "rollout_allowlist": "not_set",
+            "tooling_allowlist": "authorized",
+            "admin_bypass": "not_set"
+        })
+    );
+    Ok(())
+}
+
+/// What it tests: authorization detail records an admin bypass independently
+/// for each source and attributes the final grant to that factor.
+/// Expected: a config-side admin grant authorizes the shared root, while the
+/// AclManifest source retains its configured admin denial.
+#[mononoke::test]
+fn test_authorization_detail_records_admin_bypass_contribution() -> Result<()> {
+    let config = check_with_authorization(
+        "tent",
+        AuthorizationCheckResult {
+            has_acl_access: FactorResult::Unauthorized,
+            is_allowlisted_tooling: FactorResult::NotSet,
+            is_rollout_allowlisted: FactorResult::NotSet,
+            is_admin_bypass: FactorResult::Authorized,
+        },
+    )?;
+    let acl_manifest = check_with_authorization(
+        "tent",
+        AuthorizationCheckResult {
+            has_acl_access: FactorResult::Unauthorized,
+            is_allowlisted_tooling: FactorResult::NotSet,
+            is_rollout_allowlisted: FactorResult::NotSet,
+            is_admin_bypass: FactorResult::Unauthorized,
+        },
+    )?;
+
+    let (reconciled, detail) =
+        super::ReconciledAuthorization::new_with_detail(&[config], &[acl_manifest]);
+
+    assert!(
+        reconciled.has_authorization,
+        "config's admin grant should authorize the root: {reconciled:#?}",
+    );
+    assert!(
+        reconciled.authorization.is_admin_bypass(),
+        "the admin grant should be reported: {reconciled:#?}",
+    );
+    assert_eq!(
+        detail[0]["contributing_factors"],
+        serde_json::json!(["admin_bypass"])
+    );
+    assert_eq!(
+        detail[0]["sources"]["config"]["admin_bypass"],
+        serde_json::json!("authorized")
+    );
+    assert_eq!(
+        detail[0]["sources"]["acl_manifest"]["admin_bypass"],
+        serde_json::json!("unauthorized")
     );
     Ok(())
 }

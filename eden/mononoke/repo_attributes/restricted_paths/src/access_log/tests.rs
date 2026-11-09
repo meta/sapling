@@ -522,6 +522,91 @@ async fn test_both_aggregate_fields_union_source_results(fb: FacebookInit) -> Re
     Ok(())
 }
 
+/// What it tests: Both-mode logging does not synthesize reconciliation detail
+/// when the config source fails.
+/// Expected: the config error is returned, the successful AclManifest result is
+/// logged as the aggregate, and authorization detail is omitted.
+#[mononoke::fbinit_test]
+async fn test_both_config_error_omits_authorization_detail(fb: FacebookInit) -> Result<()> {
+    let (log_result, samples) = ShadowComparisonFieldFixture::new(
+        fb,
+        error_result("config lookup failed"),
+        Some(restricted_path_result(
+            false,
+            false,
+            "acl_manifest_acl",
+            "acl_manifest/restricted",
+        )?),
+        full_path_access_data()?,
+    )?
+    .with_acl_manifest_mode(AclManifestMode::Both)
+    .log_with_result(log_source_results_to_scuba)?;
+
+    let err = match log_result {
+        Ok(()) => {
+            return Err(anyhow!(
+                "expected config error, logged samples: {samples:?}"
+            ));
+        }
+        Err(err) => err,
+    };
+    assert!(
+        format!("{err:#}").contains("config lookup failed"),
+        "the config error should be returned: {err:#}",
+    );
+    assert_eq!(samples.len(), 1);
+    let sample = &samples[0];
+    assert!(
+        sample_field(sample, "config_error")
+            .is_some_and(|value| value.contains("config lookup failed"))
+    );
+    assert_eq!(sample_field(sample, "acl_manifest_error"), None);
+    assert_eq!(sample_field(sample, "authorization_detail"), None);
+    assert_eq!(
+        sample_field(sample, "has_authorization"),
+        Some("false".to_string())
+    );
+    assert_eq!(
+        sample_array(sample, "acls"),
+        vec!["REPO_REGION:acl_manifest_acl".to_string()]
+    );
+    Ok(())
+}
+
+/// What it tests: Both-mode logging does not synthesize reconciliation detail
+/// when the AclManifest source fails.
+/// Expected: the successful config result remains the aggregate, the source
+/// error is logged, and authorization detail is omitted.
+#[mononoke::fbinit_test]
+async fn test_both_acl_manifest_error_omits_authorization_detail(fb: FacebookInit) -> Result<()> {
+    let samples = ShadowComparisonFieldFixture::new(
+        fb,
+        restricted_path_result(false, false, "config_acl", "config/restricted")?,
+        Some(error_result("acl manifest lookup failed")),
+        full_path_access_data()?,
+    )?
+    .with_acl_manifest_mode(AclManifestMode::Both)
+    .log_with(log_source_results_to_scuba)?;
+
+    assert_eq!(samples.len(), 1);
+    let sample = &samples[0];
+    assert_eq!(sample_field(sample, "config_error"), None);
+    assert!(
+        sample_field(sample, "acl_manifest_error")
+            .is_some_and(|value| value.contains("acl manifest lookup failed"))
+    );
+    assert_eq!(sample_field(sample, "authorization_detail"), None);
+    assert_eq!(
+        sample_field(sample, "has_authorization"),
+        Some("false".to_string())
+    );
+    assert_eq!(
+        sample_array(sample, "acls"),
+        vec!["REPO_REGION:config_acl".to_string()]
+    );
+    Ok(())
+}
+
 // What it tests: Both-mode source-comparison callers return the union of
 // successful source results, matching the aggregate logging semantics.
 // Expected: an AclManifest-only restriction is denied instead of returning the

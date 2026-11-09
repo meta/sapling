@@ -80,6 +80,7 @@ struct RestrictedPathLogData<'a> {
     enforcement_decision: Option<EnforcementDecision>,
     acl_manifest_mode: Option<AclManifestMode>,
     source_comparison: Option<SourceComparisonLogContext>,
+    authorization_detail: Option<String>,
 }
 
 /// The enforcement columns of an access-log row.
@@ -377,14 +378,25 @@ pub(crate) fn log_source_results_to_scuba_with_enforcement<T: SourceRestrictionC
         return Ok(());
     };
 
-    let aggregate_summary = aggregate_summary_for_source_results(
-        acl_manifest_mode,
-        reconcile_sources,
-        config_result,
-        acl_manifest_result,
-        config_source.as_ref(),
-        acl_manifest_source.as_ref(),
-    );
+    let reconciled = (reconcile_sources && acl_manifest_mode == AclManifestMode::Both)
+        .then(|| successful_source_check_pair(config_result, acl_manifest_result))
+        .flatten()
+        .map(|(config, acl_manifest)| {
+            restriction_check::ReconciledAuthorization::new_with_detail(
+                config.as_ref(),
+                acl_manifest.as_ref(),
+            )
+        });
+    let aggregate_summary = match reconciled.as_ref() {
+        Some((reconciled, _)) => Some(reconciled.to_source_summary()),
+        None => aggregate_summary_for_source_results(
+            acl_manifest_mode,
+            config_result,
+            acl_manifest_result,
+            config_source.as_ref(),
+            acl_manifest_source.as_ref(),
+        ),
+    };
     let restriction_acls = match aggregate_summary.as_ref() {
         Some(summary) => summary
             .repo_region_acls()
@@ -424,6 +436,7 @@ pub(crate) fn log_source_results_to_scuba_with_enforcement<T: SourceRestrictionC
             enforcement_decision,
             acl_manifest_mode: None,
             source_comparison: Some(source_comparison),
+            authorization_detail: reconciled.as_ref().map(|(_, detail)| detail.to_string()),
         },
         scuba,
     )?;
@@ -518,9 +531,11 @@ fn legacy_logging_result<T: SourceRestrictionCheck>(
         .map_err(anyhow::Error::from)
 }
 
+/// Logging summary when the sources were not reconciled: config's outside
+/// Both mode, and in Both mode the union of the checks that loaded after a
+/// failed read.
 fn aggregate_summary_for_source_results<T: SourceRestrictionCheck>(
     acl_manifest_mode: AclManifestMode,
-    reconcile_sources: bool,
     config_result: &SourceRestrictionResult<T>,
     acl_manifest_result: Option<&SourceRestrictionResult<T>>,
     config_source: Option<&SuccessfulSourceData>,
@@ -531,8 +546,12 @@ fn aggregate_summary_for_source_results<T: SourceRestrictionCheck>(
     }
 
     let any_source_succeeded = config_source.is_some() || acl_manifest_source.is_some();
-    any_source_succeeded
-        .then(|| both_mode_source_summary(reconcile_sources, config_result, acl_manifest_result))
+    any_source_succeeded.then(|| {
+        SourceRestrictionSummary::from_check_union(
+            successful_source_checks(Some(config_result))
+                .chain(successful_source_checks(acl_manifest_result)),
+        )
+    })
 }
 
 /// Both-mode logging summary: the reconciled authorization when
@@ -543,11 +562,8 @@ fn both_mode_source_summary<T: SourceRestrictionCheck>(
     config_result: &SourceRestrictionResult<T>,
     acl_manifest_result: Option<&SourceRestrictionResult<T>>,
 ) -> SourceRestrictionSummary {
-    match (
-        config_result.as_ref(),
-        acl_manifest_result.and_then(|result| result.as_ref().ok()),
-    ) {
-        (Ok(config), Some(acl_manifest)) if reconcile_sources => {
+    match successful_source_check_pair(config_result, acl_manifest_result) {
+        Some((config, acl_manifest)) if reconcile_sources => {
             restriction_check::ReconciledAuthorization::new(config.as_ref(), acl_manifest.as_ref())
                 .to_source_summary()
         }
@@ -556,6 +572,20 @@ fn both_mode_source_summary<T: SourceRestrictionCheck>(
                 .chain(successful_source_checks(acl_manifest_result)),
         ),
     }
+}
+
+/// The checks of both sources, when both reads succeeded.
+fn successful_source_check_pair<'a, T: SourceRestrictionCheck>(
+    config_result: &'a SourceRestrictionResult<T>,
+    acl_manifest_result: Option<&'a SourceRestrictionResult<T>>,
+) -> Option<(
+    &'a SourceRestrictionChecks<T>,
+    &'a SourceRestrictionChecks<T>,
+)> {
+    Some((
+        config_result.as_ref().ok()?,
+        acl_manifest_result?.as_ref().ok()?,
+    ))
 }
 
 fn successful_source_checks<T: SourceRestrictionCheck>(
@@ -852,6 +882,7 @@ fn log_source_result_to_legacy_scuba(
             enforcement_decision,
             acl_manifest_mode: Some(acl_manifest_mode),
             source_comparison: None,
+            authorization_detail: None,
         },
         scuba,
     )?;
@@ -1149,6 +1180,7 @@ pub(crate) async fn log_access_to_restricted_path(
             enforcement_decision: None,
             acl_manifest_mode: Some(acl_manifest_mode),
             source_comparison: None,
+            authorization_detail: None,
         },
         scuba,
     )?;
@@ -1302,6 +1334,9 @@ fn log_access_to_scuba(
     }
     if let Some(has_enforcement_exemption) = enforcement.has_enforcement_exemption {
         scuba.add("has_enforcement_exemption", has_enforcement_exemption);
+    }
+    if let Some(authorization_detail) = log_data.authorization_detail {
+        scuba.add("authorization_detail", authorization_detail);
     }
 
     scuba.log();
