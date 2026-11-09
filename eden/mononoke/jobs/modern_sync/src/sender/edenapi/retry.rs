@@ -77,11 +77,13 @@ impl EdenapiSender for RetryEdenapiSender {
         &self,
         ids: Vec<(HgChangesetId, ChangesetId)>,
     ) -> Result<Vec<ChangesetId>> {
-        self.inner.filter_existing_commits(ids).await
+        self.with_retry(|this| this.inner.filter_existing_commits(ids.clone()).boxed())
+            .await
     }
 
     async fn read_bookmark(&self, bookmark: String) -> Result<Option<HgChangesetId>> {
-        self.inner.read_bookmark(bookmark).await
+        self.with_retry(|this| this.inner.read_bookmark(bookmark.clone()).boxed())
+            .await
     }
 }
 
@@ -103,5 +105,129 @@ async fn with_retry<'t, T>(
             }
         }
         attempt += 1;
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+
+    use anyhow::anyhow;
+    use mononoke_macros::mononoke;
+
+    use super::*;
+
+    /// Fails the first `failures` lookup and bookmark calls, then answers.
+    struct FlakySender {
+        failures: usize,
+        calls: AtomicUsize,
+    }
+
+    impl FlakySender {
+        fn new(failures: usize) -> Self {
+            Self {
+                failures,
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn fail_or_ok<T>(&self, ok: T) -> Result<T> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call < self.failures {
+                Err(anyhow!("504 Gateway Timeout on call {call}"))
+            } else {
+                Ok(ok)
+            }
+        }
+    }
+
+    #[async_trait]
+    impl EdenapiSender for FlakySender {
+        async fn upload_contents(&self, _contents: Vec<(AnyFileContentId, Bytes)>) -> Result<()> {
+            unimplemented!()
+        }
+
+        async fn upload_trees(&self, _trees: Vec<HgManifestId>) -> Result<()> {
+            unimplemented!()
+        }
+
+        async fn upload_filenodes(&self, _fn_ids: Vec<HgFileNodeId>) -> Result<()> {
+            unimplemented!()
+        }
+
+        async fn set_bookmark(&self, _bookmark: String, _moves: Vec<BookmarkMove>) -> Result<()> {
+            unimplemented!()
+        }
+
+        async fn upload_identical_changeset(
+            &self,
+            _css: Vec<(HgBlobChangeset, BonsaiChangeset)>,
+        ) -> Result<()> {
+            unimplemented!()
+        }
+
+        async fn filter_existing_commits(
+            &self,
+            ids: Vec<(HgChangesetId, ChangesetId)>,
+        ) -> Result<Vec<ChangesetId>> {
+            self.fail_or_ok(ids.into_iter().map(|(_, cs_id)| cs_id).collect())
+        }
+
+        async fn read_bookmark(&self, _bookmark: String) -> Result<Option<HgChangesetId>> {
+            self.fail_or_ok(Some(HgChangesetId::from_bytes(&[1; 20]).unwrap()))
+        }
+    }
+
+    fn ids() -> Vec<(HgChangesetId, ChangesetId)> {
+        vec![(
+            HgChangesetId::from_bytes(&[2; 20]).unwrap(),
+            ChangesetId::from_bytes([3; 32]).unwrap(),
+        )]
+    }
+
+    #[mononoke::test]
+    async fn filter_existing_commits_retries_transient_errors() {
+        let inner = Arc::new(FlakySender::new(MAX_RETRIES));
+        let sender = RetryEdenapiSender::new(inner.clone());
+
+        let missing = sender
+            .filter_existing_commits(ids())
+            .await
+            .expect("lookup should succeed once the transient errors stop");
+
+        assert_eq!(missing, vec![ChangesetId::from_bytes([3; 32]).unwrap()]);
+        assert_eq!(
+            inner.calls.load(Ordering::SeqCst),
+            MAX_RETRIES + 1,
+            "one first attempt plus MAX_RETRIES retries"
+        );
+    }
+
+    #[mononoke::test]
+    async fn filter_existing_commits_gives_up_after_max_retries() {
+        let inner = Arc::new(FlakySender::new(MAX_RETRIES + 1));
+        let sender = RetryEdenapiSender::new(inner.clone());
+
+        sender
+            .filter_existing_commits(ids())
+            .await
+            .expect_err("lookup should fail when every attempt fails");
+
+        assert_eq!(inner.calls.load(Ordering::SeqCst), MAX_RETRIES + 1);
+    }
+
+    #[mononoke::test]
+    async fn read_bookmark_retries_transient_errors() {
+        let inner = Arc::new(FlakySender::new(1));
+        let sender = RetryEdenapiSender::new(inner.clone());
+
+        let hgid = sender
+            .read_bookmark("master".to_owned())
+            .await
+            .expect("bookmark read should succeed on the retry");
+
+        assert_eq!(hgid, Some(HgChangesetId::from_bytes(&[1; 20]).unwrap()));
+        assert_eq!(inner.calls.load(Ordering::SeqCst), 2);
     }
 }
