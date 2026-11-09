@@ -31,6 +31,7 @@ impl ServiceState {
     pub(crate) async fn caller_admission(
         &self,
         _ctx: &CoreContext,
+        _service_identity: Option<&str>,
     ) -> Result<Option<&'static str>, LandChangesetsError> {
         Ok(None)
     }

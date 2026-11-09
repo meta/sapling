@@ -133,7 +133,10 @@ impl LandService for LandServiceImpl {
                 )
             })?;
 
-        let admitted_as = self.platform.caller_admission(&ctx).await?;
+        let admitted_as = self
+            .platform
+            .caller_admission(&ctx, land_changesets.service_identity.as_deref())
+            .await?;
         let ctx = ctx.with_mutated_scuba(|mut scuba| {
             scuba
                 .add("repo_name", land_changesets.repo_name.as_str())

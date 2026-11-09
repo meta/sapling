@@ -6,21 +6,11 @@ oncall("scm_server_infra")
 rust_binary(
     name = "land_service",
     srcs = glob(["src/**/*.rs"]),
-    autocargo = {
-        "cargo_toml_config": {
-            # Autocargo reads this file as an fbcode build, so it does not
-            # see the test dependencies of the OSS backend.
-            "extra_buck_dependencies": {
-                "dev-dependencies": [
-                    "//eden/mononoke/common/mononoke_macros:mononoke_macros",
-                ],
-            },
-        },
-    },
     test_deps = [
+        "//eden/mononoke/common/mononoke_macros:mononoke_macros",
         "//eden/mononoke/common/rust/justknobs_ext:justknobs",
     ]
-    + (["//eden/mononoke/common/mononoke_macros:mononoke_macros"] if rust_oss.is_oss_build() else []),
+    + ([] if rust_oss.is_oss_build() else ["//common/rust/shed/fbinit:fbinit-tokio"]),
     deps = [
         "fbsource//third-party/rust:anyhow",
         "fbsource//third-party/rust:async-trait",
