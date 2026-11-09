@@ -15,6 +15,8 @@ use anyhow::Result;
 use context::CoreContext;
 use context::SessionContainer;
 use fbinit::FacebookInit;
+use metaconfig_types::EnforcementConditionSet;
+use metaconfig_types::RequestMatchers;
 use metadata::Metadata;
 use mononoke_macros::mononoke;
 use mononoke_types::NonRootMPath;
@@ -30,6 +32,7 @@ use super::EnforcementDecision;
 use super::FactorResult;
 use super::ManifestRestrictionCheckResult;
 use super::PathRestrictionCheckResult;
+use super::PreFilterVariant;
 use super::SharedFetchHandle;
 use super::SourceRestrictionCheck;
 use super::SourceRestrictionSummary;
@@ -282,6 +285,250 @@ fn test_source_restriction_check_exposes_common_facts() -> Result<()> {
     );
     assert!(path.restriction_root().is_some());
     assert!(manifest.restriction_root().is_none());
+    Ok(())
+}
+
+/// What it tests: named-source reconciliation keeps both ACL requirements for
+/// one known root while allowing config to supply a rollout group omitted by
+/// AclManifest.
+/// Expected: ACL authorization is denied, config rollout authorization grants
+/// the restriction, and both ACLs remain visible for condition matching.
+#[mononoke::test]
+fn test_reconcile_same_root_requires_both_acls_and_falls_back_to_config_rollout() -> Result<()> {
+    let config = check_with_factors(
+        "tent",
+        "REPO_REGION:config_acl",
+        FactorResult::Unauthorized,
+        FactorResult::Authorized,
+        Some("GROUP:config_rollout"),
+    )?;
+    let acl_manifest = check_with_factors(
+        "tent",
+        "REPO_REGION:manifest_acl",
+        FactorResult::Authorized,
+        FactorResult::NotSet,
+        None,
+    )?;
+
+    let (config, acl_manifest) = ([config], [acl_manifest]);
+    let reconciled = super::ReconciledAuthorization::new(&config, &acl_manifest);
+
+    assert!(
+        reconciled.has_authorization,
+        "config's rollout group should authorize the root: {reconciled:#?}",
+    );
+    assert!(
+        !reconciled.authorization.has_acl_access(),
+        "the caller lacks config's ACL: {reconciled:#?}",
+    );
+    assert!(
+        reconciled.authorization.is_rollout_allowlisted(),
+        "config's rollout group should be reported: {reconciled:#?}",
+    );
+    assert_eq!(
+        reconciled.to_source_summary().repo_region_acls(),
+        [
+            "REPO_REGION:config_acl".to_string(),
+            "REPO_REGION:manifest_acl".to_string(),
+        ]
+    );
+    Ok(())
+}
+
+/// What it tests: an AclManifest rollout observation takes precedence when
+/// config names a different rollout group for the same root.
+/// Expected: AclManifest authorization grants even when config's rollout group
+/// denies the caller.
+#[mononoke::test]
+fn test_reconcile_same_root_prefers_acl_manifest_rollout() -> Result<()> {
+    let config = check_with_factors(
+        "tent",
+        "REPO_REGION:acl",
+        FactorResult::Unauthorized,
+        FactorResult::Unauthorized,
+        Some("GROUP:config_rollout"),
+    )?;
+    let acl_manifest = check_with_factors(
+        "tent",
+        "REPO_REGION:acl",
+        FactorResult::Unauthorized,
+        FactorResult::Authorized,
+        Some("GROUP:manifest_rollout"),
+    )?;
+
+    let (config, acl_manifest) = ([config], [acl_manifest]);
+    let reconciled = super::ReconciledAuthorization::new(&config, &acl_manifest);
+
+    assert!(
+        reconciled.has_authorization,
+        "AclManifest's rollout group should authorize the root: {reconciled:#?}",
+    );
+    assert!(
+        reconciled.authorization.is_rollout_allowlisted(),
+        "AclManifest's rollout group should be reported: {reconciled:#?}",
+    );
+    Ok(())
+}
+
+/// What it tests: a root whose caller holds every source ACL but is in neither
+/// source's rollout group.
+/// Expected: ACL access alone authorizes the root, so the request is authorized
+/// with no denial. A reconciled denial therefore always names an ACL the
+/// caller lacks.
+#[mononoke::test]
+fn test_reconcile_acl_access_authorizes_despite_rollout_denial() -> Result<()> {
+    let config = check_with_factors(
+        "tent",
+        "REPO_REGION:acl",
+        FactorResult::Authorized,
+        FactorResult::Unauthorized,
+        Some("GROUP:config_rollout"),
+    )?;
+    let acl_manifest = check_with_factors(
+        "tent",
+        "REPO_REGION:acl",
+        FactorResult::Authorized,
+        FactorResult::Unauthorized,
+        Some("GROUP:manifest_rollout"),
+    )?;
+
+    let (config, acl_manifest) = ([config], [acl_manifest]);
+    let reconciled = super::ReconciledAuthorization::new(&config, &acl_manifest);
+
+    assert!(
+        reconciled.has_authorization,
+        "ACL access should authorize the root despite the rollout denial: {reconciled:#?}",
+    );
+    assert_eq!(
+        super::reconciled_denial(&config, &acl_manifest),
+        None,
+        "an authorized request carries no denial: {reconciled:#?}",
+    );
+    assert!(
+        !reconciled.authorization.is_rollout_allowlisted(),
+        "neither rollout group authorizes the caller: {reconciled:#?}",
+    );
+    Ok(())
+}
+
+/// What it tests: the denial reported when both successful sources deny the
+/// same restriction root with different ACLs.
+/// Expected: AclManifest's ACL is reported, as for source errors, even though
+/// config's ACL sorts first.
+#[mononoke::test]
+fn test_reconcile_denial_prefers_acl_manifest() -> Result<()> {
+    let config = check_with_factors(
+        "tent",
+        "REPO_REGION:sorts_first",
+        FactorResult::Unauthorized,
+        FactorResult::NotSet,
+        None,
+    )?;
+    let acl_manifest = check_with_factors(
+        "tent",
+        "REPO_REGION:sorts_last",
+        FactorResult::Unauthorized,
+        FactorResult::NotSet,
+        None,
+    )?;
+
+    let (config, acl_manifest) = ([config], [acl_manifest]);
+
+    assert_eq!(
+        super::reconciled_denial(&config, &acl_manifest),
+        Some(DenyingRestriction {
+            restriction_root: Some(NonRootMPath::new("tent")?),
+            repo_region_acl: MononokeIdentity::from_str("REPO_REGION:sorts_last")?,
+            permission_request_group: MononokeIdentity::from_str("REPO_REGION:sorts_last")?,
+        }),
+        "AclManifest's denial should be reported",
+    );
+    Ok(())
+}
+
+/// What it tests: the denial reported when one source denies nested tents.
+/// Expected: the outer tent is reported, as single-source enforcement reports
+/// it, even though the inner tent's ACL sorts first.
+#[mononoke::test]
+fn test_reconcile_denial_reports_outer_tent_first() -> Result<()> {
+    let outer = check_with_factors(
+        "nested",
+        "REPO_REGION:outer_acl",
+        FactorResult::Unauthorized,
+        FactorResult::NotSet,
+        None,
+    )?;
+    let inner = check_with_factors(
+        "nested/inner",
+        "REPO_REGION:inner_acl",
+        FactorResult::Unauthorized,
+        FactorResult::NotSet,
+        None,
+    )?;
+
+    let denial = super::reconciled_denial(&[outer, inner], &[]);
+
+    assert_eq!(
+        denial
+            .as_ref()
+            .and_then(|denial| denial.restriction_root.clone()),
+        Some(NonRootMPath::new("nested")?),
+        "the outer tent should be reported: {denial:#?}",
+    );
+    Ok(())
+}
+
+/// What it tests: reconciled enforcement for a request whose condition sets
+/// are scoped to restriction ACLs, so they apply only once checks are fetched.
+/// Expected: a condition naming neither source's ACL leaves the request
+/// unenforced, and a condition naming only AclManifest's ACL enforces
+/// config's denial for the shared root.
+#[mononoke::test]
+fn test_reconciled_enforcement_matches_conditions_against_both_sources_acls() -> Result<()> {
+    let config = check_with_factors(
+        "tent",
+        "REPO_REGION:config_acl",
+        FactorResult::Unauthorized,
+        FactorResult::NotSet,
+        None,
+    )?;
+    let acl_manifest = check_with_factors(
+        "tent",
+        "REPO_REGION:manifest_acl",
+        FactorResult::Authorized,
+        FactorResult::NotSet,
+        None,
+    )?;
+    let (config, acl_manifest) = ([config], [acl_manifest]);
+    let unrelated = acl_scoped_condition_set("REPO_REGION:unrelated_acl")?;
+    let manifest_scoped = acl_scoped_condition_set("REPO_REGION:manifest_acl")?;
+
+    assert_eq!(
+        super::reconciled_enforcement_outcome(
+            &config,
+            &acl_manifest,
+            &[&unrelated],
+            &PreFilterVariant::NeedsFetch,
+        ),
+        AccessEnforcementOutcome::NotEnforced,
+        "a condition naming neither ACL should not enforce",
+    );
+    assert_eq!(
+        super::reconciled_enforcement_outcome(
+            &config,
+            &acl_manifest,
+            &[&manifest_scoped],
+            &PreFilterVariant::NeedsFetch,
+        ),
+        AccessEnforcementOutcome::Enforced {
+            denial: Some(DenyingRestriction {
+                restriction_root: Some(NonRootMPath::new("tent")?),
+                repo_region_acl: MononokeIdentity::from_str("REPO_REGION:config_acl")?,
+                permission_request_group: MononokeIdentity::from_str("REPO_REGION:config_acl")?,
+            }),
+        },
+        "a condition naming AclManifest's ACL should enforce config's denial",
+    );
     Ok(())
 }
 
@@ -925,6 +1172,31 @@ fn check_with_authorization(
     ))
 }
 
+fn check_with_factors(
+    restriction_root: &str,
+    acl: &str,
+    acl_result: FactorResult,
+    rollout_result: FactorResult,
+    rollout_group: Option<&str>,
+) -> Result<PathRestrictionCheckResult> {
+    let acl = MononokeIdentity::from_str(acl)?;
+    Ok(PathRestrictionCheckResult::new(
+        PathRestrictionInfo {
+            restriction_root: NonRootMPath::new(restriction_root)?,
+            repo_region_acl: acl.to_string(),
+            permission_request_group: acl.clone(),
+            rollout_allowlist_group: rollout_group.map(MononokeIdentity::from_str).transpose()?,
+        },
+        AuthorizationCheckResult {
+            has_acl_access: acl_result,
+            is_allowlisted_tooling: FactorResult::NotSet,
+            is_rollout_allowlisted: rollout_result,
+            is_admin_bypass: FactorResult::NotSet,
+        },
+        acl,
+    ))
+}
+
 fn path_restriction_check_with(
     restriction_root: &str,
     acl: &str,
@@ -977,4 +1249,14 @@ fn ctx_with_identities(fb: FacebookInit, ids: &[&str]) -> Result<CoreContext> {
         .metadata(Arc::new(metadata))
         .build();
     Ok(CoreContext::test_mock_session(session))
+}
+
+/// A condition set that applies only to restrictions guarded by `acl`.
+fn acl_scoped_condition_set(acl: &str) -> Result<EnforcementConditionSet> {
+    Ok(EnforcementConditionSet {
+        always_enabled: false,
+        require_client_request_flag: false,
+        restriction_acls: vec![MononokeIdentity::from_str(acl)?],
+        matchers: RequestMatchers::default(),
+    })
 }

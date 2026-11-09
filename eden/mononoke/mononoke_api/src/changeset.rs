@@ -94,7 +94,6 @@ use repo_identity::RepoIdentityRef;
 use repo_permission_checker::RepoPermissionCheckerRef;
 use restricted_paths::DenyingRestriction;
 use restricted_paths::RestrictedPathsArc;
-use restricted_paths::check_path_restriction_infos;
 use skeleton_manifest::RootSkeletonManifestId;
 use skeleton_manifest_v2::RootSkeletonManifestV2Id;
 use smallvec::SmallVec;
@@ -2615,16 +2614,10 @@ impl<R: MononokeRepo> ChangesetContext<R> {
         let restricted_paths = self.repo_ctx().repo().restricted_paths_arc();
         let cs_id = self.id();
 
-        let restriction_infos = restricted_paths
-            .find_restricted_descendants(self.ctx(), Some(cs_id), roots)
-            .await?;
-
         if check_permissions {
-            // TODO(T289977216): Route this through the Both-mode-aware checker
-            // so tri-state factors are reconciled before producing has_access.
-            let restriction_checks =
-                check_path_restriction_infos(self.ctx(), &restricted_paths, restriction_infos)
-                    .await?;
+            let restriction_checks = restricted_paths
+                .find_restricted_descendant_checks(self.ctx(), Some(cs_id), roots)
+                .await?;
             return Ok(restriction_checks
                 .into_iter()
                 .map(|restriction_check| PathAccessInfo {
@@ -2633,6 +2626,10 @@ impl<R: MononokeRepo> ChangesetContext<R> {
                 })
                 .collect());
         }
+
+        let restriction_infos = restricted_paths
+            .find_restricted_descendants(self.ctx(), Some(cs_id), roots)
+            .await?;
 
         Ok(restriction_infos
             .into_iter()

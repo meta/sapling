@@ -113,6 +113,16 @@ pub struct RestrictedPathsTestData {
     tooling_allowlist_group: Option<String>,
 }
 
+/// Results of every combined restriction check API, and of path enforcement,
+/// for one restricted path and its root.
+#[derive(Debug)]
+pub struct CombinedChecksAndEnforcement {
+    pub path_checks: Vec<PathRestrictionCheckResult>,
+    pub root_checks: Vec<PathRestrictionCheckResult>,
+    pub descendant_checks: Vec<PathRestrictionCheckResult>,
+    pub was_denied: bool,
+}
+
 #[derive(Clone)]
 pub struct RestrictedPathsTestDataBuilder {
     config_restricted_paths: Vec<(NonRootMPath, MononokeIdentity)>,
@@ -794,18 +804,24 @@ impl RestrictedPathsTestData {
 
     /// Creates the configured test commit, then runs both combined path checking
     /// and spawned enforcement against that same repository state.
-    pub async fn observe_path_check_and_enforcement_after_commit(
+    pub async fn observe_combined_checks_and_enforcement_after_commit(
         &self,
+        root: NonRootMPath,
         path: NonRootMPath,
         enforcement_condition_sets: &[EnforcementConditionSet],
-    ) -> Result<(Vec<PathRestrictionCheckResult>, bool)> {
+    ) -> Result<CombinedChecksAndEnforcement> {
         let scenario = self.setup_scenario_repo(enforcement_condition_sets).await?;
         let bcs_id = self.create_configured_changeset(&scenario.repo).await?;
+        let restricted_paths = scenario.repo.restricted_paths();
 
-        let checks = scenario
-            .repo
-            .restricted_paths()
+        let path_checks = restricted_paths
             .get_path_restriction_check(&self.ctx, Some(bcs_id), std::slice::from_ref(&path))
+            .await?;
+        let root_checks = restricted_paths
+            .get_path_restriction_root_check(&self.ctx, Some(bcs_id), std::slice::from_ref(&root))
+            .await?;
+        let descendant_checks = restricted_paths
+            .find_restricted_descendant_checks(&self.ctx, Some(bcs_id), vec![MPath::ROOT])
             .await?;
         let result = spawn_enforce_restricted_path_access(
             &self.ctx,
@@ -821,7 +837,12 @@ impl RestrictedPathsTestData {
             Err(err) => return Err(err.into()),
         };
 
-        Ok((checks, was_denied))
+        Ok(CombinedChecksAndEnforcement {
+            path_checks,
+            root_checks,
+            descendant_checks,
+            was_denied,
+        })
     }
 
     /// Run restricted paths testing for a single scenario.

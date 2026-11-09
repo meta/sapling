@@ -64,6 +64,7 @@
     "scm/mononoke:scs_log_unverified_forwarded_identities": false,
     "scm/mononoke:enable_merge_identity_set_attributes": true,
     "scm/mononoke:enforce_acl_file_protection_on_create": true,
+    "scm/mononoke:path_acls_reconcile_both_mode_sources": true,
     "scm/mononoke:enable_server_side_path_acls": false,
     "scm/mononoke:megarepo_derive_remotely": false,
     "scm/mononoke:megarepo_reject_divergent_config_reinsert": false,

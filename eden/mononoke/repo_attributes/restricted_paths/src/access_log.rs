@@ -198,12 +198,14 @@ pub(crate) async fn log_source_comparison_access_by_manifest_if_restricted(
         None
     };
 
+    let reconcile_sources = restricted_paths.reconciles_both_mode_sources();
     let log_result = log_source_results_to_scuba(
         ctx,
         restricted_paths.config_based.manifest_id_store().repo_id(),
         &config_result,
         acl_manifest_result.as_ref(),
         acl_manifest_mode,
+        reconcile_sources,
         RestrictedPathAccessData::Manifest(manifest_id, manifest_type),
         restricted_paths.scuba.clone(),
     );
@@ -211,6 +213,7 @@ pub(crate) async fn log_source_comparison_access_by_manifest_if_restricted(
     log_result?;
     restriction_check_result_for_source_results(
         acl_manifest_mode,
+        reconcile_sources,
         &config_result,
         acl_manifest_result.as_ref(),
     )
@@ -248,12 +251,14 @@ pub(crate) async fn log_source_comparison_access_by_path_if_restricted(
         _ => None,
     };
 
+    let reconcile_sources = restricted_paths.reconciles_both_mode_sources();
     let log_result = log_source_results_to_scuba(
         ctx,
         restricted_paths.config_based.manifest_id_store().repo_id(),
         &config_result,
         acl_manifest_result.as_ref(),
         acl_manifest_mode,
+        reconcile_sources,
         RestrictedPathAccessData::FullPath { full_path: path },
         restricted_paths.scuba.clone(),
     );
@@ -261,6 +266,7 @@ pub(crate) async fn log_source_comparison_access_by_path_if_restricted(
     log_result?;
     restriction_check_result_for_source_results(
         acl_manifest_mode,
+        reconcile_sources,
         &config_result,
         acl_manifest_result.as_ref(),
     )
@@ -268,16 +274,12 @@ pub(crate) async fn log_source_comparison_access_by_path_if_restricted(
 
 fn restriction_check_result_for_source_results<T: SourceRestrictionCheck>(
     acl_manifest_mode: AclManifestMode,
+    reconcile_sources: bool,
     config_result: &SourceRestrictionResult<T>,
     acl_manifest_result: Option<&SourceRestrictionResult<T>>,
 ) -> Result<RestrictionCheckResult> {
     let summary = if acl_manifest_mode == AclManifestMode::Both {
-        // TODO(T289977216): Reconcile tri-state factors by restriction instead
-        // of merging successful sources through legacy boolean aggregation.
-        SourceRestrictionSummary::from_check_union(
-            successful_source_checks(Some(config_result))
-                .chain(successful_source_checks(acl_manifest_result)),
-        )
+        both_mode_source_summary(reconcile_sources, config_result, acl_manifest_result)
     } else {
         let config = config_result
             .as_ref()
@@ -292,6 +294,7 @@ pub(crate) fn spawn_log_source_results_with_enforcement<T>(
     restricted_paths: Arc<RestrictedPaths>,
     access_data: RestrictedPathAccessData,
     acl_manifest_mode: AclManifestMode,
+    reconcile_sources: bool,
     enforcement_decision: EnforcementDecision,
     config_handle: Option<SharedFetchHandle<T>>,
     acl_manifest_handle: Option<SharedFetchHandle<T>>,
@@ -309,6 +312,7 @@ pub(crate) fn spawn_log_source_results_with_enforcement<T>(
             &restricted_paths,
             access_data,
             acl_manifest_mode,
+            reconcile_sources,
             enforcement_decision,
             config_handle,
             acl_manifest_handle,
@@ -333,6 +337,7 @@ pub(crate) fn log_source_results_to_scuba<T: SourceRestrictionCheck>(
     config_result: &SourceRestrictionResult<T>,
     acl_manifest_result: Option<&SourceRestrictionResult<T>>,
     acl_manifest_mode: AclManifestMode,
+    reconcile_sources: bool,
     access_data: RestrictedPathAccessData,
     scuba: MononokeScubaSampleBuilder,
 ) -> Result<()> {
@@ -342,6 +347,7 @@ pub(crate) fn log_source_results_to_scuba<T: SourceRestrictionCheck>(
         config_result,
         acl_manifest_result,
         acl_manifest_mode,
+        reconcile_sources,
         None,
         access_data,
         scuba,
@@ -354,6 +360,7 @@ pub(crate) fn log_source_results_to_scuba_with_enforcement<T: SourceRestrictionC
     config_result: &SourceRestrictionResult<T>,
     acl_manifest_result: Option<&SourceRestrictionResult<T>>,
     acl_manifest_mode: AclManifestMode,
+    reconcile_sources: bool,
     enforcement_decision: Option<EnforcementDecision>,
     access_data: RestrictedPathAccessData,
     scuba: MononokeScubaSampleBuilder,
@@ -372,6 +379,7 @@ pub(crate) fn log_source_results_to_scuba_with_enforcement<T: SourceRestrictionC
 
     let aggregate_summary = aggregate_summary_for_source_results(
         acl_manifest_mode,
+        reconcile_sources,
         config_result,
         acl_manifest_result,
         config_source.as_ref(),
@@ -431,6 +439,7 @@ async fn log_source_results<T>(
     restricted_paths: &RestrictedPaths,
     access_data: RestrictedPathAccessData,
     acl_manifest_mode: AclManifestMode,
+    reconcile_sources: bool,
     enforcement_decision: EnforcementDecision,
     config_handle: Option<SharedFetchHandle<T>>,
     acl_manifest_handle: Option<SharedFetchHandle<T>>,
@@ -466,6 +475,7 @@ where
             &config_result,
             acl_manifest_result.as_ref(),
             acl_manifest_mode,
+            reconcile_sources,
             Some(enforcement_decision),
             access_data,
             restricted_paths.scuba.clone(),
@@ -510,6 +520,7 @@ fn legacy_logging_result<T: SourceRestrictionCheck>(
 
 fn aggregate_summary_for_source_results<T: SourceRestrictionCheck>(
     acl_manifest_mode: AclManifestMode,
+    reconcile_sources: bool,
     config_result: &SourceRestrictionResult<T>,
     acl_manifest_result: Option<&SourceRestrictionResult<T>>,
     config_source: Option<&SuccessfulSourceData>,
@@ -520,14 +531,31 @@ fn aggregate_summary_for_source_results<T: SourceRestrictionCheck>(
     }
 
     let any_source_succeeded = config_source.is_some() || acl_manifest_source.is_some();
-    any_source_succeeded.then(|| {
-        // TODO(T289977216): Reconcile tri-state factors by restriction instead
-        // of merging successful sources through legacy boolean aggregation.
-        SourceRestrictionSummary::from_check_union(
+    any_source_succeeded
+        .then(|| both_mode_source_summary(reconcile_sources, config_result, acl_manifest_result))
+}
+
+/// Both-mode logging summary: the reconciled authorization when
+/// reconciliation is enabled and both reads succeeded, otherwise the union of
+/// the checks that loaded.
+fn both_mode_source_summary<T: SourceRestrictionCheck>(
+    reconcile_sources: bool,
+    config_result: &SourceRestrictionResult<T>,
+    acl_manifest_result: Option<&SourceRestrictionResult<T>>,
+) -> SourceRestrictionSummary {
+    match (
+        config_result.as_ref(),
+        acl_manifest_result.and_then(|result| result.as_ref().ok()),
+    ) {
+        (Ok(config), Some(acl_manifest)) if reconcile_sources => {
+            restriction_check::ReconciledAuthorization::new(config.as_ref(), acl_manifest.as_ref())
+                .to_source_summary()
+        }
+        _ => SourceRestrictionSummary::from_check_union(
             successful_source_checks(Some(config_result))
                 .chain(successful_source_checks(acl_manifest_result)),
-        )
-    })
+        ),
+    }
 }
 
 fn successful_source_checks<T: SourceRestrictionCheck>(

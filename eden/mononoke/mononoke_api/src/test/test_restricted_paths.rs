@@ -525,8 +525,8 @@ async fn test_batch_restriction_info_both_mode_same_root_prefers_acl_manifest(
 
 /// What it tests: permission-aware path lookup in Both mode when config and
 /// AclManifest disagree on the ACL for the same root.
-/// Expected: one AclManifest metadata row is returned and its allowed ACL
-/// is reported, while authorization requires both source ACLs and is denied.
+/// Expected: one AclManifest metadata row is returned, while authorization
+/// conservatively requires both source ACLs.
 #[mononoke::fbinit_test]
 async fn test_restriction_info_both_mode_same_root_requires_both_acls(
     fb: FacebookInit,
@@ -551,10 +551,7 @@ async fn test_restriction_info_both_mode_same_root_requires_both_acls(
     assert_eq!(infos.len(), 1, "same-root metadata should produce one row");
     assert_eq!(info.restriction_root(), &NonRootMPath::new("shared")?);
     assert_eq!(info.repo_region_acl(), "REPO_REGION:myusername_project");
-    // FIXME(T291525172): The current metadata lookup applies AclManifest
-    // precedence, so this temporarily asserts today's access grant. Invert the
-    // assertion when Both-mode reconciliation is used.
-    assert_eq!(info.has_access, Some(true));
+    assert_eq!(info.has_access, Some(false));
 
     Ok(())
 }
@@ -585,10 +582,7 @@ async fn test_restriction_info_both_mode_uses_config_rollout_fallback(
         .ok_or_else(|| anyhow::anyhow!("expected one same-root restriction"))?;
 
     assert_eq!(infos.len(), 1, "same-root metadata should produce one row");
-    // FIXME(T291525172): The current metadata lookup treats AclManifest's
-    // missing rollout group as denial, so this temporarily asserts today's
-    // denial. Invert the assertion with reconciliation.
-    assert_eq!(info.has_access, Some(false));
+    assert_eq!(info.has_access, Some(true));
     Ok(())
 }
 
@@ -624,10 +618,7 @@ async fn test_batch_restriction_info_both_mode_same_root_requires_both_acls(
     assert_eq!(infos.len(), 1, "same-root metadata should produce one row");
     assert_eq!(info.restriction_root(), &NonRootMPath::new("shared")?);
     assert_eq!(info.repo_region_acl(), "REPO_REGION:myusername_project");
-    // FIXME(T291525172): The current metadata lookup applies AclManifest
-    // precedence, so this temporarily asserts today's access grant. Invert the
-    // assertion when Both-mode reconciliation is used.
-    assert_eq!(info.has_access, Some(true));
+    assert_eq!(info.has_access, Some(false));
 
     Ok(())
 }
@@ -666,10 +657,7 @@ async fn test_find_descendants_both_mode_same_root_requires_both_acls(
     );
     assert_eq!(info.restriction_root(), &NonRootMPath::new("shared")?);
     assert_eq!(info.repo_region_acl(), "REPO_REGION:myusername_project");
-    // FIXME(T291525172): The current metadata lookup applies AclManifest
-    // precedence, so this temporarily asserts today's access grant. Invert the
-    // assertion when Both-mode reconciliation is used.
-    assert_eq!(info.has_access, Some(true));
+    assert_eq!(info.has_access, Some(false));
 
     Ok(())
 }

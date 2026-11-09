@@ -1284,12 +1284,13 @@ async fn test_both_mode_acl_manifest_deny_overrides_config_allow(fb: FacebookIni
     Ok(())
 }
 
-/// What it tests: Combined metadata checking and Both-mode request enforcement
-/// evaluate conflicting ACLs for the same restriction root differently.
-/// Expected: metadata authorizes from the AclManifest ACL while enforcement
-/// denies on the config ACL, characterizing the inconsistency fixed later.
+/// What it tests: combined metadata checking and Both-mode request enforcement
+/// reconcile conflicting ACLs for the same restriction root consistently.
+/// Expected: the path, root and descendant checks and enforcement all require
+/// the config and AclManifest ACLs, so the checks report no authorization and
+/// enforcement denies access.
 #[mononoke::fbinit_test]
-async fn test_both_mode_combined_check_and_enforcement_disagree_for_conflicting_acls(
+async fn test_both_mode_combined_check_and_enforcement_agree_for_conflicting_acls(
     fb: FacebookInit,
 ) -> Result<()> {
     let denied_acl = MononokeIdentity::from_str("REPO_REGION:restricted_acl")?;
@@ -1303,32 +1304,37 @@ async fn test_both_mode_combined_check_and_enforcement_disagree_for_conflicting_
     let test_data = RestrictedPathsTestDataBuilder::new()
         .with_acl_manifest_mode(AclManifestMode::Both)
         .with_config_restricted_paths(vec![(restricted_root.clone(), denied_acl.clone())])
-        .with_acl_manifest_restricted_paths(vec![(restricted_root, allowed_acl.clone())])
+        .with_acl_manifest_restricted_paths(vec![(restricted_root.clone(), allowed_acl.clone())])
         .with_file_path_changes(vec![("restricted/dir/file", None)])
         .build(fb)
         .await?;
 
-    let (combined_checks, was_denied) = test_data
-        .observe_path_check_and_enforcement_after_commit(
+    let observed = test_data
+        .observe_combined_checks_and_enforcement_after_commit(
+            restricted_root.clone(),
             restricted_path,
             &enforcement_condition_sets,
         )
         .await?;
-    assert_eq!(combined_checks.len(), 1, "{combined_checks:#?}");
-    assert_eq!(
-        combined_checks[0].restriction_info().repo_region_acl,
-        allowed_acl.to_string(),
-        "the combined check should use the AclManifest ACL"
-    );
-    // TODO(T291525172): Invert this assertion when Both-mode reconciliation is
-    // wired into combined metadata checking.
-    assert!(
-        combined_checks[0].has_authorization(),
-        "the current combined metadata check uses only the AclManifest ACL: {combined_checks:#?}"
-    );
+    for checks in [
+        &observed.path_checks,
+        &observed.root_checks,
+        &observed.descendant_checks,
+    ] {
+        assert_eq!(checks.len(), 1, "{checks:#?}");
+        assert_eq!(
+            checks[0].restriction_info().repo_region_acl,
+            allowed_acl.to_string(),
+            "the combined check should show the AclManifest ACL"
+        );
+        assert!(
+            !checks[0].has_authorization(),
+            "the combined check must also require the config ACL: {checks:#?}"
+        );
+    }
 
     assert!(
-        was_denied,
+        observed.was_denied,
         "Both-mode request enforcement should deny on the config ACL"
     );
     Ok(())
@@ -3306,6 +3312,73 @@ async fn test_shadow_manifest_dispatch_omits_unrestricted_rows(fb: FacebookInit)
         "expected no Shadow rows for unrestricted manifest accesses: {:#?}",
         result.scuba_logs
     );
+    Ok(())
+}
+
+/// What it tests: Both-mode combined checks when the AclManifest source cannot
+/// be read: no changeset id or a missing changeset for path checks, and an
+/// invalid manifest id for the manifest check.
+/// Expected: every combined check returns an error instead of answering from
+/// the config source alone.
+#[mononoke::fbinit_test]
+async fn test_both_mode_combined_checks_fail_closed_without_acl_manifest(
+    fb: FacebookInit,
+) -> Result<()> {
+    use context::CoreContext;
+    use mononoke_types::MPath;
+
+    let repo = RestrictedPathsTestDataBuilder::new()
+        .with_config_restricted_paths(vec![(
+            NonRootMPath::new("restricted/dir")?,
+            MononokeIdentity::from_str("REPO_REGION:restricted_acl")?,
+        )])
+        .with_acl_manifest_mode(AclManifestMode::Both)
+        .build(fb)
+        .await?
+        .build_repo_only()
+        .await?;
+    let ctx = CoreContext::test_mock(fb);
+    let restricted_paths = repo.restricted_paths();
+    let root = NonRootMPath::new("restricted/dir")?;
+    let path = NonRootMPath::new("restricted/dir/file")?;
+    let missing_changeset =
+        ChangesetId::from_str("1111111111111111111111111111111111111111111111111111111111111111")?;
+
+    for cs_id in [None, Some(missing_changeset)] {
+        assert!(
+            restricted_paths
+                .get_path_restriction_check(&ctx, cs_id, std::slice::from_ref(&path))
+                .await
+                .is_err(),
+            "path check should fail without AclManifest data for {cs_id:?}",
+        );
+        assert!(
+            restricted_paths
+                .get_path_restriction_root_check(&ctx, cs_id, std::slice::from_ref(&root))
+                .await
+                .is_err(),
+            "root check should fail without AclManifest data for {cs_id:?}",
+        );
+        assert!(
+            restricted_paths
+                .find_restricted_descendant_checks(&ctx, cs_id, vec![MPath::ROOT])
+                .await
+                .is_err(),
+            "descendant check should fail without AclManifest data for {cs_id:?}",
+        );
+    }
+    assert!(
+        restricted_paths
+            .get_manifest_restriction_check(
+                &ctx,
+                &RestrictedManifestId::from("not-a-valid-hg-augmented-manifest-id"),
+                &ManifestType::HgAugmented,
+            )
+            .await
+            .is_err(),
+        "manifest check should fail without AclManifest data",
+    );
+
     Ok(())
 }
 

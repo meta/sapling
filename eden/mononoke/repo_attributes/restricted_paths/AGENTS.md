@@ -103,8 +103,19 @@ Repo config validation lives in the repo config parser
 
 - `RestrictedPaths::new` checks that the derived data types the restriction
   sources need are enabled.
-- An access is denied if any source denies, and metadata lookups return the
-  union (for the same root, the AclManifest entry wins).
+- When both sources restrict a root and the repo's reconciliation JustKnob
+  (`RECONCILE_BOTH_MODE_SOURCES_JK` in `lib.rs`) is on, enforcement, the
+  combined checks and the access log reconcile them
+  (`ReconciledAuthorization`): every distinct ACL is required, and the tent's
+  rollout allowlist group is the `.slacl` one when set and config's
+  otherwise. Rootless manifest restrictions stay separate. A reconciled denial
+  names the `.slacl` ACL before config's. With the knob off, each source
+  decides on its own and an access is denied if either source denies.
+  Metadata lookups return the union (for the same root, the AclManifest entry
+  wins).
+- If one source read fails, enforcement falls back to the per-source outcomes:
+  a denial from the other source wins, otherwise the error is returned. With a
+  matching exemption, the error is returned even over a denial.
 - Use `may_have_restricted_paths()`, not config emptiness, to decide whether a
   repo can have restrictions: it accounts for `.slacl` files.
 
@@ -113,7 +124,8 @@ Repo config validation lives in the repo config parser
 Each matched restriction is authorized on its own
 (`check_restriction_authorization_with_acl`). The caller is authorized for a
 restriction through `read` on its REPO_REGION ACL or a configured allowlist
-group.
+group. When both sources restrict a root, their checks are reconciled first
+(see above).
 
 - An access is denied if **any** of its restrictions denies. Nested and
   multiple tents are conjunctive: access to one tent never authorizes another.
@@ -156,10 +168,22 @@ Record new decisions here with their reason.
    authorization.
 5. **One enforcement flow, evaluated once.** Path and manifest enforcement
    share `spawn_enforce_restricted_access`.
-6. **Two restriction sources.** Config and `.slacl`; an access is denied if
-   either denies.
+6. **Two restriction sources, reconciled per restriction.** Config and
+   `.slacl`. When both restrict a root, every distinct ACL is required and the
+   `.slacl` rollout allowlist group wins when set, so lookups and enforcement
+   agree and one source's missing group never overrules the other's. The
+   `.slacl` source also wins the reported denial, as Path ACLs move to it.
+   Rootless manifest restrictions and failed reads are not reconciled (see
+   decision 8). Reconciliation changes access decisions in both directions, so
+   a per-repo JustKnob gates it, default off.
 7. **Cheap guards before I/O.** Avoid per-tree store I/O that cannot match a
    restriction.
+8. **Fail closed on a failed source read.** Enforcement falls back to the
+   per-source outcomes instead of guessing the failed source's policy: a
+   denial from the other source wins, otherwise the error is returned, and
+   with a matching exemption the error is returned even over a denial. The
+   denial can name an ACL that the failed source's rollout group would have
+   waived; access is refused either way.
 
 ## Changing this code safely
 

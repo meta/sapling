@@ -125,6 +125,7 @@ impl<T: SourceRestrictionCheck> ShadowComparisonFieldFixture<T> {
             &SourceRestrictionResult<T>,
             Option<&SourceRestrictionResult<T>>,
             AclManifestMode,
+            bool,
             RestrictedPathAccessData,
             MononokeScubaSampleBuilder,
         ) -> Result<()>,
@@ -142,6 +143,7 @@ impl<T: SourceRestrictionCheck> ShadowComparisonFieldFixture<T> {
             &SourceRestrictionResult<T>,
             Option<&SourceRestrictionResult<T>>,
             AclManifestMode,
+            bool,
             RestrictedPathAccessData,
             MononokeScubaSampleBuilder,
         ) -> Result<()>,
@@ -164,6 +166,7 @@ impl<T: SourceRestrictionCheck> ShadowComparisonFieldFixture<T> {
             &config_result,
             acl_manifest_result.as_ref(),
             acl_manifest_mode,
+            true,
             access_data,
             scuba,
         );
@@ -531,6 +534,7 @@ async fn test_both_check_result_unions_acl_manifest_only_restriction(
         restricted_path_result(false, false, "acl_manifest_acl", "acl_manifest/restricted")?;
     let result = restriction_check_result_for_source_results(
         AclManifestMode::Both,
+        true,
         &unrestricted_result(),
         Some(&acl_manifest_result),
     )?;
@@ -657,13 +661,14 @@ async fn test_enforcement_decision_is_logged(fb: FacebookInit) -> Result<()> {
             full_path_access_data()?,
         )?
         .log_with(
-            |ctx, repo_id, config, acl_manifest, mode, access_data, scuba| {
+            |ctx, repo_id, config, acl_manifest, mode, reconcile_sources, access_data, scuba| {
                 log_source_results_to_scuba_with_enforcement(
                     ctx,
                     repo_id,
                     config,
                     acl_manifest,
                     mode,
+                    reconcile_sources,
                     Some(decision),
                     access_data,
                     scuba,
