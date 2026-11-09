@@ -1454,6 +1454,35 @@ struct RepoRebaseStackParams {
   // 9: reserved for inferring base when absent
 }
 
+enum RepoCheckRebaseConflictsStatus {
+  /// Reserved zero value, never sent. A missing or unrecognized status
+  /// must not read as a real verdict.
+  UNKNOWN = 0,
+  /// The stack merges onto the target without conflicts.
+  CLEAN = 1,
+  /// The stack conflicts with the target; see `conflicts`.
+  CONFLICT = 2,
+  /// Every change in the stack is already contained in the target, so
+  /// landing it is a no-op.
+  ALREADY_LANDED = 3,
+}
+
+struct RepoCheckRebaseConflictsParams {
+  /// Top of the draft stack to check. Must be a draft.
+  1: CommitId head;
+
+  /// Name of the bookmark to check the merge against. Resolved
+  /// server-side so the caller needs no separate lookup; the resolved
+  /// commit is returned as `target_ids`.
+  2: string target_bookmark;
+
+  /// The set of commit identity schemes to return in the response.
+  3: set<CommitIdentityScheme> identity_schemes;
+
+  /// Whether paths changed on both sides may be content-merged.
+  4: RepoRebaseStackMergeResolution merge_resolution = RepoRebaseStackMergeResolution.DEFAULT;
+}
+
 struct RepoPrepareCommitsParams {
   /// The list of commits for which data must be derived
   1: list<CommitId> commits;
@@ -2801,6 +2830,25 @@ struct RepoRebaseStackResponse {
   4: i64 merged_path_count;
 }
 
+struct RepoCheckRebaseConflictsResponse {
+  /// The merge verdict.
+  1: RepoCheckRebaseConflictsStatus status;
+
+  /// Conflicting paths. Non-empty only when `status` is CONFLICT.
+  2: list<PushrebaseConflict> conflicts;
+
+  /// The resolved target commit in the requested schemes. Reuse it for any
+  /// follow-up rebase so the verdict and the action agree on the target.
+  3: map<CommitIdentityScheme, CommitId> target_ids;
+
+  /// Paths changed both in the stack and between the merge base and the
+  /// target. Equals the number of conflicts when `status` is CONFLICT.
+  4: i64 overlapping_path_count;
+
+  /// Distinct paths the server content-merged.
+  5: i64 merged_path_count;
+}
+
 struct RepoPrepareCommitsResponse {}
 
 struct RepoUploadFileContentResponse {
@@ -4146,6 +4194,21 @@ service SourceControlService {
     2: InternalError internal_error,
     3: PushrebaseConflictsException pushrebase_conflicts,
     4: OverloadError overload_error,
+  );
+
+  /// Check whether a draft stack would merge cleanly onto a bookmark,
+  /// creating no commits and moving no bookmark. The stack base is the
+  /// merge base of the head and the target. Conflicts are reported in the
+  /// response rather than thrown, since a conflict is an expected answer
+  /// and not an error. Advisory only: the target may move between the
+  /// check and the land.
+  RepoCheckRebaseConflictsResponse repo_check_rebase_conflicts(
+    1: RepoSpecifier repo,
+    2: RepoCheckRebaseConflictsParams params,
+  ) throws (
+    1: RequestError request_error,
+    2: InternalError internal_error,
+    3: OverloadError overload_error,
   );
 
   /// Derive data for commits in a repo

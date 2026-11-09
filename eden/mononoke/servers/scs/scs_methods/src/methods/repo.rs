@@ -55,6 +55,7 @@ use crate::specifiers::SpecifierExt;
 // Cap concurrent in-flight requests when resolving stacks of thousands of commits.
 const CONCURRENCY_LIMIT: usize = 100;
 
+mod check_rebase_conflicts;
 mod create_commit;
 mod land_stack;
 mod rebase_stack;

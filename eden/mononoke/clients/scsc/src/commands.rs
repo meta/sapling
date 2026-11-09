@@ -14,6 +14,7 @@ base_app::subcommands! {
     mod commit_fingerprint;
     mod commit_rate_limit_check;
     mod common_base;
+    mod check_rebase_conflicts;
     mod create_git_bundle;
     mod create_repos if "SCSC_ADMIN_ENABLED";
     mod create_bookmark if "SCSC_WRITES_ENABLED";

@@ -28,8 +28,8 @@ use crate::MononokeRepo;
 use crate::errors::MononokeError;
 use crate::repo::RepoContext;
 
-const MAX_COMMITS_KNOB: &str = "scm/mononoke:scs_rebase_stack_max_commits";
-const MAX_PATHS_KNOB: &str = "scm/mononoke:scs_rebase_stack_max_paths";
+pub(crate) const MAX_COMMITS_KNOB: &str = "scm/mononoke:scs_rebase_stack_max_commits";
+pub(crate) const MAX_PATHS_KNOB: &str = "scm/mononoke:scs_rebase_stack_max_paths";
 
 #[derive(Clone, Copy, Debug)]
 pub enum RebaseStackMergeResolution {

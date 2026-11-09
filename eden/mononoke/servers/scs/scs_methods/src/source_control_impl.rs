@@ -1516,6 +1516,11 @@ impl SourceControlService for SourceControlServiceThriftImpl {
             params: thrift::RepoRebaseStackParams,
         ) -> Result<thrift::RepoRebaseStackResponse, service::RepoRebaseStackExn>;
 
+        async fn repo_check_rebase_conflicts(
+            repo: thrift::RepoSpecifier,
+            params: thrift::RepoCheckRebaseConflictsParams,
+        ) -> Result<thrift::RepoCheckRebaseConflictsResponse, service::RepoCheckRebaseConflictsExn>;
+
         async fn repo_prepare_commits(
             repo: thrift::RepoSpecifier,
             params: thrift::RepoPrepareCommitsParams,

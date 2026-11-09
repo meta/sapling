@@ -436,6 +436,7 @@ impl_into_thrift_error!(service::RepoMultipleCommitLookupExn);
 impl_into_thrift_error!(service::RepoDeleteBookmarkExn);
 impl_into_thrift_error!(service::RepoLandStackExn);
 impl_into_thrift_error!(service::RepoRebaseStackExn);
+impl_into_thrift_error!(service::RepoCheckRebaseConflictsExn);
 impl_into_thrift_error!(service::RepoBookmarkInfoExn);
 impl_into_thrift_error!(service::RepoStackInfoExn);
 impl_into_thrift_error!(service::RepoStackGitBundleStoreExn);

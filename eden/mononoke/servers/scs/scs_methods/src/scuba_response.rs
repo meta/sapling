@@ -93,6 +93,15 @@ impl AddScubaResponse for thrift::RepoRebaseStackResponse {
     }
 }
 
+impl AddScubaResponse for thrift::RepoCheckRebaseConflictsResponse {
+    fn add_scuba_response(&self, scuba: &mut MononokeScubaSampleBuilder) {
+        scuba.add("response_status", self.status.to_string());
+        scuba.add("response_conflicts", self.conflicts.len() as i64);
+        scuba.add("response_overlapping_paths", self.overlapping_path_count);
+        scuba.add("response_merged_paths", self.merged_path_count);
+    }
+}
+
 impl AddScubaResponse for thrift::RepoListBookmarksResponse {}
 
 impl AddScubaResponse for thrift::RepoResolveBookmarkResponse {}

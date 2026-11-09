@@ -266,6 +266,15 @@ impl AddScubaParams for thrift::RepoRebaseStackParams {
     }
 }
 
+impl AddScubaParams for thrift::RepoCheckRebaseConflictsParams {
+    fn add_scuba_params(&self, scuba: &mut MononokeScubaSampleBuilder) {
+        scuba.add("commit", self.head.to_string());
+        scuba.add("param_target_bookmark", self.target_bookmark.as_str());
+        scuba.add("merge_resolution", self.merge_resolution.to_string());
+        self.identity_schemes.add_scuba_params(scuba);
+    }
+}
+
 impl AddScubaParams for thrift::RepoListBookmarksParams {
     fn add_scuba_params(&self, scuba: &mut MononokeScubaSampleBuilder) {
         scuba.add("param_include_scratch", self.include_scratch as i32);

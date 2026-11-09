@@ -188,6 +188,7 @@ use crate::specifiers::HgChangesetId;
 use crate::tree::TreeContext;
 use crate::xrepo::CandidateSelectionHintArgs;
 
+pub mod check_rebase_conflicts;
 pub mod commit_cloud;
 pub mod commit_graph;
 pub mod create_bookmark;
