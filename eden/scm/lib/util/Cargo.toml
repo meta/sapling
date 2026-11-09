@@ -25,7 +25,7 @@ sapling-atomicfile = { version = "0.2.0", path = "../atomicfile" }
 sapling-lazystr = { version = "0.2.0", path = "../lazystr" }
 sapling-metrics = { version = "0.1.0", path = "../metrics" }
 sapling-rewrite-macros = { version = "0.2.0", path = "rewrite-macros" }
-shellexpand = "2.1.2"
+shellexpand = { version = "3.1.2", features = ["path"] }
 thiserror = "2.0.21"
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 

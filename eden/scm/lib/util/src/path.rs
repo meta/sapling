@@ -673,7 +673,7 @@ where
     };
 
     let path = shellexpand::env_with_context_no_errors(&path, getenv);
-    shellexpand::tilde_with_context(&path, homedir)
+    shellexpand::path::tilde_with_context(&*path, homedir)
         .as_ref()
         .into()
 }
