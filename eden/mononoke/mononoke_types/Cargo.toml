@@ -25,7 +25,7 @@ cloned = { version = "0.1.0", git = "https://github.com/facebookexperimental/rus
 context = { version = "0.1.0", path = "../servers/slapi/slapi_server/context" }
 derivative = "2.2"
 derived_data_type_if = { version = "0.1.0", path = "../derived_data/if" }
-faster-hex = "0.6.1"
+faster-hex = "0.8.1"
 fbthrift = { version = "0.0.1", git = "https://github.com/facebook/fbthrift.git", branch = "main" }
 fn-error-context = "0.2"
 futures = { version = "0.3.34", features = ["async-await", "compat"] }

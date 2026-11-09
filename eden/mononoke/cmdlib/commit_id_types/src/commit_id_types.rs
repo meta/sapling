@@ -467,6 +467,14 @@ fn get_commit_ids_with_names<Names: CommitIdNames>(
     Ok((positional_commit_ids, named_commit_ids))
 }
 
+/// Decode hex into `dst`, requiring the input to fill it exactly.
+fn hex_decode_exact(src: &str, dst: &mut [u8]) -> Result<(), faster_hex::Error> {
+    if src.len() != dst.len() * 2 {
+        return Err(faster_hex::Error::InvalidLength(dst.len() * 2));
+    }
+    hex_decode(src.as_bytes(), dst)
+}
+
 /// Get the commit ids specified by the user.  They are returned in the order specified.
 fn get_commit_ids_impl(matches: &ArgMatches) -> Result<BTreeMap<usize, CommitId>, Error> {
     let bubble_id = matches
@@ -488,7 +496,7 @@ fn get_commit_ids_impl(matches: &ArgMatches) -> Result<BTreeMap<usize, CommitId>
     ) {
         for (index, value) in indices.zip(values) {
             let mut id = [0; 20];
-            hex_decode(value.as_bytes(), &mut id)?;
+            hex_decode_exact(value, &mut id)?;
             commit_ids.insert(index, CommitId::HgId(id));
         }
     }
@@ -498,7 +506,7 @@ fn get_commit_ids_impl(matches: &ArgMatches) -> Result<BTreeMap<usize, CommitId>
     ) {
         for (index, value) in indices.zip(values) {
             let mut id = [0; 32];
-            hex_decode(value.as_bytes(), &mut id)?;
+            hex_decode_exact(value, &mut id)?;
             commit_ids.insert(index, CommitId::BonsaiId(id));
         }
     }
@@ -508,7 +516,7 @@ fn get_commit_ids_impl(matches: &ArgMatches) -> Result<BTreeMap<usize, CommitId>
     ) {
         for (index, value) in indices.zip(values) {
             let mut id = [0; 32];
-            hex_decode(value.as_bytes(), &mut id)?;
+            hex_decode_exact(value, &mut id)?;
             commit_ids.insert(index, CommitId::EphemeralBonsai(id, bubble_id));
         }
     }
@@ -518,7 +526,7 @@ fn get_commit_ids_impl(matches: &ArgMatches) -> Result<BTreeMap<usize, CommitId>
     ) {
         for (index, value) in indices.zip(values) {
             let mut hash = [0; 20];
-            hex_decode(value.as_bytes(), &mut hash)?;
+            hex_decode_exact(value, &mut hash)?;
             commit_ids.insert(index, CommitId::GitSha1(hash));
         }
     }
