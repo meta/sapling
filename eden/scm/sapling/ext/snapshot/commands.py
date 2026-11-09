@@ -123,9 +123,11 @@ def createremotecmd(*args, **kwargs) -> None:
     ],
     _("ID"),
 )
-def updatecmd(*args, **kwargs) -> None:
+def updatecmd(ui, repo, csid=None, **opts) -> None:
     """download a previously created snapshot and update working copy to its state"""
-    update.update(*args, **kwargs)
+    if csid is None:
+        raise error.CommandError("snapshot update", _("missing snapshot id"))
+    update.update(ui, repo, csid, **opts)
 
 
 @subcmd(
