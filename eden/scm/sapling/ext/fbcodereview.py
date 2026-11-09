@@ -533,6 +533,7 @@ def singlepublicbase(repo, ctx, templ, **args):
 @templatekeyword("reviewers")
 def showreviewers(repo, ctx, templ, **args):
     """String. Return a space-separated list of diff reviewers for a given @prog@ rev."""
+    reviewers = []
     if ctx.node() is None:
         # working copy - use committemplate.reviewers, which can be found at
         # templ.t.cache.
@@ -540,17 +541,13 @@ def showreviewers(repo, ctx, templ, **args):
         reviewersconfig = props.get("reviewers")
         if reviewersconfig:
             return cmdutil.rendertemplate(repo.ui, reviewersconfig, props)
-        else:
-            return None
     else:
-        reviewers = []
-        descr = ctx.description()
-        match = re.search("Reviewers:(.*)", descr)
+        match = re.search("Reviewers:(.*)", ctx.description())
         if match:
             reviewers = list(filter(None, re.split(r"[\s,]", match.group(1))))
-        args = args.copy()
-        args["templ"] = templ
-        return templatekw.showlist("reviewer", reviewers, args)
+    args = args.copy()
+    args["templ"] = templ
+    return templatekw.showlist("reviewer", reviewers, args)
 
 
 def makebackoutmessage(orig, repo, message: str, node):

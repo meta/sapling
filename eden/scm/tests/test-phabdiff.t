@@ -73,6 +73,12 @@ Test reviewers for working copy
   $ sl debugcommitmessage --config 'committemplate.changeset=A{reviewers}B'
   AB (no-eol)
 
+Without `committemplate.reviewers`, the working copy has an empty list of
+reviewers, so the list operations work on it:
+
+  $ sl log -r 'wdir()' -T '{reviewers % "[{reviewer}]"}|{join(reviewers, ",")}|\n'
+  ||
+
 Make sure the template keywords are documented correctly
 
   $ sl help templates | grep -E 'phabdiff|tasks'
