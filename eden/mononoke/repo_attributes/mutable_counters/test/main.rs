@@ -15,9 +15,26 @@ use mutable_counters::MutableCounters;
 use mutable_counters::SqlMutableCounters;
 use mutable_counters::SqlMutableCountersBuilder;
 use sql_construct::SqlConstruct;
+use sql_ext::Connection;
+use sql_ext::SqlConnections;
+use sql_ext::open_sqlite_in_memory;
 
 fn create_db() -> Result<SqlMutableCounters> {
     Ok(SqlMutableCountersBuilder::with_sqlite_in_memory()?.build(REPO_ZERO))
+}
+
+/// Create a database where any write to the counter named `poisoned` fails
+/// inside the transaction, after earlier statements in it have already run.
+fn create_db_failing_writes_to(poisoned: &str) -> Result<SqlMutableCounters> {
+    let conn = open_sqlite_in_memory()?;
+    conn.execute_batch(SqlMutableCountersBuilder::CREATION_QUERY)?;
+    conn.execute_batch(&format!(
+        "CREATE TRIGGER fail_poisoned_counter BEFORE INSERT ON mutable_counters
+         WHEN NEW.name = '{poisoned}'
+         BEGIN SELECT RAISE(ABORT, 'injected failure'); END;"
+    ))?;
+    let connections = SqlConnections::new_single(Connection::with_sqlite(conn)?);
+    Ok(SqlMutableCountersBuilder::from_sql_connections(connections).build(REPO_ZERO))
 }
 
 #[mononoke::fbinit_test]
@@ -134,6 +151,92 @@ async fn test_counter_name_length_limit(fb: FacebookInit) -> Result<()> {
             .set_counter_if_absent(&ctx, &oversized_name, 1)
             .await
             .is_err()
+    );
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_set_counters_writes_all(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let mutable_counters = create_db()?;
+    mutable_counters.set_counter(&ctx, "a", 1, None).await?;
+
+    mutable_counters
+        .set_counters(&ctx, &[("a", 10), ("b", 20)])
+        .await?;
+
+    assert_eq!(
+        mutable_counters.get_counter(&ctx, "a").await?,
+        Some(10),
+        "existing counter should be overwritten"
+    );
+    assert_eq!(
+        mutable_counters.get_counter(&ctx, "b").await?,
+        Some(20),
+        "missing counter should be created"
+    );
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_set_counters_failure_writes_nothing(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let mutable_counters = create_db_failing_writes_to("b")?;
+    mutable_counters.set_counter(&ctx, "a", 1, None).await?;
+
+    // The write to "a" runs first and succeeds inside the transaction; the
+    // write to "b" then fails, so the whole transaction must roll back.
+    assert!(
+        mutable_counters
+            .set_counters(&ctx, &[("a", 10), ("b", 20)])
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        mutable_counters.get_counter(&ctx, "a").await?,
+        Some(1),
+        "first counter must be rolled back when the second write fails"
+    );
+    assert_eq!(mutable_counters.get_counter(&ctx, "b").await?, None);
+
+    // The connection is usable again after the rollback.
+    mutable_counters.set_counters(&ctx, &[("a", 11)]).await?;
+    assert_eq!(mutable_counters.get_counter(&ctx, "a").await?, Some(11));
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_set_counters_invalid_name_writes_nothing(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let mutable_counters = create_db()?;
+    mutable_counters.set_counter(&ctx, "a", 1, None).await?;
+    let oversized_name = "x".repeat(MAX_COUNTER_NAME_LENGTH + 1);
+
+    assert!(
+        mutable_counters
+            .set_counters(&ctx, &[("a", 10), (&oversized_name, 20)])
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        mutable_counters.get_counter(&ctx, "a").await?,
+        Some(1),
+        "no counter should be written when any name is invalid"
+    );
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_set_counters_empty_is_noop(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let mutable_counters = create_db()?;
+    mutable_counters.set_counter(&ctx, "a", 1, None).await?;
+
+    mutable_counters.set_counters(&ctx, &[]).await?;
+
+    assert_eq!(
+        mutable_counters.get_all_counters(&ctx).await?,
+        vec![("a".to_owned(), 1)]
     );
     Ok(())
 }

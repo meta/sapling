@@ -67,6 +67,14 @@ pub trait MutableCounters {
         prev_value: Option<i64>,
     ) -> Result<bool>;
 
+    /// Unconditionally set several counters atomically: either every
+    /// counter is written, or none is and an error is returned. Use this
+    /// when readers interpret a group of counters together.
+    ///
+    /// There is deliberately no default implementation: one built from
+    /// repeated `set_counter` calls would not be atomic.
+    async fn set_counters(&self, ctx: &CoreContext, counters: &[(&str, i64)]) -> Result<()>;
+
     /// Initialize a counter if it does not exist yet. Returns whether this
     /// call inserted the counter.
     async fn set_counter_if_absent(
@@ -218,6 +226,37 @@ impl MutableCounters for SqlMutableCounters {
             }
             TransactionResult::Failed => Ok(false),
         }
+    }
+
+    async fn set_counters(&self, ctx: &CoreContext, counters: &[(&str, i64)]) -> Result<()> {
+        if counters.is_empty() {
+            return Ok(());
+        }
+        counters
+            .iter()
+            .try_for_each(|(name, _)| validate_counter_name(name))?;
+
+        let conn = &self.connections.write_connection;
+        let mut txn = conn.start_transaction(ctx.sql_query_telemetry()).await?;
+        // Any early return below drops `txn` uncommitted, which rolls back
+        // the counters already written in it.
+        for (name, value) in counters {
+            txn = match Self::set_counter_on_txn(ctx, self.repo_id, name, *value, None, txn).await?
+            {
+                TransactionResult::Succeeded(txn) => txn,
+                TransactionResult::Failed => {
+                    return Err(format_err!(
+                        "failed to set mutable counter {name:?} to {value}; no counter in {counters:?} was written",
+                    ));
+                }
+            };
+        }
+        txn.commit().await?;
+
+        counters.iter().for_each(|(name, value)| {
+            STATS::cur_value.set_value(ctx.fb, *value, ((*name).to_owned(),))
+        });
+        Ok(())
     }
 
     async fn set_counter_if_absent(

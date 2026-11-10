@@ -109,6 +109,18 @@ impl MutableCounters for MemoryMutableCounters {
         Ok(true)
     }
 
+    async fn set_counters(&self, _ctx: &CoreContext, counters: &[(&str, i64)]) -> Result<()> {
+        counters
+            .iter()
+            .try_for_each(|(name, _)| validate_counter_name(name))?;
+        self.counters.write().unwrap().extend(
+            counters
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), *value)),
+        );
+        Ok(())
+    }
+
     async fn set_counter_if_absent(
         &self,
         _ctx: &CoreContext,
