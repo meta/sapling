@@ -329,6 +329,10 @@ class obsoletecache:
             nodes = list(dag.all())
             live = set(dag.ancestors([n for n in nodes if isvisible(n)]))
             self.live.update((n, n in live) for n in nodes)
+            if node not in self.live:
+                # ``getdag`` includes ``node``; if a corrupt history with a
+                # loop ever leaves it out, walking its successors answers.
+                self.live[node] = any(isvisible(n) for n in allsuccessors(repo, [node]))
         return self.live[node]
 
     def isobsolete(self, repo, node):

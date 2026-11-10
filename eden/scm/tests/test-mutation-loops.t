@@ -70,3 +70,52 @@ Similarly, check that predecessorsset is also safe.
 
   $ sl debugsh -c "ui.write(str([s.node.hex(n) for n in s.mutation.predecessorsset(repo, s.node.bin(\"21c93100b04c543843a7dab4fa0d5bada061b7a0\"))]) + '\n')"
   ['e6c779c67aa947c951f334f4f312bd2b21d27e55']
+
+A loop that nothing leads out of is not reachable from the heads of its
+history. A commit rewritten both into a visible commit and into such a loop is
+still drawn, as diverged.
+
+  $ newrepo noexit
+  $ echo base > base
+  $ sl commit -Aqm base
+  $ for name in A B C; do
+  >   sl goto -q 'desc(base)'
+  >   echo $name > $name
+  >   sl commit -Aqm $name
+  > done
+  $ sl goto -q 'desc(base)'
+  $ echo X > X
+  $ sl commit -Aqm X
+  $ echo Z > Z
+  $ sl commit -Aqm Z
+  $ sl prev -q
+  [*] X (glob)
+  $ echo Y > X
+  $ sl amend -q -m Y --config amend.autorestack=none
+  invalid amend.autorestack config of "none"; falling back to only-trivial
+  hint[amend-restack]: descendants of 015050e97578 are left behind - use 'sl restack' to rebase them
+  hint[hint-ack]: use 'sl hint --ack amend-restack' to silence these hints
+  $ cat > $TESTTMP/loop.py << 'PYEOF'
+  > nodes = {repo[r].description(): repo[r].node() for r in repo.revs("all()")}
+  > entries = [
+  >     s.mutation.createsyntheticentry(repo, [nodes[pred]], nodes[succ], "loop")
+  >     for pred, succ in [("X", "A"), ("A", "B"), ("B", "C"), ("C", "A")]
+  > ]
+  > with repo.lock():
+  >     s.mutation.recordentries(repo, entries, skipexisting=False)
+  > PYEOF
+  $ sl debugsh $TESTTMP/loop.py
+  $ tglogm
+  @  be2e557708d7 'Y'
+  │
+  │ o  3bae41dfad74 'Z'
+  │ │
+  │ v  015050e97578 'X'  (Rewritten using rewrite into 9d73aac1b2ed) (Rewritten using amend into be2e557708d7)
+  ├─╯
+  │ x  541f8cbccc44 'C'  (Rewritten using loop into 9d73aac1b2ed)
+  ├─╯
+  │ x  58c9665b7b97 'B'  (Rewritten using loop into 541f8cbccc44)
+  ├─╯
+  │ x  9d73aac1b2ed 'A'  (Rewritten using loop into 58c9665b7b97)
+  ├─╯
+  o  d20a80d4def3 'base'

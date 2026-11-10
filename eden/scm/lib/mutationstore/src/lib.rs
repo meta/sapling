@@ -42,6 +42,7 @@ use dag::Set;
 use dag::Vertex;
 use dag::dag::MemDag;
 use dag::ops::DagAddHeads;
+use dag::ops::IdConvert;
 use dag::set::hints::Flags;
 use futures::stream::StreamExt;
 use futures::stream::TryStreamExt;
@@ -400,6 +401,7 @@ impl MutationStore {
         };
 
         // Visit nodes. Fill parent map.
+        let requested = nodes.clone();
         let mut to_visit = nodes;
         let mut connected = HashSet::new();
         while let Some(node) = to_visit.pop() {
@@ -465,6 +467,20 @@ impl MutationStore {
 
         // Inserting to a memory DAG from a fully known parent function is non-blocking.
         dag.add_heads(&parents, &heads.into()).await?;
+
+        // A loop that nothing leads out of has no head, so it is not an
+        // ancestor of any head. Add the requested nodes in such loops, so the
+        // graph always contains every requested node.
+        let mut missing = Vec::new();
+        for node in requested {
+            let vertex = Vertex::copy_from(node.as_ref());
+            if !dag.contains_vertex_name(&vertex).await? {
+                missing.push(vertex);
+            }
+        }
+        if !missing.is_empty() {
+            dag.add_heads(&parents, &missing.into()).await?;
+        }
         Ok(dag)
     }
 }
@@ -641,10 +657,35 @@ mod tests {
         }
         r(ms.flush())?;
 
-        // Nothing - cycles without a head is not rendered.
-        assert_eq!(render(&ms, "A")?, "\n");
-        assert_eq!(render(&ms, "B")?, "\n");
-        assert_eq!(render(&ms, "C")?, "\n");
+        // A cycle without a head is still rendered from the requested node,
+        // with the cycle broken below it.
+        assert_eq!(
+            render(&ms, "A")?,
+            r#"
+            o  4141414141414141414141414141414141414141 (A)
+            │
+            o  4343434343434343434343434343434343434343 (C)
+            │
+            o  4242424242424242424242424242424242424242 (B)"#
+        );
+        assert_eq!(
+            render(&ms, "B")?,
+            r#"
+            o  4242424242424242424242424242424242424242 (B)
+            │
+            o  4141414141414141414141414141414141414141 (A)
+            │
+            o  4343434343434343434343434343434343434343 (C)"#
+        );
+        assert_eq!(
+            render(&ms, "C")?,
+            r#"
+            o  4343434343434343434343434343434343434343 (C)
+            │
+            o  4242424242424242424242424242424242424242 (B)
+            │
+            o  4141414141414141414141414141414141414141 (A)"#
+        );
 
         // Add a "head" to "revive" the graph.
         add(&mut ms, "C", "D")?;
