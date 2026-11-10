@@ -397,7 +397,7 @@ impl ComponentStore {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::fmt;
     use std::sync::atomic::AtomicU32;
     use std::sync::atomic::Ordering;
@@ -416,15 +416,17 @@ mod tests {
 
     use super::*;
 
-    fn value(bytes: &'static [u8]) -> BlobstoreBytes {
+    pub(crate) fn value(bytes: &'static [u8]) -> BlobstoreBytes {
         BlobstoreBytes::from_bytes(Bytes::from_static(bytes))
     }
 
-    /// A store whose first `failures` listings fail.
+    /// A store whose first `failures` listings and first `unlink_failures`
+    /// unlinks fail.
     #[derive(Debug, Default)]
-    struct Flaky {
-        inner: Memblob,
-        failures: AtomicU32,
+    pub(crate) struct Flaky {
+        pub(crate) inner: Memblob,
+        pub(crate) failures: AtomicU32,
+        pub(crate) unlink_failures: AtomicU32,
     }
 
     fn take_failure(counter: &AtomicU32) -> bool {
@@ -471,6 +473,9 @@ mod tests {
         }
 
         async fn unlink<'a>(&'a self, ctx: &'a CoreContext, key: &'a str) -> Result<()> {
+            if take_failure(&self.unlink_failures) {
+                bail!("injected unlink failure");
+            }
             Blobstore::unlink(&self.inner, ctx, key).await
         }
     }

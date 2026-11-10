@@ -48,6 +48,7 @@ use packblob::PackContents;
 use packblob::StoredValue;
 use serde::Deserialize;
 use serde::Serialize;
+use tracing::warn;
 
 use crate::apply::ApplyContext;
 use crate::apply::FailedKey;
@@ -801,7 +802,20 @@ pub async fn execute_owned_tasks(actx: &ApplyContext<'_>, hex: &str) -> Result<T
         .await?;
     let totals = stream::iter(tasks)
         .map(|task| async move {
-            let result = execute_task(actx, &task).await;
+            // A task resumes from its journal, so a failed one can run again.
+            let result = actx
+                .unlink
+                .retry
+                .run(
+                    |_| execute_task(actx, &task),
+                    |attempt, error| {
+                        warn!(
+                            "pack task {} failed on attempt {attempt}, retrying: {error:#}",
+                            task.task_id
+                        )
+                    },
+                )
+                .await;
             (task, result)
         })
         .buffer_unordered(actx.pack.pack_concurrency.get())

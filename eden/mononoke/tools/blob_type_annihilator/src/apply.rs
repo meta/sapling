@@ -44,6 +44,9 @@ use crate::pack_rewrite::PackOptions;
 use crate::pack_rewrite::TaskTotals;
 use crate::pack_rewrite::execute_owned_tasks;
 use crate::policy::Selection;
+use crate::progress::STORE_STATS;
+use crate::progress::StoreOp;
+use crate::retry::RetryPolicy;
 use crate::scan::Cell;
 use crate::scan::InventoryRecord;
 use crate::scan::Sampled;
@@ -69,30 +72,52 @@ pub struct ApplyOptions {
     /// Partitions processed at the same time
     #[clap(long, default_value_t = NonZeroUsize::new(32).expect("32 is non-zero"))]
     pub partition_concurrency: NonZeroUsize,
-    /// Upper bound on unlinks per second for the whole process
+    /// Upper bound on unlink attempts per second for the whole process,
+    /// retries included
     #[clap(long, default_value_t = NonZeroU32::new(5000).expect("5000 is non-zero"))]
     pub max_unlinks_per_second: NonZeroU32,
+    /// Attempts at each unlink, pack rewrite and metadata update before it is
+    /// recorded as failed
+    #[clap(long, default_value_t = 5, value_parser = clap::value_parser!(u32).range(1..=30))]
+    pub unlink_attempts: u32,
+    /// Milliseconds before the first retry of a failed unlink, pack rewrite or
+    /// metadata update.  Each further retry doubles the delay, up to 30 seconds
+    #[clap(long, default_value_t = 1000, value_parser = clap::value_parser!(u64).range(0..=30_000))]
+    pub unlink_retry_delay_ms: u64,
 }
 
 impl ApplyOptions {
-    pub fn unlink_settings(&self) -> UnlinkSettings {
-        UnlinkSettings::new(self.unlink_concurrency, self.max_unlinks_per_second)
+    pub fn retry(&self) -> Result<RetryPolicy> {
+        RetryPolicy::new(
+            self.unlink_attempts,
+            Duration::from_millis(self.unlink_retry_delay_ms),
+        )
+    }
+
+    pub fn unlink_settings(&self) -> Result<UnlinkSettings> {
+        Ok(UnlinkSettings::new(
+            self.unlink_concurrency,
+            self.max_unlinks_per_second,
+            self.retry()?,
+        ))
     }
 }
 
-/// How keys are unlinked: at most `concurrency` at once, paced by one rate
-/// shared by everything that unlinks.
+/// How keys are unlinked: at most `concurrency` at once, retried, and paced
+/// by one rate shared by everything that unlinks.
 pub struct UnlinkSettings {
     pub concurrency: NonZeroUsize,
+    pub retry: RetryPolicy,
     limiter: DefaultDirectRateLimiter,
 }
 
 impl UnlinkSettings {
-    pub fn new(concurrency: NonZeroUsize, per_second: NonZeroU32) -> Self {
+    pub fn new(concurrency: NonZeroUsize, per_second: NonZeroU32, retry: RetryPolicy) -> Self {
         let burst =
             NonZeroU32::new(per_second.get() / RATE_LIMIT_BURST_DIVISOR).unwrap_or(NonZeroU32::MIN);
         Self {
             concurrency,
+            retry,
             limiter: RateLimiter::direct(Quota::per_second(per_second).allow_burst(burst)),
         }
     }
@@ -217,15 +242,26 @@ fn recover_batches(
     Ok((batch_size, batches))
 }
 
-/// Unlinks one key, paced by the shared rate.
+/// Unlinks one key, paced by the shared rate and retried.
 async fn unlink_key(
     ctx: &CoreContext,
     store: &ComponentStore,
     settings: &UnlinkSettings,
     key: &str,
 ) -> Result<UnlinkOutcome> {
-    settings.until_ready().await;
-    store.unlink(ctx, key).await
+    settings
+        .retry
+        .run(
+            |_| async {
+                settings.until_ready().await;
+                store.unlink(ctx, key).await
+            },
+            |attempt, error| {
+                warn!("unlinking {key} failed on attempt {attempt}, retrying: {error:#}");
+                STORE_STATS.record(StoreOp::UnlinkRetried);
+            },
+        )
+        .await
 }
 
 /// Unlinks `keys`, at most `settings.concurrency` at once.
@@ -472,6 +508,7 @@ pub(crate) mod tests {
     use std::collections::HashSet;
     use std::fmt;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicU32;
 
     use anyhow::anyhow;
     use async_trait::async_trait;
@@ -488,6 +525,7 @@ pub(crate) mod tests {
     use mononoke_types::BlobstoreBytes;
 
     use super::*;
+    use crate::adapters::tests::Flaky;
     use crate::policy::RECIPES;
     use crate::policy::RetiredBlobType;
     use crate::scan::InventoryContext;
@@ -513,6 +551,7 @@ pub(crate) mod tests {
                 unlink: UnlinkSettings::new(
                     concurrency(2),
                     NonZeroU32::new(1_000_000).expect("non-zero"),
+                    RetryPolicy::once(),
                 ),
                 pack: PackOptions {
                     repack_zstd_level: 3,
@@ -520,6 +559,17 @@ pub(crate) mod tests {
                 },
             };
             (this, concurrency(batch_size))
+        }
+
+        pub(crate) fn with_retry(self, retry: RetryPolicy) -> Self {
+            Self {
+                unlink: UnlinkSettings::new(
+                    self.unlink.concurrency,
+                    NonZeroU32::new(1_000_000).expect("non-zero"),
+                    retry,
+                ),
+                ..self
+            }
         }
 
         pub(crate) fn context<'a>(
@@ -760,6 +810,51 @@ pub(crate) mod tests {
         memblob.put(&ctx, plain.clone(), bytes("v")).await?;
         assert_eq!(apply_partition(&actx, "0").await?, cleared);
         assert!(store.is_present(&ctx, &plain).await?);
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn unlink_is_retried_until_it_succeeds(fb: FacebookInit) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let flaky = Arc::new(Flaky {
+            unlink_failures: AtomicU32::new(2),
+            ..Default::default()
+        });
+        flaky
+            .inner
+            .put(&ctx, "p.a0".to_string(), bytes("v"))
+            .await?;
+        let store = ComponentStore::key_source(flaky.clone());
+        let (test, _) = TestApply::new(1);
+        let test = test.with_retry(RetryPolicy::new(3, Duration::ZERO)?);
+        let counts = unlink_keys(&ctx, &store, vec!["p.a0".to_string()], &test.unlink).await;
+        assert_eq!(counts.unlinked, 1, "two failures fit within three attempts");
+        assert!(!store.is_present(&ctx, "p.a0").await?);
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn unlink_fails_once_its_attempts_are_used(fb: FacebookInit) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let flaky = Arc::new(Flaky {
+            unlink_failures: AtomicU32::new(3),
+            ..Default::default()
+        });
+        flaky
+            .inner
+            .put(&ctx, "p.a0".to_string(), bytes("v"))
+            .await?;
+        let store = ComponentStore::key_source(flaky.clone());
+        let (test, _) = TestApply::new(1);
+        let test = test.with_retry(RetryPolicy::new(3, Duration::ZERO)?);
+        let counts = unlink_keys(&ctx, &store, vec!["p.a0".to_string()], &test.unlink).await;
+        assert_eq!(
+            counts.failed.len(),
+            1,
+            "three failures exhaust three attempts"
+        );
+        assert!(counts.failed[0].error.contains("failed after 3 attempts"));
+        assert!(store.is_present(&ctx, "p.a0").await?, "the key is kept");
         Ok(())
     }
 }

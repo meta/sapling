@@ -68,6 +68,8 @@ pub enum StoreOp {
     KeyUnlinked,
     #[strum(to_string = "listings retried")]
     ListingRetried,
+    #[strum(to_string = "unlinks retried")]
+    UnlinkRetried,
 }
 
 type StoreCounts = [u64; StoreOp::COUNT];

@@ -15,9 +15,12 @@
 //! In-process caches of running services cannot be reached from here.
 
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -33,9 +36,11 @@ use mononoke_types::ChangesetId;
 use mononoke_types::RepositoryId;
 use serde::Deserialize;
 use serde::Serialize;
+use tracing::warn;
 
 use crate::policy::RetiredBlobType;
 use crate::policy::Selection;
+use crate::retry::RetryPolicy;
 use crate::state::StateDir;
 
 #[derive(Args, Clone, Debug)]
@@ -215,9 +220,24 @@ pub struct MetadataContext<'a> {
     pub repo_id: RepositoryId,
     pub selection: &'a Selection,
     pub options: &'a MetadataOptions,
+    /// Every operation here is idempotent, so each is retried.
+    pub retry: RetryPolicy,
 }
 
 impl MetadataContext<'_> {
+    async fn retried<V, Fut>(&self, what: &str, op: impl FnMut(usize) -> Fut + Send) -> Result<V>
+    where
+        Fut: Future<Output = Result<V>>,
+        V: Send + 'static,
+    {
+        self.retry
+            .run(op, |attempt, error| {
+                warn!("{what} failed on attempt {attempt}, retrying: {error:#}")
+            })
+            .await
+            .with_context(|| what.to_string())
+    }
+
     async fn evict(
         &self,
         blob_type: RetiredBlobType,
@@ -228,24 +248,22 @@ impl MetadataContext<'_> {
         if self.options.skip_cache_eviction {
             return Ok(CacheState::Skipped);
         }
+        let what = format!(
+            "evicting {} {blob_type} v{version} mappings of {}",
+            cs_ids.len(),
+            self.repo_id
+        );
         let eviction = self
-            .md
-            .mapping
-            .evict_shared_cache(
-                self.repo_id,
-                blob_type.derivable_type(),
-                version,
-                shard_id,
-                cs_ids,
-            )
-            .await
-            .with_context(|| {
-                format!(
-                    "evicting {} {blob_type} v{version} mappings of {}",
-                    cs_ids.len(),
-                    self.repo_id
+            .retried(&what, |_| {
+                self.md.mapping.evict_shared_cache(
+                    self.repo_id,
+                    blob_type.derivable_type(),
+                    version,
+                    shard_id,
+                    cs_ids,
                 )
-            })?;
+            })
+            .await?;
         Ok(match eviction {
             CacheEviction::Evicted => CacheState::Evicted,
             CacheEviction::NoSharedCache => CacheState::NoSharedCache,
@@ -262,11 +280,11 @@ impl MetadataContext<'_> {
         let mut outcome = MetadataOutcome::default();
         for blob_type in self.selection.types() {
             let dt = blob_type.derivable_type();
-            self.md
-                .enabled
-                .mark_disabled(self.ctx, self.repo_id, dt)
-                .await
-                .with_context(|| format!("disabling {blob_type} for {}", self.repo_id))?;
+            self.retried(
+                &format!("disabling {blob_type} for {}", self.repo_id),
+                |_| self.md.enabled.mark_disabled(self.ctx, self.repo_id, dt),
+            )
+            .await?;
             for shard_id in 0..self.md.mapping.sql.connection_count() {
                 outcome.add(self.reset_shard(blob_type, shard_id).await?);
             }
@@ -287,18 +305,22 @@ impl MetadataContext<'_> {
         let mut outcome = MetadataOutcome::default();
         let mut after = None;
         loop {
+            let what = format!(
+                "listing {blob_type} mappings of {} on connection {shard_id}",
+                self.repo_id
+            );
             let rows = self
-                .md
-                .mapping
-                .sql
-                .list_type_mappings(self.ctx, self.repo_id, dt, after, page_size, shard_id)
-                .await
-                .with_context(|| {
-                    format!(
-                        "listing {blob_type} mappings of {} on connection {shard_id}",
-                        self.repo_id
+                .retried(&what, |_| {
+                    self.md.mapping.sql.list_type_mappings(
+                        self.ctx,
+                        self.repo_id,
+                        dt,
+                        after,
+                        page_size,
+                        shard_id,
                     )
-                })?;
+                })
+                .await?;
             let Some(last) = rows.last().copied() else {
                 return Ok(outcome);
             };
@@ -323,19 +345,33 @@ impl MetadataContext<'_> {
                         cs_ids: cs_ids.clone(),
                     })
                     .await?;
+                let what = format!(
+                    "deleting {} {blob_type} v{version} mappings of {}",
+                    cs_ids.len(),
+                    self.repo_id
+                );
+                let attempts = AtomicUsize::new(0);
                 let rows = self
-                    .md
-                    .mapping
-                    .sql
-                    .delete_mappings(self.ctx, self.repo_id, dt, version, &cs_ids, shard_id)
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "deleting {} {blob_type} v{version} mappings of {}",
-                            cs_ids.len(),
-                            self.repo_id
+                    .retried(&what, |attempt| {
+                        attempts.store(attempt, Ordering::Relaxed);
+                        self.md.mapping.sql.delete_mappings(
+                            self.ctx,
+                            self.repo_id,
+                            dt,
+                            version,
+                            &cs_ids,
+                            shard_id,
                         )
-                    })?;
+                    })
+                    .await?;
+                // A failed attempt may still have committed, so a retry's own
+                // count can be short; under the fence every listed row was
+                // there to delete.
+                let rows = if attempts.into_inner() > 1 {
+                    cs_ids.len() as u64
+                } else {
+                    rows
+                };
                 let cache = self.evict(blob_type, version, shard_id, &cs_ids).await?;
                 journal
                     .append(&MappingEvent::Deleted { rows, cache })
@@ -448,6 +484,7 @@ mod tests {
             repo_id,
             selection,
             options,
+            retry: RetryPolicy::once(),
         }
     }
 

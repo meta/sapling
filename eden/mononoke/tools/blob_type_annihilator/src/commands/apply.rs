@@ -29,6 +29,7 @@ use crate::pack_rewrite::PackOptions;
 use crate::pack_rewrite::freeze;
 use crate::pack_rewrite::missing_pack_note;
 use crate::progress::Phase;
+use crate::retry::RetryPolicy;
 use crate::run::Run;
 use crate::run::RunArgs;
 use crate::run::Stores;
@@ -75,6 +76,7 @@ struct Apply<'a> {
     stores: &'a Stores,
     cells: &'a [Cell<'a>],
     args: &'a CommandArgs,
+    retry: RetryPolicy,
 }
 
 impl<'a> Apply<'a> {
@@ -141,6 +143,7 @@ impl<'a> Apply<'a> {
             repo_id,
             selection: &self.plan().request.selection,
             options: &self.args.metadata,
+            retry: self.retry,
         }
     }
 
@@ -174,7 +177,7 @@ impl<'a> Apply<'a> {
 
     /// Applies every partition, returning the totals of each cell.
     async fn apply_partitions(&self) -> Result<BTreeMap<CellKey<'a>, ApplyTotals>> {
-        let unlink = self.args.apply.unlink_settings();
+        let unlink = self.args.apply.unlink_settings()?;
         let reporter = self.args.run.progress.start(Phase::new(
             "apply",
             "partitions",
@@ -365,6 +368,7 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
         stores: &stores,
         cells: &cells,
         args: &args,
+        retry: args.apply.retry()?,
     };
     apply.ensure_inventoried().await?;
     apply.freeze_all().await?;
