@@ -12,6 +12,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use backsyncer::advance_bookmark_counter;
@@ -128,26 +129,19 @@ impl ChangesetManager {
         for (counter_names, (position, id)) in latest_checkpoints.drain() {
             tracing::info!("Setting checkpoint from entry {} to {}", id, position);
 
-            let res_entry = mc
-                .set_counter(ctx, &counter_names.current_entry, id, None)
-                .await?;
-
-            let res_checkpoint = mc
-                .set_counter(
-                    ctx,
-                    &counter_names.batch_checkpoint,
-                    position.try_into().unwrap(),
-                    None,
-                )
-                .await?;
-
-            if !(res_checkpoint && res_entry) {
-                tracing::warn!(
-                    "Failed to checkpoint entry {} at position {:?}",
-                    id,
-                    position
-                );
-            }
+            // The reader trusts `batch_checkpoint` only when `current_entry`
+            // matches, so the two must never be stored out of step.
+            let position = i64::try_from(position)
+                .with_context(|| format!("checkpoint position {position} of entry {id}"))?;
+            mc.set_counters(
+                ctx,
+                &[
+                    (&counter_names.current_entry, id),
+                    (&counter_names.batch_checkpoint, position),
+                ],
+            )
+            .await
+            .with_context(|| format!("failed to checkpoint entry {id} at position {position}"))?;
         }
 
         if !latest_bookmark_chain.is_empty() {
@@ -547,10 +541,9 @@ mod tests {
             counters.get_counter(&ctx, &names.current_entry).await?,
             counters.get_counter(&ctx, &names.batch_checkpoint).await?,
         );
-        // FIXME: BUG! The entry id was written without its position. The pair
-        // now claims entry 11 is 500 commits in, so on resume the reader skips
-        // 500 commits of entry 11 that were never uploaded.
-        assert_eq!(stored_pair, (Some(11), Some(500)));
+        // Neither counter moved, so the reader still sees entry 10's
+        // checkpoint and starts entry 11 from its first commit.
+        assert_eq!(stored_pair, (Some(10), Some(500)));
 
         Ok(())
     }
