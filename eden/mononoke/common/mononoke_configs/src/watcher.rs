@@ -629,30 +629,28 @@ async fn handle_per_repo_fire(
     prev_specs: &mut HashMap<String, Arc<RepoSpec>>,
 ) {
     // Handle removed concurrently by remove_repo_config_handle (which drops
-    // the ConfigHandle, closing the watcher channel). Don't re-push. The
-    // presence lookup doubles as the provenance read for this update.
-    let version_info = match repo_handles.read() {
-        Ok(h) => h.get(&name).map(|handle| handle.get_with_version().1),
+    // the ConfigHandle, closing the watcher channel). Don't re-push.
+    let handle = match repo_handles.read() {
+        Ok(h) => h.get(&name).cloned(),
         Err(e) => {
             error!("repo_handles lock poisoned dispatching per-repo update for {name}: {e:?}");
             STATS::per_repo_refresh_failure_count.add_value(1);
             return;
         }
     };
-    let Some(version_info) = version_info else {
+    let Some(handle) = handle else {
         debug!("Per-repo watcher fired for absent repo {name}, dropping");
         prev_specs.remove(&name);
         return;
     };
 
-    let spec = match result {
-        Ok(s) => s,
-        Err(e) => {
-            // Dead watcher; a live handle may remain (checked above), so leave its dedup seed.
-            debug!("Per-repo watcher for {name} closed: {e:?}");
-            return;
-        }
-    };
+    if let Err(e) = result {
+        // Dead watcher; a live handle may remain (checked above), so leave its dedup seed.
+        debug!("Per-repo watcher for {name} closed: {e:?}");
+        return;
+    }
+    // One snapshot gives the spec and its version, at least as new as the fire.
+    let (spec, version_info) = handle.get_with_version();
 
     // Skip spurious version bumps: identical RepoSpec content -> no parse/rebuild
     // (repo_factory::build re-preloads the commit graph). Raw compare.
