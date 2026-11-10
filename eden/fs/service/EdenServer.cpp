@@ -2334,6 +2334,8 @@ std::vector<ImmediateFuture<Unit>> EdenServer::prepareMountsTakeover(
 
   for (auto& info : takeoverMounts) {
     const auto stateDirectory = info.stateDirectory;
+    // The lambda below runs right away and moves `info` into mount().
+    auto mountPath = info.mountPath;
     auto mountFuture =
         makeImmediateFutureWith([&] {
           auto initialConfig = CheckoutConfig::loadFromClientDirectory(
@@ -2346,7 +2348,7 @@ std::vector<ImmediateFuture<Unit>> EdenServer::prepareMountsTakeover(
             .thenTry(
                 [logger,
                  serverState = serverState_,
-                 mountPath = info.mountPath](
+                 mountPath = std::move(mountPath)](
                     folly::Try<std::shared_ptr<EdenMount>>&& result)
                     -> ImmediateFuture<folly::Unit> {
                   if (result.hasValue()) {
