@@ -18,6 +18,7 @@ derive_more = { version = "2.1.1", features = ["full"] }
 enabled_derived_data_types = { version = "0.1.0", path = "../../repo_attributes/enabled_derived_data_types" }
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
+futures_retry = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 governor = "0.10.4"
 itertools = "0.15.0"
 metaconfig_types = { version = "0.1.0", path = "../../metaconfig/types" }

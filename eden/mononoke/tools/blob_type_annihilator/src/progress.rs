@@ -66,6 +66,8 @@ pub enum StoreOp {
     ValueRead,
     #[strum(to_string = "keys unlinked")]
     KeyUnlinked,
+    #[strum(to_string = "listings retried")]
+    ListingRetried,
 }
 
 type StoreCounts = [u64; StoreOp::COUNT];
@@ -269,10 +271,14 @@ mod tests {
         phase.unit_done_as("present");
         phase.record(&Ok::<_, ()>(()));
         phase.unit_done_as("absent");
-        let store = store_counts(&[(StoreOp::PageListed, 40), (StoreOp::KeySeen, 1200)]);
+        let store = store_counts(&[
+            (StoreOp::PageListed, 40),
+            (StoreOp::KeySeen, 1200),
+            (StoreOp::ListingRetried, 2),
+        ]);
         assert_eq!(
             phase.render(Duration::from_secs(185), store),
-            "scan --exists: 3/27 cells (11%), 3m05s elapsed; present 1, absent 1; 40 pages listed, 1200 keys seen"
+            "scan --exists: 3/27 cells (11%), 3m05s elapsed; present 1, absent 1; 40 pages listed, 1200 keys seen, 2 listings retried"
         );
     }
 

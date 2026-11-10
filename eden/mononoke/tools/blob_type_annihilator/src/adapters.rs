@@ -14,6 +14,7 @@
 
 use std::num::NonZeroU32;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -37,15 +38,26 @@ use mononoke_types::BlobstoreBytes;
 use readonlyblob::ReadOnlyBlobstore;
 use sqlblob::Sqlblob;
 use throttledblob::ThrottledBlob;
+use tracing::warn;
 
 use crate::progress::STORE_STATS;
 use crate::progress::StoreOp;
+use crate::retry::RetryPolicy;
 
 #[derive(Args, Clone, Debug)]
 pub struct AdapterOptions {
     /// Rows read per SQL query when enumerating SQLblob keys
     #[clap(long, default_value_t = NonZeroU32::new(1000).expect("1000 is non-zero"))]
     pub sql_page_size: NonZeroU32,
+
+    /// Attempts at each key listing before it is reported as failed
+    #[clap(long, default_value_t = 5, value_parser = clap::value_parser!(u32).range(1..=30))]
+    pub list_attempts: u32,
+
+    /// Milliseconds before the first retry of a failed key listing.  Each
+    /// further retry doubles the delay, up to 30 seconds
+    #[clap(long, default_value_t = 1000, value_parser = clap::value_parser!(u64).range(0..=30_000))]
+    pub list_retry_delay_ms: u64,
 }
 
 /// Where the next page of an enumeration starts.
@@ -89,6 +101,7 @@ pub struct ComponentStore {
     backend: Backend,
     /// Reads, checks and writes keys.
     blobstore: Arc<dyn Blobstore>,
+    list_retry: RetryPolicy,
 }
 
 /// The inclusive range covering every key starting with `prefix`: it also
@@ -131,6 +144,7 @@ impl ComponentStore {
         Self {
             blobstore: Arc::new(store.clone()),
             backend: Backend::KeySource(store),
+            list_retry: RetryPolicy::once(),
         }
     }
 
@@ -140,7 +154,13 @@ impl ComponentStore {
         Self {
             blobstore: store.clone(),
             backend: Backend::Sql { store, page_size },
+            list_retry: RetryPolicy::once(),
         }
+    }
+
+    #[cfg(test)]
+    pub fn with_list_retry(self, list_retry: RetryPolicy) -> Self {
+        Self { list_retry, ..self }
     }
 
     /// This store with the storage options applied, as `open` applies them.
@@ -192,6 +212,10 @@ impl ComponentStore {
                 *app.readonly_storage(),
                 app.blobstore_options().throttle_options,
             ),
+            list_retry: RetryPolicy::new(
+                options.list_attempts,
+                Duration::from_millis(options.list_retry_delay_ms),
+            )?,
             ..store
         })
     }
@@ -225,9 +249,28 @@ impl ComponentStore {
         ))
     }
 
-    /// Fetches one page of keys starting with `prefix`.  `cursor` must come
-    /// from the previous page of the same listing.
+    /// Fetches one page of keys starting with `prefix`, retrying failed
+    /// listings.  `cursor` must come from the previous page of the same
+    /// listing.
     async fn enumerate_page(
+        &self,
+        ctx: &CoreContext,
+        prefix: &str,
+        cursor: Cursor,
+    ) -> Result<Page> {
+        self.list_retry
+            .run(
+                |_| self.enumerate_page_once(ctx, prefix, cursor.clone()),
+                |attempt, error| {
+                    warn!("listing {prefix} failed on attempt {attempt}, retrying: {error:#}");
+                    STORE_STATS.record(StoreOp::ListingRetried);
+                },
+            )
+            .await
+            .with_context(|| format!("listing {prefix}"))
+    }
+
+    async fn enumerate_page_once(
         &self,
         ctx: &CoreContext,
         prefix: &str,
@@ -337,6 +380,15 @@ impl ComponentStore {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt;
+    use std::sync::atomic::AtomicU32;
+    use std::sync::atomic::Ordering;
+
+    use async_trait::async_trait;
+    use blobstore::BlobstoreEnumerationData;
+    use blobstore::BlobstoreGetData;
+    use blobstore::BlobstoreKeySource;
+    use blobstore::OverwriteStatus;
     use blobstore::PutBehaviour;
     use bytes::Bytes;
     use fbinit::FacebookInit;
@@ -348,6 +400,75 @@ mod tests {
 
     fn value(bytes: &'static [u8]) -> BlobstoreBytes {
         BlobstoreBytes::from_bytes(Bytes::from_static(bytes))
+    }
+
+    /// A store whose first `failures` listings fail.
+    #[derive(Debug, Default)]
+    struct Flaky {
+        inner: Memblob,
+        failures: AtomicU32,
+    }
+
+    fn take_failure(counter: &AtomicU32) -> bool {
+        counter
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+    }
+
+    impl fmt::Display for Flaky {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "Flaky")
+        }
+    }
+
+    #[async_trait]
+    impl Blobstore for Flaky {
+        async fn get<'a>(
+            &'a self,
+            ctx: &'a CoreContext,
+            key: &'a str,
+        ) -> Result<Option<BlobstoreGetData>> {
+            self.inner.get(ctx, key).await
+        }
+
+        async fn put_explicit<'a>(
+            &'a self,
+            ctx: &'a CoreContext,
+            key: String,
+            value: BlobstoreBytes,
+            put_behaviour: PutBehaviour,
+        ) -> Result<OverwriteStatus> {
+            self.inner
+                .put_explicit(ctx, key, value, put_behaviour)
+                .await
+        }
+
+        async fn put_with_status<'a>(
+            &'a self,
+            ctx: &'a CoreContext,
+            key: String,
+            value: BlobstoreBytes,
+        ) -> Result<OverwriteStatus> {
+            self.inner.put_with_status(ctx, key, value).await
+        }
+
+        async fn unlink<'a>(&'a self, ctx: &'a CoreContext, key: &'a str) -> Result<()> {
+            Blobstore::unlink(&self.inner, ctx, key).await
+        }
+    }
+
+    #[async_trait]
+    impl BlobstoreKeySource for Flaky {
+        async fn enumerate<'a>(
+            &'a self,
+            ctx: &'a CoreContext,
+            range: &'a BlobstoreKeyParam,
+        ) -> Result<BlobstoreEnumerationData> {
+            if take_failure(&self.failures) {
+                bail!("injected listing failure");
+            }
+            self.inner.enumerate(ctx, range).await
+        }
     }
 
     async fn all_keys(
@@ -408,6 +529,52 @@ mod tests {
         let mut keys: Vec<String> = pages.into_iter().flatten().collect();
         keys.sort();
         assert_eq!(keys, wanted);
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn listing_is_retried_until_it_succeeds(fb: FacebookInit) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let flaky = Arc::new(Flaky {
+            failures: AtomicU32::new(2),
+            ..Default::default()
+        });
+        flaky
+            .inner
+            .put(&ctx, "p.a0".to_string(), value(b"v"))
+            .await?;
+        let store = ComponentStore::key_source(flaky.clone())
+            .with_list_retry(RetryPolicy::new(3, Duration::ZERO)?);
+        assert_eq!(
+            all_keys(&store, &ctx, "p.a").await?,
+            vec!["p.a0"],
+            "two failures fit within three attempts"
+        );
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn listing_fails_once_its_attempts_are_used(fb: FacebookInit) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let flaky = Arc::new(Flaky {
+            failures: AtomicU32::new(3),
+            ..Default::default()
+        });
+        let store = ComponentStore::key_source(flaky.clone())
+            .with_list_retry(RetryPolicy::new(3, Duration::ZERO)?);
+        assert!(
+            all_keys(&store, &ctx, "p.a").await.is_err(),
+            "three failures exhaust three attempts"
+        );
+        assert_eq!(flaky.failures.load(Ordering::SeqCst), 0);
+        let once = ComponentStore::key_source(Arc::new(Flaky {
+            failures: AtomicU32::new(1),
+            ..Default::default()
+        }));
+        assert!(
+            all_keys(&once, &ctx, "p.a").await.is_err(),
+            "a store opened without retries lists once"
+        );
         Ok(())
     }
 

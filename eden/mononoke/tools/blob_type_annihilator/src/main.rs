@@ -21,6 +21,7 @@ mod metadata;
 mod pack_rewrite;
 mod policy;
 mod progress;
+mod retry;
 mod run;
 mod scan;
 mod scope;
