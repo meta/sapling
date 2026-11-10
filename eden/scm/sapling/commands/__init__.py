@@ -2310,7 +2310,10 @@ def diff(ui, repo, *pats, **opts):
     if opts.get("from_path") or opts.get("to_path"):
         raise error.Abort(
             _("'--from-path' and '--to-path' are deprecated for '@prog@ diff' command"),
-            hint=_("use '@prog@ subtree diff' to diff between directories"),
+            hint=_(
+                "to compare two commits, use '@prog@ diff -r REV1 -r REV2'; "
+                "to diff between directories, use '@prog@ subtree diff'"
+            ),
         )
 
     do_diff(ui, repo, *pats, **opts)

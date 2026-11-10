@@ -22,7 +22,13 @@ validate from/to paths:
 diff command does not support xdir diff:
   $ sl diff -r $A -r $A --from-path foo --to-path bar
   abort: '--from-path' and '--to-path' are deprecated for 'sl diff' command
-  (use 'sl subtree diff' to diff between directories)
+  (to compare two commits, use 'sl diff -r REV1 -r REV2'; to diff between directories, use 'sl subtree diff')
+  [255]
+
+`--from` and `--to` (from other tools) are prefixes of those options:
+  $ sl diff --from $A --to $A
+  abort: '--from-path' and '--to-path' are deprecated for 'sl diff' command
+  (to compare two commits, use 'sl diff -r REV1 -r REV2'; to diff between directories, use 'sl subtree diff')
   [255]
 
 Basic diff with add, modify, and remove:
