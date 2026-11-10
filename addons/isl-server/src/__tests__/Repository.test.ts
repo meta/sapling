@@ -539,14 +539,17 @@ describe('Repository', () => {
       );
     });
 
-    it('allows free-text values that look like flags', async () => {
-      await runOperation({
-        args: ['commit', '--message', '-Refactor --config handling'],
-      });
+    it.each([
+      [['status', '-m', '--config', 'hooks.pre-status=true']],
+      [['status', '-u', '-R/tmp']],
+      [['annotate', '--user', '--config', 'hooks.pre-annotate=true']],
+      [['commit', '--message', '-R/tmp']],
+    ])('checks args after flags that may take a value %j', async args => {
+      await runOperation({args});
 
-      expect(ejecaSpy).toHaveBeenCalledWith(
+      expect(ejecaSpy).not.toHaveBeenCalledWith(
         'sl',
-        ['commit', '--message', '-Refactor --config handling', '--noninteractive'],
+        expect.arrayContaining(args),
         expect.anything(),
       );
     });
@@ -595,10 +598,6 @@ describe('Repository', () => {
     it('allows the configured ui.merge tool', () => {
       expect(() => validateMergeToolArgs(['resolve', '--tool', 'mytool'], 'mytool')).not.toThrow();
       expect(() => validateMergeToolArgs(['resolve', '--tool', 'other'], 'mytool')).toThrow();
-    });
-
-    it('ignores free-text values', () => {
-      expect(() => validateMergeToolArgs(['commit', '--message', '-tidy up'])).not.toThrow();
     });
   });
 
