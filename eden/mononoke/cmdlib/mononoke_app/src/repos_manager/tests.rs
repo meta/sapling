@@ -591,15 +591,15 @@ fn manifest_json(entries: &[(&str, String)]) -> String {
         repos: entries.iter().map(|(n, p)| entry(n, p)).collect(),
         common: RawCommonConfig {
             trusted_parties_hipster_tier: Some("tier".to_string()),
-            internal_identity: RawAllowlistIdentity {
+            internal_identity: Some(RawAllowlistIdentity {
                 identity_type: "SERVICE_IDENTITY".to_string(),
                 identity_data: "internal".to_string(),
-            },
-            redaction_config: RawRedactionConfig {
+            }),
+            redaction_config: Some(RawRedactionConfig {
                 blobstore: STORAGE.to_string(),
                 redaction_sets_location: "test/redaction_sets".to_string(),
                 ..Default::default()
-            },
+            }),
             ..Default::default()
         },
         storage: HashMap::from([(

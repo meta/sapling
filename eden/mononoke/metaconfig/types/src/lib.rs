@@ -167,6 +167,29 @@ pub struct CommonConfig {
     /// Repo-name marker -> manifest repo, routing diverted pushes to the
     /// manifest repo named in their submit_manifest_land request.
     pub multi_repo_land_manifest_repos: BTreeMap<String, String>,
+    /// Manifest repo name -> the manifest format it holds. A manifest repo
+    /// absent here is [`ManifestFormatKind::Aosp`].
+    pub multi_repo_land_manifest_formats: BTreeMap<String, ManifestFormatKind>,
+}
+
+/// The manifest format a Multi-Repo Land manifest repo holds.
+#[derive(Eq, Clone, Copy, Debug, Default, PartialEq, Hash)]
+pub enum ManifestFormatKind {
+    /// git-repo XML: `default.xml`, pinned into `static/static.xml`.
+    #[default]
+    Aosp,
+    /// Zephyr west: `west.yml`.
+    West,
+}
+
+impl ManifestFormatKind {
+    /// The format of `manifest_repo`, from a common config's format map.
+    pub fn for_manifest_repo(
+        formats: &BTreeMap<String, ManifestFormatKind>,
+        manifest_repo: &str,
+    ) -> Self {
+        formats.get(manifest_repo).copied().unwrap_or_default()
+    }
 }
 
 /// Configuration for logging of censored blobstore accesses

@@ -495,15 +495,15 @@ fn test_get_or_load_repo_config_records_config_version() {
 pub(crate) fn test_raw_common_config(trusted_tier: &str) -> RawCommonConfig {
     RawCommonConfig {
         trusted_parties_hipster_tier: Some(trusted_tier.to_string()),
-        internal_identity: RawAllowlistIdentity {
+        internal_identity: Some(RawAllowlistIdentity {
             identity_type: "SERVICE_IDENTITY".to_string(),
             identity_data: "internal".to_string(),
-        },
-        redaction_config: RawRedactionConfig {
+        }),
+        redaction_config: Some(RawRedactionConfig {
             blobstore: TEST_STORAGE.to_string(),
             redaction_sets_location: "test/redaction_sets".to_string(),
             ..Default::default()
-        },
+        }),
         ..Default::default()
     }
 }

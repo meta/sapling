@@ -24,6 +24,7 @@ use metaconfig_types::BlobConfig;
 use metaconfig_types::CensoredScubaParams;
 use metaconfig_types::CommitIdentityScheme;
 use metaconfig_types::CommonConfig;
+use metaconfig_types::ManifestFormatKind;
 use metaconfig_types::ObjectsCountMultiplier;
 use metaconfig_types::Redaction;
 use metaconfig_types::RedactionConfig;
@@ -521,7 +522,11 @@ fn parse_common_config(
         .filter(|category| !category.is_empty());
     let scuba_censored_table = common.scuba_censored_table;
     let scuba_censored_local_path = common.scuba_local_path_censored;
-    let internal_identity = common.internal_identity.convert()?;
+    let internal_identity = common
+        .internal_identity
+        .map(Convert::convert)
+        .transpose()?
+        .unwrap_or_default();
     let git_memory_upper_bound = common
         .git_memory_upper_bound
         .map(|bound| bound.try_into())
@@ -546,7 +551,7 @@ fn parse_common_config(
             .mutable_blobstore)
     };
 
-    let redaction_config = common.redaction_config;
+    let redaction_config = common.redaction_config.unwrap_or_default();
     let redaction_config = RedactionConfig {
         blobstore: get_mutable_blobstore(&redaction_config.blobstore)?,
         redaction_sets_location: redaction_config.redaction_sets_location,
@@ -567,13 +572,30 @@ fn parse_common_config(
         .into_iter()
         .filter(|(marker, repo)| !marker.is_empty() && !repo.is_empty())
         .collect();
+    let multi_repo_land_manifest_formats = common
+        .multi_repo_land_manifest_formats
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(repo, format)| {
+            let kind = match format.to_ascii_lowercase().as_str() {
+                "aosp" => ManifestFormatKind::Aosp,
+                "west" => ManifestFormatKind::West,
+                other => {
+                    return Err(anyhow!(
+                        "multi_repo_land_manifest_formats[{repo}]: unknown manifest format {other:?} (expected aosp or west)"
+                    ));
+                }
+            };
+            Ok((repo, kind))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
 
     Ok(CommonConfig {
         trusted_parties_hipster_tier,
         trusted_parties_allowlist,
         global_allowlist,
         loadlimiter_category,
-        enable_http_control_api: common.enable_http_control_api,
+        enable_http_control_api: common.enable_http_control_api.unwrap_or(false),
         censored_scuba_params,
         redaction_config,
         internal_identity,
@@ -582,6 +604,7 @@ fn parse_common_config(
         async_requests_config,
         rl_land_service_repo_prefix,
         multi_repo_land_manifest_repos,
+        multi_repo_land_manifest_formats,
     })
 }
 
@@ -1836,6 +1859,7 @@ mod test {
                 },
                 rl_land_service_repo_prefix: None,
                 multi_repo_land_manifest_repos: BTreeMap::new(),
+                multi_repo_land_manifest_formats: BTreeMap::new(),
             }
         );
 
