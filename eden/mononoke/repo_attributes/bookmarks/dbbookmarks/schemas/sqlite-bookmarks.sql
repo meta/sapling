@@ -15,10 +15,10 @@ CREATE TABLE IF NOT EXISTS `bookmarks` (
   -- branch, tag or note
   `category` VARCHAR(32) NOT NULL DEFAULT (CAST('branch' AS BLOB)),
   `log_id` INTEGER NULL,
-  PRIMARY KEY (`repo_id`, `name`, `category`),
-  UNIQUE(`repo_id`, `log_id`)
+  PRIMARY KEY (`repo_id`, `name`, `category`)
 );
 
+CREATE INDEX IF NOT EXISTS `bookmarks_repo_id_log_id` ON `bookmarks` (`repo_id`, `log_id`);
 CREATE INDEX IF NOT EXISTS `bookmarks_repo_id_hg_kind` ON `bookmarks` (`repo_id`, `hg_kind`);
 
 CREATE TABLE IF NOT EXISTS `bookmarks_update_log` (
@@ -30,8 +30,10 @@ CREATE TABLE IF NOT EXISTS `bookmarks_update_log` (
   `reason` VARCHAR(32) NOT NULL, -- enum is used in mysql
   `timestamp` BIGINT NOT NULL,
   `category` VARCHAR(32) NOT NULL DEFAULT (CAST('branch' AS BLOB)),
-  PRIMARY KEY (`repo_id`, `id`)
+  PRIMARY KEY (`repo_id`, `name`, `id`)
 );
+
+CREATE INDEX IF NOT EXISTS `bookmarks_update_log_repo_id_id` ON `bookmarks_update_log` (`repo_id`, `id`);
 
 CREATE TABLE IF NOT EXISTS `bookmarks_update_log_lock` (
   `repo_id` INT UNSIGNED NOT NULL,
