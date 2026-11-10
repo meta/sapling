@@ -35,6 +35,12 @@ test worktree remove - subdirectory path gives clear error
   [255]
   $ cd $TESTTMP/myrepo
 
+test worktree remove - nonexistent path gives clear error
+
+  $ sl worktree remove $TESTTMP/nonexistent -y
+  abort: $TESTTMP/nonexistent does not exist
+  [255]
+
 test worktree remove - basic remove cleans redirection backing storage with read-only files
 
 #if no-windows

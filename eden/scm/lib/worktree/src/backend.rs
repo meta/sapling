@@ -197,6 +197,9 @@ impl EdenBackend {
                 parent.display()
             );
         }
+        if !target.exists() {
+            anyhow::bail!("{} does not exist", target.display());
+        }
         anyhow::bail!(
             "{} is not in this worktree group, use `eden rm` instead",
             target.display()
