@@ -428,6 +428,44 @@ function start_and_wait_for_mononoke_server {
     wait_for_mononoke
 }
 
+# Assign the shards given after "$1" to the server started with
+# `--local-shardmanager-path "$1"`, in place of its earlier assignments.
+function set_local_shards {
+  local path="$1"
+  shift
+  printf '%s\n' "$@" > "$path.new" && mv "$path.new" "$path"
+}
+
+# Wait until the server started with `--local-shardmanager-path "$1"` has set
+# up exactly the shards assigned in "$1".
+function wait_for_local_shards {
+  local path="$1"
+  local wanted
+  wanted="$(sed 's/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d' "$path" | LC_ALL=C sort -u)"
+  for _ in $(seq 1 300); do
+    if [[ -f "$path.active" && "$(cat "$path.active")" == "$wanted" ]]; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  echo "Timed out waiting for the shards in $path to be set up" >&2
+  cat "$path.active" "$path.errors" >&2
+  return 1
+}
+
+# Wait until shard "$2" has failed to set up on the server started with
+# `--local-shardmanager-path "$1"`.
+function wait_for_local_shard_error {
+  for _ in $(seq 1 300); do
+    if grep -q "^$2: " "$1.errors" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  echo "Timed out waiting for shard $2 to fail" >&2
+  return 1
+}
+
 # Wait until cache warmup finishes
 function wait_for_mononoke_cache_warmup {
   local attempts=150

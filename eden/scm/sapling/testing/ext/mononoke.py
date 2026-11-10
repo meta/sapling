@@ -771,6 +771,21 @@ def setup_acls(stderr: BinaryIO, fs: ShellFS, env: Env) -> int:
     return 0
 
 
+# `RawShardedService` in repos.thrift, by name.
+RAW_SHARDED_SERVICES = {
+    "EDEN_API": 1,
+    "SOURCE_CONTROL_SERVICE": 2,
+    "DERIVED_DATA_SERVICE": 3,
+    "LAND_SERVICE": 4,
+    "DERIVATION_WORKER": 5,
+    "LARGE_FILES_SERVICE": 6,
+    "ASYNC_REQUESTS_WORKER": 7,
+    "MONONOKE_GIT_SERVER": 15,
+    "BOOKMARK_SERVICE": 17,
+    "DIFF_SERVICE": 18,
+}
+
+
 def setup_mononoke_repo_config(
     args: List[str],
     stderr: BinaryIO,
@@ -868,6 +883,20 @@ hipster_acl="{env.getenv("ACL_NAME", "default")}"
 
     if env.getenv("READ_ONLY_REPO"):
         append_def_config("\nreadonly=true\n")
+
+    # Services, named as in `RawShardedService`, that load the repo only where
+    # ShardManager (or a local shard file) assigns it.
+    if deep_sharded_services := env.getenv("DEEP_SHARDED_SERVICES"):
+        status = []
+        for service in deep_sharded_services.split():
+            if service not in RAW_SHARDED_SERVICES:
+                stderr.write(f"Unknown sharded service {service}\n".encode())
+                return 1
+            status.append(f'"{RAW_SHARDED_SERVICES[service]}" = true')
+        # An inline table, so that later top-level keys stay top-level.
+        append_config(
+            f"deep_sharding_config = {{ status = {{ {', '.join(status)} }} }}"
+        )
 
     if env.getenv("COMMIT_IDENTITY_SCHEME"):
         append_def_config(
@@ -1358,7 +1387,11 @@ def render_mononoke_config(stderr: BinaryIO, fs: ShellFS, env: Env) -> int:
                 "repo_name": repo_name,
                 "repo_id": spec["repo_id"],
                 "config_path": config_path,
-                "is_deep_sharded": False,
+                "is_deep_sharded": any(
+                    repo_config.get("deep_sharding_config", {})
+                    .get("status", {})
+                    .values()
+                ),
             }
         )
 
