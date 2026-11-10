@@ -10,7 +10,6 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashSet;
-use std::num::NonZeroU64;
 
 use anyhow::Error;
 use anyhow::format_err;
@@ -313,13 +312,13 @@ pub(crate) async fn resolve_commit_ids(
             async move {
                 match commit_id {
                     CommitId::BonsaiId(bonsai) => Ok(thrift::CommitId::bonsai(bonsai.to_vec())),
-                    CommitId::EphemeralBonsai(bonsai, bubble) => Ok(
-                        thrift::CommitId::ephemeral_bonsai(thrift::EphemeralBonsai {
+                    CommitId::EphemeralBonsai(bonsai) => Ok(thrift::CommitId::ephemeral_bonsai(
+                        thrift::EphemeralBonsai {
                             bonsai_id: bonsai.to_vec(),
-                            bubble_id: bubble.map_or(0, NonZeroU64::get).try_into()?,
+                            bubble_id: 0,
                             ..Default::default()
-                        }),
-                    ),
+                        },
+                    )),
                     CommitId::HgId(hg) => Ok(thrift::CommitId::hg(hg.to_vec())),
                     CommitId::GitSha1(hash) => Ok(thrift::CommitId::git(hash.to_vec())),
                     CommitId::Globalrev(rev) => Ok(thrift::CommitId::globalrev((*rev).try_into()?)),

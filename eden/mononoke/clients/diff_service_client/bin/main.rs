@@ -5,7 +5,6 @@
  * GNU General Public License version 2.
  */
 
-use std::num::NonZeroU64;
 use std::str::FromStr;
 
 use anyhow::Result;
@@ -79,16 +78,11 @@ enum CommitScheme {
     EphemeralBonsai,
 }
 
-fn parse_commit_id(id_str: &str, scheme: CommitScheme, bubble_id: Option<u64>) -> Result<CommitId> {
+fn parse_commit_id(id_str: &str, scheme: CommitScheme) -> Result<CommitId> {
     match scheme {
         CommitScheme::Bonsai => {
             let id = hex_decode_array::<32>(id_str.as_bytes())?;
-            let bubble = bubble_id.and_then(NonZeroU64::new);
-            if bubble.is_some() {
-                Ok(CommitId::EphemeralBonsai(id, bubble))
-            } else {
-                Ok(CommitId::BonsaiId(id))
-            }
+            Ok(CommitId::BonsaiId(id))
         }
         CommitScheme::Hg => {
             let id = hex_decode_array::<20>(id_str.as_bytes())?;
@@ -102,8 +96,7 @@ fn parse_commit_id(id_str: &str, scheme: CommitScheme, bubble_id: Option<u64>) -
         CommitScheme::Svnrev => Ok(CommitId::Svnrev(id_str.parse()?)),
         CommitScheme::EphemeralBonsai => {
             let id = hex_decode_array::<32>(id_str.as_bytes())?;
-            let bubble = bubble_id.and_then(NonZeroU64::new);
-            Ok(CommitId::EphemeralBonsai(id, bubble))
+            Ok(CommitId::EphemeralBonsai(id))
         }
     }
 }
@@ -113,10 +106,10 @@ fn parse_commit_id(id_str: &str, scheme: CommitScheme, bubble_id: Option<u64>) -
 fn commit_id_to_thrift(commit_id: CommitId) -> Result<thrift::CommitId> {
     match commit_id {
         CommitId::BonsaiId(bonsai) => Ok(thrift::CommitId::bonsai(bonsai.to_vec())),
-        CommitId::EphemeralBonsai(bonsai, bubble) => Ok(thrift::CommitId::ephemeral_bonsai(
+        CommitId::EphemeralBonsai(bonsai) => Ok(thrift::CommitId::ephemeral_bonsai(
             thrift::EphemeralBonsai {
                 bonsai_id: bonsai.to_vec(),
-                bubble_id: bubble.map_or(0, NonZeroU64::get).try_into()?,
+                bubble_id: 0,
                 ..Default::default()
             },
         )),
@@ -271,10 +264,6 @@ struct UnifiedDiffArgs {
         help = "Path for other content (optional when using content IDs)"
     )]
     other_content_path: Option<String>,
-    #[arg(long, help = "Ephemeral bubble ID for base snapshot changeset")]
-    base_bubble_id: Option<u64>,
-    #[arg(long, help = "Ephemeral bubble ID for other snapshot changeset")]
-    other_bubble_id: Option<u64>,
     #[arg(long, help = "Ignore whitespace changes")]
     ignore_whitespace: bool,
     #[arg(long, value_enum, default_value_t = CommitScheme::Bonsai)]
@@ -315,8 +304,6 @@ impl UnifiedDiffArgs {
             other_lfs_size,
             base_content_path,
             other_content_path,
-            base_bubble_id,
-            other_bubble_id,
             ignore_whitespace,
             commit_scheme,
         } = self;
@@ -340,11 +327,7 @@ impl UnifiedDiffArgs {
                 lfs_pointer,
             })
         } else if let (Some(commit_id_str), Some(path)) = (base_commit_id, base_path) {
-            let commit_id = commit_id_to_thrift(parse_commit_id(
-                &commit_id_str,
-                commit_scheme,
-                base_bubble_id,
-            )?)?;
+            let commit_id = commit_id_to_thrift(parse_commit_id(&commit_id_str, commit_scheme)?)?;
             Some(DiffInput::CommitPath {
                 commit_id,
                 path,
@@ -367,11 +350,7 @@ impl UnifiedDiffArgs {
                 lfs_pointer,
             })
         } else if let (Some(commit_id_str), Some(path)) = (other_commit_id, other_path) {
-            let commit_id = commit_id_to_thrift(parse_commit_id(
-                &commit_id_str,
-                commit_scheme,
-                other_bubble_id,
-            )?)?;
+            let commit_id = commit_id_to_thrift(parse_commit_id(&commit_id_str, commit_scheme)?)?;
             Some(DiffInput::commit_path(commit_id, path))
         } else if let Some(content) = other_string {
             Some(DiffInput::string(content))
@@ -412,10 +391,6 @@ struct HeaderlessDiffArgs {
     context_lines: i32,
     #[arg(long)]
     inspect_binary_data: bool,
-    #[arg(long, help = "Ephemeral bubble ID for base snapshot changeset")]
-    base_bubble_id: Option<u64>,
-    #[arg(long, help = "Ephemeral bubble ID for other snapshot changeset")]
-    other_bubble_id: Option<u64>,
     #[arg(long, help = "Ignore whitespace changes")]
     ignore_whitespace: bool,
     #[arg(
@@ -451,8 +426,6 @@ impl HeaderlessDiffArgs {
             other_string,
             context_lines,
             inspect_binary_data,
-            base_bubble_id,
-            other_bubble_id,
             ignore_whitespace,
             omit_options,
             commit_scheme,
@@ -473,11 +446,7 @@ impl HeaderlessDiffArgs {
             let content_id = ContentId::from_str(&content_id_str)?;
             Some(DiffInput::content(content_id))
         } else if let (Some(commit_id_str), Some(path)) = (base_commit_id, base_path) {
-            let commit_id = commit_id_to_thrift(parse_commit_id(
-                &commit_id_str,
-                commit_scheme,
-                base_bubble_id,
-            )?)?;
+            let commit_id = commit_id_to_thrift(parse_commit_id(&commit_id_str, commit_scheme)?)?;
             Some(DiffInput::commit_path(commit_id, path))
         } else if let Some(content) = base_string {
             Some(DiffInput::string(content))
@@ -491,11 +460,7 @@ impl HeaderlessDiffArgs {
             let content_id = ContentId::from_str(&content_id_str)?;
             Some(DiffInput::content(content_id))
         } else if let (Some(commit_id_str), Some(path)) = (other_commit_id, other_path) {
-            let commit_id = commit_id_to_thrift(parse_commit_id(
-                &commit_id_str,
-                commit_scheme,
-                other_bubble_id,
-            )?)?;
+            let commit_id = commit_id_to_thrift(parse_commit_id(&commit_id_str, commit_scheme)?)?;
             Some(DiffInput::commit_path(commit_id, path))
         } else if let Some(content) = other_string {
             Some(DiffInput::string(content))
@@ -567,10 +532,6 @@ enum Command {
         other_commit_id: Option<String>,
         #[arg(long, value_enum, default_value_t = CommitScheme::Bonsai)]
         commit_scheme: CommitScheme,
-        #[arg(long, help = "Ephemeral bubble ID for base commit")]
-        bubble_id: Option<u64>,
-        #[arg(long, help = "Ephemeral bubble ID for other commit")]
-        other_bubble_id: Option<u64>,
         #[arg(long, help = "Only list changed file paths")]
         paths_only: bool,
         #[arg(long, help = "Show copies and renames as plain adds/deletes")]
@@ -656,7 +617,7 @@ async fn main(fb: FacebookInit) -> Result<()> {
                 Some(DiffInput::content(content_id))
             } else if let (Some(base_commit_id), Some(base_path)) = (base_commit_id, base_path) {
                 let commit_id =
-                    commit_id_to_thrift(parse_commit_id(&base_commit_id, commit_scheme, None)?)?;
+                    commit_id_to_thrift(parse_commit_id(&base_commit_id, commit_scheme)?)?;
                 Some(DiffInput::commit_path(commit_id, base_path))
             } else if let Some(base_string) = base_string {
                 Some(DiffInput::string(base_string))
@@ -672,7 +633,7 @@ async fn main(fb: FacebookInit) -> Result<()> {
             } else if let (Some(other_commit_id), Some(other_path)) = (other_commit_id, other_path)
             {
                 let commit_id =
-                    commit_id_to_thrift(parse_commit_id(&other_commit_id, commit_scheme, None)?)?;
+                    commit_id_to_thrift(parse_commit_id(&other_commit_id, commit_scheme)?)?;
                 Some(DiffInput::commit_path(commit_id, other_path))
             } else if let Some(other_string) = other_string {
                 Some(DiffInput::string(other_string))
@@ -788,7 +749,7 @@ async fn main(fb: FacebookInit) -> Result<()> {
                 Some(DiffInput::content(content_id))
             } else if let (Some(base_commit_id), Some(base_path)) = (base_commit_id, base_path) {
                 let commit_id =
-                    commit_id_to_thrift(parse_commit_id(&base_commit_id, commit_scheme, None)?)?;
+                    commit_id_to_thrift(parse_commit_id(&base_commit_id, commit_scheme)?)?;
                 Some(DiffInput::commit_path(commit_id, base_path))
             } else if let Some(base_string) = base_string {
                 Some(DiffInput::string(base_string))
@@ -804,7 +765,7 @@ async fn main(fb: FacebookInit) -> Result<()> {
             } else if let (Some(other_commit_id), Some(other_path)) = (other_commit_id, other_path)
             {
                 let commit_id =
-                    commit_id_to_thrift(parse_commit_id(&other_commit_id, commit_scheme, None)?)?;
+                    commit_id_to_thrift(parse_commit_id(&other_commit_id, commit_scheme)?)?;
                 Some(DiffInput::commit_path(commit_id, other_path))
             } else if let Some(other_string) = other_string {
                 Some(DiffInput::string(other_string))
@@ -878,20 +839,17 @@ async fn main(fb: FacebookInit) -> Result<()> {
             commit_id,
             other_commit_id,
             commit_scheme,
-            bubble_id,
-            other_bubble_id,
             paths_only,
             skip_copies_renames,
             compare_trees,
         } => {
             let repo_client = RepoDiffServiceClient::new(repo_name, client);
 
-            let base_commit =
-                commit_id_to_thrift(parse_commit_id(&commit_id, commit_scheme, bubble_id)?)?;
+            let base_commit = commit_id_to_thrift(parse_commit_id(&commit_id, commit_scheme)?)?;
 
             let other_commit = other_commit_id
                 .map(|id| {
-                    let parsed = parse_commit_id(&id, commit_scheme, other_bubble_id)?;
+                    let parsed = parse_commit_id(&id, commit_scheme)?;
                     commit_id_to_thrift(parsed)
                 })
                 .transpose()?;
