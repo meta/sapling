@@ -191,6 +191,7 @@
     "scm/mononoke:scs_popular_methods_sampling_rate": 1000,
     "scm/mononoke:scs_other_methods_sampling_rate": 1,
     "scm/mononoke:warm_bookmark_cache_poll_interval_ms": 1000,
+    "scm/mononoke_bookmark_log_migration:wbc_event_router_batch_accumulation_ms": 0,
     "scm/mononoke:bookmarks_cache_ttl_ms": 0,
     "scm/mononoke:backsyncer_bookmark_discovery_page_size": 10000,
     "scm/mononoke:backsyncer_max_discovered_bookmarks": 100000,
