@@ -1,5 +1,7 @@
 {
   "bools": {
+    "scm/mononoke_bookmark_log_migration:bookmark_log_guard_enabled": false,
+    "scm/mononoke_bookmark_log_migration:mrls_bookmark_log_guard_enabled": false,
     "scm/mononoke:load_shed_client_groups_from_identities": false,
     "scm/mononoke:repo_metadata_logger_wait_for_derived_blame": false,
     "scm/mononoke:enable_diff_service_path_acls": true,

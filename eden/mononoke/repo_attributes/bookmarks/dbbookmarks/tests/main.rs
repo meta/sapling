@@ -7,6 +7,9 @@
 
 //! Tests for the Bookmarks store.
 
+mod log_lock;
+mod migration_controls;
+
 use std::collections::HashMap;
 
 use anyhow::Error;

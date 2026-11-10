@@ -57,6 +57,7 @@ rust_unittest(
         "//common/rust/shed/quickcheck_arbitrary_derive:quickcheck_arbitrary_derive",
         "//common/rust/shed/sql:sql",
         "//eden/mononoke/common/mononoke_macros:mononoke_macros",
+        "//eden/mononoke/common/rust/justknobs_ext:justknobs",
         "//eden/mononoke/common/sql_construct:sql_construct",
         "//eden/mononoke/mononoke_types:mononoke_types",
         "//eden/mononoke/mononoke_types:mononoke_types-mocks",

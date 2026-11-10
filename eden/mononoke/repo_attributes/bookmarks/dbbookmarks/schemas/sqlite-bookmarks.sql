@@ -32,3 +32,9 @@ CREATE TABLE IF NOT EXISTS `bookmarks_update_log` (
   `category` VARCHAR(32) NOT NULL DEFAULT (CAST('branch' AS BLOB)),
   PRIMARY KEY (`repo_id`, `id`)
 );
+
+CREATE TABLE IF NOT EXISTS `bookmarks_update_log_lock` (
+  `repo_id` INT UNSIGNED NOT NULL,
+  `id` INTEGER NOT NULL,
+  PRIMARY KEY (`repo_id`, `id`)
+);

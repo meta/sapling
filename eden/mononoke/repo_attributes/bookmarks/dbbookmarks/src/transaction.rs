@@ -107,6 +107,16 @@ mononoke_queries! {
         "SELECT MAX(id) FROM bookmarks_update_log WHERE repo_id = {repo_id}"
     }
 
+    pub read FindMaxBookmarkLogLockId(repo_id: RepositoryId) -> (Option<u64>) {
+        "SELECT MAX(id) FROM bookmarks_update_log_lock WHERE repo_id = {repo_id}"
+    }
+
+    pub write AddBookmarkLogLock(values: (repo_id: RepositoryId, id: u64)) {
+        none,
+        mysql("INSERT INTO bookmarks_update_log_lock (repo_id, id) VALUES {values}")
+        sqlite("INSERT OR ROLLBACK INTO bookmarks_update_log_lock (repo_id, id) VALUES {values}")
+    }
+
     pub write AddBookmarkLog(
         values: (
             id: u64,
@@ -152,6 +162,48 @@ mononoke_queries! {
          VALUES {values}
          ON CONFLICT(repo_id, name, category) DO UPDATE SET log_id = excluded.log_id, changeset_id = excluded.changeset_id")
     }
+}
+
+/// Bookmark-log producer whose migration controls apply to an attempt.
+#[derive(Clone, Copy, Debug)]
+pub enum BookmarkLogWriter {
+    SingleRepo,
+    MultiRepo,
+}
+
+/// Select this producer's guard activation using the decimal repository ID.
+pub fn bookmark_log_guard_enabled(repo_id: RepositoryId, writer: BookmarkLogWriter) -> bool {
+    let knob = match writer {
+        BookmarkLogWriter::SingleRepo => {
+            "scm/mononoke_bookmark_log_migration:bookmark_log_guard_enabled"
+        }
+        BookmarkLogWriter::MultiRepo => {
+            "scm/mononoke_bookmark_log_migration:mrls_bookmark_log_guard_enabled"
+        }
+    };
+    let repo_key = repo_id.to_string();
+    justknobs::eval(knob, Some(&repo_key), Some(&repo_key))
+}
+
+/// Read the next repo-scoped migration ticket before reading any actual log IDs.
+/// The ticket is committed with the log rows; a competing ticket rolls back the attempt.
+pub async fn find_next_bookmark_log_lock_id(
+    txn: SqlTransaction,
+    repo_id: RepositoryId,
+) -> Result<(SqlTransaction, u64)> {
+    let (txn, rows) = FindMaxBookmarkLogLockId::query_with_transaction(txn, &repo_id).await?;
+    let next_id = match rows.as_slice() {
+        [(None,)] => 1,
+        [(Some(id),)] => id
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("bookmark log migration ticket overflow for repo {repo_id}"))?,
+        _ => {
+            return Err(anyhow!(
+                "unexpected migration ticket rows for repo {repo_id}: {rows:?}"
+            ));
+        }
+    };
+    Ok((txn, next_id))
 }
 
 struct NewUpdateLogEntry {
@@ -316,10 +368,11 @@ impl SqlBookmarksTransactionPayload {
         _ctx: &CoreContext,
         mut txn: SqlTransaction,
         log: &'a TransactionLogUpdates<'a>,
+        next_lock_id: Option<u64>,
     ) -> Result<SqlTransaction> {
         let timestamp = Timestamp::now();
 
-        for (id, bookmark, log_entry) in log.log_entries.iter() {
+        for (offset, (id, bookmark, log_entry)) in log.log_entries.iter().enumerate() {
             let data = [(
                 id,
                 &self.repo_id,
@@ -333,6 +386,14 @@ impl SqlBookmarksTransactionPayload {
             txn = AddBookmarkLog::query_with_transaction(txn, &data[..])
                 .await?
                 .0;
+            if let Some(next_lock_id) = next_lock_id {
+                let lock_id = next_lock_id
+                    .checked_add(offset.try_into()?)
+                    .ok_or_else(|| anyhow!("bookmark log migration ticket range overflow"))?;
+                txn = AddBookmarkLogLock::query_with_transaction(txn, &[(&self.repo_id, &lock_id)])
+                    .await?
+                    .0;
+            }
         }
         Ok(txn)
     }
@@ -682,6 +743,13 @@ impl SqlBookmarksTransactionPayload {
         ctx: &CoreContext,
         txn: SqlTransaction,
     ) -> Result<(SqlTransaction, u64), BookmarkTransactionError> {
+        let enabled = bookmark_log_guard_enabled(self.repo_id, BookmarkLogWriter::SingleRepo);
+        let (txn, next_lock_id) = if enabled {
+            let (txn, id) = find_next_bookmark_log_lock_id(txn, self.repo_id).await?;
+            (txn, Some(id))
+        } else {
+            (txn, None)
+        };
         let (mut txn, next_id) = Self::find_next_update_log_id(ctx, txn, self.repo_id).await?;
         let mut log = TransactionLogUpdates::new(next_id);
 
@@ -691,7 +759,7 @@ impl SqlBookmarksTransactionPayload {
         txn = self.store_force_deletes(ctx, txn, &mut log).await?;
         txn = self.store_deletes(ctx, txn, &mut log).await?;
         txn = self
-            .store_log(ctx, txn, &log)
+            .store_log(ctx, txn, &log, next_lock_id)
             .await
             .map_err(BookmarkTransactionError::RetryableError)?;
         // modern_sync mirror batches insert their own log rows with source ids,
