@@ -541,11 +541,14 @@ struct AllowCustomDefaultInAllocCtor {
 struct InternalExperimentalAllowAllocatorOnUnion {}
 
 /**
- * Gives a string, binary or container field or typedef a PMR allocator-aware
- * C++ type, such as `std::pmr::string` or `std::pmr::vector`, that can allocate
- * from a `std::pmr::memory_resource` such as an arena. On a field, the field
- * also allocates from its struct's memory resource. On a struct or union, it
- * applies to every field it could annotate. Other languages ignore it.
+ * Gives a string, binary or container field a PMR allocator-aware C++ type,
+ * such as `std::pmr::string` or `std::pmr::vector`, that can allocate from a
+ * `std::pmr::memory_resource` such as an arena. The field doesn't use its
+ * struct's memory resource yet: it allocates from the default resource. On a
+ * struct or union it does nothing yet, and on a typedef it is an error.
+ *
+ * The py3 generator rejects fields with it unless `auto_migrate` is set. Other
+ * languages ignore it.
  */
 @scope.Field
 @scope.Struct
