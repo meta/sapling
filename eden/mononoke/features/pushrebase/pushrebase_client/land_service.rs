@@ -172,6 +172,7 @@ impl PushrebaseClient for LandServicePushrebaseClient {
         cross_repo_push_source: CrossRepoPushSource,
         bookmark_restrictions: BookmarkKindRestrictions,
         log_new_public_commits_to_scribe: bool,
+        _required_root: Option<ChangesetId>,
     ) -> Result<PushrebaseOutcome, BookmarkMovementError> {
         let repo_name = self.repo.to_string();
         let changesets = convert_changesets(changesets);

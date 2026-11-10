@@ -1080,6 +1080,7 @@ async fn unsafe_sync_commit_pushrebase_impl<'a, R: Repo>(
                 &target_bookmark,
                 &rewritten_list,
                 pushrebase_hooks.as_slice(),
+                None,
             )
             .await;
             let pushrebase_res = pushrebase_res

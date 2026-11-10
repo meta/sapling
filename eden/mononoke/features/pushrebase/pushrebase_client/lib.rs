@@ -31,6 +31,7 @@ pub use hybrid::normal_pushrebase;
 pub use land_service::LandServicePushrebaseClient;
 pub use local::LocalPushrebaseClient;
 use mononoke_types::BonsaiChangeset;
+use mononoke_types::ChangesetId;
 #[cfg(not(fbcode_build))]
 use oss as platform;
 use pushrebase::PushrebaseOutcome;
@@ -55,5 +56,6 @@ pub trait PushrebaseClient: Sync + Send {
         cross_repo_push_source: CrossRepoPushSource,
         bookmark_restrictions: BookmarkKindRestrictions,
         log_new_public_commits_to_scribe: bool,
+        required_root: Option<ChangesetId>,
     ) -> Result<PushrebaseOutcome, BookmarkMovementError>;
 }

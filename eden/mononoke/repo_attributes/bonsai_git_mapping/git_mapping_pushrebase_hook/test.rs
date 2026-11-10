@@ -102,6 +102,7 @@ async fn pushrebase_populates_git_mapping(fb: FacebookInit) -> Result<(), Error>
         &book,
         &hashset![cs2.clone()],
         &hooks,
+        None,
     )
     .await?
     .rebased_changesets;
@@ -143,6 +144,7 @@ async fn pushrebase_populates_git_mapping(fb: FacebookInit) -> Result<(), Error>
         &book,
         &hashset![cs3.clone(), cs4.clone()],
         &hooks,
+        None,
     )
     .await?
     .rebased_changesets;

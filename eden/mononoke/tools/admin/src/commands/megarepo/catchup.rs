@@ -107,6 +107,7 @@ pub async fn create_deletion_head_commits<'a>(
             &head_bookmark,
             &hashset![bcs],
             &[],
+            None,
         )
         .await?;
         info!("Pushrebased to {}", pushrebase_res.head);

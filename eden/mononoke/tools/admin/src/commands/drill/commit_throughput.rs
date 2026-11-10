@@ -525,6 +525,7 @@ pub async fn commit_throughput(
                     CrossRepoPushSource::NativeToThisRepo,
                     BookmarkKindRestrictions::AnyKind,
                     true,
+                    None,
                 )
                 .await?;
             let landed_at_secs = wall.elapsed().as_secs_f64();

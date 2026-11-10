@@ -199,7 +199,7 @@ async fn do_pushrebase(
     init_just_knobs_for_test();
     let pushed = fetch_bonsai_changesets(ctx, repo, pushed_set).await?;
 
-    let res = do_pushrebase_bonsai(ctx, repo, config, onto_bookmark, &pushed, &[]).await?;
+    let res = do_pushrebase_bonsai(ctx, repo, config, onto_bookmark, &pushed, &[], None).await?;
 
     Ok(res)
 }
@@ -378,6 +378,7 @@ async fn pushrebase_one_commit_transaction_hook(fb: FacebookInit) -> Result<(), 
         &book,
         &hashset![bcs.clone()],
         &hooks,
+        None,
     )
     .map_err(|err| format_err!("{err:?}"))
     .await?;
@@ -399,6 +400,7 @@ async fn pushrebase_one_commit_transaction_hook(fb: FacebookInit) -> Result<(), 
         &book,
         &hashset![bcs],
         &hooks,
+        None,
     )
     .map_err(|err| format_err!("{err:?}"))
     .await?;
@@ -2995,6 +2997,7 @@ async fn pushrebase_rewritedates(fb: FacebookInit) -> Result<(), Error> {
         &BookmarkKey::new("keep")?,
         &source,
         &[],
+        None,
     )
     .await?;
 
@@ -3009,6 +3012,7 @@ async fn pushrebase_rewritedates(fb: FacebookInit) -> Result<(), Error> {
         &BookmarkKey::new("rewrite")?,
         &source,
         &[],
+        None,
     )
     .await?;
 
@@ -3451,6 +3455,7 @@ async fn pushrebase_simultaneously(fb: FacebookInit) -> Result<(), Error> {
                 &book,
                 &hashset![bcs],
                 &hooks,
+                None,
             )
             .await
         };
@@ -3540,6 +3545,7 @@ async fn pushrebase_simultaneously_and_create_new(fb: FacebookInit) -> Result<()
                 &book,
                 &hashset![bcs],
                 &hooks,
+                None,
             )
             .await
         };
@@ -4615,6 +4621,7 @@ async fn pushrebase_branch_merge(
         &master_bookmark(),
         &hashset![branch_merge.merge.clone()],
         &[],
+        None,
     )
     .await
 }
@@ -5448,6 +5455,7 @@ async fn pushrebase_merge_resolution_clean(fb: FacebookInit) -> Result<(), Error
         &book,
         &hashset![client_bcs],
         &[],
+        None,
     )
     .await?;
 
@@ -5509,6 +5517,7 @@ async fn pushrebase_merge_resolution_identical_lfs_is_already_applied(
         &book,
         &hashset![client_bcs],
         &[],
+        None,
     )
     .await?;
 
@@ -5570,6 +5579,7 @@ async fn pushrebase_merge_resolution_identical_lfs_alone_follows_noop_policy(
         &book,
         &hashset![client_bcs],
         &[],
+        None,
     )
     .await;
     match result {
@@ -5619,6 +5629,7 @@ async fn pushrebase_merge_resolution_differing_lfs_still_conflicts(
         &book,
         &hashset![client_bcs],
         &[],
+        None,
     )
     .await;
 
@@ -5673,6 +5684,7 @@ async fn pushrebase_merge_resolution_conflict(fb: FacebookInit) -> Result<(), Er
         &book,
         &hashset![client_bcs],
         &[],
+        None,
     )
     .await;
 
@@ -6058,6 +6070,7 @@ line 8
         &book,
         &hashset![client_bcs_1.clone(), client_bcs_2.clone()],
         &[],
+        None,
     )
     .await?;
 
@@ -6200,6 +6213,7 @@ line 5.1
         &book,
         &hashset![client_bcs_1, client_bcs_2],
         &[],
+        None,
     )
     .await;
 
@@ -6924,6 +6938,7 @@ async fn pushrebase_noop_merge_detected_only_when_jk_off(fb: FacebookInit) -> Re
         &book,
         &hashset![client_bcs],
         &[],
+        None,
     )
     .await?;
 
@@ -6968,6 +6983,7 @@ async fn pushrebase_noop_merge_rejected_single_file(fb: FacebookInit) -> Result<
         &book,
         &hashset![client_bcs],
         &[],
+        None,
     )
     .await;
 
@@ -7032,6 +7048,7 @@ async fn pushrebase_noop_merge_mixed_commit_lands(fb: FacebookInit) -> Result<()
         &book,
         &hashset![client_bcs],
         &[],
+        None,
     )
     .await?;
 
@@ -7090,6 +7107,7 @@ async fn pushrebase_noop_merge_in_stack_rejects_entire_stack(
         &book,
         &hashset![c1_bcs, c2_bcs],
         &[],
+        None,
     )
     .await;
 
@@ -7151,6 +7169,7 @@ async fn pushrebase_noop_merge_rejected_all_files_duplicate(fb: FacebookInit) ->
         &book,
         &hashset![client_bcs],
         &[],
+        None,
     )
     .await;
 
@@ -7212,6 +7231,7 @@ async fn pushrebase_noop_merge_genuine_merge_not_flagged(fb: FacebookInit) -> Re
         &book,
         &hashset![client_bcs],
         &[],
+        None,
     )
     .await?;
 
@@ -7277,6 +7297,7 @@ async fn pushrebase_noop_merge_local_equals_base_not_flagged(
         &book,
         &hashset![client_bcs],
         &[],
+        None,
     )
     .await?;
 
@@ -7334,8 +7355,16 @@ async fn pushrebase_merge_resolution_override_forces_off(fb: FacebookInit) -> Re
         ..Default::default()
     };
 
-    let result =
-        do_pushrebase_bonsai(&ctx, &repo, &config, &book, &hashset![client_bcs], &[]).await;
+    let result = do_pushrebase_bonsai(
+        &ctx,
+        &repo,
+        &config,
+        &book,
+        &hashset![client_bcs],
+        &[],
+        None,
+    )
+    .await;
 
     should_have_conflicts(result);
     Ok(())
@@ -7359,8 +7388,16 @@ async fn pushrebase_merge_resolution_override_forces_on(fb: FacebookInit) -> Res
         ..Default::default()
     };
 
-    let result =
-        do_pushrebase_bonsai(&ctx, &repo, &config, &book, &hashset![client_bcs], &[]).await?;
+    let result = do_pushrebase_bonsai(
+        &ctx,
+        &repo,
+        &config,
+        &book,
+        &hashset![client_bcs],
+        &[],
+        None,
+    )
+    .await?;
 
     let result_hg = repo.derive_hg_changeset(&ctx, result.head).await?;
     let expected_content = "modified_line1\nline2\nline3\nline4\nmodified_line5\n";
@@ -7396,8 +7433,16 @@ async fn pushrebase_merge_resolution_override_none_falls_through(
         ..Default::default()
     };
 
-    let result =
-        do_pushrebase_bonsai(&ctx, &repo, &config, &book, &hashset![client_bcs], &[]).await;
+    let result = do_pushrebase_bonsai(
+        &ctx,
+        &repo,
+        &config,
+        &book,
+        &hashset![client_bcs],
+        &[],
+        None,
+    )
+    .await;
 
     should_have_conflicts(result);
     Ok(())
@@ -8350,6 +8395,7 @@ async fn pushrebase_merge_resolution_delete_then_readd_still_lands(
         &book,
         &hashset![c1_bcs, c2_bcs],
         &[],
+        None,
     )
     .await?;
 
@@ -9217,7 +9263,7 @@ async fn pushrebase_take_incoming_resolves_same_artifact_race(
     init_just_knobs_for_take_incoming_test(true);
     let flags = take_incoming_flags(&["ArtA", "prebuilt_manifest.json"]);
     let result =
-        do_pushrebase_bonsai(&ctx, &repo, &flags, &book, &hashset![client_bcs], &[]).await?;
+        do_pushrebase_bonsai(&ctx, &repo, &flags, &book, &hashset![client_bcs], &[], None).await?;
 
     // ArtA is the client's (incoming wins); ArtB, which only the server
     // changed, is the server's; the pointer is the client's, still LFS.
@@ -9261,6 +9307,7 @@ async fn pushrebase_take_incoming_off_is_todays_conflict(fb: FacebookInit) -> Re
         &book,
         &hashset![client_bcs.clone()],
         &[],
+        None,
     )
     .await;
     assert!(matches!(res, Err(PushrebaseError::Conflicts(_))), "{res:?}");
@@ -9275,6 +9322,7 @@ async fn pushrebase_take_incoming_off_is_todays_conflict(fb: FacebookInit) -> Re
         &book,
         &hashset![client_bcs],
         &[],
+        None,
     )
     .await;
     assert!(matches!(res, Err(PushrebaseError::Conflicts(_))), "{res:?}");
@@ -9293,7 +9341,8 @@ async fn pushrebase_take_incoming_rejects_conflict_outside_prefixes(
     // and the whole land rejects, exactly as today.
     init_just_knobs_for_take_incoming_test(true);
     let flags = take_incoming_flags(&["prebuilt_manifest.json"]);
-    let res = do_pushrebase_bonsai(&ctx, &repo, &flags, &book, &hashset![client_bcs], &[]).await;
+    let res =
+        do_pushrebase_bonsai(&ctx, &repo, &flags, &book, &hashset![client_bcs], &[], None).await;
     assert!(matches!(res, Err(PushrebaseError::Conflicts(_))), "{res:?}");
     Ok(())
 }
@@ -9320,7 +9369,7 @@ async fn pushrebase_take_incoming_requested_resolves_without_prefixes(
     init_just_knobs_for_take_incoming_test(true);
     let flags = take_incoming_requested_flags();
     let result =
-        do_pushrebase_bonsai(&ctx, &repo, &flags, &book, &hashset![client_bcs], &[]).await?;
+        do_pushrebase_bonsai(&ctx, &repo, &flags, &book, &hashset![client_bcs], &[], None).await?;
 
     let result_hg = repo.derive_hg_changeset(&ctx, result.head).await?;
     ensure_content(
@@ -9356,7 +9405,8 @@ async fn pushrebase_take_incoming_requested_needs_the_knob(fb: FacebookInit) -> 
 
     init_just_knobs_for_take_incoming_test(false);
     let flags = take_incoming_requested_flags();
-    let res = do_pushrebase_bonsai(&ctx, &repo, &flags, &book, &hashset![client_bcs], &[]).await;
+    let res =
+        do_pushrebase_bonsai(&ctx, &repo, &flags, &book, &hashset![client_bcs], &[], None).await;
     assert!(matches!(res, Err(PushrebaseError::Conflicts(_))), "{res:?}");
     Ok(())
 }
@@ -9389,7 +9439,8 @@ async fn pushrebase_take_incoming_requested_still_rejects_both_sides_added(
 
     init_just_knobs_for_take_incoming_test(true);
     let flags = take_incoming_requested_flags();
-    let res = do_pushrebase_bonsai(&ctx, &repo, &flags, &book, &hashset![client_bcs], &[]).await;
+    let res =
+        do_pushrebase_bonsai(&ctx, &repo, &flags, &book, &hashset![client_bcs], &[], None).await;
     assert!(matches!(res, Err(PushrebaseError::Conflicts(_))), "{res:?}");
     Ok(())
 }
@@ -9439,6 +9490,7 @@ async fn pushrebase_take_incoming_rejects_already_landed_and_superseded(
         &book,
         &hashset![retry_bcs.clone()],
         &[],
+        None,
     )
     .await;
     assert!(matches!(res, Err(PushrebaseError::Conflicts(_))), "{res:?}");

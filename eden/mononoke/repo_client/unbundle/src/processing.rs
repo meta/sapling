@@ -350,6 +350,7 @@ async fn run_pushrebase(
                 &authz,
                 false, // We will log new commits locally
                 force_local_pushrebase,
+                None,
             )
             .await;
             let (pushrebased_rev, pushrebased_changesets, log_id) = match outcome {

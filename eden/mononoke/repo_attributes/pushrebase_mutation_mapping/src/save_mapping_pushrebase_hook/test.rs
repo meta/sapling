@@ -94,6 +94,7 @@ async fn pushrebase_saves_mapping(fb: FacebookInit) -> Result<()> {
         &master,
         &hashset![cs.clone()],
         &hooks,
+        None,
     )
     .await?;
 
@@ -107,6 +108,7 @@ async fn pushrebase_saves_mapping(fb: FacebookInit) -> Result<()> {
         &main,
         &hashset![cs.clone()],
         &hooks,
+        None,
     )
     .await?
     .head;

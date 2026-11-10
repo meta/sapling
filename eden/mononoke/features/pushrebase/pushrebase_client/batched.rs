@@ -21,6 +21,7 @@ use context::CoreContext;
 use hook_manager::manager::HookManagerRef;
 use hooks::CrossRepoPushSource;
 use mononoke_types::BonsaiChangeset;
+use mononoke_types::ChangesetId;
 use pushrebase::PushrebaseError;
 use pushrebase::PushrebaseOutcome;
 use pushrebase::PushrebaseQueue;
@@ -64,6 +65,7 @@ impl<R: Repo + HookManagerRef + 'static> PushrebaseClient for BatchedPushrebaseC
         cross_repo_push_source: CrossRepoPushSource,
         bookmark_restrictions: BookmarkKindRestrictions,
         log_new_public_commits_to_scribe: bool,
+        _required_root: Option<ChangesetId>,
     ) -> Result<PushrebaseOutcome, BookmarkMovementError> {
         let repo = (self.resolve_repo)().ok_or_else(|| {
             BookmarkMovementError::Error(anyhow!("Pushrebase repository is not loaded"))

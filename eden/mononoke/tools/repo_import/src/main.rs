@@ -644,6 +644,7 @@ async fn push_merge_commit(
         bookmark_to_merge_into,
         &hashset![merged_cs],
         &pushrebase_hooks,
+        None,
     )
     .await?;
 

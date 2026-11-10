@@ -517,6 +517,7 @@ pub async fn do_pushrebase_bonsai(
     onto_bookmark: &BookmarkKey,
     pushed: &HashSet<BonsaiChangeset>,
     prepushrebase_hooks: &[Box<dyn PushrebaseHook>],
+    _required_root: Option<ChangesetId>,
 ) -> Result<PushrebaseOutcome, PushrebaseError> {
     // Tag every Scuba sample emitted during this pushrebase with the
     // land-attribution keys from the request pushvars, so downstream

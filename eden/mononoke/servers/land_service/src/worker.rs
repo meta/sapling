@@ -133,6 +133,7 @@ async fn process_land_changesets_request(
         cross_repo_push_source,
         bookmark_restrictions,
         request.log_new_public_commits_to_scribe,
+        None,
     )
     .await?;
 
@@ -318,6 +319,7 @@ async fn process_batched_request(
             cross_repo_push_source,
             bookmark_restrictions,
             request.log_new_public_commits_to_scribe,
+            None,
         )
         .await?;
 

@@ -80,6 +80,7 @@ pub async fn pushrebase(
         &pushrebase_args.bookmark,
         &bonsais,
         &pushrebase_hooks,
+        None,
     )
     .map_err(Error::from)
     .await?;

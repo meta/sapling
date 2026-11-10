@@ -19,6 +19,7 @@ use futures_stats::TimedFutureExt;
 use hooks::CrossRepoPushSource;
 use hooks::HookManager;
 use mononoke_types::BonsaiChangeset;
+use mononoke_types::ChangesetId;
 use pushrebase::PushrebaseOutcome;
 use pushrebase::RepoLockPolicy;
 use pushrebase_hooks::RepoLockPushrebaseHook;
@@ -44,6 +45,7 @@ impl<'a, R: Repo> PushrebaseClient for LocalPushrebaseClient<'a, R> {
         cross_repo_push_source: CrossRepoPushSource,
         bookmark_restrictions: BookmarkKindRestrictions,
         log_new_public_commits_to_scribe: bool,
+        _required_root: Option<ChangesetId>,
     ) -> Result<PushrebaseOutcome, BookmarkMovementError> {
         let prepared = prepare_pushrebase(
             ctx,
@@ -81,6 +83,7 @@ impl<'a, R: Repo> PushrebaseClient for LocalPushrebaseClient<'a, R> {
             bookmark,
             &source_changesets,
             &hooks,
+            None,
         )
         .timed()
         .await;

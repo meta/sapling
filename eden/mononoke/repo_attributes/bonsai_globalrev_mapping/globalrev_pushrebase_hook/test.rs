@@ -114,6 +114,7 @@ async fn pushrebase_assigns_globalrevs(fb: FacebookInit) -> Result<(), Error> {
         &book,
         &hashset![cs2.clone()],
         &hooks,
+        None,
     )
     .await?
     .rebased_changesets;
@@ -145,6 +146,7 @@ async fn pushrebase_assigns_globalrevs(fb: FacebookInit) -> Result<(), Error> {
         &book,
         &hashset![cs3.clone(), cs4.clone()],
         &hooks,
+        None,
     )
     .await?
     .rebased_changesets;
@@ -260,7 +262,7 @@ async fn test_pushrebase_race_assigns_monotonic_globalrevs(fb: FacebookInit) -> 
         let fut = async {
             let params = Default::default();
             let bcss = hashset![bcs];
-            do_pushrebase_bonsai(ctx, repo, &params, &book, &bcss, &hooks).await
+            do_pushrebase_bonsai(ctx, repo, &params, &book, &bcss, &hooks, None).await
         };
 
         futs.push(fut);

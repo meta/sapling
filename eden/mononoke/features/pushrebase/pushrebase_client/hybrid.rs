@@ -18,6 +18,7 @@ use hooks::HookManager;
 use metaconfig_types::Address;
 use metaconfig_types::PushrebaseRemoteMode;
 use mononoke_types::BonsaiChangeset;
+use mononoke_types::ChangesetId;
 use pushrebase::PushrebaseOutcome;
 use repo_authorization::AuthorizationContext;
 use scuba_ext::MononokeScubaSampleBuilder;
@@ -38,6 +39,7 @@ pub async fn normal_pushrebase<'a>(
     authz: &'a AuthorizationContext,
     log_new_public_commits_to_scribe: bool,
     force_local_pushrebase: bool,
+    required_root: Option<ChangesetId>,
 ) -> Result<PushrebaseOutcome, BookmarkMovementError> {
     let remote_mode = if force_local_pushrebase {
         PushrebaseRemoteMode::Local
@@ -59,6 +61,7 @@ pub async fn normal_pushrebase<'a>(
                     cross_repo_push_source,
                     bookmark_restrictions,
                     log_new_public_commits_to_scribe,
+                    required_root,
                 )
                 .await;
             match (result, &remote_mode) {
@@ -98,6 +101,7 @@ pub async fn normal_pushrebase<'a>(
             cross_repo_push_source,
             bookmark_restrictions,
             log_new_public_commits_to_scribe,
+            required_root,
         )
         .await;
     if let Some((mut scuba, err)) = maybe_fallback_scuba {
