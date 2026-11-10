@@ -12,11 +12,13 @@ use std::collections::BTreeSet;
 #[cfg(fbcode_build)]
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use acl_regions::ArcAclRegions;
 use acl_regions::build_acl_regions;
 use anyhow::Result;
 use blobstore::Blobstore;
+use blobstore::BlobstoreEnumerableWithUnlink;
 use bonsai_git_mapping::ArcBonsaiGitMapping;
 use bonsai_git_mapping::SqlBonsaiGitMappingBuilder;
 use bonsai_globalrev_mapping::ArcBonsaiGlobalrevMapping;
@@ -58,6 +60,7 @@ use enabled_derived_data_types::ArcEnabledDerivedDataTypes;
 use enabled_derived_data_types::SqlEnabledDerivedDataTypesBuilder;
 use ephemeral_blobstore::ArcRepoEphemeralStore;
 use ephemeral_blobstore::RepoEphemeralStore;
+use ephemeral_blobstore::RepoEphemeralStoreBuilder;
 use fbinit::FacebookInit;
 use filenodes::ArcFilenodes;
 use filestore::ArcFilestoreConfig;
@@ -87,6 +90,7 @@ use metaconfig_parser::RepoConfigs;
 use metaconfig_parser::StorageConfigs;
 use metaconfig_types::ArcRepoConfig;
 use metaconfig_types::BlameVersion;
+use metaconfig_types::BubbleDeletionMode;
 #[cfg(fbcode_build)]
 use metaconfig_types::CommonConfig;
 use metaconfig_types::ComparableRegex;
@@ -210,6 +214,7 @@ pub struct TestRepoFactory {
     restricted_paths: Option<ArcRestrictedPaths>,
     acl_provider: Option<Arc<dyn AclProvider>>,
     repo_derivation_queues: Option<ArcRepoDerivationQueues>,
+    ephemeral_blobstore: Option<Arc<dyn BlobstoreEnumerableWithUnlink>>,
 }
 
 /// The default derived data types configuration for test repositories.
@@ -368,6 +373,7 @@ impl TestRepoFactory {
             restricted_paths: None,
             acl_provider: None,
             repo_derivation_queues: None,
+            ephemeral_blobstore: None,
         })
     }
 
@@ -420,6 +426,12 @@ impl TestRepoFactory {
         repo_derivation_queues: ArcRepoDerivationQueues,
     ) -> &mut Self {
         self.repo_derivation_queues = Some(repo_derivation_queues);
+        self
+    }
+
+    /// Give repos built by this factory an in-memory ephemeral store.
+    pub fn with_ephemeral_store(&mut self) -> &mut Self {
+        self.ephemeral_blobstore = Some(Arc::new(Memblob::default()));
         self
     }
 
@@ -796,8 +808,21 @@ impl TestRepoFactory {
     }
 
     /// Disabled ephemeral repo
-    pub fn repo_ephemeral_store(&self, repo_identity: &ArcRepoIdentity) -> ArcRepoEphemeralStore {
-        Arc::new(RepoEphemeralStore::disabled(repo_identity.id()))
+    pub fn repo_ephemeral_store(
+        &self,
+        repo_identity: &ArcRepoIdentity,
+    ) -> Result<ArcRepoEphemeralStore> {
+        let Some(blobstore) = &self.ephemeral_blobstore else {
+            return Ok(Arc::new(RepoEphemeralStore::disabled(repo_identity.id())));
+        };
+        let store = RepoEphemeralStoreBuilder::with_sqlite_in_memory()?.build(
+            repo_identity.id(),
+            blobstore.clone(),
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            BubbleDeletionMode::MarkAndDelete,
+        );
+        Ok(Arc::new(store))
     }
 
     /// Mutable renames
@@ -1172,5 +1197,55 @@ impl TestRepoFactory {
         self.repo_derivation_queues.clone().unwrap_or_else(|| {
             Arc::new(RepoDerivationQueues::new(std::collections::HashMap::new()))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ephemeral_blobstore::RepoEphemeralStoreRef;
+    use mononoke_macros::mononoke;
+
+    use super::*;
+
+    #[facet::container]
+    struct EphemeralTestRepo {
+        #[facet]
+        repo_ephemeral_store: RepoEphemeralStore,
+    }
+
+    #[mononoke::fbinit_test]
+    async fn default_ephemeral_store_is_disabled(fb: FacebookInit) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let repo: EphemeralTestRepo = TestRepoFactory::new(fb)?.build().await?;
+
+        assert!(
+            repo.repo_ephemeral_store()
+                .create_bubble(&ctx, None, vec![])
+                .await
+                .is_err(),
+            "the default test repo has no ephemeral store"
+        );
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn with_ephemeral_store_creates_bubbles(fb: FacebookInit) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let repo: EphemeralTestRepo = TestRepoFactory::new(fb)?
+            .with_ephemeral_store()
+            .build()
+            .await?;
+
+        let bubble = repo
+            .repo_ephemeral_store()
+            .create_bubble(&ctx, None, vec![])
+            .await?;
+        let reopened = repo
+            .repo_ephemeral_store()
+            .open_bubble(&ctx, bubble.bubble_id())
+            .await?;
+
+        assert_eq!(reopened.bubble_id(), bubble.bubble_id());
+        Ok(())
     }
 }

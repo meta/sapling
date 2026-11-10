@@ -125,6 +125,10 @@ rust_library(
     name = "test_repo_factory",
     srcs = glob(["test_repo_factory/src/**/*.rs"]),
     autocargo = {"cargo_toml_dir": "test_repo_factory"},
+    test_deps = [
+        "//common/rust/shed/fbinit:fbinit-tokio",
+        "//eden/mononoke/common/mononoke_macros:mononoke_macros",
+    ],
     deps = [
         "fbsource//third-party/rust:anyhow",
         "fbsource//third-party/rust:maplit",
