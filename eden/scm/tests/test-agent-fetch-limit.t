@@ -27,7 +27,7 @@ With an agent and a low file limit, sl diff aborts:
 
   $ CODING_AGENT_METADATA=id=test sl diff -r .~1 -r . --stat --config agent.max-file-fetch-count=1
   abort: command accessed over 1 files from store
-  (run 'sl help agent performance' for guidance)
+  (narrow it to the paths you need, and find files by name with code search; see 'sl help agent performance')
   [255]
 
 A high-enough limit admits the diff:
@@ -69,5 +69,5 @@ The tree limit is independent and uses its own config key:
 
   $ CODING_AGENT_METADATA=id=test sl diff -r .~1 -r . --stat --config agent.max-tree-fetch-count=1
   abort: command accessed over 1 trees from store
-  (run 'sl help agent performance' for guidance)
+  (narrow it to the paths you need, and find files by name with code search; see 'sl help agent performance')
   [255]

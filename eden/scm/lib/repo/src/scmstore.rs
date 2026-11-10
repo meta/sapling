@@ -56,7 +56,8 @@ fn agent_max_fetch_count(
     let cli = identity::default().cli_name();
     let err_msg = format!(
         "command accessed over {limit} {item_kind} from store\n\
-         (run '{cli} help agent performance' for guidance)"
+         (narrow it to the paths you need, and find files by name with code search; \
+         see '{cli} help agent performance')"
     );
     Ok(MaxFetchCount::new(limit, err_msg))
 }
