@@ -31,10 +31,9 @@ namespace facebook::eden {
 class CheckoutCancellationTest : public ::testing::Test {};
 
 /**
- * Test that when a checkout is cancelled, the mount enters an interrupted
- * checkout state and can be recovered.
+ * Cancellation before start() leaves the checkout state unchanged.
  */
-TEST_F(CheckoutCancellationTest, CheckoutLeavesInterruptedState) {
+TEST_F(CheckoutCancellationTest, CancellationBeforeStartPreservesParentState) {
   auto builder1 = FakeTreeBuilder();
   builder1.setFile("file1.txt", "content1\n");
   builder1.setFile("file2.txt", "content2\n");
@@ -92,10 +91,7 @@ TEST_F(CheckoutCancellationTest, CheckoutLeavesInterruptedState) {
   EXPECT_TRUE(checkoutFuture.isReady());
   EXPECT_ANY_THROW(std::move(checkoutFuture).get());
 
-  // Verify the mount is in interrupted checkout state
-  EXPECT_TRUE(testMount.getEdenMount()->isCheckoutInProgress())
-      << "After cancellation, checkout should be marked as in-progress "
-      << "(interrupted state)";
+  EXPECT_FALSE(testMount.getEdenMount()->isCheckoutInProgress());
 
   // Clean up - remove the fault
   testMount.getServerState()->getFaultInjector().removeFault("checkout", ".*");

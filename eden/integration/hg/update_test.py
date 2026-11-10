@@ -915,11 +915,9 @@ class UpdateTest(EdenHgTestCase):
 
         self.assertEqual(snapshot_before, snapshot_path.read_bytes())
         self.assertEqual("updated in commit 3\n", self.read_file("foo/bar.txt"))
-        # FIXME: Status should succeed because checkout never changed the tree.
-        with self.assertRaisesRegex(hgrepo.HgError, "checkout was interrupted"):
-            self.assert_status_empty()
+        self.assert_status_empty()
 
-        self.repo.update(self.commit1)
+        self.repo.update(self.commit2)
         self.assert_status_empty()
 
     async def test_resume_interrupted_update(self) -> None:

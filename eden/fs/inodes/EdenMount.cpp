@@ -1655,9 +1655,9 @@ struct EdenMount::CheckoutInProgressGuard {
 
  private:
   // Resets parentState_ out of CheckoutInProgress: restores the prior state for
-  // dry runs, leaves the mount interrupted when the checkout failed, or clears
-  // the state otherwise. Returns true when the mount was left interrupted, so
-  // the caller can surface the error to the user.
+  // dry runs and failures before start(), leaves the mount interrupted after a
+  // started checkout fails, or clears the state otherwise. Returns true for a
+  // non-dry checkout error so the caller can surface it to the user.
   bool applyResetState(EdenMount* mount, bool hadException) {
     auto parentLock = mount->parentState_.wlock();
     XCHECK(
@@ -1668,10 +1668,14 @@ struct EdenMount::CheckoutInProgressGuard {
       parentLock->checkoutState = oldState_;
       return false;
     } else if (hadException) {
-      parentLock->checkoutState = ParentCommitState::InterruptedCheckout{
-          oldParent_,
-          snapshotId_,
-      };
+      if (ctx_->hasStarted()) {
+        parentLock->checkoutState = ParentCommitState::InterruptedCheckout{
+            oldParent_,
+            snapshotId_,
+        };
+      } else {
+        parentLock->checkoutState = oldState_;
+      }
       return true;
     } else {
       parentLock->checkoutState = ParentCommitState::NoOngoingCheckout{};

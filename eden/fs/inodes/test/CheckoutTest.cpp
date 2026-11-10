@@ -2190,9 +2190,7 @@ TEST(CheckoutTest, checkoutFailureBeforeStartPreservesParentState) {
             "checkout not started"),
         1);
     EXPECT_THROW(checkoutTo2(), EdenError);
-    // FIXME: This should equal resuming: a failure before start() must restore
-    // the prior state because the working copy has not changed.
-    EXPECT_TRUE(testMount.getEdenMount()->isCheckoutInProgress());
+    EXPECT_EQ(resuming, testMount.getEdenMount()->isCheckoutInProgress());
     EXPECT_EQ(
         parentBefore,
         testMount.getEdenMount()->getCheckoutConfig()->getParentCommit());

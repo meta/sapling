@@ -62,6 +62,7 @@ void CheckoutContext::start(
     RootId newSnapshot,
     std::shared_ptr<const Tree> toTree) {
   renameLock_ = std::move(renameLock);
+  hasStarted_ = true;
 
   // Only update the parent if it is not a dry run.
   if (!isDryRun()) {
