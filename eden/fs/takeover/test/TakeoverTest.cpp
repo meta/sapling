@@ -16,9 +16,12 @@
 #include <folly/testing/TestUtil.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include <poll.h>
 #include <thrift/lib/cpp2/protocol/Serializer.h>
 
 #include <eden/fs/takeover/gen-cpp2/takeover_types.h>
+#include "eden/common/utils/FutureUnixSocket.h"
+#include "eden/common/utils/Pipe.h"
 #include "eden/fs/takeover/TakeoverClient.h"
 #include "eden/fs/takeover/TakeoverData.h"
 #include "eden/fs/takeover/TakeoverHandler.h"
@@ -1039,4 +1042,64 @@ TEST(Takeover, nfsNotEnabled) {
   auto& fuseChannelData0 =
       std::get<FuseChannelData>(clientData.mountPoints.at(0).channelInfo);
   checkExpectedFile(fuseChannelData0.fd.fd(), mount1FusePath);
+}
+
+TEST(Takeover, passedSocketsRemainReadable) {
+  // Like a graceful restart, the sender closes every copy of the socket it
+  // passed, and its end of the channel, before the receiver reads the message.
+  // On macOS that closure schedules unp_gc.
+  auto previousHandler = signal(SIGPIPE, SIG_IGN);
+  SCOPE_EXIT {
+    signal(SIGPIPE, previousHandler);
+  };
+  SocketPair channel;
+  SocketPair conn;
+  EventBase evb;
+  FutureUnixSocket receiver{&evb, folly::File{channel.read.release(), true}};
+  {
+    FutureUnixSocket sender{&evb, folly::File{channel.write.release(), true}};
+    std::vector<folly::File> files;
+    files.emplace_back(conn.read.release(), true);
+    sender
+        .send(
+            UnixSocket::Message{
+                folly::IOBuf{folly::IOBuf::COPY_BUFFER, "x", 1},
+                std::move(files)})
+        .getVia(&evb);
+  }
+  if (folly::kIsApple) {
+    // An unreachable socket queued on itself only closes after unp_gc has
+    // flushed every socket in that GC pass. Its peer's EOF signals completion.
+    SocketPair gc;
+    auto gcFd = gc.write.fd();
+    FutureUnixSocket gcSender{&evb, folly::File{gc.write.release(), true}};
+    std::vector<folly::File> files;
+    files.emplace_back(gc.read.release(), true);
+    gcSender
+        .send(
+            UnixSocket::Message{
+                folly::IOBuf{folly::IOBuf::COPY_BUFFER, "x", 1},
+                std::move(files)})
+        .getVia(&evb);
+    // Schedule GC after the cycle is queued, even if the sender's GC ran early.
+    {
+      SocketPair trigger;
+    }
+    struct pollfd event{gcFd, POLLIN, 0};
+    ASSERT_EQ(1, poll(&event, 1, 5000));
+    char byte;
+    ASSERT_EQ(0, read(gcFd, &byte, sizeof(byte)));
+  }
+
+  auto msg = receiver.receive(5s).getVia(&evb);
+  ASSERT_EQ(1, msg.files.size());
+  ASSERT_EQ(5, write(conn.write.fd(), "hello", 5));
+  char buf[5];
+  if (folly::kIsApple) {
+    // FIXME: This should read "hello" once the receiving socket is pinned.
+    ASSERT_EQ(0, read(msg.files[0].fd(), buf, sizeof(buf)));
+    return;
+  }
+  ASSERT_EQ(5, read(msg.files[0].fd(), buf, sizeof(buf)));
+  EXPECT_EQ("hello", std::string_view(buf, sizeof(buf)));
 }

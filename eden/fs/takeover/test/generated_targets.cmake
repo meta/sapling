@@ -22,5 +22,6 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR APPLE)
       Folly::folly_testing_test_util
       eden_fs_takeover
       eden_takeover_thrift
+      edencommon::edencommon_utils
   )
 endif ()
