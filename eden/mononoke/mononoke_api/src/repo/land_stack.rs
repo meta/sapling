@@ -150,22 +150,43 @@ impl<R: MononokeRepo> RepoContext<R> {
             )));
         }
 
+        let to_land = self.changesets_to_land(&bookmark, head, base).await?;
+        self.land_changesets(
+            bookmark,
+            to_land,
+            pushvars,
+            bookmark_restrictions,
+            push_authored_by,
+            force_local_pushrebase,
+        )
+        .await
+    }
+
+    /// Pushrebases `to_land` onto `bookmark`.
+    pub(crate) async fn land_changesets(
+        &self,
+        bookmark: BookmarkKey,
+        to_land: ChangesetsToLand,
+        pushvars: Option<&HashMap<String, Bytes>>,
+        bookmark_restrictions: BookmarkKindRestrictions,
+        push_authored_by: PushAuthoredBy,
+        force_local_pushrebase: bool,
+    ) -> Result<PushrebaseOutcome, MononokeError> {
         let ctx = self.ctx();
         let blobstore = self.repo().repo_blobstore();
-        let changesets: Vec<_> =
-            stream::iter(self.changesets_to_land(&bookmark, head, base).await?)
-                .map(|cs_id| {
-                    cloned!(ctx);
-                    async move {
-                        cs_id
-                            .load(&ctx, blobstore)
-                            .map_err(MononokeError::from)
-                            .await
-                    }
-                })
-                .buffer_unordered(100)
-                .try_collect()
-                .await?;
+        let changesets: Vec<_> = stream::iter(to_land.changesets)
+            .map(|cs_id| {
+                cloned!(ctx);
+                async move {
+                    cs_id
+                        .load(&ctx, blobstore)
+                        .map_err(MononokeError::from)
+                        .await
+                }
+            })
+            .buffer_unordered(100)
+            .try_collect()
+            .await?;
 
         let push_redirector = self.push_redirector().await?;
         let outcome = if let Some(redirector) = push_redirector.as_ref() {
@@ -185,7 +206,10 @@ impl<R: MononokeRepo> RepoContext<R> {
             let small_to_large = redirector
                 .sync_uploaded_changesets(ctx, changesets, Some(&large_bookmark))
                 .await?;
-            // Land the mapped changesets on the large repo
+            // Land the mapped changesets on the large repo. A small-repo
+            // commit can map to several large-repo commits, and the sync
+            // chooses the one under the large bookmark, so `base` is not
+            // mapped to a required root here.
             let outcome = normal_pushrebase(
                 self.ctx(),
                 &redirector.repo,
@@ -218,7 +242,7 @@ impl<R: MononokeRepo> RepoContext<R> {
                 self.authorization_context(),
                 true, // log_new_public_commits_to_scribe
                 force_local_pushrebase,
-                None,
+                to_land.required_root,
             )
             .await?
         };
@@ -228,7 +252,8 @@ impl<R: MononokeRepo> RepoContext<R> {
 
     /// The commits that `land_stack` passes to pushrebase, in topological
     /// order: the commits from `base` to `head` and, for a checked stack that
-    /// passes, the merged-in commits that are not public.
+    /// passes, the merged-in commits that are not public. A checked stack
+    /// that passes also requires pushrebase to rebase from `base`.
     ///
     /// `scm/mononoke:pushrebase_land_stack_validation` chooses, per repo, how
     /// the checks apply. At 0, no stack is checked, and only the commits from
@@ -241,7 +266,7 @@ impl<R: MononokeRepo> RepoContext<R> {
         bookmark: &BookmarkKey,
         head: ChangesetId,
         base: ChangesetId,
-    ) -> Result<Vec<ChangesetId>, MononokeError> {
+    ) -> Result<ChangesetsToLand, MononokeError> {
         let ctx = self.ctx();
         let commit_graph = self.repo().commit_graph();
         let rebased: Vec<ChangesetId> = commit_graph
@@ -260,7 +285,7 @@ impl<R: MononokeRepo> RepoContext<R> {
             _ => LandStackValidation::Enforce,
         };
         if validation == LandStackValidation::Off {
-            return Ok(rebased);
+            return Ok(ChangesetsToLand::unchecked(rebased));
         }
 
         let has_merges = commit_graph
@@ -272,7 +297,14 @@ impl<R: MononokeRepo> RepoContext<R> {
             .check_land_stack(bookmark, head, base, &rebased)
             .await?;
         let Some(failure) = check.failure else {
-            return Ok(check.merged_in.into_iter().chain(rebased).collect());
+            // Pushrebase must rebase from `base`, the root the checks
+            // confirmed, rather than from a root it chooses by reading the
+            // bookmark again.
+            let required_root = (check.merge_bases == [base]).then_some(base);
+            return Ok(ChangesetsToLand {
+                changesets: check.merged_in.into_iter().chain(rebased).collect(),
+                required_root,
+            });
         };
 
         let merge_stack = has_merges || check.has_merged_in;
@@ -295,7 +327,7 @@ impl<R: MononokeRepo> RepoContext<R> {
             .add("land_stack_public_commits", check.public.len());
         if validation == LandStackValidation::Shadow && !merge_stack {
             scuba.log_with_msg("land_stack validation would reject", None);
-            return Ok(rebased);
+            return Ok(ChangesetsToLand::unchecked(rebased));
         }
         scuba.log_with_msg("land_stack validation rejected", None);
         Err(self
@@ -500,6 +532,25 @@ impl<R: MononokeRepo> RepoContext<R> {
                 _ => cs_id.to_string(),
             })
             .collect())
+    }
+}
+
+/// What `land_stack` passes to pushrebase.
+#[derive(Debug)]
+pub(crate) struct ChangesetsToLand {
+    /// In topological order.
+    pub(crate) changesets: Vec<ChangesetId>,
+    /// The root pushrebase must rebase from: `base`, once the checks have
+    /// confirmed it is the only merge base of the bookmark and `head`.
+    pub(crate) required_root: Option<ChangesetId>,
+}
+
+impl ChangesetsToLand {
+    fn unchecked(changesets: Vec<ChangesetId>) -> Self {
+        Self {
+            changesets,
+            required_root: None,
+        }
     }
 }
 

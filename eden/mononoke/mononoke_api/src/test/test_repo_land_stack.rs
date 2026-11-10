@@ -449,17 +449,18 @@ async fn land_stack_merged_in_commits(fb: FacebookInit) -> Result<()> {
 
     // The draft side of a merge is pushed with the merge.
     let draft_merge = new_commit(&repo, vec![cs["D"], cs["F2"]], "M").await?;
-    assert_eq!(
-        repo.changesets_to_land(&trunk_key, draft_merge, cs["D"])
-            .await?,
-        vec![cs["F1"], cs["F2"], draft_merge],
-    );
+    let to_land = repo
+        .changesets_to_land(&trunk_key, draft_merge, cs["D"])
+        .await?;
+    assert_eq!(to_land.changesets, vec![cs["F1"], cs["F2"], draft_merge]);
+    assert_eq!(to_land.required_root, Some(cs["D"]));
 
     // The public side of a merge is not.
     let release_merge = new_commit(&repo, vec![cs["D"], cs["R2"]], "M").await?;
     assert_eq!(
         repo.changesets_to_land(&trunk_key, release_merge, cs["D"])
-            .await?,
+            .await?
+            .changesets,
         vec![release_merge],
     );
 
@@ -469,7 +470,8 @@ async fn land_stack_merged_in_commits(fb: FacebookInit) -> Result<()> {
     let partial_merge = new_commit(&repo, vec![t, cs["F2"]], "M").await?;
     assert_eq!(
         repo.changesets_to_land(&trunk_key, partial_merge, t)
-            .await?,
+            .await?
+            .changesets,
         vec![cs["F2"], partial_merge],
     );
     Ok(())
@@ -698,10 +700,12 @@ async fn land_stack_validation_of_merge(fb: FacebookInit) -> Result<()> {
         })
         .await;
         if setting == 0 {
+            let to_land = to_land?;
             assert_eq!(
-                to_land?.into_iter().collect::<HashSet<_>>(),
+                to_land.changesets.into_iter().collect::<HashSet<_>>(),
                 hashset! {cs["C"], cs["D"], merge},
             );
+            assert_eq!(to_land.required_root, None);
             match result {
                 Err(MononokeError::PushrebaseConflicts(conflicts)) => assert_eq!(
                     conflicts
@@ -752,5 +756,28 @@ async fn land_stack_swaps_second_parent_base(fb: FacebookInit) -> Result<()> {
     assert_eq!(mapping.keys().copied().collect::<Vec<_>>(), vec![merge]);
     assert_eq!(trunk(&repo).await?, mapping[&merge]);
     assert_eq!(parents(&repo, mapping[&merge]).await?, vec![e, cs["F2"]]);
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn land_stack_rejects_bookmark_moved_back_after_check(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let (repo, cs) = init_branches_repo(&ctx).await?;
+    let merge = new_commit(&repo, vec![cs["D"], cs["F2"]], "M").await?;
+    let trunk_key = BookmarkKey::new("trunk")?;
+
+    // The merge is checked with trunk at D, then trunk moves back to B
+    // before it lands. Rebased from A, the closest root under B, the push
+    // would also rebase the public C and D; it is rejected instead.
+    let to_land = repo.changesets_to_land(&trunk_key, merge, cs["D"]).await?;
+    set_bookmark(&repo, "trunk", cs["B"]).await?;
+    let result = repo
+        .land_changesets(trunk_key, to_land, None, AnyKind, User, false)
+        .await;
+    assert_invalid_request(
+        result,
+        "bookmark 'trunk' moved while the push was being checked. Pull and retry",
+    );
+    assert_eq!(trunk(&repo).await?, cs["B"]);
     Ok(())
 }
