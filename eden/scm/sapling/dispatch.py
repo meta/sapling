@@ -171,6 +171,9 @@ def run(args, fin, fout, ferr, rctx: rscontext, skipprehooks: bool):
             errormsg = err.strerror.encode()
             req.ui.ferr.write(b"abort: %s\n" % errormsg)
         req.ui.ferr.flush()
+    if err is not None and err.errno == errno.EPIPE:
+        # A closed pipe (`sl log | head`): exit like a process killed by SIGPIPE.
+        status = 128 + 13
     sys.exit(status & 255)
 
 
