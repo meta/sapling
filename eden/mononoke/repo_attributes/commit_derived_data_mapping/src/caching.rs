@@ -25,6 +25,8 @@ use caching_ext::MemcacheHandler;
 use caching_ext::get_or_fill_chunked;
 use context::CoreContext;
 use fbthrift::compact_protocol;
+use futures::stream;
+use futures::stream::TryStreamExt;
 use memcache::KeyGen;
 use mononoke_types::ChangesetId;
 use mononoke_types::DerivableType;
@@ -39,6 +41,7 @@ mod tests;
 const CACHE_CODE_VERSION: u32 = 1;
 const FETCH_CHUNK_SIZE: usize = 1000;
 const PARALLEL_FETCH_CHUNKS: usize = 2;
+const PARALLEL_EVICTIONS: usize = 64;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[derive(bincode::Encode, bincode::Decode)]
@@ -76,6 +79,58 @@ impl MappingCache {
                 ),
             ),
         }
+    }
+}
+
+fn cache_key(
+    repo_id: RepositoryId,
+    derived_data_type: DerivableType,
+    derived_data_version: i32,
+    shard_id: usize,
+    cs_id: &ChangesetId,
+) -> String {
+    format!(
+        "v{}.repo{}.type{}.version{}.shard{}.{}",
+        CACHE_CODE_VERSION,
+        repo_id,
+        SqlCommitDerivedDataMapping::derived_data_type_id(derived_data_type),
+        derived_data_version,
+        shard_id,
+        cs_id,
+    )
+}
+
+impl MappingCache {
+    /// Whether entries are shared with other processes through memcache.
+    pub(super) fn has_shared_cache(&self) -> bool {
+        !self.memcache.is_noop()
+    }
+
+    /// Deletes the memcache entries for these mappings.  Entries in any
+    /// process's cachelib are unaffected.
+    pub(super) async fn evict_shared(
+        &self,
+        repo_id: RepositoryId,
+        derived_data_type: DerivableType,
+        derived_data_version: i32,
+        shard_id: usize,
+        cs_ids: &[ChangesetId],
+    ) -> Result<()> {
+        stream::iter(cs_ids.iter().map(anyhow::Ok))
+            .try_for_each_concurrent(PARALLEL_EVICTIONS, |cs_id| {
+                let key = self.keygen.key(cache_key(
+                    repo_id,
+                    derived_data_type,
+                    derived_data_version,
+                    shard_id,
+                    cs_id,
+                ));
+                self.memcache.del(key)
+            })
+            .await
+            .with_context(|| {
+                format!("Error evicting {derived_data_type:?} mappings for repo {repo_id}")
+            })
     }
 }
 
@@ -136,11 +191,9 @@ impl EntityStore<CachedMapping> for CacheRequest<'_> {
 #[async_trait]
 impl KeyedEntityStore<ChangesetId, CachedMapping> for CacheRequest<'_> {
     fn get_cache_key(&self, cs_id: &ChangesetId) -> String {
-        format!(
-            "v{}.repo{}.type{}.version{}.shard{}.{}",
-            CACHE_CODE_VERSION,
+        cache_key(
             self.repo_id,
-            SqlCommitDerivedDataMapping::derived_data_type_id(self.derived_data_type),
+            self.derived_data_type,
             self.derived_data_version,
             self.shard_id,
             cs_id,

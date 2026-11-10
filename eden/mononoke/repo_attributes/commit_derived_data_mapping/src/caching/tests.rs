@@ -20,6 +20,7 @@ use sql_ext::mononoke_queries;
 use vec1::vec1;
 
 use super::*;
+use crate::CacheEviction;
 use crate::CommitDerivedDataMapping;
 
 const REPO: RepositoryId = RepositoryId::new(1);
@@ -363,6 +364,66 @@ async fn test_malformed_memcache_value_falls_back_to_sql(fb: FacebookInit) -> Re
             .fetch_mapping(&ctx, REPO, ONES_CSID, TYPE, VERSION, SHARD)
             .await?,
         Some(vec![1; 32]),
+    );
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_evict_shared_cache(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let mapping = mapping_with_mock_caches()?;
+    for cs_id in [ONES_CSID, TWOS_CSID] {
+        mapping
+            .store_mapping(&ctx, REPO, cs_id, TYPE, VERSION, &[1; 32], SHARD)
+            .await?;
+    }
+    mapping
+        .fetch_mapping_batch(&ctx, REPO, vec![ONES_CSID, TWOS_CSID], TYPE, VERSION, SHARD)
+        .await?;
+    let request = CacheRequest {
+        ctx: &ctx,
+        sql: &mapping.sql,
+        cache: cache(&mapping),
+        repo_id: REPO,
+        derived_data_type: TYPE,
+        derived_data_version: VERSION,
+        shard_id: SHARD,
+    };
+    let memcache = cache(&mapping).memcache.mock_store().unwrap();
+    let key = |cs_id| request.keygen().key(request.get_cache_key(&cs_id));
+    assert!(memcache.get(&key(ONES_CSID)).is_some());
+    assert!(memcache.get(&key(TWOS_CSID)).is_some());
+
+    assert_eq!(
+        mapping
+            .evict_shared_cache(REPO, TYPE, VERSION, SHARD, &[ONES_CSID])
+            .await?,
+        CacheEviction::Evicted
+    );
+    assert!(memcache.get(&key(ONES_CSID)).is_none(), "evicted exactly");
+    assert!(memcache.get(&key(TWOS_CSID)).is_some(), "others are kept");
+    assert!(
+        mapping
+            .evict_shared_cache(REPO, TYPE, VERSION, SHARD + 1, &[ONES_CSID])
+            .await
+            .is_err(),
+        "an unknown shard is rejected"
+    );
+
+    let uncached =
+        CommitDerivedDataMapping::new(SqlCommitDerivedDataMapping::with_sqlite_in_memory()?);
+    assert_eq!(
+        uncached
+            .evict_shared_cache(REPO, TYPE, VERSION, SHARD, &[ONES_CSID])
+            .await?,
+        CacheEviction::NoSharedCache
+    );
+    assert!(
+        uncached
+            .evict_shared_cache(REPO, TYPE, VERSION, SHARD + 1, &[ONES_CSID])
+            .await
+            .is_err(),
+        "an unknown shard is rejected even without a shared cache"
     );
     Ok(())
 }

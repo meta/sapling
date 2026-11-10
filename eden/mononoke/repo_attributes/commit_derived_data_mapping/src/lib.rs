@@ -6,6 +6,7 @@
  */
 
 use std::collections::HashSet;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -56,6 +57,48 @@ mononoke_queries! {
            AND derived_data_version = {derived_data_version}"
     }
 
+    read SelectTypeMappings(
+        repo_id: RepositoryId,
+        derived_data_type: i32,
+        limit: u64
+    ) -> (ChangesetId, i32) {
+        "SELECT cs_id, derived_data_version FROM commit_derived_data
+         WHERE repo_id = {repo_id}
+           AND derived_data_type = {derived_data_type}
+         ORDER BY cs_id, derived_data_version
+         LIMIT {limit}"
+    }
+
+    read SelectTypeMappingsAfter(
+        repo_id: RepositoryId,
+        derived_data_type: i32,
+        after_cs_id: ChangesetId,
+        after_version: i32,
+        limit: u64
+    ) -> (ChangesetId, i32) {
+        "SELECT cs_id, derived_data_version FROM commit_derived_data
+         WHERE repo_id = {repo_id}
+           AND derived_data_type = {derived_data_type}
+           AND (cs_id > {after_cs_id}
+                OR (cs_id = {after_cs_id} AND derived_data_version > {after_version}))
+         ORDER BY cs_id, derived_data_version
+         LIMIT {limit}"
+    }
+
+    write DeleteMappings(
+        repo_id: RepositoryId,
+        derived_data_type: i32,
+        derived_data_version: i32,
+        >list cs_ids: ChangesetId
+    ) {
+        none,
+        "DELETE FROM commit_derived_data
+         WHERE repo_id = {repo_id}
+           AND derived_data_type = {derived_data_type}
+           AND derived_data_version = {derived_data_version}
+           AND cs_id IN {cs_ids}"
+    }
+
     read SelectMappingBatch(
         repo_id: RepositoryId,
         derived_data_type: i32,
@@ -68,6 +111,16 @@ mononoke_queries! {
            AND derived_data_type = {derived_data_type}
            AND derived_data_version = {derived_data_version}"
     }
+}
+
+/// Outcome of evicting cached mappings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CacheEviction {
+    /// Every given mapping's shared-cache entry is gone, whether or not it
+    /// was present.
+    Evicted,
+    /// The mapping has no shared cache to evict from.
+    NoSharedCache,
 }
 
 /// Mapping of (repo_id, changeset_id, derived_data_type, version) -> derived_value
@@ -212,6 +265,36 @@ impl CommitDerivedDataMapping {
                 shard_id,
             )
             .await
+    }
+
+    /// Deletes the shared-cache (memcache) entries for these mappings, keyed
+    /// exactly as reads through `shard_id` cache them.  Mappings are cached
+    /// without expiry, so this must follow any deletion of their rows.
+    /// Entries already in any process's local cache are unaffected.
+    pub async fn evict_shared_cache(
+        &self,
+        repo_id: RepositoryId,
+        derived_data_type: DerivableType,
+        derived_data_version: i32,
+        shard_id: usize,
+        cs_ids: &[ChangesetId],
+    ) -> Result<CacheEviction> {
+        self.sql.shard_id(shard_id)?;
+        match &self.cache {
+            Some(cache) if cache.has_shared_cache() => {
+                cache
+                    .evict_shared(
+                        repo_id,
+                        derived_data_type,
+                        derived_data_version,
+                        shard_id,
+                        cs_ids,
+                    )
+                    .await?;
+                Ok(CacheEviction::Evicted)
+            }
+            _ => Ok(CacheEviction::NoSharedCache),
+        }
     }
 }
 
@@ -407,6 +490,89 @@ impl SqlCommitDerivedDataMapping {
         .await?;
         rows.extend(primary_rows);
         Ok(rows)
+    }
+
+    /// Number of connections, each a possible `shard_id`.
+    pub fn connection_count(&self) -> usize {
+        self.write_connections.len()
+    }
+
+    /// Lists up to `limit` mappings of one repository and type on one
+    /// connection, as `(cs_id, version)` in ascending order after `after`.
+    /// Reads from the primary.
+    pub async fn list_type_mappings(
+        &self,
+        ctx: &CoreContext,
+        repo_id: RepositoryId,
+        derived_data_type: DerivableType,
+        after: Option<(ChangesetId, i32)>,
+        limit: NonZeroU32,
+        shard_id: usize,
+    ) -> Result<Vec<(ChangesetId, i32)>> {
+        let idx = self.shard_id(shard_id)?;
+        let type_id = Self::derived_data_type_id(derived_data_type);
+        let limit = u64::from(limit.get());
+        ctx.perf_counters()
+            .increment_counter(PerfCounterType::SqlReadsMaster);
+        let rows = match after {
+            None => {
+                SelectTypeMappings::query(
+                    &self.read_master_connections[idx],
+                    ctx.sql_query_telemetry(),
+                    &repo_id,
+                    &type_id,
+                    &limit,
+                )
+                .await?
+            }
+            Some((after_cs_id, after_version)) => {
+                SelectTypeMappingsAfter::query(
+                    &self.read_master_connections[idx],
+                    ctx.sql_query_telemetry(),
+                    &repo_id,
+                    &type_id,
+                    &after_cs_id,
+                    &after_version,
+                    &limit,
+                )
+                .await?
+            }
+        };
+        Ok(rows)
+    }
+
+    /// Deletes the mappings of these changesets for one repository, type and
+    /// version on one connection, returning the number of rows deleted.
+    pub async fn delete_mappings(
+        &self,
+        ctx: &CoreContext,
+        repo_id: RepositoryId,
+        derived_data_type: DerivableType,
+        derived_data_version: i32,
+        cs_ids: &[ChangesetId],
+        shard_id: usize,
+    ) -> Result<u64> {
+        let idx = self.shard_id(shard_id)?;
+        if cs_ids.is_empty() {
+            return Ok(0);
+        }
+        let type_id = Self::derived_data_type_id(derived_data_type);
+        let mut deleted = 0;
+        for chunk in cs_ids.chunks(MYSQL_INSERT_CHUNK_SIZE) {
+            ctx.perf_counters()
+                .increment_counter(PerfCounterType::SqlWrites);
+            deleted += DeleteMappings::query(
+                &self.write_connections[idx],
+                ctx.sql_query_telemetry(),
+                &repo_id,
+                &type_id,
+                &derived_data_version,
+                chunk,
+            )
+            .await?
+            .affected_rows();
+        }
+        Ok(deleted)
     }
 }
 
@@ -830,6 +996,94 @@ mod test {
             .await?;
         assert_eq!(result, Some(value));
 
+        Ok(())
+    }
+
+    fn page(rows: u32) -> NonZeroU32 {
+        NonZeroU32::new(rows).expect("page sizes in tests are non-zero")
+    }
+
+    #[mononoke::fbinit_test]
+    async fn test_list_and_delete_type_mappings(fb: FacebookInit) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let sql = SqlCommitDerivedDataMapping::with_sqlite_in_memory()?;
+        let repo = RepositoryId::new(1);
+        let other_repo = RepositoryId::new(2);
+        let hm = DerivableType::HistoryManifests;
+        let blame = DerivableType::BlameV3;
+        let value = [1u8; 32];
+        for cs_id in [THREES_CSID, ONES_CSID, TWOS_CSID] {
+            sql.store_mapping(&ctx, repo, cs_id, hm, 1, &value, CONN)
+                .await?;
+        }
+        for version in [2, 1] {
+            sql.store_mapping(&ctx, repo, ONES_CSID, blame, version, &value, CONN)
+                .await?;
+        }
+        sql.store_mapping(
+            &ctx,
+            repo,
+            ONES_CSID,
+            DerivableType::Fsnodes,
+            1,
+            &value,
+            CONN,
+        )
+        .await?;
+        sql.store_mapping(&ctx, other_repo, ONES_CSID, hm, 1, &value, CONN)
+            .await?;
+
+        assert_eq!(
+            sql.list_type_mappings(&ctx, repo, blame, None, page(10), CONN)
+                .await?,
+            vec![(ONES_CSID, 1), (ONES_CSID, 2)],
+            "every version of the type is listed"
+        );
+        // Paging continues within one changeset's versions.
+        assert_eq!(
+            sql.list_type_mappings(&ctx, repo, blame, Some((ONES_CSID, 1)), page(10), CONN)
+                .await?,
+            vec![(ONES_CSID, 2)]
+        );
+        let first = sql
+            .list_type_mappings(&ctx, repo, hm, None, page(2), CONN)
+            .await?;
+        assert_eq!(first, vec![(ONES_CSID, 1), (TWOS_CSID, 1)]);
+        assert_eq!(
+            sql.list_type_mappings(&ctx, repo, hm, first.last().copied(), page(2), CONN)
+                .await?,
+            vec![(THREES_CSID, 1)]
+        );
+
+        assert_eq!(
+            sql.delete_mappings(&ctx, repo, hm, 2, &[ONES_CSID], CONN)
+                .await?,
+            0,
+            "only the given version is deleted"
+        );
+        assert_eq!(
+            sql.delete_mappings(&ctx, repo, hm, 1, &[ONES_CSID, TWOS_CSID], CONN)
+                .await?,
+            2
+        );
+        assert_eq!(
+            sql.list_type_mappings(&ctx, repo, hm, None, page(10), CONN)
+                .await?,
+            vec![(THREES_CSID, 1)]
+        );
+        for (repo_id, dt) in [
+            (other_repo, hm),
+            (repo, DerivableType::Fsnodes),
+            (repo, blame),
+        ] {
+            assert!(
+                !sql.list_type_mappings(&ctx, repo_id, dt, None, page(10), CONN)
+                    .await?
+                    .is_empty(),
+                "{dt:?} in {repo_id} must be untouched"
+            );
+        }
+        assert_eq!(sql.connection_count(), 1);
         Ok(())
     }
 
