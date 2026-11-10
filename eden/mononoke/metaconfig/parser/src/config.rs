@@ -16,6 +16,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
+use anyhow::ensure;
 use cached_config::ConfigHandle;
 use cached_config::ConfigStore;
 use im::HashMap as ImHashMap;
@@ -342,27 +343,23 @@ fn build_repo_config(
         ..
     } = raw_repo_config;
 
-    let named_storage_config = storage_config;
+    ensure!(
+        storage.is_none(),
+        "repo_config.storage is not supported: define the storage in the shared storage \
+         configs and name it in storage_config"
+    );
+    let storage_name =
+        storage_config.ok_or_else(|| anyhow!("missing storage_config from configuration"))?;
 
     let hooks: Vec<_> = hooks.unwrap_or_default().convert()?;
 
-    let get_storage = move |name: &str| -> Result<StorageConfig> {
-        let raw_storage_config = storage
-            .as_ref()
-            .and_then(|s| s.get(name))
-            .or_else(|| named_storage_configs.get(name))
-            .cloned()
-            .ok_or_else(|| {
-                ConfigurationError::InvalidConfig(format!("Storage \"{name}\" not defined"))
-            })?;
-
-        raw_storage_config.convert()
-    };
-
-    let storage_config = get_storage(
-        &named_storage_config
-            .ok_or_else(|| anyhow!("missing storage_config from configuration"))?,
-    )?;
+    let storage_config: StorageConfig = named_storage_configs
+        .get(&storage_name)
+        .cloned()
+        .ok_or_else(|| {
+            ConfigurationError::InvalidConfig(format!("Storage \"{storage_name}\" not defined"))
+        })?
+        .convert()?;
 
     let walker_config = walker_config.convert()?;
 
@@ -1129,14 +1126,15 @@ mod test {
         let www_content = r#"
             scuba_table_hooks="scm_hooks"
             storage_config="files"
-
-            [storage.files.metadata.local]
+        "#;
+        let storage = r#"
+            [files.metadata.local]
             local_db_path = "/tmp/www"
 
-            [storage.files.blobstore.blob_files]
+            [files.blobstore.blob_files]
             path = "/tmp/www"
 
-            [storage.files.mutable_blobstore.blob_files]
+            [files.mutable_blobstore.blob_files]
             path = "/tmp/www_mutable"
         "#;
         let common_content = r#"
@@ -1162,6 +1160,7 @@ mod test {
 
         let paths = btreemap! {
             "common/common.toml" => common_content,
+            "common/storage.toml" => storage,
             "repos/www1/server.toml" => www_content,
             "repos/www2/server.toml" => www_content,
             "repo_definitions/www1/server.toml" => www1_repo_def,
@@ -1933,14 +1932,15 @@ mod test {
     #[mononoke::test]
     fn test_broken_bypass_config() {
         // Incorrect bypass string
-        let content = r#"
-            storage_config = "sqlite"
-
-            [storage.sqlite.metadata.local]
+        let storage = r#"
+            [sqlite.metadata.local]
             local_db_path = "/tmp/fbsource"
 
-            [storage.sqlite.blobstore.blob_files]
+            [sqlite.blobstore.blob_files]
             path = "/tmp/fbsource"
+        "#;
+        let content = r#"
+            storage_config = "sqlite"
 
             [[bookmarks]]
             name="master"
@@ -1958,6 +1958,7 @@ mod test {
         "#;
 
         let paths = btreemap! {
+            "common/storage.toml" => storage,
             "repos/fbsource/server.toml" => content,
             "repo_definitions/fbsource/server.toml" => content_def,
         };
@@ -2161,14 +2162,15 @@ mod test {
         fn check_fails(common: &str, expect: &str) {
             let content = r#"
                 storage_config = "storage"
-
-                [storage.storage.metadata.local]
+            "#;
+            let storage = r#"
+                [storage.metadata.local]
                 local_db_path = "/tmp/fbsource"
 
-                [storage.storage.blobstore.blob_sqlite]
+                [storage.blobstore.blob_sqlite]
                 path = "/tmp/fbsource"
 
-                [storage.storage.mutable_blobstore.blob_files]
+                [storage.mutable_blobstore.blob_files]
                 path = "/tmp/foo1"
             "#;
 
@@ -2180,6 +2182,7 @@ mod test {
 
             let paths = btreemap! {
                 "common/common.toml" => common,
+                "common/storage.toml" => storage,
                 "repos/fbsource/server.toml" => content,
                 "repo_definitions/fbsource/server.toml" => content_def,
             };
@@ -2242,17 +2245,6 @@ mod test {
 
         const REPO: &str = r#"
         storage_config = "multiplex_store"
-
-        # Not overriding common store
-        [storage.some_other_store.metadata.remote]
-        production = { db_address = "other_db" }
-        commit_graph = { db_address = "other_db" }
-        bookmarks = { db_address = "other_db" }
-        bonsai_hg_mapping = { db_address = "other_db" }
-        filenodes = { sharded = { shard_map = "other-shards", shard_num = 20 } }
-
-        [storage.some_other_store.blobstore]
-        disabled = {}
         "#;
 
         const REPO_DEF: &str = r#"
@@ -2382,7 +2374,7 @@ mod test {
     }
 
     #[mononoke::test]
-    fn test_common_blobstores_local_override() {
+    fn test_repo_storage_definitions_are_refused() {
         const STORAGE: &str = r#"
         [multiplex_store.metadata.remote]
         production = { db_address = "some_db" }
@@ -2427,7 +2419,6 @@ mod test {
         const REPO: &str = r#"
         storage_config = "multiplex_store"
 
-        # Override common store
         [storage.multiplex_store.metadata.remote]
         production = { db_address = "other_other_db" }
         commit_graph = { db_address = "other_other_db" }
@@ -2471,52 +2462,11 @@ mod test {
             "repos/test/server.toml" => REPO,
             "repo_definitions/test/server.toml" => REPO_DEF,
         };
-        let res = load_test_configs(&paths).expect("Read configs failed");
-
-        let expected = hashmap! {
-            "test".into() => RepoConfig {
-                enabled: true,
-                directory_branch_cluster_config: None,
-                storage_config: StorageConfig {
-                    blobstore: BlobConfig::Disabled,
-                    metadata: MetadataDatabaseConfig::Remote( RemoteMetadataDatabaseConfig {
-                        production: RemoteDatabaseConfig { db_address: "other_other_db".into(), },
-                        commit_graph: RemoteDatabaseConfig { db_address: "other_other_db".into(), },
-                        bookmarks: RemoteDatabaseConfig { db_address: "other_other_db".into(), },
-                        bonsai_hg_mapping: RemoteDatabaseConfig { db_address: "other_other_db".into(), },
-                        filenodes: ShardableRemoteDatabaseConfig::Sharded(ShardedRemoteDatabaseConfig { shard_map: "other-other-shards".into(), shard_num: NonZeroUsize::new(789).unwrap() }),
-                        mutation: RemoteDatabaseConfig { db_address: "other_other_mutation_db".into(), },
-                        sparse_profiles: RemoteDatabaseConfig { db_address: "test_db".into(), },
-                        bonsai_blob_mapping: None,
-                        deletion_log: None,
-                        git_bundle_metadata: Some(RemoteDatabaseConfig { db_address: "git_bundles".into(), }),
-                        commit_cloud: Some(RemoteDatabaseConfig { db_address: "other_other_other_mutation_db".into(), }),
-                        repo_metadata: Some(RemoteDatabaseConfig { db_address: "repo_metadata".into() }),
-                        restricted_paths: Some(RemoteDatabaseConfig { db_address: "restricted_paths".into(), }),
-                        commit_derived_data_mapping: Some(ShardableRemoteDatabaseConfig::Unsharded(RemoteDatabaseConfig { db_address: "derived_data_mapping".into() })),
-                        repo_manifest_mapping: None,
-                    }),
-
-                    ephemeral_blobstore: None,
-
-                    mutable_blobstore: BlobConfig::Disabled,
-                },
-                repoid: RepositoryId::new(123),
-                list_keys_patterns_max: LIST_KEYS_PATTERNS_MAX_DEFAULT,
-                hook_max_file_size: HOOK_MAX_FILE_SIZE_DEFAULT,
-                ..Default::default()
-            }
-        };
-
-        let expected: ImHashMap<String, Arc<RepoConfigEntry>> = expected
-            .into_iter()
-            .map(|(name, config)| (name, Arc::new(RepoConfigEntry::from(config))))
-            .collect();
-        assert_eq!(
-            res.repos, expected,
-            "Got: {:#?}\nWant: {:#?}",
-            &res.repos, expected
-        )
+        let error = load_test_configs(&paths).expect_err("a repo cannot define storage");
+        assert!(
+            format!("{error:#}").contains("repo_config.storage is not supported"),
+            "{error:#}"
+        );
     }
 
     #[mononoke::test]
