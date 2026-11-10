@@ -487,6 +487,12 @@ fn test_get_or_load_repo_config_records_config_version() {
         Some("config-version-7"),
         "the cached entry must carry the same recorded config version"
     );
+
+    // Reconcile builds from the live spec, which reports the same version.
+    let (_, version) = cfg
+        .live_repo_spec_with_version("good/repo")
+        .expect("a subscribed repo has a live spec");
+    assert_eq!(version.as_deref(), Some("config-version-7"));
 }
 
 // --- Sourcing `common`/`storage` from the manifest ---

@@ -254,6 +254,18 @@ impl MononokeConfigs {
             .map(|handle| handle.get())
     }
 
+    /// [`Self::live_repo_spec`] with the configerator version of that spec, for
+    /// a config built from it to record.
+    pub fn live_repo_spec_with_version(
+        &self,
+        repo_name: &str,
+    ) -> Option<(Arc<RepoSpec>, Option<String>)> {
+        self.repo_handles.read().ok()?.get(repo_name).map(|handle| {
+            let (spec, version_info) = handle.get_with_version();
+            (spec, version_info.map(|info| info.version))
+        })
+    }
+
     /// Is automatic update of the underlying configuration enabled?
     pub fn auto_update_enabled(&self) -> bool {
         // If the config updater handle is none, configs won't be updated.

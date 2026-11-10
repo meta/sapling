@@ -713,14 +713,15 @@ where
         deep: bool,
         storage_gen: u64,
     ) -> Result<Option<RepoGeneration>> {
-        let spec = self
+        let (spec, version) = self
             .configs
-            .live_repo_spec(name)
+            .live_repo_spec_with_version(name)
             .context("reconcile: no live RepoSpec (unsubscribed or unreadable)")?;
         let spec_hash = spec_hash(&spec)?;
         let manifest = self.configs.manifest().context("reconcile: no manifest")?;
         let mut repo_config =
             parse_repo_spec(Arc::unwrap_or_clone(spec), &self.tier, &manifest.storage)?;
+        repo_config.config_version = version;
         if self.redaction_disabled {
             repo_config.redaction = Redaction::Disabled;
         }
