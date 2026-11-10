@@ -52,6 +52,7 @@ sharding_ext = { version = "0.1.0", path = "../../cmdlib/sharding_ext" }
 slapi_service = { version = "0.1.0", path = "../../servers/slapi/slapi_service" }
 sorted_vector_map = { version = "0.2.1", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 stats = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
+thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 url = "2.5.8"

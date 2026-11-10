@@ -21,6 +21,7 @@ rust_binary(
             "fbsource//third-party/rust:clap",
             "fbsource//third-party/rust:futures",
             "fbsource//third-party/rust:itertools",
+            "fbsource//third-party/rust:thiserror",
             "fbsource//third-party/rust:tokio",
             "fbsource//third-party/rust:tracing",
             "fbsource//third-party/rust:url",

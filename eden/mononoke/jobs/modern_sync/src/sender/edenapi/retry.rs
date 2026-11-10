@@ -22,6 +22,7 @@ use mononoke_types::BonsaiChangeset;
 use mononoke_types::ChangesetId;
 
 use crate::sender::edenapi::BookmarkMove;
+use crate::sender::edenapi::BookmarkMovesRejected;
 use crate::sender::edenapi::EdenapiSender;
 
 const MAX_RETRIES: usize = 3;
@@ -62,7 +63,21 @@ impl EdenapiSender for RetryEdenapiSender {
     }
 
     async fn set_bookmark(&self, bookmark: String, moves: Vec<BookmarkMove>) -> Result<()> {
-        self.inner.set_bookmark(bookmark, moves).await
+        // Retry only when no answer came back (transport error, 5xx, timeout).
+        // A replay is one compare-and-swap on the replica, and a chain it
+        // already applied comes back as "already processed", which counts as
+        // success, so sending it again is safe. A refusal is not retried: the
+        // sync must stop on it.
+        with_retry_if(
+            MAX_RETRIES,
+            || {
+                self.inner
+                    .set_bookmark(bookmark.clone(), moves.clone())
+                    .boxed()
+            },
+            |e| e.downcast_ref::<BookmarkMovesRejected>().is_none(),
+        )
+        .await
     }
 
     async fn upload_identical_changeset(
@@ -91,6 +106,14 @@ async fn with_retry<'t, T>(
     max_retry_count: usize,
     func: impl Fn() -> BoxFuture<'t, Result<T>>,
 ) -> Result<T> {
+    with_retry_if(max_retry_count, func, |_| true).await
+}
+
+async fn with_retry_if<'t, T>(
+    max_retry_count: usize,
+    func: impl Fn() -> BoxFuture<'t, Result<T>>,
+    should_retry: impl Fn(&anyhow::Error) -> bool,
+) -> Result<T> {
     let mut attempt = 0usize;
     loop {
         let result = func().await;
@@ -99,6 +122,7 @@ async fn with_retry<'t, T>(
         }
         match result {
             Ok(result) => return Ok(result),
+            Err(e) if !should_retry(&e) => return Err(e),
             Err(e) => {
                 tracing::warn!("Found error: {:?}, retrying attempt #{}", e, attempt);
                 tokio::time::sleep(Duration::from_secs(attempt as u64 + 1)).await;
@@ -157,7 +181,7 @@ mod test {
         }
 
         async fn set_bookmark(&self, _bookmark: String, _moves: Vec<BookmarkMove>) -> Result<()> {
-            unimplemented!()
+            self.fail_or_ok(())
         }
 
         async fn upload_identical_changeset(
@@ -229,5 +253,103 @@ mod test {
 
         assert_eq!(hgid, Some(HgChangesetId::from_bytes(&[1; 20]).unwrap()));
         assert_eq!(inner.calls.load(Ordering::SeqCst), 2);
+    }
+    /// Refuses every bookmark replay in-band, the way the replica answers a
+    /// chain it will not apply.
+    struct RejectingSender {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl EdenapiSender for RejectingSender {
+        async fn upload_contents(&self, _contents: Vec<(AnyFileContentId, Bytes)>) -> Result<()> {
+            unimplemented!()
+        }
+
+        async fn upload_trees(&self, _trees: Vec<HgManifestId>) -> Result<()> {
+            unimplemented!()
+        }
+
+        async fn upload_filenodes(&self, _fn_ids: Vec<HgFileNodeId>) -> Result<()> {
+            unimplemented!()
+        }
+
+        async fn set_bookmark(&self, _bookmark: String, _moves: Vec<BookmarkMove>) -> Result<()> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(anyhow!("bookmark transaction failed").context(BookmarkMovesRejected))
+        }
+
+        async fn upload_identical_changeset(
+            &self,
+            _css: Vec<(HgBlobChangeset, BonsaiChangeset)>,
+        ) -> Result<()> {
+            unimplemented!()
+        }
+
+        async fn filter_existing_commits(
+            &self,
+            _ids: Vec<(HgChangesetId, ChangesetId)>,
+        ) -> Result<Vec<ChangesetId>> {
+            unimplemented!()
+        }
+
+        async fn read_bookmark(&self, _bookmark: String) -> Result<Option<HgChangesetId>> {
+            unimplemented!()
+        }
+    }
+
+    fn moves() -> Vec<BookmarkMove> {
+        vec![BookmarkMove {
+            log_id: 1,
+            from: None,
+            to: ChangesetId::from_bytes([3; 32]).unwrap(),
+            reason: bookmarks::BookmarkUpdateReason::Push,
+        }]
+    }
+
+    #[mononoke::test]
+    async fn set_bookmark_retries_transport_errors() {
+        let inner = Arc::new(FlakySender::new(MAX_RETRIES));
+        let sender = RetryEdenapiSender::new(inner.clone());
+
+        sender
+            .set_bookmark("master".to_owned(), moves())
+            .await
+            .expect("bookmark replay should succeed once the transport errors stop");
+
+        assert_eq!(inner.calls.load(Ordering::SeqCst), MAX_RETRIES + 1);
+    }
+
+    #[mononoke::test]
+    async fn set_bookmark_gives_up_after_max_retries() {
+        let inner = Arc::new(FlakySender::new(MAX_RETRIES + 1));
+        let sender = RetryEdenapiSender::new(inner.clone());
+
+        sender
+            .set_bookmark("master".to_owned(), moves())
+            .await
+            .expect_err("bookmark replay should fail when every attempt fails");
+
+        assert_eq!(inner.calls.load(Ordering::SeqCst), MAX_RETRIES + 1);
+    }
+
+    #[mononoke::test]
+    async fn set_bookmark_does_not_retry_a_rejection() {
+        let inner = Arc::new(RejectingSender {
+            calls: AtomicUsize::new(0),
+        });
+        let sender = RetryEdenapiSender::new(inner.clone());
+
+        let err = sender
+            .set_bookmark("master".to_owned(), moves())
+            .await
+            .expect_err("a rejected bookmark replay must fail");
+
+        assert!(err.downcast_ref::<BookmarkMovesRejected>().is_some());
+        assert_eq!(
+            inner.calls.load(Ordering::SeqCst),
+            1,
+            "a rejection must stop the sync, not be sent again"
+        );
     }
 }

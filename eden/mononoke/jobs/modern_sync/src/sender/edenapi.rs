@@ -16,6 +16,7 @@ use mercurial_types::blobs::HgBlobChangeset;
 use minibytes::Bytes;
 use mononoke_types::BonsaiChangeset;
 use mononoke_types::ChangesetId;
+use thiserror::Error;
 
 mod config;
 mod default;
@@ -43,12 +44,20 @@ pub(crate) use retry::RetryEdenapiSender;
 /// `to` is required. A source move that clears the bookmark is a deletion,
 /// which must never reach the shadow replica, so the mirror path rejects it
 /// where it reads the log entry rather than carrying it this far.
+#[derive(Clone)]
 pub(crate) struct BookmarkMove {
     pub log_id: i64,
     pub from: Option<ChangesetId>,
     pub to: ChangesetId,
     pub reason: BookmarkUpdateReason,
 }
+
+/// Context on the error `set_bookmark` returns when the replica answered and
+/// refused the moves. Such a refusal is final: the sync must stop rather than
+/// send the same moves again.
+#[derive(Debug, Error)]
+#[error("server rejected mirrored bookmark moves")]
+pub(crate) struct BookmarkMovesRejected;
 
 #[async_trait]
 pub(crate) trait EdenapiSender {

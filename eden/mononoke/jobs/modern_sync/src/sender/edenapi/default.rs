@@ -51,6 +51,7 @@ use repo_identity::RepoIdentityRef;
 
 use crate::Repo;
 use crate::sender::edenapi::BookmarkMove;
+use crate::sender::edenapi::BookmarkMovesRejected;
 use crate::sender::edenapi::EdenapiConfig;
 use crate::sender::edenapi::EdenapiSender;
 use crate::sender::edenapi::util;
@@ -403,9 +404,7 @@ fn handle_replay_identical_response(response: ReplayIdenticalMovesResponse) -> R
             );
             Ok(())
         }
-        Err(_) => response
-            .data
-            .with_context(|| "server rejected mirrored bookmark moves"),
+        Err(_) => response.data.context(BookmarkMovesRejected),
     }
 }
 
