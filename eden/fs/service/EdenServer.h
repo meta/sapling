@@ -300,6 +300,12 @@ class EdenServer : private TakeoverHandler {
   void endRecoveryMount(const AbsolutePath& mountPath);
 
   /**
+   * Why the daemon last stopped serving a checkout, or tried to mount it and
+   * failed; empty if it has not done either since it started.
+   */
+  std::string getCheckoutStopReason(const AbsolutePath& mountPath);
+
+  /**
    * Mount and return an EdenMount.
    */
   [[nodiscard]] ImmediateFuture<std::shared_ptr<EdenMount>> mount(
@@ -810,8 +816,6 @@ class EdenServer : private TakeoverHandler {
   // the checkouts the other daemon handed over.
   void recoverCheckoutsNotServedSoon();
 
-  // The last recorded stop reason of a checkout, or empty.
-  std::string getCheckoutStopReason(const AbsolutePath& mountPath);
   // Whether recovery stopped retrying a checkout because it kept flapping.
   bool isCheckoutFlapLimited(const AbsolutePath& mountPath) const;
 

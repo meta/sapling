@@ -1075,6 +1075,21 @@ class SingleBackingStoreFactory : public BackingStoreFactory {
   std::shared_ptr<BackingStore> store_;
 };
 
+// A checkout mounted at <dir>/mount, read from the client directory
+// <dir>/client, which this creates along with the mount point.
+std::unique_ptr<CheckoutConfig> createCheckoutConfig(AbsolutePathPiece dir) {
+  auto clientDir = dir + "client"_pc;
+  ensureDirectoryExists(clientDir + "local"_pc);
+  auto mountPath = dir + "mount"_pc;
+  ensureDirectoryExists(mountPath);
+  writeFile(
+      clientDir + "config.toml"_pc,
+      folly::ByteRange{folly::StringPiece{
+          "[repository]\npath = \"/repo\"\ntype = \"hg\"\n"}})
+      .value();
+  return CheckoutConfig::loadFromClientDirectory(mountPath, clientDir);
+}
+
 } // namespace
 
 // A server that can mount a checkout over a FakeFuse through EdenServer::mount,
@@ -1101,17 +1116,8 @@ class EdenServerMountTest : public ::testing::Test {
   // The checkout's config, read from its client directory; the first call
   // creates the client directory and the mount point.
   std::unique_ptr<CheckoutConfig> checkoutConfig() {
-    auto clientDir = testServer_->getTmpDir() + "client"_pc;
-    ensureDirectoryExists(clientDir + "local"_pc);
-    mountPath_ = testServer_->getTmpDir() + "mount"_pc;
-    ensureDirectoryExists(mountPath_);
-    writeFile(
-        clientDir + "config.toml"_pc,
-        folly::ByteRange{folly::StringPiece{
-            "[repository]\npath = \"/repo\"\ntype = \"hg\"\n"}})
-        .value();
-    auto config =
-        CheckoutConfig::loadFromClientDirectory(mountPath_, clientDir);
+    auto config = createCheckoutConfig(testServer_->getTmpDir());
+    mountPath_ = config->getMountPath();
     config->setCheckedOutCommit(kCommit);
     return config;
   }
@@ -1207,6 +1213,37 @@ TEST_F(EdenServerMountTest, RefusedMountLeavesTheIntentionalMarker) {
       "already mounted");
   EXPECT_TRUE(mount->getCheckoutConfig()->isIntentionallyUnmounted());
   EXPECT_EQ(MountState::RUNNING, mount->getState());
+}
+
+// A mount refused because the path is already mounted records no stop: the
+// checkout is still served.
+TEST_F(EdenServerMountTest, RefusedMountRecordsNoStop) {
+  auto& server = testServer().getServer();
+  auto mount = mountCheckout();
+
+  EXPECT_THROW_RE(
+      (void)server.mount(checkoutConfig(), /*readOnly=*/false),
+      EdenError,
+      "already mounted");
+  EXPECT_EQ("", server.getCheckoutStopReason(mountPath()));
+}
+
+// A mount that fails before it is in mountPoints_ never reaches
+// mountFinished(), so mount() records the stop itself. The health check then
+// reports the checkout as mount_failed rather than as not mounted since the
+// daemon started.
+TEST(EdenServerMountFailureTest, FailureBeforeRegistrationRecordsTheStop) {
+  // The default TestServer cannot create a backing store.
+  TestServer testServer;
+  auto& server = testServer.getServer();
+  auto config = createCheckoutConfig(testServer.getTmpDir());
+  const auto mountPath = config->getMountPath();
+
+  EXPECT_THROW_RE(
+      (void)server.mount(std::move(config), /*readOnly=*/false),
+      std::logic_error,
+      "no BackingStores");
+  EXPECT_EQ("mount_failed", server.getCheckoutStopReason(mountPath));
 }
 
 // An unmount that finds the mount right after its registration writes the

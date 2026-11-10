@@ -232,6 +232,8 @@ void runInEventBaseThreadAndRethrow(folly::EventBase* evb, Fn&& fn) {
 
 constexpr auto kMountHealthCheckTimeout = std::chrono::seconds{5};
 constexpr auto kChannelStopRecoveryDelay = std::chrono::milliseconds{500};
+// Stop reason of a mount that failed before its channel started.
+constexpr std::string_view kMountFailedStopReason = "mount_failed";
 
 // `source` of the eden_mount_health_issue row that reports a recovery's
 // outcome.
@@ -2792,42 +2794,60 @@ ImmediateFuture<std::shared_ptr<EdenMount>> EdenServer::mount(
     optional<TakeoverData::MountInfo>&& optionalTakeover) {
   folly::stop_watch<> mountStopWatch;
 
-  auto bsType = toBackingStoreType(initialConfig->getRepoType());
-  XLOGF(
-      INFO, "Creating backing store of type: {}", toBackingStoreString(bsType));
-  auto backingStore =
-      getBackingStore(bsType, initialConfig->getRepoSource(), *initialConfig);
+  const auto mountPath = initialConfig->getMountPath();
+  std::shared_ptr<EdenMount> edenMount;
+  try {
+    auto bsType = toBackingStoreType(initialConfig->getRepoType());
+    XLOGF(
+        INFO,
+        "Creating backing store of type: {}",
+        toBackingStoreString(bsType));
+    auto backingStore =
+        getBackingStore(bsType, initialConfig->getRepoSource(), *initialConfig);
 
-  std::shared_ptr<WalkDetector> walkDetector;
-  if (serverState_->getReloadableConfig()
-          ->getEdenConfig()
-          ->enableWalkDetector.getValue()) {
-    walkDetector =
-        backingStore->createWalkDetector(initialConfig->getMountPath());
+    std::shared_ptr<WalkDetector> walkDetector;
+    if (serverState_->getReloadableConfig()
+            ->getEdenConfig()
+            ->enableWalkDetector.getValue()) {
+      walkDetector =
+          backingStore->createWalkDetector(initialConfig->getMountPath());
+    }
+    auto objectStore = ObjectStore::create(
+        backingStore,
+        treeCache_,
+        getStats().copy(),
+        serverState_->getProcessInfoCache(),
+        serverState_->getEdenFsEventsLogger(),
+        serverState_->getReloadableConfig(),
+        initialConfig->getCaseSensitive(),
+        folly::getKeepAliveToken(serverState_->getThreadPool().get()),
+        walkDetector);
+    auto journal = std::make_unique<Journal>(
+        getStats().copy(), &serverState_->getFaultInjector());
+
+    edenMount = EdenMount::create(
+        std::move(initialConfig),
+        std::move(objectStore),
+        blobCache_,
+        serverState_,
+        std::move(journal),
+        getStats().copy(),
+        std::nullopt,
+        std::move(walkDetector));
+  } catch (...) {
+    // mountFinished() records the stop of a mount in mountPoints_. This one
+    // never got there; if the path is there, it belongs to another mount.
+    const bool otherMount = mountPoints_->withRLock([&](const auto& mounts) {
+      return mounts.find(mountPath) != mounts.end();
+    });
+    if (!otherMount) {
+      recordCheckoutStop(
+          mountPath, std::string{kMountFailedStopReason}, std::nullopt);
+    }
+    throw;
   }
-  auto objectStore = ObjectStore::create(
-      backingStore,
-      treeCache_,
-      getStats().copy(),
-      serverState_->getProcessInfoCache(),
-      serverState_->getEdenFsEventsLogger(),
-      serverState_->getReloadableConfig(),
-      initialConfig->getCaseSensitive(),
-      folly::getKeepAliveToken(serverState_->getThreadPool().get()),
-      walkDetector);
-  auto journal = std::make_unique<Journal>(
-      getStats().copy(), &serverState_->getFaultInjector());
 
-  // Create the EdenMount object and insert the mount into the mountPoints_ map.
-  auto edenMount = EdenMount::create(
-      std::move(initialConfig),
-      std::move(objectStore),
-      blobCache_,
-      serverState_,
-      std::move(journal),
-      getStats().copy(),
-      std::nullopt,
-      std::move(walkDetector));
+  // Insert the mount into the mountPoints_ map.
   addToMountPoints(edenMount);
   serverState_->getFaultInjector().check(
       "mountRegistered", edenMount->getPath().view());
@@ -3042,8 +3062,8 @@ void EdenServer::mountFinished(
     bool fsChannelCompleted) {
   const auto& mountPath = edenMount->getPath();
   const auto stop = edenMount->getFsChannelStop();
-  const std::string stopReason =
-      stop ? std::string{stop->reason.name} : "mount_failed";
+  const std::string stopReason = stop ? std::string{stop->reason.name}
+                                      : std::string{kMountFailedStopReason};
   XLOGF(INFO, "mount point \"{}\" stopped ({})", mountPath, stopReason);
   recordCheckoutStop(
       mountPath,
