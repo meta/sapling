@@ -173,7 +173,7 @@ impl HgPython {
     fn run_hg_py(
         &self,
         py: Python<'_>,
-        args: Vec<String>,
+        args: &[String],
         io: &clidispatch::io::IO,
         config: &Arc<dyn Config>,
         skip_pre_hooks: bool,
@@ -187,7 +187,7 @@ impl HgPython {
                 None => fout.clone_ref(py),
                 Some(error) => write_to_py_object(py, error),
             });
-            let context = context::CoreContext::new(config.clone(), io.clone(), args.clone());
+            let context = context::CoreContext::new(config.clone(), io.clone(), args.to_vec());
             let context = pycontext::context::create_instance(py, context).unwrap();
             (args, fin, fout, ferr, context, skip_pre_hooks).to_py_object(py)
         };
@@ -198,14 +198,24 @@ impl HgPython {
     /// Run an hg command defined in Python.
     pub fn run_hg(
         &self,
-        args: Vec<String>,
+        args: &[String],
+        orig_args: &[String],
         io: &clidispatch::io::IO,
         config: &Arc<dyn Config>,
         skip_pre_hooks: bool,
     ) -> i32 {
         let gil = Python::acquire_gil();
         let py = gil.python();
-        match self.run_hg_py(py, args, io, config, skip_pre_hooks) {
+        let result = (|| {
+            let sys = py.import("sys")?;
+            let saved_argv = sys.get(py, "argv")?;
+            sys.add(py, "argv", Self::prepare_args(orig_args))?;
+            let result = self.run_hg_py(py, args, io, config, skip_pre_hooks);
+            // A nested command must leave its caller's arguments intact.
+            sys.add(py, "argv", saved_argv)?;
+            result
+        })();
+        match result {
             // The code below considers the following exit scenarios:
             // - `PyResult` is `Ok`. This means that the Python code returned
             //    successfully, without calling `sys.exit` or raising an

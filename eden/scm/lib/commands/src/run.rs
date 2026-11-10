@@ -313,7 +313,8 @@ fn dispatch_command(
                 let already_ran_pre_hooks = err.is::<errors::FallbackToPython>();
 
                 interp.run_hg(
-                    dispatcher.args().to_vec(),
+                    dispatcher.args(),
+                    dispatcher.orig_args(),
                     io,
                     config,
                     already_ran_pre_hooks,
