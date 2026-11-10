@@ -36,6 +36,11 @@ use multi_repo_bookmarks_transaction::MultiRepoBookmarksTransactionResult;
 use multi_repo_bookmarks_transaction::retry_commit_loop;
 use sql_construct::SqlConstruct;
 use sql_ext::Connection;
+
+mod guard_chunks;
+mod log_lock;
+mod writer_interop;
+
 /// Test fixture providing two repos that share the same underlying DB.
 struct TwoRepoFixture {
     ctx: CoreContext,

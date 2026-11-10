@@ -20,12 +20,16 @@ use bookmarks::BookmarkTransactionHook;
 use bookmarks::BookmarkUpdateReason;
 use context::CoreContext;
 use dbbookmarks::transaction::AddBookmarkLog;
+use dbbookmarks::transaction::AddBookmarkLogLock;
+use dbbookmarks::transaction::BookmarkLogWriter;
 use dbbookmarks::transaction::DeleteBookmarkIf;
 use dbbookmarks::transaction::FindMaxBookmarkLogId;
 use dbbookmarks::transaction::InsertBookmarks;
 use dbbookmarks::transaction::MoveLockedBookmarks;
 use dbbookmarks::transaction::SelectBookmarksForUpdate;
 use dbbookmarks::transaction::UpdateBookmark;
+use dbbookmarks::transaction::bookmark_log_guard_enabled;
+use dbbookmarks::transaction::find_next_bookmark_log_lock_id;
 use mononoke_types::ChangesetId;
 use mononoke_types::RepositoryId;
 use mononoke_types::Timestamp;
@@ -188,6 +192,7 @@ impl BookmarkOp {
 /// Accumulates log entries and assigns IDs sequentially per repo.
 struct TransactionLog {
     next_log_ids: HashMap<RepositoryId, u64>,
+    next_lock_ids: HashMap<RepositoryId, Option<u64>>,
     entries: Vec<LogEntry>,
 }
 
@@ -201,9 +206,13 @@ struct LogEntry {
 }
 
 impl TransactionLog {
-    fn new(next_log_ids: HashMap<RepositoryId, u64>) -> Self {
+    fn new(
+        next_log_ids: HashMap<RepositoryId, u64>,
+        next_lock_ids: HashMap<RepositoryId, Option<u64>>,
+    ) -> Self {
         Self {
             next_log_ids,
+            next_lock_ids,
             entries: Vec::new(),
         }
     }
@@ -234,7 +243,20 @@ impl TransactionLog {
     /// Write all accumulated log entries into the SQL transaction.
     async fn write(self, mut txn: SqlTransaction) -> Result<SqlTransaction> {
         let timestamp = Timestamp::now();
+        let mut next_lock_ids = self.next_lock_ids;
         for chunk in self.entries.chunks(LOG_CHUNK) {
+            let mut lock_data = Vec::with_capacity(chunk.len());
+            for entry in chunk {
+                let ticket = next_lock_ids.get_mut(&entry.repo_id).ok_or_else(|| {
+                    anyhow!("missing migration guard state for repo {}", entry.repo_id)
+                })?;
+                if let Some(next_id) = ticket {
+                    lock_data.push((entry.repo_id, *next_id));
+                    *next_id = next_id
+                        .checked_add(1)
+                        .ok_or_else(|| anyhow!("bookmark log migration ticket range overflow"))?;
+                }
+            }
             let data: Vec<_> = chunk
                 .iter()
                 .map(|entry| {
@@ -253,6 +275,12 @@ impl TransactionLog {
             txn = AddBookmarkLog::query_with_transaction(txn, &data[..])
                 .await?
                 .0;
+            if !lock_data.is_empty() {
+                let locks: Vec<_> = lock_data.iter().map(|(repo, id)| (repo, id)).collect();
+                txn = AddBookmarkLogLock::query_with_transaction(txn, &locks[..])
+                    .await?
+                    .0;
+            }
         }
         Ok(txn)
     }
@@ -443,12 +471,24 @@ async fn attempt_commit(
 
     // Hooks keep whatever error class they report, so a transient failure here
     // is retried rather than being flattened into a fatal one.
-    let txn = run_transaction_hooks(ctx, txn, hooks).await?;
+    let mut txn = run_transaction_hooks(ctx, txn, hooks).await?;
 
+    let mut next_lock_ids = HashMap::new();
+    for &repo_id in &repo_ids {
+        let enabled = bookmark_log_guard_enabled(repo_id, BookmarkLogWriter::MultiRepo);
+        let next_lock_id = if enabled {
+            let (next_txn, id) = find_next_bookmark_log_lock_id(txn, repo_id).await?;
+            txn = next_txn;
+            Some(id)
+        } else {
+            None
+        };
+        next_lock_ids.insert(repo_id, next_lock_id);
+    }
     let (txn, next_log_ids) = find_next_log_ids(txn, &repo_ids)
         .await
         .map_err(BookmarkTransactionError::Other)?;
-    let mut log = TransactionLog::new(next_log_ids);
+    let mut log = TransactionLog::new(next_log_ids, next_lock_ids);
 
     let txn = execute_ops(txn, ops, &mut log).await?;
 

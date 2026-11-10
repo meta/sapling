@@ -28,6 +28,7 @@ rust_unittest(
         "//common/rust/shed/fbinit:fbinit",
         "//common/rust/shed/fbinit:fbinit-tokio",
         "//eden/mononoke/common/mononoke_macros:mononoke_macros",
+        "//eden/mononoke/common/rust/justknobs_ext:justknobs",
         "//eden/mononoke/common/rust/sql_ext:sql_ext",
         "//eden/mononoke/common/sql_construct:sql_construct",
         "//eden/mononoke/mononoke_types:mononoke_types",
