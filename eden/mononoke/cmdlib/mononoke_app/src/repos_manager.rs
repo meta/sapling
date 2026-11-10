@@ -31,6 +31,7 @@ use config_reconcile::ManifestEntry;
 use config_reconcile::RepoGeneration;
 use config_reconcile::RepoManager;
 use config_reconcile::RepoState;
+use config_reconcile::SharedGenSeen;
 use config_reconcile::Splay;
 use facet::AsyncBuildable;
 use futures::FutureExt;
@@ -95,6 +96,10 @@ define_stats! {
     reconcile_dropped: timeseries(Average, Sum, Count),
     reconcile_failed_repos: timeseries(Average, Sum, Count),
     reconcile_tick_duration_ms: timeseries(Average, Sum, Count),
+    // Loaded repos waiting for their splay offset after a shared-config change.
+    // Sampled every pass, repeating the last count when a pass fails, so an
+    // alert on it staying above zero catches repos that never rebuild.
+    reconcile_deferred: timeseries(Average),
     tier_names_len: timeseries(Average),
     tier_names_manifest_len: timeseries(Average),
     // Per-task gauges, sampled on each reconcile tick: repos assigned to this
@@ -272,6 +277,7 @@ impl<Repo> MononokeReposManager<Repo> {
             repos: repos.clone(),
             redaction_disabled,
             reconcile_state: Arc::new(ArcSwap::from_pointee(HashMap::new())),
+            splay_state: Mutex::new(SplayState::default()),
             spec_hash_cache: Arc::new(Mutex::new(HashMap::new())),
             reconcile_lock: Arc::new(tokio::sync::Mutex::new(())),
         });
@@ -777,12 +783,23 @@ struct ReconcileDriver<Repo> {
     // Per-repo reconcile state (loaded generation or last failure), keyed by
     // name. Empty until reconcile runs; driven by the config_reconcile crate.
     reconcile_state: Arc<ArcSwap<HashMap<String, RepoState>>>,
+    // Carried between passes so rebuilds after a shared-config change keep
+    // their offsets, and so the loop wakes when the next one is due.
+    splay_state: Mutex<SplayState>,
     // Memoizes spec_hash keyed by RepoSpec Arc identity so an unchanged repo is
     // not re-serialized every pass. Stores the Arc itself (not a raw pointer) to
     // pin the allocation, so Arc::ptr_eq can't false-match a reused address (ABA).
     spec_hash_cache: Arc<Mutex<HashMap<String, (Arc<RepoSpec>, u64)>>>,
     // Single-flight guard: only one pass runs at a time.
     reconcile_lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+/// What one reconcile pass leaves for the next about a splayed shared-config change.
+#[derive(Default)]
+struct SplayState {
+    shared_gen_seen: Option<SharedGenSeen>,
+    next_due: Option<Instant>,
+    deferred: usize,
 }
 
 /// Single-flight guard: run `body` under `lock` iff it is free (`try_lock`), else
@@ -838,31 +855,57 @@ where
                 redaction_disabled: self.redaction_disabled,
             };
             let current = self.reconcile_state.load_full();
-            let outcome = config_reconcile::reconcile(
+            let splay = Splay {
+                window: Duration::from_secs(justknobs::get_as::<u64>(RELOAD_SPLAY_KNOB, None)),
+                now: Instant::now(),
+            };
+            let shared_gen_seen = self
+                .splay_state
+                .lock()
+                .expect("splay_state poisoned")
+                .shared_gen_seen;
+            let outcome = match config_reconcile::reconcile(
                 &config,
                 &manager,
                 &current,
                 REPOS_MANAGER_CONCURRENCY,
-                Splay {
-                    window: Duration::ZERO,
-                    now: Instant::now(),
-                },
-                None,
+                splay,
+                shared_gen_seen,
             )
-            .await?;
+            .await
+            {
+                Ok(outcome) => outcome,
+                Err(e) => {
+                    // The splay state stays as it was for the next pass.
+                    let deferred = self
+                        .splay_state
+                        .lock()
+                        .expect("splay_state poisoned")
+                        .deferred;
+                    STATS::reconcile_deferred.add_value(deferred as i64);
+                    return Err(e);
+                }
+            };
 
             if outcome.built + outcome.rebuilt + outcome.dropped > 0 || !outcome.failed.is_empty() {
                 info!(
-                    "reconcile: built={} rebuilt={} dropped={} failed={}",
+                    "reconcile: built={} rebuilt={} dropped={} failed={} deferred={}",
                     outcome.built,
                     outcome.rebuilt,
                     outcome.dropped,
                     outcome.failed.len(),
+                    outcome.deferred,
                 );
             }
             STATS::reconcile_applied.add_value((outcome.built + outcome.rebuilt) as i64);
             STATS::reconcile_dropped.add_value(outcome.dropped as i64);
             STATS::reconcile_failed_repos.add_value(outcome.failed.len() as i64);
+            STATS::reconcile_deferred.add_value(outcome.deferred as i64);
+            *self.splay_state.lock().expect("splay_state poisoned") = SplayState {
+                shared_gen_seen: outcome.shared_gen_seen,
+                next_due: outcome.next_due,
+                deferred: outcome.deferred,
+            };
             self.reconcile_state.store(Arc::new(outcome.next_state));
 
             // Evict spec-hash cache entries for repos no longer in the manifest.
@@ -882,6 +925,18 @@ where
         .await
         .unwrap_or(Ok(()))
     }
+}
+
+/// Spreads rebuilds after a shared-config change over this many seconds.
+const RELOAD_SPLAY_KNOB: &str = "scm/mononoke:common_config_reload_splay_secs";
+
+/// Wake policy (pure): the backstop, or sooner if a splayed rebuild comes due.
+/// Floored at 1s: a failed or skipped pass leaves `next_due` as it was, so a due
+/// time already past must not spin the loop.
+fn next_wake(backstop: Duration, until_next_due: Option<Duration>) -> Duration {
+    until_next_due.map_or(backstop, |due| {
+        backstop.min(due.max(Duration::from_secs(1)))
+    })
 }
 
 /// Interval policy (pure): fixed 60s backstop when off; the tunable value floored
@@ -925,7 +980,7 @@ async fn reconcile_loop<F, Fut>(
 
 /// Spawn the background reconcile loop. Owns an Arc to the driver (task is
 /// `'static`); aborted on Drop. Runs one pass immediately, then again on each
-/// wake — a config-change trigger or the backstop.
+/// wake — a config-change trigger, the backstop, or a splayed rebuild coming due.
 fn spawn_reconcile_loop<Repo>(
     driver: Arc<ReconcileDriver<Repo>>,
     trigger: Arc<Notify>,
@@ -936,6 +991,7 @@ where
         + Sync
         + 'static,
 {
+    let wake_driver = driver.clone();
     mononoke::spawn_task(reconcile_loop(
         move || {
             let driver = driver.clone();
@@ -952,7 +1008,17 @@ where
             }
         },
         trigger,
-        reconcile_tick_interval,
+        move || {
+            let next_due = wake_driver
+                .splay_state
+                .lock()
+                .expect("splay_state poisoned")
+                .next_due;
+            next_wake(
+                reconcile_tick_interval(),
+                next_due.map(|due| due.saturating_duration_since(Instant::now())),
+            )
+        },
     ))
 }
 

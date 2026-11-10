@@ -53,6 +53,7 @@ use super::apply_generation;
 use super::get_or_load_repo_in;
 use super::lazy_for_service;
 use super::memoized_spec_hash;
+use super::next_wake;
 use super::reconcile_loop;
 use super::repo_names_from_manifest;
 use super::retain_live_cache_entries;
@@ -73,6 +74,23 @@ fn test_tick_interval_on_honors_knob_and_floors_zero() {
     assert_eq!(tick_interval_secs(true, 1), 1);
     // 0 must floor to 1s, never a busy loop.
     assert_eq!(tick_interval_secs(true, 0), 1);
+}
+
+#[mononoke::test]
+fn test_next_wake_is_the_backstop_or_the_next_due_rebuild() {
+    let backstop = Duration::from_secs(60);
+    assert_eq!(next_wake(backstop, None), backstop);
+    assert_eq!(
+        next_wake(backstop, Some(Duration::from_secs(5))),
+        Duration::from_secs(5)
+    );
+    assert_eq!(next_wake(backstop, Some(Duration::from_secs(90))), backstop);
+    // A due time already past, as a failed or skipped pass leaves it, waits 1s
+    // rather than waking at once in a loop.
+    assert_eq!(
+        next_wake(backstop, Some(Duration::ZERO)),
+        Duration::from_secs(1)
+    );
 }
 
 #[mononoke::test]

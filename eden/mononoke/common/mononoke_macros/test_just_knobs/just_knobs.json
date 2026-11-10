@@ -230,6 +230,7 @@
     "scm/mononoke:repos_manager_concurrency": 30,
     "scm/mononoke:lazy_repo_build_concurrency": 100,
     "scm/mononoke:config_reconcile_tick_interval_secs": 60,
+    "scm/mononoke:common_config_reload_splay_secs": 0,
     "scm/mononoke:max_diff_file_size_mb": 64,
     "scm/mononoke:max_diff_string_size_mb": 32,
     "scm/mononoke:megarepo_override_num_heads_to_derive_at_once": 10,
