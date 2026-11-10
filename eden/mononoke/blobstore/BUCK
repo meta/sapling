@@ -588,7 +588,7 @@ rust_library(
 rust_library(
     name = "ephemeral_blobstore",
     srcs = glob([
-        "ephemeral_blobstore/src/*.rs",
+        "ephemeral_blobstore/src/**/*.rs",
         "ephemeral_blobstore/schemas/**/*.sql",
     ]),
     autocargo = {"cargo_toml_dir": "ephemeral_blobstore"},

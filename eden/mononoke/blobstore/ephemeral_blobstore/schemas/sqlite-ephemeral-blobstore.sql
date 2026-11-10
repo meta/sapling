@@ -38,3 +38,15 @@ CREATE TABLE IF NOT EXISTS 'ephemeral_bubble_labels' (
     `label` VARCHAR(255),
     PRIMARY KEY (`bubble_id`, `label`)
 );
+
+CREATE TABLE IF NOT EXISTS `ephemeral_bubble_hg_mapping` (
+    `repo_id` INT NOT NULL,
+    `hg_cs_id` BINARY(20) NOT NULL,
+    `bubble_id` BIGINT UNSIGNED NOT NULL,
+    `bcs_id` BINARY(32) NULL,
+    PRIMARY KEY (`repo_id`, `hg_cs_id`),
+    UNIQUE (`repo_id`, `bcs_id`)
+);
+
+CREATE INDEX IF NOT EXISTS `ephemeral_bubble_hg_mapping_bubble_id`
+  ON `ephemeral_bubble_hg_mapping` (`bubble_id`);
