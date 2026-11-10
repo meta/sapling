@@ -31,7 +31,7 @@ use config_reconcile::ManifestEntry;
 use config_reconcile::RepoGeneration;
 use config_reconcile::RepoManager;
 use config_reconcile::RepoState;
-use config_reconcile::SharedGenSeen;
+use config_reconcile::SharedGensSeen;
 use config_reconcile::Splay;
 use facet::AsyncBuildable;
 use futures::FutureExt;
@@ -42,9 +42,9 @@ use futures::stream::StreamExt;
 use futures::stream::TryStreamExt;
 use itertools::Itertools;
 use metaconfig_parser::RepoConfigs;
+use metaconfig_parser::SharedGenerations;
 use metaconfig_parser::StorageConfigs;
 use metaconfig_parser::parse_repo_spec;
-use metaconfig_parser::shared_generation;
 use metaconfig_parser::spec_hash;
 use metaconfig_types::CommitIdentityScheme;
 use metaconfig_types::Redaction;
@@ -644,6 +644,8 @@ where
 /// Adapts `MononokeConfigs` to the `config_reconcile::ConfigSource` trait.
 struct ReconcileConfigSource {
     configs: Arc<MononokeConfigs>,
+    tier: String,
+    shared: Arc<SharedGenerations>,
     // Memoizes spec_hash keyed by the RepoSpec Arc identity. See ReconcileDriver.
     spec_hash_cache: Arc<Mutex<HashMap<String, (Arc<RepoSpec>, u64)>>>,
 }
@@ -673,15 +675,8 @@ impl ConfigSource for ReconcileConfigSource {
         Some(DesiredRepo {
             enabled: spec.enabled,
             spec_hash: hash,
+            shared_gen: self.shared.of_repo(&spec, &self.tier),
         })
-    }
-
-    fn shared_generation(&self) -> Result<u64> {
-        let manifest = self
-            .configs
-            .manifest()
-            .context("reconcile: no manifest for shared generation")?;
-        shared_generation(&manifest.storage)
     }
 }
 
@@ -693,6 +688,7 @@ struct ReconcileRepoManager<Repo> {
     repo_factory: Arc<RepoFactory>,
     repos: Arc<MononokeRepos<Repo>>,
     tier: String,
+    shared: Arc<SharedGenerations>,
     redaction_disabled: bool,
 }
 
@@ -723,17 +719,13 @@ where
         self.repos.iter_loaded_names().collect()
     }
 
-    async fn build_and_apply(
-        &self,
-        name: &str,
-        deep: bool,
-        shared_gen: u64,
-    ) -> Result<Option<RepoGeneration>> {
+    async fn build_and_apply(&self, name: &str, deep: bool) -> Result<Option<RepoGeneration>> {
         let (spec, source) = self
             .configs
             .live_repo_spec_with_source(name)
             .context("reconcile: no live RepoSpec (unsubscribed or unreadable)")?;
         let spec_hash = spec_hash(&spec)?;
+        let shared_gen = self.shared.of_repo(&spec, &self.tier);
         let manifest = self.configs.manifest().context("reconcile: no manifest")?;
         let mut repo_config =
             parse_repo_spec(Arc::unwrap_or_clone(spec), &self.tier, &manifest.storage)?;
@@ -797,7 +789,7 @@ struct ReconcileDriver<Repo> {
 /// What one reconcile pass leaves for the next about a splayed shared-config change.
 #[derive(Default)]
 struct SplayState {
-    shared_gen_seen: Option<SharedGenSeen>,
+    shared_gens_seen: SharedGensSeen,
     next_due: Option<Instant>,
     deferred: usize,
 }
@@ -843,8 +835,15 @@ where
         // tokio Mutex is await-safe, so the guard is held across the whole pass.
         // A held lock means "skip this pass", which is a success (Ok(())).
         run_exclusive(&self.reconcile_lock, move || async move {
+            let manifest = self
+                .configs
+                .manifest()
+                .context("reconcile: no manifest for shared generations")?;
+            let shared = Arc::new(SharedGenerations::new(&manifest.storage)?);
             let config = ReconcileConfigSource {
                 configs: self.configs.clone(),
+                tier: tier.clone(),
+                shared: shared.clone(),
                 spec_hash_cache: self.spec_hash_cache.clone(),
             };
             let manager = ReconcileRepoManager {
@@ -852,6 +851,7 @@ where
                 repo_factory: self.repo_factory.clone(),
                 repos: self.repos.clone(),
                 tier,
+                shared,
                 redaction_disabled: self.redaction_disabled,
             };
             let current = self.reconcile_state.load_full();
@@ -859,18 +859,19 @@ where
                 window: Duration::from_secs(justknobs::get_as::<u64>(RELOAD_SPLAY_KNOB, None)),
                 now: Instant::now(),
             };
-            let shared_gen_seen = self
+            let shared_gens_seen = self
                 .splay_state
                 .lock()
                 .expect("splay_state poisoned")
-                .shared_gen_seen;
+                .shared_gens_seen
+                .clone();
             let outcome = match config_reconcile::reconcile(
                 &config,
                 &manager,
                 &current,
                 REPOS_MANAGER_CONCURRENCY,
                 splay,
-                shared_gen_seen,
+                shared_gens_seen,
             )
             .await
             {
@@ -902,7 +903,7 @@ where
             STATS::reconcile_failed_repos.add_value(outcome.failed.len() as i64);
             STATS::reconcile_deferred.add_value(outcome.deferred as i64);
             *self.splay_state.lock().expect("splay_state poisoned") = SplayState {
-                shared_gen_seen: outcome.shared_gen_seen,
+                shared_gens_seen: outcome.shared_gens_seen,
                 next_due: outcome.next_due,
                 deferred: outcome.deferred,
             };

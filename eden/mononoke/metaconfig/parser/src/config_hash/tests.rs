@@ -10,6 +10,7 @@
 
 use maplit::hashmap;
 use mononoke_macros::mononoke;
+use repos::RawRepoConfig;
 
 use super::*;
 
@@ -32,23 +33,90 @@ fn spec_hash_is_content_addressed() {
     );
 }
 
+fn spec_on(storage: &str, tier_storage: Option<&str>) -> RepoSpec {
+    RepoSpec {
+        repo_config: Some(RawRepoConfig {
+            storage_config: Some(storage.to_string()),
+            ..Default::default()
+        }),
+        tier_overrides: tier_storage.map(|tier_storage| {
+            [(
+                "tier".to_string(),
+                RawRepoConfig {
+                    storage_config: Some(tier_storage.to_string()),
+                    ..Default::default()
+                },
+            )]
+            .into()
+        }),
+        ..Default::default()
+    }
+}
+
 #[mononoke::test]
-fn shared_generation_reflects_content_not_order() {
-    let cfg = RawStorageConfig::default();
-    let m1: HashMap<String, RawStorageConfig> =
-        hashmap! { "a".to_string() => cfg.clone(), "b".to_string() => cfg.clone() };
-    let m2: HashMap<String, RawStorageConfig> =
-        hashmap! { "b".to_string() => cfg.clone(), "a".to_string() => cfg.clone() };
-    assert_eq!(
-        shared_generation(&m1).unwrap(),
-        shared_generation(&m2).unwrap(),
-        "shared generation must be independent of insertion order",
+fn shared_generation_covers_only_the_named_storage() {
+    let plain = RawStorageConfig::default();
+    let changed = RawStorageConfig {
+        ephemeral_blobstore: Some(Default::default()),
+        ..Default::default()
+    };
+    let generations = |storage: HashMap<String, RawStorageConfig>| {
+        SharedGenerations::new(&storage).expect("storage configs hash")
+    };
+    let before = generations(
+        hashmap! { "a".to_string() => plain.clone(), "b".to_string() => plain.clone() },
     );
-    let m3: HashMap<String, RawStorageConfig> = hashmap! { "a".to_string() => cfg };
+    let b_changed = generations(
+        hashmap! { "a".to_string() => plain.clone(), "b".to_string() => changed.clone() },
+    );
+    let a_changed =
+        generations(hashmap! { "a".to_string() => changed, "b".to_string() => plain.clone() });
+    let c_added = generations(hashmap! {
+        "a".to_string() => plain.clone(),
+        "b".to_string() => plain.clone(),
+        "c".to_string() => plain,
+    });
+    let on_a = spec_on("a", None);
+
+    assert_eq!(
+        before.of_repo(&on_a, "tier"),
+        b_changed.of_repo(&on_a, "tier"),
+        "a change to another storage config must not change the generation",
+    );
+    assert_eq!(
+        before.of_repo(&on_a, "tier"),
+        c_added.of_repo(&on_a, "tier"),
+        "adding a storage config must not change the generation",
+    );
     assert_ne!(
-        shared_generation(&m1).unwrap(),
-        shared_generation(&m3).unwrap(),
-        "different storage content must change the generation",
+        before.of_repo(&on_a, "tier"),
+        a_changed.of_repo(&on_a, "tier"),
+        "a change to the named storage config must change the generation",
+    );
+
+    let b_on_tier = spec_on("a", Some("b"));
+    assert_ne!(
+        before.of_repo(&b_on_tier, "tier"),
+        b_changed.of_repo(&b_on_tier, "tier"),
+        "the tier override's storage config counts on its tier",
+    );
+    assert_ne!(
+        before.of_repo(&b_on_tier, "tier"),
+        a_changed.of_repo(&b_on_tier, "tier"),
+        "the spec's own storage config counts even where the override names another",
+    );
+    assert_eq!(
+        before.of_repo(&b_on_tier, "other"),
+        b_changed.of_repo(&b_on_tier, "other"),
+        "another tier's override does not apply",
+    );
+
+    let on_missing = spec_on("missing", None);
+    assert_ne!(
+        before.of_repo(&on_missing, "tier"),
+        generations(hashmap! { "missing".to_string() => RawStorageConfig::default() })
+            .of_repo(&on_missing, "tier"),
+        "a storage config the manifest lacks changes the generation when it is added",
     );
 }
 

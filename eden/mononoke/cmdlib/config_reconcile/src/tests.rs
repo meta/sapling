@@ -31,8 +31,20 @@ fn entry(name: &str, is_deep_sharded: bool) -> ManifestEntry {
     }
 }
 
-fn desired(enabled: bool, spec_hash: u64) -> DesiredRepo {
-    DesiredRepo { enabled, spec_hash }
+fn desired(enabled: bool, spec_hash: u64, shared_gen: u64) -> DesiredRepo {
+    DesiredRepo {
+        enabled,
+        spec_hash,
+        shared_gen,
+    }
+}
+
+fn seen(gens: &[(u64, Instant)]) -> SharedGensSeen {
+    let mut seen = SharedGensSeen::default();
+    for &(shared_gen, since) in gens {
+        seen.record(shared_gen, since);
+    }
+    seen
 }
 
 fn no_splay() -> Splay {
@@ -58,8 +70,8 @@ fn identical_content_is_a_noop() {
         },
     )]);
     let manifest = vec![entry("r", false)];
-    let desired_map = HashMap::from([("r".to_string(), desired(true, 1))]);
-    let actions = compute_actions(&state, &names(&["r"]), &manifest, &desired_map, 9, None).actions;
+    let desired_map = HashMap::from([("r".to_string(), desired(true, 1, 9))]);
+    let actions = compute_actions(&state, &names(&["r"]), &manifest, &desired_map, None).actions;
     assert!(
         actions.is_empty(),
         "identical content must be a no-op, got {actions:?}"
@@ -85,18 +97,11 @@ fn drift_rebuilds_shallow_and_deep() {
     ]);
     let manifest = vec![entry("s", false), entry("d", true)];
     let desired_map = HashMap::from([
-        ("s".to_string(), desired(true, 11)),
-        ("d".to_string(), desired(true, 22)),
+        ("s".to_string(), desired(true, 11, 0)),
+        ("d".to_string(), desired(true, 22, 0)),
     ]);
-    let actions = compute_actions(
-        &state,
-        &names(&["s", "d"]),
-        &manifest,
-        &desired_map,
-        0,
-        None,
-    )
-    .actions;
+    let actions =
+        compute_actions(&state, &names(&["s", "d"]), &manifest, &desired_map, None).actions;
     assert_eq!(actions.get("s"), Some(&RepoAction::Rebuild));
     assert_eq!(actions.get("d"), Some(&RepoAction::Rebuild));
 }
@@ -110,8 +115,8 @@ fn shared_generation_change_rebuilds() {
         },
     )]);
     let manifest = vec![entry("r", false)];
-    let desired_map = HashMap::from([("r".to_string(), desired(true, 1))]);
-    let actions = compute_actions(&state, &names(&["r"]), &manifest, &desired_map, 8, None).actions;
+    let desired_map = HashMap::from([("r".to_string(), desired(true, 1, 8))]);
+    let actions = compute_actions(&state, &names(&["r"]), &manifest, &desired_map, None).actions;
     assert_eq!(
         actions.get("r"),
         Some(&RepoAction::Rebuild),
@@ -123,16 +128,15 @@ fn shared_generation_change_rebuilds() {
 fn builds_new_shallow_enabled_only() {
     let manifest = vec![entry("on", false), entry("off", false), entry("deep", true)];
     let desired_map = HashMap::from([
-        ("on".to_string(), desired(true, 1)),
-        ("off".to_string(), desired(false, 1)),
-        ("deep".to_string(), desired(true, 1)),
+        ("on".to_string(), desired(true, 1, 0)),
+        ("off".to_string(), desired(false, 1, 0)),
+        ("deep".to_string(), desired(true, 1, 0)),
     ]);
     let actions = compute_actions(
         &HashMap::new(),
         &HashSet::new(),
         &manifest,
         &desired_map,
-        0,
         None,
     )
     .actions;
@@ -175,13 +179,12 @@ fn drops_only_on_positive_evidence_never_deep_never_unreadable() {
     ]);
     // Manifest still lists "disabled" and "unreadable"; "gone" is absent entirely.
     let manifest = vec![entry("disabled", false), entry("unreadable", false)];
-    let desired_map = HashMap::from([("disabled".to_string(), desired(false, 1))]);
+    let desired_map = HashMap::from([("disabled".to_string(), desired(false, 1, 0))]);
     let actions = compute_actions(
         &state,
         &names(&["gone", "disabled", "unreadable", "deepgone"]),
         &manifest,
         &desired_map,
-        0,
         None,
     )
     .actions;
@@ -213,8 +216,7 @@ fn never_drops_deep_present_in_manifest() {
     )]);
     // Deep repo present in manifest but with no readable desired (unreadable).
     let manifest = vec![entry("d", true)];
-    let actions =
-        compute_actions(&state, &names(&["d"]), &manifest, &HashMap::new(), 0, None).actions;
+    let actions = compute_actions(&state, &names(&["d"]), &manifest, &HashMap::new(), None).actions;
     assert_eq!(
         actions.get("d"),
         None,
@@ -227,7 +229,6 @@ fn never_drops_deep_present_in_manifest() {
 struct FakeConfig {
     manifest: Vec<ManifestEntry>,
     desired: HashMap<String, DesiredRepo>,
-    shared_gen: u64,
 }
 
 impl ConfigSource for FakeConfig {
@@ -237,12 +238,10 @@ impl ConfigSource for FakeConfig {
     fn desired(&self, name: &str) -> Option<DesiredRepo> {
         self.desired.get(name).copied()
     }
-    fn shared_generation(&self) -> Result<u64> {
-        Ok(self.shared_gen)
-    }
 }
 
 struct FakeManager {
+    shared_gen: u64,
     loaded: Mutex<HashSet<String>>,
     fail: HashSet<String>,
     built: Mutex<Vec<String>>,
@@ -252,6 +251,7 @@ struct FakeManager {
 impl FakeManager {
     fn new(loaded: &[&str], fail: &[&str]) -> Self {
         Self {
+            shared_gen: 0,
             loaded: Mutex::new(names(loaded)),
             fail: names(fail),
             built: Mutex::new(Vec::new()),
@@ -265,12 +265,7 @@ impl RepoManager for FakeManager {
     fn loaded_names(&self) -> HashSet<String> {
         self.loaded.lock().expect("poisoned").clone()
     }
-    async fn build_and_apply(
-        &self,
-        name: &str,
-        _deep: bool,
-        shared_gen: u64,
-    ) -> Result<Option<RepoGeneration>> {
+    async fn build_and_apply(&self, name: &str, _deep: bool) -> Result<Option<RepoGeneration>> {
         self.built.lock().expect("poisoned").push(name.to_string());
         if self.fail.contains(name) {
             anyhow::bail!("simulated build failure for {name}");
@@ -281,7 +276,7 @@ impl RepoManager for FakeManager {
             .insert(name.to_string());
         Ok(Some(RepoGeneration {
             spec_hash: 100,
-            shared_gen,
+            shared_gen: self.shared_gen,
         }))
     }
     fn drop_repo(&self, name: &str) {
@@ -300,15 +295,21 @@ async fn first_pass_does_not_rebuild_already_loaded_repos() {
     let config = FakeConfig {
         manifest: vec![entry("a", false), entry("b", false)],
         desired: HashMap::from([
-            ("a".to_string(), desired(true, 100)),
-            ("b".to_string(), desired(true, 100)),
+            ("a".to_string(), desired(true, 100, 0)),
+            ("b".to_string(), desired(true, 100, 0)),
         ]),
-        shared_gen: 0,
     };
     let mgr = FakeManager::new(&["a", "b"], &[]);
-    let outcome = reconcile(&config, &mgr, &HashMap::new(), 4, no_splay(), None)
-        .await
-        .unwrap();
+    let outcome = reconcile(
+        &config,
+        &mgr,
+        &HashMap::new(),
+        4,
+        no_splay(),
+        SharedGensSeen::default(),
+    )
+    .await
+    .unwrap();
     assert!(
         mgr.built.lock().unwrap().is_empty(),
         "first pass must not rebuild already-loaded repos, built {:?}",
@@ -321,14 +322,20 @@ async fn first_pass_does_not_rebuild_already_loaded_repos() {
 async fn builds_new_and_drops_removed() {
     let config = FakeConfig {
         manifest: vec![entry("new", false)],
-        desired: HashMap::from([("new".to_string(), desired(true, 100))]),
-        shared_gen: 0,
+        desired: HashMap::from([("new".to_string(), desired(true, 100, 0))]),
     };
     // "old" is loaded but absent from the manifest -> dropped; "new" -> built.
     let mgr = FakeManager::new(&["old"], &[]);
-    let outcome = reconcile(&config, &mgr, &HashMap::new(), 4, no_splay(), None)
-        .await
-        .unwrap();
+    let outcome = reconcile(
+        &config,
+        &mgr,
+        &HashMap::new(),
+        4,
+        no_splay(),
+        SharedGensSeen::default(),
+    )
+    .await
+    .unwrap();
     assert_eq!(outcome.built, 1);
     assert_eq!(outcome.dropped, 1);
     assert_eq!(&*mgr.built.lock().unwrap(), &vec!["new".to_string()]);
@@ -341,8 +348,7 @@ async fn builds_new_and_drops_removed() {
 async fn failed_build_is_non_destructive() {
     let config = FakeConfig {
         manifest: vec![entry("r", false)],
-        desired: HashMap::from([("r".to_string(), desired(true, 200))]),
-        shared_gen: 0,
+        desired: HashMap::from([("r".to_string(), desired(true, 200, 0))]),
     };
     // "r" loaded at gen 100; desired 200 -> rebuild, but build fails.
     let mgr = FakeManager::new(&["r"], &["r"]);
@@ -352,9 +358,16 @@ async fn failed_build_is_non_destructive() {
             generation: repo_gen(100, 0),
         },
     )]);
-    let outcome = reconcile(&config, &mgr, &state, 4, no_splay(), None)
-        .await
-        .unwrap();
+    let outcome = reconcile(
+        &config,
+        &mgr,
+        &state,
+        4,
+        no_splay(),
+        SharedGensSeen::default(),
+    )
+    .await
+    .unwrap();
     assert_eq!(outcome.failed, vec!["r".to_string()]);
     match outcome.next_state.get("r") {
         Some(RepoState::Failed { serving, attempts }) => {
@@ -394,9 +407,10 @@ fn loaded_at(names: &[&str], generation: RepoGeneration) -> HashMap<String, Repo
         .collect()
 }
 
+/// A schedule `elapsed_secs` after shared generation 8 was first seen.
 fn schedule(since: Instant, elapsed_secs: u64) -> SplaySchedule {
     SplaySchedule {
-        since,
+        seen: seen(&[(8, since)]),
         now: since + Duration::from_secs(elapsed_secs),
         window: WINDOW,
     }
@@ -408,8 +422,8 @@ fn shared_only_drift_waits_for_its_offset() {
     let loaded = names(&["repo", "fbsource"]);
     let manifest = vec![entry("repo", false), entry("fbsource", false)];
     let desired_map = HashMap::from([
-        ("repo".to_string(), desired(true, 1)),
-        ("fbsource".to_string(), desired(true, 1)),
+        ("repo".to_string(), desired(true, 1, 8)),
+        ("fbsource".to_string(), desired(true, 1, 8)),
     ]);
     let since = Instant::now();
 
@@ -418,20 +432,19 @@ fn shared_only_drift_waits_for_its_offset() {
         &loaded,
         &manifest,
         &desired_map,
-        8,
         Some(&schedule(since, 10)),
     );
     assert_eq!(plan.actions.get("repo"), Some(&RepoAction::Rebuild));
     assert_eq!(plan.actions.get("fbsource"), None);
     assert_eq!(plan.deferred, 1);
     assert_eq!(plan.next_due, Some(since + Duration::from_secs(0xf4)));
+    assert_eq!(plan.seen, seen(&[(8, since)]));
 
     let plan = compute_actions(
         &state,
         &loaded,
         &manifest,
         &desired_map,
-        8,
         Some(&schedule(since, 0xf4)),
     );
     assert_eq!(plan.actions.get("repo"), Some(&RepoAction::Rebuild));
@@ -444,13 +457,12 @@ fn shared_only_drift_waits_for_its_offset() {
 fn spec_change_while_waiting_rebuilds_at_once() {
     let state = loaded_at(&["fbsource"], repo_gen(1, 7));
     let manifest = vec![entry("fbsource", false)];
-    let desired_map = HashMap::from([("fbsource".to_string(), desired(true, 2))]);
+    let desired_map = HashMap::from([("fbsource".to_string(), desired(true, 2, 8))]);
     let plan = compute_actions(
         &state,
         &names(&["fbsource"]),
         &manifest,
         &desired_map,
-        8,
         Some(&schedule(Instant::now(), 1)),
     );
     assert_eq!(
@@ -465,13 +477,12 @@ fn spec_change_while_waiting_rebuilds_at_once() {
 fn builds_and_drops_are_not_splayed() {
     let state = loaded_at(&["gone"], repo_gen(1, 7));
     let manifest = vec![entry("fbsource", false)];
-    let desired_map = HashMap::from([("fbsource".to_string(), desired(true, 1))]);
+    let desired_map = HashMap::from([("fbsource".to_string(), desired(true, 1, 8))]);
     let plan = compute_actions(
         &state,
         &names(&["gone"]),
         &manifest,
         &desired_map,
-        8,
         Some(&schedule(Instant::now(), 0)),
     );
     assert_eq!(plan.actions.get("fbsource"), Some(&RepoAction::Build));
@@ -484,12 +495,14 @@ async fn shared_change_rebuilds_repos_at_their_offsets() {
     let config = FakeConfig {
         manifest: vec![entry("repo", false), entry("fbsource", false)],
         desired: HashMap::from([
-            ("repo".to_string(), desired(true, 100)),
-            ("fbsource".to_string(), desired(true, 100)),
+            ("repo".to_string(), desired(true, 100, 1)),
+            ("fbsource".to_string(), desired(true, 100, 1)),
         ]),
-        shared_gen: 1,
     };
-    let mgr = FakeManager::new(&["repo", "fbsource"], &[]);
+    let mgr = FakeManager {
+        shared_gen: 1,
+        ..FakeManager::new(&["repo", "fbsource"], &[])
+    };
     let state = loaded_at(&["repo", "fbsource"], repo_gen(100, 0));
     let t0 = Instant::now();
     let at = |secs: u64| Splay {
@@ -497,17 +510,14 @@ async fn shared_change_rebuilds_repos_at_their_offsets() {
         now: t0 + Duration::from_secs(secs),
     };
 
-    let first = reconcile(&config, &mgr, &state, 4, at(0), None)
+    let first = reconcile(&config, &mgr, &state, 4, at(0), SharedGensSeen::default())
         .await
         .unwrap();
     assert_eq!(first.rebuilt, 0);
     assert_eq!(first.deferred, 2);
     assert_eq!(first.next_due, Some(t0 + Duration::from_secs(0x07)));
-    let seen = SharedGenSeen {
-        shared_gen: 1,
-        since: t0,
-    };
-    assert_eq!(first.shared_gen_seen, Some(seen));
+    let waiting = seen(&[(1, t0)]);
+    assert_eq!(first.shared_gens_seen, waiting);
 
     let second = reconcile(
         &config,
@@ -515,7 +525,7 @@ async fn shared_change_rebuilds_repos_at_their_offsets() {
         &first.next_state,
         4,
         at(0x07),
-        first.shared_gen_seen,
+        first.shared_gens_seen.clone(),
     )
     .await
     .unwrap();
@@ -523,7 +533,7 @@ async fn shared_change_rebuilds_repos_at_their_offsets() {
     assert_eq!(second.rebuilt, 1);
     assert_eq!(second.deferred, 1);
     assert_eq!(second.next_due, Some(t0 + Duration::from_secs(0xf4)));
-    assert_eq!(second.shared_gen_seen, Some(seen));
+    assert_eq!(second.shared_gens_seen, waiting);
 
     let third = reconcile(
         &config,
@@ -531,7 +541,7 @@ async fn shared_change_rebuilds_repos_at_their_offsets() {
         &second.next_state,
         4,
         at(0xf4),
-        second.shared_gen_seen,
+        second.shared_gens_seen.clone(),
     )
     .await
     .unwrap();
@@ -542,14 +552,14 @@ async fn shared_change_rebuilds_repos_at_their_offsets() {
     assert_eq!(third.rebuilt, 1);
     assert_eq!(third.deferred, 0);
     assert_eq!(third.next_due, None);
+    assert_eq!(third.shared_gens_seen, SharedGensSeen::default());
 }
 
 #[mononoke::test]
 async fn new_shared_generation_restarts_the_window() {
     let config = FakeConfig {
         manifest: vec![entry("fbsource", false)],
-        desired: HashMap::from([("fbsource".to_string(), desired(true, 100))]),
-        shared_gen: 2,
+        desired: HashMap::from([("fbsource".to_string(), desired(true, 100, 2))]),
     };
     let mgr = FakeManager::new(&["fbsource"], &[]);
     let state = loaded_at(&["fbsource"], repo_gen(100, 0));
@@ -564,10 +574,7 @@ async fn new_shared_generation_restarts_the_window() {
             window: WINDOW,
             now,
         },
-        Some(SharedGenSeen {
-            shared_gen: 1,
-            since: t0,
-        }),
+        seen(&[(1, t0)]),
     )
     .await
     .unwrap();
@@ -575,12 +582,75 @@ async fn new_shared_generation_restarts_the_window() {
         outcome.rebuilt, 0,
         "the window restarts for the new generation"
     );
-    assert_eq!(
-        outcome.shared_gen_seen,
-        Some(SharedGenSeen {
-            shared_gen: 2,
-            since: now,
-        })
-    );
+    assert_eq!(outcome.shared_gens_seen, seen(&[(2, now)]));
     assert_eq!(outcome.next_due, Some(now + Duration::from_secs(0xf4)));
+}
+
+#[mononoke::test]
+fn only_repos_using_a_changed_shared_config_rebuild() {
+    // a's storage changed (its generation went from 7 to 8); c's storage is
+    // unchanged at 5.
+    let state = HashMap::from([
+        (
+            "a".to_string(),
+            RepoState::Loaded {
+                generation: repo_gen(1, 7),
+            },
+        ),
+        (
+            "c".to_string(),
+            RepoState::Loaded {
+                generation: repo_gen(1, 5),
+            },
+        ),
+    ]);
+    let manifest = vec![entry("a", false), entry("c", false)];
+    let desired_map = HashMap::from([
+        ("a".to_string(), desired(true, 1, 8)),
+        ("c".to_string(), desired(true, 1, 5)),
+    ]);
+    let actions =
+        compute_actions(&state, &names(&["a", "c"]), &manifest, &desired_map, None).actions;
+    assert_eq!(actions.get("a"), Some(&RepoAction::Rebuild));
+    assert_eq!(
+        actions.get("c"),
+        None,
+        "a repo whose shared config did not change is not rebuilt"
+    );
+}
+
+#[mononoke::test]
+fn each_shared_generation_has_its_own_window() {
+    // "repo" waits for generation 8, first seen at t0; "fbsource" waits for
+    // generation 9, first seen 100s later, so its offset counts from then.
+    let t0 = Instant::now();
+    let state = loaded_at(&["repo", "fbsource"], repo_gen(1, 7));
+    let manifest = vec![entry("repo", false), entry("fbsource", false)];
+    let desired_map = HashMap::from([
+        ("repo".to_string(), desired(true, 1, 8)),
+        ("fbsource".to_string(), desired(true, 1, 9)),
+    ]);
+    let plan = compute_actions(
+        &state,
+        &names(&["repo", "fbsource"]),
+        &manifest,
+        &desired_map,
+        Some(&SplaySchedule {
+            seen: seen(&[(8, t0), (9, t0 + Duration::from_secs(100))]),
+            now: t0 + Duration::from_secs(0xf4),
+            window: WINDOW,
+        }),
+    );
+    assert_eq!(plan.actions.get("repo"), Some(&RepoAction::Rebuild));
+    assert_eq!(plan.actions.get("fbsource"), None);
+    assert_eq!(
+        plan.next_due,
+        Some(t0 + Duration::from_secs(100 + 0xf4)),
+        "fbsource's offset counts from when generation 9 was first seen"
+    );
+    assert_eq!(
+        plan.seen,
+        seen(&[(9, t0 + Duration::from_secs(100))]),
+        "only generations repos still wait for are carried"
+    );
 }

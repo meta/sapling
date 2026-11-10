@@ -26,6 +26,6 @@ pub use crate::config::load_empty_repo_configs;
 pub use crate::config::load_repo_configs_from_manifest;
 pub use crate::config::parse_manifest_common_and_storage;
 pub use crate::config::parse_repo_spec;
-pub use crate::config_hash::shared_generation;
+pub use crate::config_hash::SharedGenerations;
 pub use crate::config_hash::spec_hash;
 pub use crate::errors::ConfigurationError;

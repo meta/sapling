@@ -14,8 +14,9 @@
 //! idempotently, so correctness depends only on *"a reconcile eventually runs"*,
 //! never on which event fired in what order.
 //!
-//! A shared-config change drifts every repo at once. [`Splay`] spreads the
-//! resulting rebuilds over a window, each repo at a fixed [`splay_offset`].
+//! A shared-config change drifts every repo that uses it at once. [`Splay`]
+//! spreads the resulting rebuilds over a window, each repo at a fixed
+//! [`splay_offset`].
 //!
 //! The crate is deliberately decoupled from Mononoke's config/repo internals:
 //! callers implement [`ConfigSource`] and [`RepoManager`]. That keeps this crate
@@ -39,7 +40,6 @@ use sha2::Sha256;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RepoGeneration {
     pub spec_hash: u64,
-    /// The tier's shared config (see [`ConfigSource::shared_generation`]).
     pub shared_gen: u64,
 }
 
@@ -81,6 +81,8 @@ pub struct ManifestEntry {
 pub struct DesiredRepo {
     pub enabled: bool,
     pub spec_hash: u64,
+    /// Content hash of the shared config the repo uses, and of nothing else.
+    pub shared_gen: u64,
 }
 
 /// The single action for one repo this pass. One action per repo (the map key)
@@ -104,8 +106,6 @@ pub trait ConfigSource {
     /// Live desired state for `name`, or `None` if its spec is unreadable /
     /// unsubscribed (treated as "unknown", never "drop").
     fn desired(&self, name: &str) -> Option<DesiredRepo>;
-    /// Content hash of the config the tier's repos share, now.
-    fn shared_generation(&self) -> Result<u64>;
 }
 
 /// Mutating operations on the repos loaded for this task. Encapsulates the
@@ -120,12 +120,7 @@ pub trait RepoManager: Sync {
     /// mid-build) vs reload (shallow). Returns the applied generation, `None` if
     /// a deep repo was absent at apply time (skipped), or `Err` if the build
     /// failed (non-destructive: the previously-serving repo, if any, stays live).
-    async fn build_and_apply(
-        &self,
-        name: &str,
-        deep: bool,
-        shared_gen: u64,
-    ) -> Result<Option<RepoGeneration>>;
+    async fn build_and_apply(&self, name: &str, deep: bool) -> Result<Option<RepoGeneration>>;
     /// Remove `name` from the loaded set and evict its cached config.
     fn drop_repo(&self, name: &str);
 }
@@ -143,13 +138,19 @@ pub struct Splay {
     pub now: Instant,
 }
 
-/// The shared generation the controller is converging to and when it first saw
-/// it. The caller carries it from one pass to the next; offsets count from
-/// `since`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SharedGenSeen {
-    pub shared_gen: u64,
-    pub since: Instant,
+/// When each shared generation that loaded repos are still waiting to rebuild
+/// for was first seen. Carried from one pass to the next.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SharedGensSeen(HashMap<u64, Instant>);
+
+impl SharedGensSeen {
+    pub(crate) fn since(&self, shared_gen: u64) -> Option<Instant> {
+        self.0.get(&shared_gen).copied()
+    }
+
+    pub(crate) fn record(&mut self, shared_gen: u64, since: Instant) {
+        self.0.insert(shared_gen, since);
+    }
 }
 
 /// The point in `window` at which `repo_name` rebuilds after a shared-config
@@ -176,21 +177,15 @@ pub struct ReconcileOutcome {
     /// When the earliest waiting repo is due; `None` when none is waiting.
     pub next_due: Option<Instant>,
     /// To pass to the next pass.
-    pub shared_gen_seen: Option<SharedGenSeen>,
+    pub shared_gens_seen: SharedGensSeen,
 }
 
 /// When a repo whose only drift is the shared generation may rebuild.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct SplaySchedule {
-    pub(crate) since: Instant,
+    pub(crate) seen: SharedGensSeen,
     pub(crate) now: Instant,
     pub(crate) window: Duration,
-}
-
-impl SplaySchedule {
-    fn due(&self, repo_name: &str) -> Instant {
-        self.since + splay_offset(repo_name, self.window)
-    }
 }
 
 /// The actions for one pass, plus the repos left waiting for their offset.
@@ -199,6 +194,7 @@ pub(crate) struct Plan {
     pub(crate) actions: HashMap<String, RepoAction>,
     pub(crate) deferred: usize,
     pub(crate) next_due: Option<Instant>,
+    pub(crate) seen: SharedGensSeen,
 }
 
 /// Compute the action (if any) for each repo. Pure — the whole decision surface
@@ -209,7 +205,6 @@ pub(crate) fn compute_actions(
     loaded: &HashSet<String>,
     manifest: &[ManifestEntry],
     desired: &HashMap<String, DesiredRepo>,
-    shared_gen: u64,
     schedule: Option<&SplaySchedule>,
 ) -> Plan {
     let is_deep: HashMap<&str, bool> = manifest
@@ -245,16 +240,21 @@ pub(crate) fn compute_actions(
             // if there is no known-good generation (prior failure / seeded).
             match (d, served_gen) {
                 (Some(d), Some(g)) if d.spec_hash != g.spec_hash => Some(RepoAction::Rebuild),
-                (Some(_), Some(g)) if g.shared_gen != shared_gen => {
-                    match schedule.map(|s| (s.due(name), s.now)) {
-                        Some((due, now)) if due > now => {
+                (Some(d), Some(g)) if d.shared_gen != g.shared_gen => match schedule {
+                    Some(s) => {
+                        let since = s.seen.since(d.shared_gen).unwrap_or(s.now);
+                        let due = since + splay_offset(name, s.window);
+                        if due > s.now {
                             plan.deferred += 1;
                             plan.next_due = Some(plan.next_due.map_or(due, |next| next.min(due)));
+                            plan.seen.record(d.shared_gen, since);
                             None
+                        } else {
+                            Some(RepoAction::Rebuild)
                         }
-                        _ => Some(RepoAction::Rebuild),
                     }
-                }
+                    None => Some(RepoAction::Rebuild),
+                },
                 (Some(_), Some(_)) => None,
                 _ => Some(RepoAction::Rebuild),
             }
@@ -272,27 +272,19 @@ pub(crate) fn compute_actions(
 /// `config`, diffs it against `current_state` (plus the actually-loaded repos),
 /// and converges via `manager`. Returns the next state + a summary. Builds run
 /// concurrently up to `concurrency`; a failed build is non-destructive.
-/// `shared_gen_seen` is the previous pass's [`ReconcileOutcome::shared_gen_seen`].
+/// `shared_gens_seen` is the previous pass's [`ReconcileOutcome::shared_gens_seen`].
 pub async fn reconcile<C: ConfigSource, M: RepoManager>(
     config: &C,
     manager: &M,
     current_state: &HashMap<String, RepoState>,
     concurrency: usize,
     splay: Splay,
-    shared_gen_seen: Option<SharedGenSeen>,
+    shared_gens_seen: SharedGensSeen,
 ) -> Result<ReconcileOutcome> {
     let manifest = config.manifest();
-    let shared_gen = config.shared_generation()?;
     let loaded = manager.loaded_names();
-    let seen = match shared_gen_seen {
-        Some(seen) if seen.shared_gen == shared_gen => seen,
-        _ => SharedGenSeen {
-            shared_gen,
-            since: splay.now,
-        },
-    };
     let schedule = SplaySchedule {
-        since: seen.since,
+        seen: shared_gens_seen,
         now: splay.now,
         window: splay.window,
     };
@@ -317,7 +309,7 @@ pub async fn reconcile<C: ConfigSource, M: RepoManager>(
                 },
                 |d| RepoGeneration {
                     spec_hash: d.spec_hash,
-                    shared_gen,
+                    shared_gen: d.shared_gen,
                 },
             );
             state.insert(name.clone(), RepoState::Loaded { generation });
@@ -328,20 +320,14 @@ pub async fn reconcile<C: ConfigSource, M: RepoManager>(
         actions,
         deferred,
         next_due,
-    } = compute_actions(
-        &state,
-        &loaded,
-        &manifest,
-        &desired,
-        shared_gen,
-        Some(&schedule),
-    );
+        seen,
+    } = compute_actions(&state, &loaded, &manifest, &desired, Some(&schedule));
     if actions.is_empty() {
         return Ok(ReconcileOutcome {
             next_state: state,
             deferred,
             next_due,
-            shared_gen_seen: Some(seen),
+            shared_gens_seen: seen,
             ..Default::default()
         });
     }
@@ -354,7 +340,7 @@ pub async fn reconcile<C: ConfigSource, M: RepoManager>(
     let mut outcome = ReconcileOutcome {
         deferred,
         next_due,
-        shared_gen_seen: Some(seen),
+        shared_gens_seen: seen,
         ..Default::default()
     };
 
@@ -379,7 +365,7 @@ pub async fn reconcile<C: ConfigSource, M: RepoManager>(
         .map(|(name, action)| {
             let deep = is_deep.get(name.as_str()).copied().unwrap_or(false);
             async move {
-                let result = manager.build_and_apply(&name, deep, shared_gen).await;
+                let result = manager.build_and_apply(&name, deep).await;
                 (name, action, result)
             }
         })

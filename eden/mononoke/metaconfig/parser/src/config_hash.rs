@@ -19,6 +19,7 @@ use std::hash::Hasher;
 
 use anyhow::Context;
 use anyhow::Result;
+use repos::RawRepoConfig;
 use repos::RawStorageConfig;
 use repos::RepoSpec;
 
@@ -31,13 +32,58 @@ pub fn spec_hash(spec: &RepoSpec) -> Result<u64> {
     Ok(hash_canonical_json(&json))
 }
 
-/// A stable, content-addressed hash of the config a tier's repos share: the
-/// manifest's named storage configs (`TierManifest.storage`). Bumps only on a
-/// real content change, not a configerator version bump — so an unrelated
-/// revision never triggers a fleet-wide rebuild (the S684063 shape).
-pub fn shared_generation(storage: &HashMap<String, RawStorageConfig>) -> Result<u64> {
-    let json = serde_json::to_value(storage).context("serializing storage configs for hashing")?;
-    Ok(hash_canonical_json(&json))
+/// Content hashes of a manifest's shared configs, by name. A repo's shared
+/// generation ([`SharedGenerations::of_repo`]) covers only the shared configs it
+/// names. A hash changes only on a real content change, not a configerator
+/// version bump (the S684063 shape).
+pub struct SharedGenerations {
+    storage: HashMap<String, u64>,
+}
+
+impl SharedGenerations {
+    /// From the manifest's named storage configs.
+    pub fn new(storage: &HashMap<String, RawStorageConfig>) -> Result<Self> {
+        let storage = storage
+            .iter()
+            .map(|(name, config)| {
+                let json = serde_json::to_value(config)
+                    .with_context(|| format!("serializing storage config {name} for hashing"))?;
+                Ok((name.clone(), hash_canonical_json(&json)))
+            })
+            .collect::<Result<_>>()?;
+        Ok(Self { storage })
+    }
+
+    /// The shared generation of `spec` on `tier`: a hash of every storage config
+    /// that the spec's own config or its override for `tier` names, even one
+    /// the override replaces. A storage config the manifest lacks hashes as
+    /// missing, so the repo drifts when it is added.
+    pub fn of_repo(&self, spec: &RepoSpec, tier: &str) -> u64 {
+        hash_of(repo_layers(spec, tier).map(|layer| {
+            layer.map(|config| named(&self.storage, config.storage_config.as_deref()))
+        }))
+    }
+}
+
+/// `None` if no shared config is named, `Some(None)` if the named one is missing.
+fn named(hashes: &HashMap<String, u64>, name: Option<&str>) -> Option<Option<u64>> {
+    name.map(|name| hashes.get(name).copied())
+}
+
+/// The spec's own config and its override for `tier`.
+fn repo_layers<'a>(spec: &'a RepoSpec, tier: &str) -> [Option<&'a RawRepoConfig>; 2] {
+    [
+        spec.repo_config.as_ref(),
+        spec.tier_overrides
+            .as_ref()
+            .and_then(|overrides| overrides.get(tier)),
+    ]
+}
+
+fn hash_of(value: impl Hash) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Hash a JSON value by its canonical form (object keys recursively sorted) so
