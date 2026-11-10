@@ -46,6 +46,10 @@ pub trait PushrebaseClient: Sync + Send {
     /// Per-request control over `pushrebase_enable_merge_resolution` is
     /// expressed via the `MERGE_RESOLUTION_OVERRIDE` pushvar; parsing
     /// happens at the terminal pushrebase implementation.
+    ///
+    /// With `required_root`, the push fails unless the changesets are rebased
+    /// from it and it is an ancestor of the bookmark when they land (see
+    /// `pushrebase::PushrebaseStack::require_root`).
     async fn pushrebase(
         &self,
         ctx: &CoreContext,

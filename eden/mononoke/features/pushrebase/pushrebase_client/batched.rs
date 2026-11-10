@@ -65,7 +65,7 @@ impl<R: Repo + HookManagerRef + 'static> PushrebaseClient for BatchedPushrebaseC
         cross_repo_push_source: CrossRepoPushSource,
         bookmark_restrictions: BookmarkKindRestrictions,
         log_new_public_commits_to_scribe: bool,
-        _required_root: Option<ChangesetId>,
+        required_root: Option<ChangesetId>,
     ) -> Result<PushrebaseOutcome, BookmarkMovementError> {
         let repo = (self.resolve_repo)().ok_or_else(|| {
             BookmarkMovementError::Error(anyhow!("Pushrebase repository is not loaded"))
@@ -92,6 +92,11 @@ impl<R: Repo + HookManagerRef + 'static> PushrebaseClient for BatchedPushrebaseC
         )
         .await
         .map_err(BookmarkMovementError::PushrebaseError)?;
+        if let Some(root) = required_root {
+            stack
+                .require_root(bookmark, root)
+                .map_err(BookmarkMovementError::PushrebaseError)?;
+        }
         stack
             .precompute(ctx, repo.as_ref(), &prepared.flags, bookmark)
             .await
@@ -134,6 +139,13 @@ impl<R: Repo + HookManagerRef + 'static> PushrebaseClient for BatchedPushrebaseC
                     PushrebaseError::Conflicts(conflicts) => {
                         PushrebaseError::Conflicts(conflicts.clone())
                     }
+                    PushrebaseError::BookmarkMoved {
+                        bookmark,
+                        required_root,
+                    } => PushrebaseError::BookmarkMoved {
+                        bookmark: bookmark.clone(),
+                        required_root: *required_root,
+                    },
                     _ => PushrebaseError::Error(anyhow!(error)),
                 })
             })?;

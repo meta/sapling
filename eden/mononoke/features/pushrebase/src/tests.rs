@@ -9586,3 +9586,172 @@ async fn pushrebase_take_incoming_manifest_mode_keeps_todays_outcome(
     .await?;
     Ok(())
 }
+
+/// Trunk is A-B-C with F a draft child of A, and M merges F into B, so a push
+/// of {F, M} has the candidate roots A and B, and B is its merge base with
+/// the trunk.
+struct RequiredRootMerge {
+    a: ChangesetId,
+    b: ChangesetId,
+    c: ChangesetId,
+    f: ChangesetId,
+    m: ChangesetId,
+    pushed: HashSet<BonsaiChangeset>,
+}
+
+async fn required_root_merge(
+    ctx: &CoreContext,
+    repo: &PushrebaseTestRepo,
+) -> Result<RequiredRootMerge, Error> {
+    init_just_knobs_for_test();
+    let a = CreateCommitContext::new_root(ctx, repo)
+        .add_file("a", "a")
+        .commit()
+        .await?;
+    let b = CreateCommitContext::new(ctx, repo, vec![a])
+        .add_file("b", "b")
+        .commit()
+        .await?;
+    let c = CreateCommitContext::new(ctx, repo, vec![b])
+        .add_file("c", "c")
+        .commit()
+        .await?;
+    let f = CreateCommitContext::new(ctx, repo, vec![a])
+        .add_file("f", "f")
+        .commit()
+        .await?;
+    let m = CreateCommitContext::new(ctx, repo, vec![b, f])
+        .add_file("m", "m")
+        .commit()
+        .await?;
+    let pushed = hashset![
+        f.load(ctx, repo.repo_blobstore()).await?,
+        m.load(ctx, repo.repo_blobstore()).await?,
+    ];
+    Ok(RequiredRootMerge {
+        a,
+        b,
+        c,
+        f,
+        m,
+        pushed,
+    })
+}
+
+fn assert_bookmark_moved(
+    result: Result<impl std::fmt::Debug, PushrebaseError>,
+    expected_root: ChangesetId,
+) {
+    match result {
+        Err(PushrebaseError::BookmarkMoved { required_root, .. }) => {
+            assert_eq!(required_root, expected_root)
+        }
+        other => panic!("expected BookmarkMoved, got {other:?}"),
+    }
+}
+
+#[mononoke::fbinit_test]
+async fn required_root_rejects_another_closest_root(fb: FacebookInit) -> Result<(), Error> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: PushrebaseTestRepo = test_repo_factory::build_empty(ctx.fb).await?;
+    let merge = required_root_merge(&ctx, &repo).await?;
+    let book = master_bookmark();
+
+    // With the bookmark at A, A is the closest root, so B is not the root
+    // pushrebase would rebase from.
+    bookmark(&ctx, &repo, book.clone()).set_to(merge.a).await?;
+    let result = do_pushrebase_bonsai(
+        &ctx,
+        &repo,
+        &PushrebaseFlags::default(),
+        &book,
+        &merge.pushed,
+        &[],
+        Some(merge.b),
+    )
+    .await;
+    assert_bookmark_moved(result, merge.b);
+    assert_eq!(resolve_cs_id(&ctx, &repo, "master").await?, merge.a);
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn required_root_lands_from_it(fb: FacebookInit) -> Result<(), Error> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: PushrebaseTestRepo = test_repo_factory::build_empty(ctx.fb).await?;
+    let merge = required_root_merge(&ctx, &repo).await?;
+    let book = master_bookmark();
+
+    // The bookmark moved forward to C: only M is rebased, and F lands
+    // unchanged as its second parent.
+    bookmark(&ctx, &repo, book.clone()).set_to(merge.c).await?;
+    let outcome = do_pushrebase_bonsai(
+        &ctx,
+        &repo,
+        &PushrebaseFlags::default(),
+        &book,
+        &merge.pushed,
+        &[],
+        Some(merge.b),
+    )
+    .await?;
+    assert_eq!(
+        outcome
+            .rebased_changesets
+            .iter()
+            .map(|pair| pair.id_old)
+            .collect::<Vec<_>>(),
+        vec![merge.m]
+    );
+    let head = outcome.head.load(&ctx, repo.repo_blobstore()).await?;
+    assert_eq!(head.parents().collect::<Vec<_>>(), vec![merge.c, merge.f]);
+    assert_eq!(resolve_cs_id(&ctx, &repo, "master").await?, outcome.head);
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn required_root_rejects_bookmark_moved_back_before_landing(
+    fb: FacebookInit,
+) -> Result<(), Error> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: PushrebaseTestRepo = test_repo_factory::build_empty(ctx.fb).await?;
+    let merge = required_root_merge(&ctx, &repo).await?;
+    let book = master_bookmark();
+    let config = PushrebaseFlags::default();
+
+    // The stack is indexed with the bookmark at B, then the bookmark moves
+    // back to A before it lands.
+    bookmark(&ctx, &repo, book.clone()).set_to(merge.b).await?;
+    let mut stack = index_pushrebase_request(&ctx, &repo, &config, &book, &merge.pushed).await?;
+    stack.require_root(&book, merge.b)?;
+    bookmark(&ctx, &repo, book.clone()).set_to(merge.a).await?;
+
+    let result = rebase_in_loop(&ctx, &repo, &config, &book, &stack, &[]).await;
+    assert_bookmark_moved(result, merge.b);
+    assert_eq!(resolve_cs_id(&ctx, &repo, "master").await?, merge.a);
+
+    let (tx, rx) = oneshot::channel();
+    let requeued = do_batched_pushrebase(
+        &ctx,
+        &repo,
+        &config,
+        &book,
+        vec![queued_pushrebase_request(&ctx, stack, tx)],
+        &[],
+    )
+    .await;
+    assert!(requeued.is_empty());
+    let result = rx.await?.map_err(|e| match e.inner() {
+        PushrebaseError::BookmarkMoved {
+            bookmark,
+            required_root,
+        } => PushrebaseError::BookmarkMoved {
+            bookmark: bookmark.clone(),
+            required_root: *required_root,
+        },
+        other => PushrebaseError::Error(format_err!("{other:?}")),
+    });
+    assert_bookmark_moved(result, merge.b);
+    assert_eq!(resolve_cs_id(&ctx, &repo, "master").await?, merge.a);
+    Ok(())
+}

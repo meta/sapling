@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use blobstore::Loadable;
@@ -71,6 +72,7 @@ async fn process_land_changesets_request(
     repo: &Repo,
     request: LandChangesetRequest,
 ) -> Result<LandChangesetsResponse, LandChangesetsError> {
+    let required_root = request_required_root(&request)?;
     let authz = authorization_context(ctx, request.service_identity)?;
 
     let bookmark = BookmarkKey::new(request.bookmark)?;
@@ -133,11 +135,22 @@ async fn process_land_changesets_request(
         cross_repo_push_source,
         bookmark_restrictions,
         request.log_new_public_commits_to_scribe,
-        None,
+        required_root,
     )
     .await?;
 
     Ok(land_changesets_response(outcome))
+}
+
+fn request_required_root(
+    request: &LandChangesetRequest,
+) -> anyhow::Result<Option<mononoke_types::ChangesetId>> {
+    request
+        .required_root
+        .as_deref()
+        .map(mononoke_types::ChangesetId::from_bytes)
+        .transpose()
+        .context("invalid required_root")
 }
 
 fn land_changesets_response(outcome: pushrebase::PushrebaseOutcome) -> LandChangesetsResponse {
@@ -259,6 +272,7 @@ async fn process_batched_request(
     client: &BatchedPushrebaseClient<Repo>,
     request: LandChangesetRequest,
 ) -> Result<LandChangesetsResponse, LandChangesetsError> {
+    let required_root = request_required_root(&request)?;
     let authz = authorization_context(ctx, request.service_identity)?;
 
     let bookmark = BookmarkKey::new(&request.bookmark)?;
@@ -319,9 +333,32 @@ async fn process_batched_request(
             cross_repo_push_source,
             bookmark_restrictions,
             request.log_new_public_commits_to_scribe,
-            None,
+            required_root,
         )
         .await?;
 
     Ok(land_changesets_response(outcome))
+}
+
+#[cfg(test)]
+mod tests {
+    use mononoke_macros::mononoke;
+    use mononoke_types::ChangesetId;
+
+    use super::*;
+
+    #[mononoke::test]
+    fn required_root_is_read_from_the_request() {
+        let root = ChangesetId::from_bytes([1u8; 32]).unwrap();
+        let request = |root: Option<Vec<u8>>| LandChangesetRequest {
+            required_root: root,
+            ..Default::default()
+        };
+        assert_eq!(request_required_root(&request(None)).unwrap(), None);
+        assert_eq!(
+            request_required_root(&request(Some(root.as_ref().to_vec()))).unwrap(),
+            Some(root)
+        );
+        assert!(request_required_root(&request(Some(vec![1, 2, 3]))).is_err());
+    }
 }

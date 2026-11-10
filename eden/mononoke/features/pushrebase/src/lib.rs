@@ -230,6 +230,13 @@ pub enum PushrebaseError {
     RebaseOverMerge,
     #[error("Root is too far behind")]
     RootTooFarBehind,
+    /// The stack's required root is not where pushrebase would rebase it
+    /// from, or is no longer an ancestor of the bookmark.
+    #[error("bookmark '{bookmark}' moved while the push was being checked. Pull and retry")]
+    BookmarkMoved {
+        bookmark: BookmarkKey,
+        required_root: ChangesetId,
+    },
     #[error("baseline {baseline} {rejection} (onto {onto})")]
     UnplaceableBaseline {
         baseline: ChangesetId,
@@ -428,11 +435,63 @@ pub struct PushrebaseStack {
     pub head: ChangesetId,
     /// Root of the pushed stack.
     pub root: ChangesetId,
+    /// Set by `require_root`: `root` must be an ancestor of the bookmark
+    /// value that each landing attempt reads.
+    required_root: Option<ChangesetId>,
     conflict_check_base: ChangesetId,
     carried_merge_file_info: Vec<MergedFileInfo>,
 }
 
 impl PushrebaseStack {
+    /// Requires the stack to be rebased from `root`. Fails unless `root` is
+    /// the root pushrebase chose for it; every landing attempt then also
+    /// fails unless `root` is an ancestor of the bookmark value it reads, so
+    /// the bookmark's compare-and-swap only lands the stack while that holds.
+    pub fn require_root(
+        &mut self,
+        bookmark: &BookmarkKey,
+        root: ChangesetId,
+    ) -> Result<(), PushrebaseError> {
+        if self.root != root {
+            return Err(PushrebaseError::BookmarkMoved {
+                bookmark: bookmark.clone(),
+                required_root: root,
+            });
+        }
+        self.required_root = Some(root);
+        Ok(())
+    }
+
+    /// Fails unless the required root, if any, is an ancestor of
+    /// `bookmark_value`.
+    async fn check_required_root(
+        &self,
+        ctx: &CoreContext,
+        repo: &impl Repo,
+        bookmark: &BookmarkKey,
+        bookmark_value: Option<ChangesetId>,
+    ) -> Result<(), PushrebaseError> {
+        let Some(required_root) = self.required_root else {
+            return Ok(());
+        };
+        let on_bookmark = match bookmark_value {
+            Some(value) => {
+                repo.commit_graph()
+                    .is_ancestor(ctx, required_root, value)
+                    .await?
+            }
+            None => false,
+        };
+        if on_bookmark {
+            Ok(())
+        } else {
+            Err(PushrebaseError::BookmarkMoved {
+                bookmark: bookmark.clone(),
+                required_root,
+            })
+        }
+    }
+
     /// Precomputes conflict information against a bookmark snapshot.
     /// Calling this method is optional; the batch worker performs any remaining work.
     pub async fn precompute(
@@ -510,6 +569,9 @@ fn pushrebase_context(ctx: &CoreContext, config: &PushrebaseFlags) -> CoreContex
 /// Does a pushrebase of a list of commits `pushed` onto `onto_bookmark`
 /// The commits from the pushed set should already be committed to the blobrepo
 /// Returns updated bookmark value.
+///
+/// With `required_root`, the stack must be rebased from it (see
+/// `PushrebaseStack::require_root`).
 pub async fn do_pushrebase_bonsai(
     ctx: &CoreContext,
     repo: &impl Repo,
@@ -517,7 +579,7 @@ pub async fn do_pushrebase_bonsai(
     onto_bookmark: &BookmarkKey,
     pushed: &HashSet<BonsaiChangeset>,
     prepushrebase_hooks: &[Box<dyn PushrebaseHook>],
-    _required_root: Option<ChangesetId>,
+    required_root: Option<ChangesetId>,
 ) -> Result<PushrebaseOutcome, PushrebaseError> {
     // Tag every Scuba sample emitted during this pushrebase with the
     // land-attribution keys from the request pushvars, so downstream
@@ -527,7 +589,10 @@ pub async fn do_pushrebase_bonsai(
     let ctx = pushrebase_context(ctx, config);
     let ctx = &ctx;
 
-    let stack = index_pushrebase_request(ctx, repo, config, onto_bookmark, pushed).await?;
+    let mut stack = index_pushrebase_request(ctx, repo, config, onto_bookmark, pushed).await?;
+    if let Some(root) = required_root {
+        stack.require_root(onto_bookmark, root)?;
+    }
     rebase_in_loop(
         ctx,
         repo,
@@ -570,6 +635,7 @@ pub async fn index_pushrebase_request(
         changesets: client_bcs,
         head,
         root,
+        required_root: None,
         conflict_check_base: root,
         carried_merge_file_info: vec![],
     })
@@ -1587,6 +1653,14 @@ async fn do_batched_pushrebase(
     let mut requests_iter = requests.into_iter();
     while let Some(mut request) = requests_iter.next() {
         let request_ctx = pushrebase_context(&request.ctx, flags);
+        if let Err(e) = request
+            .stack
+            .check_required_root(&request_ctx, repo, onto_bookmark, old_bookmark_value)
+            .await
+        {
+            let _ = request.response_tx.send(Err(SharedError::from(e)));
+            continue;
+        }
         let bookmark_val = old_bookmark_value.unwrap_or(request.stack.root);
         // Only scan the delta since preparation or the last attempt.
         let conflict_result = match check_pushrebase_conflicts(
@@ -2157,6 +2231,9 @@ async fn rebase_in_loop(
         let start_critical_section = Instant::now();
         // CRITICAL SECTION START: After getting the value of the bookmark
         let old_bookmark_value = get_bookmark_value(ctx, repo, onto_bookmark).await?;
+        stack
+            .check_required_root(ctx, repo, onto_bookmark, old_bookmark_value)
+            .await?;
         let hooks = try_join_all(prepushrebase_hooks.iter().map(|h| {
             h.in_critical_section(ctx, old_bookmark_value)
                 .map_err(PushrebaseError::from)

@@ -172,7 +172,7 @@ impl PushrebaseClient for LandServicePushrebaseClient {
         cross_repo_push_source: CrossRepoPushSource,
         bookmark_restrictions: BookmarkKindRestrictions,
         log_new_public_commits_to_scribe: bool,
-        _required_root: Option<ChangesetId>,
+        required_root: Option<ChangesetId>,
     ) -> Result<PushrebaseOutcome, BookmarkMovementError> {
         let repo_name = self.repo.to_string();
         let changesets = convert_changesets(changesets);
@@ -212,6 +212,7 @@ impl PushrebaseClient for LandServicePushrebaseClient {
             // Per-request control travels via the MERGE_RESOLUTION_OVERRIDE
             // pushvar; the typed Thrift field is deprecated.
             merge_resolution_override_deprecated: None,
+            required_root: required_root.map(|root| root.as_ref().to_vec()),
         };
 
         let response = self

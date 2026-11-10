@@ -27,6 +27,8 @@ use crate::LandServicePushrebaseClient;
 use crate::PushrebaseClient;
 use crate::local::LocalPushrebaseClient;
 
+/// Pushrebases `changesets` with the repo's configured client (see
+/// `PushrebaseClient::pushrebase` for `required_root`).
 pub async fn normal_pushrebase<'a>(
     ctx: &'a CoreContext,
     repo: &'a impl Repo,

@@ -45,7 +45,7 @@ impl<'a, R: Repo> PushrebaseClient for LocalPushrebaseClient<'a, R> {
         cross_repo_push_source: CrossRepoPushSource,
         bookmark_restrictions: BookmarkKindRestrictions,
         log_new_public_commits_to_scribe: bool,
-        _required_root: Option<ChangesetId>,
+        required_root: Option<ChangesetId>,
     ) -> Result<PushrebaseOutcome, BookmarkMovementError> {
         let prepared = prepare_pushrebase(
             ctx,
@@ -83,7 +83,7 @@ impl<'a, R: Repo> PushrebaseClient for LocalPushrebaseClient<'a, R> {
             bookmark,
             &source_changesets,
             &hooks,
-            None,
+            required_root,
         )
         .timed()
         .await;

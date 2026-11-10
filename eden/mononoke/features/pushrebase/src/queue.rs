@@ -478,6 +478,7 @@ mod tests {
                 changesets: vec![changeset],
                 head: id,
                 root: id,
+                required_root: None,
                 conflict_check_base: id,
                 carried_merge_file_info: vec![],
             },
@@ -581,6 +582,7 @@ mod tests {
                         ctx: ctx.clone(),
                         stack: PushrebaseStack {
                             root,
+                            required_root: None,
                             conflict_check_base: root,
                             carried_merge_file_info: vec![],
                             head: changeset.get_changeset_id(),
