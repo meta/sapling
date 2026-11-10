@@ -164,6 +164,19 @@ impl Pack {
         &self.entries
     }
 
+    /// The key `PackBlob::put_packed` stores this pack under for `pack_prefix`.
+    /// It depends only on the set of entry keys, so packs with the same entries
+    /// share an identity.
+    pub fn pack_key(&self, pack_prefix: &str) -> String {
+        let mut link_keys: Vec<&str> = self
+            .entries
+            .iter()
+            .map(|entry| entry.key.as_str())
+            .collect();
+        link_keys.sort_unstable();
+        pack_key_for(pack_prefix, &link_keys)
+    }
+
     /// Converts the pack into something that can go into a blobstore
     pub(crate) fn into_blobstore_bytes(
         self,
@@ -179,19 +192,10 @@ impl Pack {
                 );
             }
         }
-        let link_keys = {
-            let mut link_keys: Vec<String> =
-                self.entries.iter().map(|entry| entry.key.clone()).collect();
-
-            // As long as it has the same entries its the same pack.  Sort keys before hashing them
-            link_keys.sort_unstable();
-            link_keys
-        };
-
-        // Build the pack identity
-        let mut pack_key = pack_prefix;
-        pack_key.push_str(compute_pack_hash(&link_keys).as_str());
-        pack_key.push_str(store::ENVELOPE_SUFFIX);
+        let mut link_keys: Vec<String> =
+            self.entries.iter().map(|entry| entry.key.clone()).collect();
+        link_keys.sort_unstable();
+        let pack_key = pack_key_for(&pack_prefix, &link_keys);
 
         let pack = PackedFormat {
             key: pack_key.clone(),
@@ -355,10 +359,110 @@ pub(crate) fn decode_pack(
     Ok((decoded, sizing))
 }
 
+/// What a physical `.pack` key holds.
+pub enum StoredValue {
+    /// The value is stored on its own.
+    Single,
+    /// The value is one entry of a pack that is linked from its entries' keys.
+    Packed(PackContents),
+}
+
+/// The contents of a pack, as read through any key linking to it.
+pub struct PackContents(PackedFormat);
+
+impl PackContents {
+    /// The identity the pack was stored with.  Every link to the same pack
+    /// reports it, and a pack with a different set of entries has a different one.
+    pub fn pack_key(&self) -> &str {
+        &self.0.key
+    }
+
+    /// Keys of the pack's entries, without repository prefix, in stored order.
+    /// An entry may only be present as a dictionary for other entries, with no
+    /// key linking to the pack for it.
+    pub fn entry_keys(&self) -> impl Iterator<Item = &str> {
+        self.0.entries.iter().map(|entry| entry.key.as_str())
+    }
+
+    /// Decode the given entries (keys without repository prefix), resolving
+    /// their dictionaries through the other entries of the pack.
+    pub fn decode_entries(&self, keys: &[&str]) -> Result<HashMap<String, BlobstoreBytes>> {
+        let entries: HashMap<&str, &PackedValue> = self
+            .0
+            .entries
+            .iter()
+            .map(|entry| (entry.key.as_str(), &entry.data))
+            .collect();
+        let mut decoded: HashMap<String, BlobstoreBytes> = HashMap::new();
+        for key in keys {
+            let mut to_decode = vec![key.to_string()];
+            while let Some(next_key) = to_decode.last().cloned() {
+                if decoded.contains_key(&next_key) {
+                    to_decode.pop();
+                    continue;
+                }
+                let value = entries.get(next_key.as_str()).ok_or_else(|| {
+                    format_err!("Key {key} needs entry {next_key}, which is not in the pack")
+                })?;
+                match value {
+                    PackedValue::Single(v) => {
+                        let (value, _) = decode_independent(v.clone())?;
+                        decoded.insert(next_key, value);
+                        to_decode.pop();
+                    }
+                    PackedValue::ZstdFromDict(v) if decoded.contains_key(&v.dict_key) => {
+                        let (value, _) = decode_zstd_from_dict(&next_key, v.clone(), &decoded)?;
+                        decoded.insert(next_key, value);
+                        to_decode.pop();
+                    }
+                    PackedValue::ZstdFromDict(v) => {
+                        if to_decode.contains(&v.dict_key) {
+                            bail!(
+                                "Key {key} needs dictionary {} but it forms a cycle in the pack",
+                                v.dict_key
+                            );
+                        }
+                        to_decode.push(v.dict_key.clone());
+                    }
+                    PackedValue::UnknownField(e) => bail!("PackedValue::UnknownField {e:?}"),
+                }
+            }
+        }
+        keys.iter()
+            .map(|key| {
+                let value = decoded
+                    .get(*key)
+                    .ok_or_else(|| format_err!("Key {key} was not decoded"))?;
+                Ok((key.to_string(), value.clone()))
+            })
+            .collect()
+    }
+}
+
+/// Interpret the raw bytes stored under a physical `.pack` key.
+pub fn inspect_stored_value(raw: BlobstoreBytes) -> Result<StoredValue> {
+    let envelope: PackEnvelope = raw.try_into()?;
+    match envelope.0.storage {
+        StorageFormat::Single(_) => Ok(StoredValue::Single),
+        StorageFormat::Packed(packed) => Ok(StoredValue::Packed(PackContents(packed))),
+        StorageFormat::UnknownField(e) => Err(format_err!("StorageFormat::UnknownField {e:?}")),
+    }
+}
+
+// The identity of a pack holding entries with these sorted keys.
+fn pack_key_for<K: AsRef<str>>(pack_prefix: &str, sorted_keys: &[K]) -> String {
+    format!(
+        "{pack_prefix}{}{}",
+        compute_pack_hash(sorted_keys),
+        store::ENVELOPE_SUFFIX
+    )
+}
+
 // Hash the keys as they themselves are hashes
-fn compute_pack_hash(keys: &[String]) -> AsciiString {
+fn compute_pack_hash<K: AsRef<str>>(keys: &[K]) -> AsciiString {
     let mut hash_context = HashContext::new(b"pack");
     for key in keys {
+        let key = key.as_ref();
         hash_context.update(key.len().to_le_bytes());
         hash_context.update(key.as_bytes());
     }
@@ -649,6 +753,106 @@ mod tests {
             "Pack grew by more than the size of added data. Expected {compressed_size} < {limit}",
         );
 
+        Ok(())
+    }
+
+    fn chained_pack() -> Result<(Pack, Vec<(String, Bytes)>)> {
+        let mut rng = XorShiftRng::seed_from_u64(0); // reproducible Rng
+        let mut version = vec![7u8; 4096];
+        rng.fill_bytes(&mut version[0..2048]);
+        let mut values = vec![("a".to_string(), Bytes::from(version.clone()))];
+        let mut pack = EmptyPack::new(0)
+            .add_base_blob("a".to_string(), BlobstoreBytes::from_bytes(version.clone()))?;
+        for (dict_key, key) in [("a", "b"), ("b", "c"), ("a", "d")] {
+            rng.fill_bytes(&mut version[2048..2560]);
+            pack.add_delta_blob(
+                dict_key.to_string(),
+                key.to_string(),
+                BlobstoreBytes::from_bytes(version.clone()),
+            )?;
+            values.push((key.to_string(), Bytes::from(version.clone())));
+        }
+        Ok((pack, values))
+    }
+
+    #[mononoke::test]
+    fn inspect_and_decode_pack_entries() -> Result<()> {
+        let (pack, values) = chained_pack()?;
+        let expected_key = pack.pack_key("multiblob-");
+        let (pack_key, _, blob) = pack.into_blobstore_bytes("multiblob-".to_string())?;
+        assert_eq!(
+            expected_key, pack_key,
+            "pack_key must predict the stored identity"
+        );
+
+        let StoredValue::Packed(contents) = inspect_stored_value(blob)? else {
+            bail!("a pack must be inspected as packed");
+        };
+        assert_eq!(contents.pack_key(), pack_key);
+        assert_eq!(
+            contents.entry_keys().collect::<Vec<_>>(),
+            vec!["a", "b", "c", "d"]
+        );
+
+        // "c" is only decodable through "b" and then "a".
+        let decoded = contents.decode_entries(&["c", "d", "c"])?;
+        assert_eq!(
+            decoded.len(),
+            2,
+            "only the requested entries are returned, once each"
+        );
+        for (key, value) in values.iter().filter(|(key, _)| key == "c" || key == "d") {
+            assert_eq!(decoded[key].as_bytes(), value);
+        }
+
+        let err = match contents.decode_entries(&["e"]) {
+            Ok(_) => bail!("decoding an absent entry must fail"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("not in the pack"), "got: {err}");
+        Ok(())
+    }
+
+    #[mononoke::test]
+    fn inspect_single_and_invalid_values() -> Result<()> {
+        let single = SingleCompressed::new_uncompressed(BlobstoreBytes::from_bytes(
+            Bytes::from_static(b"value"),
+        ))
+        .into_blobstore_bytes();
+        assert!(matches!(inspect_stored_value(single)?, StoredValue::Single));
+        assert!(
+            inspect_stored_value(BlobstoreBytes::from_bytes(Bytes::from_static(b"ab"))).is_err(),
+            "a value too short for an envelope header must be rejected"
+        );
+        Ok(())
+    }
+
+    #[mononoke::test]
+    fn decode_entries_cyclic_dict_chain() -> Result<()> {
+        let contents = PackContents(PackedFormat {
+            key: "multiblob-cycle.pack".to_string(),
+            entries: vec![
+                PackedEntry {
+                    key: "0".to_string(),
+                    data: PackedValue::ZstdFromDict(ZstdFromDictValue {
+                        dict_key: "1".to_string(),
+                        zstd: Bytes::new(),
+                    }),
+                },
+                PackedEntry {
+                    key: "1".to_string(),
+                    data: PackedValue::ZstdFromDict(ZstdFromDictValue {
+                        dict_key: "0".to_string(),
+                        zstd: Bytes::new(),
+                    }),
+                },
+            ],
+        });
+        let err = match contents.decode_entries(&["0"]) {
+            Ok(_) => bail!("a cyclic dictionary chain must be rejected"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("cycle"), "got: {err}");
         Ok(())
     }
 
