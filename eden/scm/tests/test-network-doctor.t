@@ -19,6 +19,17 @@ Set up fake cert paths so we don't hit "missing certs" error.
   [1]
 
 
+With edenapi.url unset, the doctor checks the SLAPI server the client derives
+from the mononoke:// path.
+  $ sl pull --config edenapi.url= --config paths.default=mononoke://test_fail/foo --config doctor.external-host-check-url=https://test_succeed --verbose
+  pulling from mononoke://test_fail/foo
+  abort: command failed due to network error (see * for details) (glob)
+  
+  Please check your VPN or proxy (internet okay, but can't reach server).
+    no server connectivity: TCP error: test
+  [1]
+
+
   $ sl pull --config edenapi.url=https://test_fail/foo --config doctor.external-host-check-url=https://test_succeed --verbose
   pulling from mononoke://169.254.1.2/foo
   abort: command failed due to network error (see * for details) (glob)

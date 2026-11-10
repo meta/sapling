@@ -16,5 +16,6 @@ sl_rust_library(
         "//eden/scm/lib/config/model:configmodel",
         "//eden/scm/lib/hg-http:hg-http",
         "//eden/scm/lib/http-client:http-client",
+        "//eden/scm/lib/repo/url:repourl",
     ],
 )

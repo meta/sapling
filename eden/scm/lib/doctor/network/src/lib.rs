@@ -18,6 +18,8 @@ use configmodel::Config;
 use configmodel::ConfigExt;
 use http_client::HttpClientError;
 use http_client::curl;
+use repourl::RepoUrl;
+use repourl::SlapiServer;
 use thiserror::Error;
 use url::Host;
 use url::Url;
@@ -317,7 +319,7 @@ impl Doctor {
     }
 
     fn check_server_connectivity(&self, config: &dyn Config) -> Result<(), Diagnosis> {
-        let repo_url = config_url(config, "edenapi", "url", None)?;
+        let repo_url = slapi_server(config)?.url;
 
         // First check for server connectivity.
         let server_err = match self.check_host_tcp(&repo_url) {
@@ -340,7 +342,7 @@ impl Doctor {
     }
 
     fn check_http_connectivity(&self, config: &dyn Config) -> Result<(), Diagnosis> {
-        let mut url = config_url(config, "edenapi", "url", None)?;
+        let SlapiServer { mut url, repo_url } = slapi_server(config)?;
         let repo_name = match config
             .get("remotefilelog", "reponame")
             // Try a default reponame so network doctor works outside a repo context.
@@ -361,15 +363,19 @@ impl Doctor {
             Err(()) => return Err(Diagnosis::BadConfig("bad edenapi.url".into())),
         };
 
+        let repo_url = repo_url.as_ref();
         let mut x2pagentd_err = None;
         if use_x2pagentd(config, &url) {
-            x2pagentd_err = match self.check_host_http(config, &url, true) {
+            x2pagentd_err = match self.check_host_http(config, &url, repo_url, true) {
                 Ok(()) => return Ok(()),
                 Err(err) => Some(err),
             }
         }
 
-        match (self.check_host_http(config, &url, false), x2pagentd_err) {
+        match (
+            self.check_host_http(config, &url, repo_url, false),
+            x2pagentd_err,
+        ) {
             (Ok(()), Some(err)) => Err(Diagnosis::AuthProxyProblem(err)),
             (Ok(()), None) => Ok(()),
             (Err(_), Some(proxy_err)) => Err(Diagnosis::HttpProblem(proxy_err)),
@@ -377,20 +383,32 @@ impl Doctor {
         }
     }
 
+    /// Requests `url` with the client certificate the SLAPI client would use:
+    /// for a server named by the remote path `repo_url`, the `[auth]` group
+    /// `AuthSection::best_match_for_repo_url` picks.
     fn check_host_http(
         &self,
         config: &dyn Config,
         url: &Url,
+        repo_url: Option<&RepoUrl>,
         use_x2pagentd: bool,
     ) -> Result<(), HttpError> {
         tracing::debug!(%url, use_x2pagentd, "check_host_http");
 
-        let mut hc = hg_http::http_config(config, url)?;
+        let select_auth = {
+            let url = url.clone();
+            let repo_url = repo_url.cloned();
+            move |auth: &AuthSection| match &repo_url {
+                Some(repo_url) => auth.best_match_for_repo_url(repo_url),
+                None => auth.best_match_for(&url),
+            }
+        };
+        let mut hc = hg_http::http_config_with_auth(config, url, select_auth.clone())?;
 
         if !use_x2pagentd {
             hc.unix_socket_path = None;
 
-            let auth = AuthSection::from_config(config).best_match_for(url)?;
+            let auth = select_auth(&AuthSection::from_config(config))?;
             (hc.cert_path, hc.key_path, hc.ca_path) = auth
                 .map(|auth| (auth.cert, auth.key, auth.cacerts))
                 .unwrap_or_default();
@@ -443,6 +461,28 @@ fn use_x2pagentd(config: &dyn Config, url: &Url) -> bool {
         None => false,
         Some(domain) => hc.unix_socket_domains.contains(domain),
     }
+}
+
+/// The SLAPI server the repo's client uses (see `repourl::slapi_server`).
+fn slapi_server(config: &dyn Config) -> Result<SlapiServer, Diagnosis> {
+    // A path that does not parse names no server. Its error is the diagnosis
+    // only if nothing else names one.
+    let path = config.get_nonempty("paths", "default").map(|path| {
+        RepoUrl::from_str(config, &path).map_err(|e| format!("invalid paths.default {path}: {e:#}"))
+    });
+    let repo_url = match &path {
+        Some(Ok(repo_url)) => Some(repo_url),
+        _ => None,
+    };
+
+    repourl::slapi_server(config, repo_url)
+        .map_err(|e| Diagnosis::BadConfig(e.to_string()))?
+        .ok_or_else(|| match path {
+            Some(Err(err)) => Diagnosis::BadConfig(err),
+            _ => Diagnosis::BadConfig(
+                "no config for edenapi.url, and paths.default names no SLAPI server".to_string(),
+            ),
+        })
 }
 
 // Extract and parse URL from config with optional default if no config value.
@@ -685,6 +725,73 @@ mod tests {
                 }
                 _ => panic!(),
             };
+        }
+    }
+
+    #[test]
+    fn test_slapi_server_from_path() {
+        let td = tempdir().unwrap();
+        let fake_cert_path = td.path().join("cert");
+        std::fs::write(&fake_cert_path, "foo").unwrap();
+
+        // With edenapi.url unset, the server and its credentials come from
+        // the mononoke:// path, as for the SLAPI client.
+        let mut cfg = BTreeMap::new();
+        cfg.insert("edenapi.url", "");
+        cfg.insert("paths.default", "mononoke://example.com:8443/some_repo");
+        cfg.insert("remotefilelog.reponame", "some_repo");
+        cfg.insert("auth.test.prefix", "mononoke://*");
+        cfg.insert("auth.test.cert", fake_cert_path.to_str().unwrap());
+        cfg.insert("auth.test.key", fake_cert_path.to_str().unwrap());
+
+        let server = slapi_server(&cfg).unwrap();
+        assert_eq!(server.url.as_str(), "https://example.com:8443/slapi/");
+
+        let mut doc = Doctor::new();
+        doc.stub_healthcheck_response = Some(Box::new(|url, _x2p| {
+            assert_eq!(
+                url.as_str(),
+                "https://example.com:8443/slapi/some_repo/capabilities"
+            );
+            Ok(response!(http::StatusCode::OK))
+        }));
+        assert!(matches!(doc.check_http_connectivity(&cfg), Ok(())));
+
+        // An explicit edenapi.url still wins.
+        let mut explicit = cfg.clone();
+        explicit.insert("edenapi.url", "https://configured.example.com/edenapi/");
+        assert_eq!(
+            slapi_server(&explicit).unwrap().url.as_str(),
+            "https://configured.example.com/edenapi/"
+        );
+
+        // A path that does not parse names no server, so edenapi.url is used.
+        let mut malformed = explicit.clone();
+        malformed.insert("paths.default", "mononoke://a%20b/some_repo");
+        assert_eq!(
+            slapi_server(&malformed).unwrap().url.as_str(),
+            "https://configured.example.com/edenapi/"
+        );
+
+        // Without edenapi.url, the path's error is the diagnosis.
+        malformed.insert("edenapi.url", "");
+        match slapi_server(&malformed) {
+            Err(Diagnosis::BadConfig(msg)) => assert!(
+                msg.starts_with("invalid paths.default mononoke://a%20b/some_repo: "),
+                "{msg}"
+            ),
+            _ => panic!("expected a config diagnosis"),
+        }
+
+        // Neither names a server.
+        let mut none = cfg.clone();
+        none.insert("paths.default", "ssh://user@example.com/some_repo");
+        match slapi_server(&none) {
+            Err(Diagnosis::BadConfig(msg)) => assert_eq!(
+                msg,
+                "no config for edenapi.url, and paths.default names no SLAPI server"
+            ),
+            _ => panic!("expected a config diagnosis"),
         }
     }
 
