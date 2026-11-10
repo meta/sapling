@@ -15,10 +15,10 @@ use mononoke_macros::mononoke;
 
 use super::*;
 
-fn repo_gen(spec_hash: u64, storage_gen: u64) -> RepoGeneration {
+fn repo_gen(spec_hash: u64, shared_gen: u64) -> RepoGeneration {
     RepoGeneration {
         spec_hash,
-        storage_gen,
+        shared_gen,
     }
 }
 
@@ -85,7 +85,7 @@ fn drift_rebuilds_shallow_and_deep() {
 }
 
 #[mononoke::test]
-fn storage_generation_change_rebuilds() {
+fn shared_generation_change_rebuilds() {
     let state = HashMap::from([(
         "r".to_string(),
         RepoState::Loaded {
@@ -98,7 +98,7 @@ fn storage_generation_change_rebuilds() {
     assert_eq!(
         actions.get("r"),
         Some(&RepoAction::Rebuild),
-        "a storage-gen bump must rebuild even when the spec is unchanged",
+        "a shared-gen bump must rebuild even when the spec is unchanged",
     );
 }
 
@@ -199,7 +199,7 @@ fn never_drops_deep_present_in_manifest() {
 struct FakeConfig {
     manifest: Vec<ManifestEntry>,
     desired: HashMap<String, DesiredRepo>,
-    storage_gen: u64,
+    shared_gen: u64,
 }
 
 impl ConfigSource for FakeConfig {
@@ -209,8 +209,8 @@ impl ConfigSource for FakeConfig {
     fn desired(&self, name: &str) -> Option<DesiredRepo> {
         self.desired.get(name).copied()
     }
-    fn storage_generation(&self) -> Result<u64> {
-        Ok(self.storage_gen)
+    fn shared_generation(&self) -> Result<u64> {
+        Ok(self.shared_gen)
     }
 }
 
@@ -241,7 +241,7 @@ impl RepoManager for FakeManager {
         &self,
         name: &str,
         _deep: bool,
-        storage_gen: u64,
+        shared_gen: u64,
     ) -> Result<Option<RepoGeneration>> {
         self.built.lock().expect("poisoned").push(name.to_string());
         if self.fail.contains(name) {
@@ -253,7 +253,7 @@ impl RepoManager for FakeManager {
             .insert(name.to_string());
         Ok(Some(RepoGeneration {
             spec_hash: 100,
-            storage_gen,
+            shared_gen,
         }))
     }
     fn drop_repo(&self, name: &str) {
@@ -275,7 +275,7 @@ async fn first_pass_does_not_rebuild_already_loaded_repos() {
             ("a".to_string(), desired(true, 100)),
             ("b".to_string(), desired(true, 100)),
         ]),
-        storage_gen: 0,
+        shared_gen: 0,
     };
     let mgr = FakeManager::new(&["a", "b"], &[]);
     let outcome = reconcile(&config, &mgr, &HashMap::new(), 4).await.unwrap();
@@ -292,7 +292,7 @@ async fn builds_new_and_drops_removed() {
     let config = FakeConfig {
         manifest: vec![entry("new", false)],
         desired: HashMap::from([("new".to_string(), desired(true, 100))]),
-        storage_gen: 0,
+        shared_gen: 0,
     };
     // "old" is loaded but absent from the manifest -> dropped; "new" -> built.
     let mgr = FakeManager::new(&["old"], &[]);
@@ -310,7 +310,7 @@ async fn failed_build_is_non_destructive() {
     let config = FakeConfig {
         manifest: vec![entry("r", false)],
         desired: HashMap::from([("r".to_string(), desired(true, 200))]),
-        storage_gen: 0,
+        shared_gen: 0,
     };
     // "r" loaded at gen 100; desired 200 -> rebuild, but build fails.
     let mgr = FakeManager::new(&["r"], &["r"]);

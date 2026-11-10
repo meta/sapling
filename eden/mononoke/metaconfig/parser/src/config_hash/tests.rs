@@ -33,21 +33,21 @@ fn spec_hash_is_content_addressed() {
 }
 
 #[mononoke::test]
-fn storage_generation_reflects_content_not_order() {
+fn shared_generation_reflects_content_not_order() {
     let cfg = RawStorageConfig::default();
     let m1: HashMap<String, RawStorageConfig> =
         hashmap! { "a".to_string() => cfg.clone(), "b".to_string() => cfg.clone() };
     let m2: HashMap<String, RawStorageConfig> =
         hashmap! { "b".to_string() => cfg.clone(), "a".to_string() => cfg.clone() };
     assert_eq!(
-        storage_generation(&m1).unwrap(),
-        storage_generation(&m2).unwrap(),
-        "storage generation must be independent of insertion order",
+        shared_generation(&m1).unwrap(),
+        shared_generation(&m2).unwrap(),
+        "shared generation must be independent of insertion order",
     );
     let m3: HashMap<String, RawStorageConfig> = hashmap! { "a".to_string() => cfg };
     assert_ne!(
-        storage_generation(&m1).unwrap(),
-        storage_generation(&m3).unwrap(),
+        shared_generation(&m1).unwrap(),
+        shared_generation(&m3).unwrap(),
         "different storage content must change the generation",
     );
 }

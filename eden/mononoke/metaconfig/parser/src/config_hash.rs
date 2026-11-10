@@ -31,11 +31,11 @@ pub fn spec_hash(spec: &RepoSpec) -> Result<u64> {
     Ok(hash_canonical_json(&json))
 }
 
-/// A stable, content-addressed hash of a tier's named storage configs
-/// (`TierManifest.storage`). Bumps only on a real storage content change, not a
-/// configerator version bump — so an unrelated revision never triggers a
-/// fleet-wide rebuild (the S684063 shape).
-pub fn storage_generation(storage: &HashMap<String, RawStorageConfig>) -> Result<u64> {
+/// A stable, content-addressed hash of the config a tier's repos share: the
+/// manifest's named storage configs (`TierManifest.storage`). Bumps only on a
+/// real content change, not a configerator version bump — so an unrelated
+/// revision never triggers a fleet-wide rebuild (the S684063 shape).
+pub fn shared_generation(storage: &HashMap<String, RawStorageConfig>) -> Result<u64> {
     let json = serde_json::to_value(storage).context("serializing storage configs for hashing")?;
     Ok(hash_canonical_json(&json))
 }

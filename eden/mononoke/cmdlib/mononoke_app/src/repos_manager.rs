@@ -42,8 +42,8 @@ use itertools::Itertools;
 use metaconfig_parser::RepoConfigs;
 use metaconfig_parser::StorageConfigs;
 use metaconfig_parser::parse_repo_spec;
+use metaconfig_parser::shared_generation;
 use metaconfig_parser::spec_hash;
-use metaconfig_parser::storage_generation;
 use metaconfig_types::CommitIdentityScheme;
 use metaconfig_types::Redaction;
 use metaconfig_types::RepoConfig;
@@ -669,12 +669,12 @@ impl ConfigSource for ReconcileConfigSource {
         })
     }
 
-    fn storage_generation(&self) -> Result<u64> {
+    fn shared_generation(&self) -> Result<u64> {
         let manifest = self
             .configs
             .manifest()
-            .context("reconcile: no manifest for storage generation")?;
-        storage_generation(&manifest.storage)
+            .context("reconcile: no manifest for shared generation")?;
+        shared_generation(&manifest.storage)
     }
 }
 
@@ -720,7 +720,7 @@ where
         &self,
         name: &str,
         deep: bool,
-        storage_gen: u64,
+        shared_gen: u64,
     ) -> Result<Option<RepoGeneration>> {
         let (spec, source) = self
             .configs
@@ -753,7 +753,7 @@ where
             applied,
             RepoGeneration {
                 spec_hash,
-                storage_gen,
+                shared_gen,
             },
         ))
     }

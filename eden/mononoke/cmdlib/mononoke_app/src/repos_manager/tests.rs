@@ -433,7 +433,7 @@ async fn test_reconcile_loop_abort_stops() {
 fn test_apply_generation_truth_table() {
     let generation = RepoGeneration {
         spec_hash: 11,
-        storage_gen: 22,
+        shared_gen: 22,
     };
 
     // Shallow reload always applies, so a generation is always recorded.

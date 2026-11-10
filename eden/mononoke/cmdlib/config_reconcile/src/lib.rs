@@ -32,7 +32,8 @@ use futures::stream::StreamExt;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RepoGeneration {
     pub spec_hash: u64,
-    pub storage_gen: u64,
+    /// The tier's shared config (see [`ConfigSource::shared_generation`]).
+    pub shared_gen: u64,
 }
 
 /// The controller's view of a repo it manages. A repo is EITHER healthy-loaded
@@ -96,8 +97,8 @@ pub trait ConfigSource {
     /// Live desired state for `name`, or `None` if its spec is unreadable /
     /// unsubscribed (treated as "unknown", never "drop").
     fn desired(&self, name: &str) -> Option<DesiredRepo>;
-    /// Content hash of the tier's storage config now.
-    fn storage_generation(&self) -> Result<u64>;
+    /// Content hash of the config the tier's repos share, now.
+    fn shared_generation(&self) -> Result<u64>;
 }
 
 /// Mutating operations on the repos loaded for this task. Encapsulates the
@@ -116,7 +117,7 @@ pub trait RepoManager: Sync {
         &self,
         name: &str,
         deep: bool,
-        storage_gen: u64,
+        shared_gen: u64,
     ) -> Result<Option<RepoGeneration>>;
     /// Remove `name` from the loaded set and evict its cached config.
     fn drop_repo(&self, name: &str);
@@ -140,7 +141,7 @@ pub(crate) fn compute_actions(
     loaded: &HashSet<String>,
     manifest: &[ManifestEntry],
     desired: &HashMap<String, DesiredRepo>,
-    storage_gen: u64,
+    shared_gen: u64,
 ) -> HashMap<String, RepoAction> {
     let is_deep: HashMap<&str, bool> = manifest
         .iter()
@@ -175,9 +176,7 @@ pub(crate) fn compute_actions(
                 // Loaded + enabled (shallow or deep): rebuild on real drift, or
                 // if there is no known-good generation (prior failure / seeded).
                 let drifted = match (d, served_gen) {
-                    (Some(d), Some(g)) => {
-                        d.spec_hash != g.spec_hash || g.storage_gen != storage_gen
-                    }
+                    (Some(d), Some(g)) => d.spec_hash != g.spec_hash || g.shared_gen != shared_gen,
                     _ => true,
                 };
                 drifted.then_some(RepoAction::Rebuild)
@@ -200,7 +199,7 @@ pub async fn reconcile<C: ConfigSource, M: RepoManager>(
     concurrency: usize,
 ) -> Result<ReconcileOutcome> {
     let manifest = config.manifest();
-    let storage_gen = config.storage_generation()?;
+    let shared_gen = config.shared_generation()?;
     let loaded = manager.loaded_names();
 
     // Live desired state for every manifest member the controller can read.
@@ -219,18 +218,18 @@ pub async fn reconcile<C: ConfigSource, M: RepoManager>(
             let generation = desired.get(name).map_or(
                 RepoGeneration {
                     spec_hash: 0,
-                    storage_gen: 0,
+                    shared_gen: 0,
                 },
                 |d| RepoGeneration {
                     spec_hash: d.spec_hash,
-                    storage_gen,
+                    shared_gen,
                 },
             );
             state.insert(name.clone(), RepoState::Loaded { generation });
         }
     }
 
-    let actions = compute_actions(&state, &loaded, &manifest, &desired, storage_gen);
+    let actions = compute_actions(&state, &loaded, &manifest, &desired, shared_gen);
     if actions.is_empty() {
         return Ok(ReconcileOutcome {
             next_state: state,
@@ -266,7 +265,7 @@ pub async fn reconcile<C: ConfigSource, M: RepoManager>(
         .map(|(name, action)| {
             let deep = is_deep.get(name.as_str()).copied().unwrap_or(false);
             async move {
-                let result = manager.build_and_apply(&name, deep, storage_gen).await;
+                let result = manager.build_and_apply(&name, deep, shared_gen).await;
                 (name, action, result)
             }
         })
