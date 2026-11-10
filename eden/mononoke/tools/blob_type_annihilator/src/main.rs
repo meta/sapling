@@ -24,6 +24,7 @@ mod run;
 mod scan;
 mod scope;
 mod state;
+mod verify;
 
 /// Remove retired derived data blob families from repository storage.
 #[derive(Parser)]

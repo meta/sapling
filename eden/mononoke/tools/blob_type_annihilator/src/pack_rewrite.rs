@@ -685,6 +685,63 @@ pub async fn execute_task(actx: &ApplyContext<'_>, task: &PackTask) -> Result<Ta
     Ok(TaskResult::Complete(outcome))
 }
 
+/// The frozen tasks of a component and repo, if frozen.
+pub async fn frozen_summary(
+    state: &StateDir,
+    component_id: &str,
+    repo_id: RepositoryId,
+) -> Result<Option<FreezeSummary>> {
+    state
+        .read_json(
+            &packs_dir(component_id, repo_id)
+                .join("frozen")
+                .join("summary.json"),
+        )
+        .await
+}
+
+/// Task journals read at the same time.
+const JOURNAL_READS: usize = 64;
+
+/// Outcomes of the completed tasks of a component and repo, by pack key.
+pub async fn completed_tasks(
+    state: &StateDir,
+    component_id: &str,
+    repo_id: RepositoryId,
+) -> Result<Vec<TaskOutcome>> {
+    let dir = task_journals_dir(component_id, repo_id);
+    let journals: Vec<PathBuf> = stream::iter(state.list_dir(&dir).await?)
+        .map(|shard| {
+            let shard_dir = dir.join(shard);
+            async move {
+                let names = state.list_dir(&shard_dir).await?;
+                anyhow::Ok(
+                    names
+                        .into_iter()
+                        .map(|name| shard_dir.join(name))
+                        .collect::<Vec<_>>(),
+                )
+            }
+        })
+        .buffer_unordered(JOURNAL_READS)
+        .try_concat()
+        .await?;
+    let mut outcomes: Vec<TaskOutcome> = stream::iter(journals)
+        .map(|path| async move {
+            let events: Vec<PackEvent> = state.read_journal(&path).await?;
+            anyhow::Ok(match replay(events) {
+                Stage::Complete(outcome) => Some(outcome),
+                _ => None,
+            })
+        })
+        .buffer_unordered(JOURNAL_READS)
+        .try_filter_map(|outcome| future::ready(Ok(outcome)))
+        .try_collect()
+        .await?;
+    outcomes.sort_by(|a, b| a.pack_key.cmp(&b.pack_key));
+    Ok(outcomes)
+}
+
 /// Describes a task that found no alias still linking to its pack.
 pub fn missing_pack_note(pack_key: &str) -> String {
     format!(

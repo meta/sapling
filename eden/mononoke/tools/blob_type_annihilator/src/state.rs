@@ -164,6 +164,21 @@ impl StateDir {
             .with_context(|| format!("corrupt journal {}", self.path(relative).display()))
     }
 
+    /// Names of the entries of a directory; a missing directory is empty.
+    pub async fn list_dir(&self, relative: &Path) -> Result<Vec<String>> {
+        let mut entries = match fs::read_dir(self.path(relative)).await {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e).with_context(|| format!("listing {}", relative.display())),
+        };
+        let mut names = Vec::new();
+        while let Some(entry) = entries.next_entry().await? {
+            names.push(entry.file_name().to_string_lossy().into_owned());
+        }
+        names.sort();
+        Ok(names)
+    }
+
     /// Removes a file, if present.
     pub async fn remove_file(&self, relative: &Path) -> Result<()> {
         let path = self.path(relative);

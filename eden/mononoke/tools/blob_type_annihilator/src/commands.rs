@@ -11,4 +11,5 @@ mononoke_app::subcommands! {
     mod plan;
     mod recipes;
     mod scan;
+    mod verify;
 }

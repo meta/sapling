@@ -215,3 +215,38 @@ untouched, and the packed contents read back unchanged from their new pack:
   >   for s in 0 1; do sqlite3 "$TESTTMP/blobstore/0/blobs/shard_$s.sqlite" "SELECT chunk_id FROM data WHERE CAST(id AS TEXT) = '$k.pack'"; done
   > done | sort -u | wc -l
   1
+
+Verification scans afresh.  Tests run without a shared cache, so the cache
+evictions cannot be certified and the result stays incomplete:
+  $ bta verify --state-dir "$TESTTMP/bta"
+  Plan DIGEST
+  Repositories: all configured repositories; repositories absent from the configuration are not covered
+  Cells: 18 checked, 0 not verified absent
+  Metadata repo 0: clean; shared cache: {NoSharedCache: 3}
+  Packs C0 repo 0: 1/1 tasks complete, 1 rewritten, 0 packs not found
+  Not covered: repo 0 mutable blobstore: holds mutable state, not derived data; not inventoried
+  Physical reclamation: C0: pending; unlinked keys leave chunks for sqlblob GC to reclaim
+  Physical reclamation: C1: pending; unlinked keys leave chunks for sqlblob GC to reclaim
+  Physical reclamation: 1 packs rewritten; each original pack is released when its last link is gone
+  Operator action: Restart or redeploy every process holding cachelib entries of the retired types' mappings (derived data service, derivation workers, SCS and other readers) before any rebuild.
+  Operator action: Confirm replicas of the metadata databases have converged before replica reads resume.
+  Operator action: Keep producers, consumers, healing and packing of the affected stores fenced until the rebuild starts.
+  Verdict: Incomplete
+  Report: $TESTTMP/bta/reports/verify-TIME.json
+  Error: verification found retired data, failures or unchecked cells
+  [1]
+
+A retired key written again, and a key of a retired family in a format no
+recipe covers, are both caught:
+  $ echo value > "$TESTTMP/value"
+  $ mononoke_admin blobstore -R repo upload --key "historymf.file.blake2.$AAAA" --value-file "$TESTTMP/value" > /dev/null
+  $ mononoke_admin blobstore -R repo upload --key "historymf.v9.$AAAA" --value-file "$TESTTMP/value" > /dev/null
+  $ bta verify --state-dir "$TESTTMP/bta" | grep -E '^(Cells|  |Family|Verdict)'
+  Cells: 18 checked, 2 not verified absent
+    Present C0 repo 0 historymf.file
+    Present C1 repo 0 historymf.file
+  Family historymf. in C0 repo 0: 1 registered keys, 1 unknown keys
+    unknown key repo0000.historymf.v9.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.pack
+  Family historymf. in C1 repo 0: 1 registered keys, 1 unknown keys
+    unknown key repo0000.historymf.v9.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  Verdict: Incomplete

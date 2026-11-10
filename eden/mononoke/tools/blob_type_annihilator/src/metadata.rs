@@ -26,6 +26,7 @@ use commit_derived_data_mapping::CacheEviction;
 use commit_derived_data_mapping::CommitDerivedDataMapping;
 use context::CoreContext;
 use enabled_derived_data_types::EnabledDerivedDataTypes;
+use enabled_derived_data_types::Staleness;
 use itertools::Itertools;
 use mononoke_app::MononokeApp;
 use mononoke_types::ChangesetId;
@@ -121,6 +122,16 @@ pub struct FinalPass {
     pub entries_evicted: u64,
 }
 
+impl FinalPass {
+    /// Every deleted mapping's shared-cache entry was evicted after the
+    /// blobs were gone.
+    pub fn is_clean(&self) -> bool {
+        self.batches
+            .keys()
+            .all(|state| *state == CacheState::Evicted)
+    }
+}
+
 /// The metadata stores of one repository.
 pub struct RepoMetadata {
     pub mapping: Arc<CommitDerivedDataMapping>,
@@ -139,6 +150,43 @@ impl RepoMetadata {
             enabled: factory.enabled_derived_data_types(&repo_config).await?,
         })
     }
+
+    /// Reads, from the primary, what remains of the selected types'
+    /// metadata, counting up to `sample` mapping rows per type and
+    /// connection.
+    pub async fn remaining(
+        &self,
+        ctx: &CoreContext,
+        repo_id: RepositoryId,
+        selection: &Selection,
+        sample: NonZeroU32,
+    ) -> Result<MetadataRemaining> {
+        let enabled = self
+            .enabled
+            .get_enabled_types(ctx, repo_id, Staleness::MostRecent)
+            .await?;
+        let mut remaining = MetadataRemaining::default();
+        for blob_type in selection.types() {
+            let dt = blob_type.derivable_type();
+            if enabled.contains(&dt) {
+                remaining.enabled.push(blob_type.to_string());
+            }
+            for shard_id in 0..self.mapping.sql.connection_count() {
+                let rows = self
+                    .mapping
+                    .sql
+                    .list_type_mappings(ctx, repo_id, dt, None, sample, shard_id)
+                    .await?;
+                for (_, version) in rows {
+                    *remaining
+                        .mapping_rows
+                        .entry(format!("{blob_type} v{version}"))
+                        .or_default() += 1;
+                }
+            }
+        }
+        Ok(remaining)
+    }
 }
 
 fn final_pass_path(repo_id: RepositoryId) -> PathBuf {
@@ -152,6 +200,11 @@ fn journal_path(repo_id: RepositoryId, blob_type: RetiredBlobType, shard_id: usi
         .join(repo_id.id().to_string())
         .join(blob_type.to_string())
         .join(format!("shard{shard_id}.jsonl"))
+}
+
+/// The final metadata pass recorded for a repository, if any.
+pub async fn final_pass(state: &StateDir, repo_id: RepositoryId) -> Result<Option<FinalPass>> {
+    state.read_json(&final_pass_path(repo_id)).await
 }
 
 /// Resetting one repository's metadata.
@@ -326,11 +379,26 @@ impl MetadataContext<'_> {
     }
 }
 
+/// What remains of the selected types' metadata for one repository.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetadataRemaining {
+    /// Types still marked enabled.
+    pub enabled: Vec<String>,
+    /// Mapping rows left, by type and version, counting up to one page per
+    /// type and connection.
+    pub mapping_rows: BTreeMap<String, u64>,
+}
+
+impl MetadataRemaining {
+    pub fn is_clean(&self) -> bool {
+        self.enabled.is_empty() && self.mapping_rows.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use caching_ext::CacheHandlerFactory;
     use commit_derived_data_mapping::SqlCommitDerivedDataMapping;
-    use enabled_derived_data_types::Staleness;
     use enabled_derived_data_types::TestEnabledDerivedDataTypes;
     use fbinit::FacebookInit;
     use mononoke_macros::mononoke;
@@ -429,14 +497,13 @@ mod tests {
             BTreeMap::from([("blame-v3 v7".to_string(), 1)])
         );
 
+        let left = md.remaining(&ctx, repo, &selection, page(10)).await?;
+        assert!(left.enabled.is_empty());
         assert_eq!(
-            mapping
-                .sql
-                .list_type_mappings(&ctx, repo, DerivableType::BlameV3, None, page(10), 0)
-                .await?,
-            vec![(TWOS_CSID, 7)],
-            "only the unapproved row is left"
+            left.mapping_rows,
+            BTreeMap::from([("blame-v3 v7".to_string(), 1)])
         );
+        assert!(!left.is_clean());
         assert_eq!(
             enabled
                 .get_enabled_types(&ctx, repo, Staleness::MostRecent)
@@ -460,15 +527,16 @@ mod tests {
 
         // Pages of two: history manifests in two batches, fastlog in one,
         // blame in one per approved version.
-        let final_path = final_pass_path(repo);
-        assert!(!state.exists(&final_path).await?);
+        assert_eq!(final_pass(&state, repo).await?, None);
         let pass = mctx.evict_journalled().await?;
         assert_eq!(pass.entries_evicted, 6);
         assert_eq!(pass.batches, BTreeMap::from([(CacheState::Evicted, 5)]));
-        assert_eq!(state.read_json(&final_path).await?, Some(pass));
+        assert!(pass.is_clean());
+        assert_eq!(final_pass(&state, repo).await?, Some(pass));
         mctx.reset().await?;
-        assert!(
-            !state.exists(&final_path).await?,
+        assert_eq!(
+            final_pass(&state, repo).await?,
+            None,
             "a reset invalidates the final pass"
         );
 
@@ -497,10 +565,7 @@ mod tests {
             outcome.cache_not_invalidated, 1,
             "without a shared cache the batch is reported as not invalidated"
         );
-        assert_eq!(
-            mctx.evict_journalled().await?.batches,
-            BTreeMap::from([(CacheState::NoSharedCache, 1)])
-        );
+        assert!(!mctx.evict_journalled().await?.is_clean());
         Ok(())
     }
 
@@ -542,12 +607,11 @@ mod tests {
             BTreeMap::from([(CacheState::Evicted, 2)]),
             "the interrupted batch is evicted again with the rescan's"
         );
+        assert!(pass.is_clean());
         assert!(
-            md.mapping
-                .sql
-                .list_type_mappings(&ctx, repo, hm, None, page(10), 0)
+            md.remaining(&ctx, repo, &selection, page(10))
                 .await?
-                .is_empty()
+                .is_clean()
         );
         Ok(())
     }
