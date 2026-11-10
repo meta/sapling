@@ -164,6 +164,16 @@ impl StateDir {
             .with_context(|| format!("corrupt journal {}", self.path(relative).display()))
     }
 
+    /// Removes a file, if present.
+    pub async fn remove_file(&self, relative: &Path) -> Result<()> {
+        let path = self.path(relative);
+        match fs::remove_file(&path).await {
+            Ok(()) => sync_parent(&path).await,
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e).with_context(|| format!("removing {}", relative.display())),
+        }
+    }
+
     /// Removes a directory tree, if present.
     pub async fn remove_dir_all(&self, relative: &Path) -> Result<()> {
         match fs::remove_dir_all(self.path(relative)).await {

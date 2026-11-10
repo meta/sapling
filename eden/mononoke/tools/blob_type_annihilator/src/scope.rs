@@ -231,6 +231,13 @@ impl Plan {
             .with_context(|| format!("component {id} is not in the plan"))
     }
 
+    pub fn repo(&self, repo_id: RepositoryId) -> Result<&PlannedRepo> {
+        self.repos
+            .iter()
+            .find(|repo| repo.id == repo_id)
+            .with_context(|| format!("repo {repo_id} is not in the plan"))
+    }
+
     /// Fails unless `current`, freshly resolved, is the same plan.
     pub fn ensure_unchanged(&self, current: &Plan) -> Result<()> {
         if self.digest != current.digest {

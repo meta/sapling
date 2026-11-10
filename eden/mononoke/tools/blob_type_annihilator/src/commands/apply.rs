@@ -6,6 +6,7 @@
  */
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 use anyhow::Result;
 use anyhow::bail;
@@ -14,12 +15,16 @@ use context::CoreContext;
 use futures::future;
 use futures::stream::StreamExt;
 use mononoke_app::MononokeApp;
+use mononoke_types::RepositoryId;
 use tracing::warn;
 
 use crate::apply::ApplyContext;
 use crate::apply::ApplyOptions;
 use crate::apply::ApplyTotals;
 use crate::apply::apply_partition;
+use crate::metadata::MetadataContext;
+use crate::metadata::MetadataOptions;
+use crate::metadata::RepoMetadata;
 use crate::pack_rewrite::PackOptions;
 use crate::pack_rewrite::freeze;
 use crate::pack_rewrite::missing_pack_note;
@@ -31,11 +36,13 @@ use crate::scan::Cell;
 use crate::scan::CellKey;
 use crate::scope::Plan;
 
-/// Delete the inventoried retired keys from the plan's stores
+/// Delete the retired types' metadata and inventoried keys
 ///
-/// Requires a complete inventory.  Run only under a maintenance fence: no
-/// readers or writers of the retired types, and no healing, scrubbing or
-/// packing of the affected stores, for the whole run.
+/// Requires a complete inventory.  Resets the covered repositories' mappings,
+/// enablement and shared-cache entries first, then deletes the keys, then
+/// resets the metadata again.  Run only under a maintenance fence: no readers
+/// or writers of the retired types, and no healing, scrubbing or packing of
+/// the affected stores, for the whole run.
 #[derive(Parser)]
 pub struct CommandArgs {
     #[clap(flatten)]
@@ -54,10 +61,14 @@ pub struct CommandArgs {
 
     #[clap(flatten)]
     pack: PackOptions,
+
+    #[clap(flatten)]
+    metadata: MetadataOptions,
 }
 
 /// One `apply` invocation.
 struct Apply<'a> {
+    app: &'a MononokeApp,
     ctx: &'a CoreContext,
     run: &'a Run,
     stores: &'a Stores,
@@ -109,6 +120,41 @@ impl<'a> Apply<'a> {
         Ok(())
     }
 
+    fn metadata_context<'b>(
+        &'b self,
+        md: &'b RepoMetadata,
+        repo_id: RepositoryId,
+    ) -> MetadataContext<'b> {
+        MetadataContext {
+            ctx: self.ctx,
+            state: &self.run.state,
+            md,
+            repo_id,
+            selection: &self.plan().request.selection,
+            options: &self.args.metadata,
+        }
+    }
+
+    /// Resets the metadata of every covered repository, before any blob is
+    /// deleted.
+    async fn reset_metadata(&self) -> Result<Vec<(RepositoryId, RepoMetadata)>> {
+        let repo_ids: BTreeSet<RepositoryId> = self.cells.iter().map(|cell| cell.repo_id).collect();
+        let mut repos = Vec::new();
+        for repo_id in repo_ids {
+            let md = RepoMetadata::open(self.app, &self.plan().repo(repo_id)?.name).await?;
+            let outcome = self.metadata_context(&md, repo_id).reset().await?;
+            println!(
+                "repo {repo_id} metadata: {} mapping rows deleted, {} shared-cache entries evicted, {} batches not invalidated, unapproved rows left {:?}",
+                outcome.rows_deleted,
+                outcome.cache_entries_evicted,
+                outcome.cache_not_invalidated,
+                outcome.unapproved_rows
+            );
+            repos.push((repo_id, md));
+        }
+        Ok(repos)
+    }
+
     /// Applies every partition, returning the totals of each cell.
     async fn apply_partitions(&self) -> Result<BTreeMap<CellKey<'a>, ApplyTotals>> {
         let unlink = self.args.apply.unlink_settings();
@@ -145,6 +191,29 @@ impl<'a> Apply<'a> {
         })
         .await;
         Ok(totals)
+    }
+
+    /// Resets each repository's metadata again and evicts every journalled
+    /// mapping's shared-cache entry, now the blobs are gone.  Returns how
+    /// many repositories failed.
+    async fn final_pass(&self, repos: &[(RepositoryId, RepoMetadata)]) -> usize {
+        let mut failed = 0;
+        for (repo_id, md) in repos {
+            let mctx = self.metadata_context(md, *repo_id);
+            let result =
+                async { anyhow::Ok((mctx.reset().await?, mctx.evict_journalled().await?)) }.await;
+            match result {
+                Ok((rescan, pass)) => println!(
+                    "repo {repo_id} final metadata pass: {} mapping rows deleted, {} shared-cache entries evicted again",
+                    rescan.rows_deleted, pass.entries_evicted
+                ),
+                Err(e) => {
+                    failed += 1;
+                    warn!("final metadata pass of repo {repo_id} failed: {e:#}");
+                }
+            }
+        }
+        failed
     }
 }
 
@@ -254,6 +323,7 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
     }
     let cells = run.cells(&stores);
     let apply = Apply {
+        app: &app,
         ctx: &ctx,
         run: &run,
         stores: &stores,
@@ -262,12 +332,22 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
     };
     apply.ensure_inventoried().await?;
     apply.freeze_all().await?;
+    let repos = apply.reset_metadata().await?;
     let totals = apply.apply_partitions().await?;
     let all = print_summary(&cells, &totals);
+    let final_pass_failures = apply.final_pass(&repos).await;
 
     let incomplete = all.partitions - all.done;
-    if incomplete > 0 {
-        bail!("{incomplete} partitions are incomplete; resolve them and rerun apply");
+    let problems: Vec<String> = [
+        (incomplete, "partitions are incomplete"),
+        (final_pass_failures, "final metadata passes failed"),
+    ]
+    .into_iter()
+    .filter(|(count, _)| *count > 0)
+    .map(|(count, what)| format!("{count} {what}"))
+    .collect();
+    if !problems.is_empty() {
+        bail!("{}; resolve them and rerun apply", problems.join(", "));
     }
     Ok(())
 }

@@ -11,6 +11,9 @@ rust_binary(
         "fbsource//third-party/rust:tempfile",
         "//common/rust/shed/fbinit:fbinit-tokio",
         "//eden/mononoke/blobstore:memblob",
+        "//eden/mononoke/common/rust/caching_ext:caching_ext",
+        "//eden/mononoke/common/sql_construct:sql_construct",
+        "//eden/mononoke/mononoke_types:mononoke_types-mocks",
     ],
     deps = [
         "fbsource//third-party/rust:anyhow",
@@ -18,6 +21,7 @@ rust_binary(
         "fbsource//third-party/rust:derive_more",
         "fbsource//third-party/rust:futures",
         "fbsource//third-party/rust:governor",
+        "fbsource//third-party/rust:itertools",
         "fbsource//third-party/rust:serde",
         "fbsource//third-party/rust:serde_json",
         "fbsource//third-party/rust:strum",
@@ -34,6 +38,8 @@ rust_binary(
         "//eden/mononoke/common/mononoke_macros:mononoke_macros",
         "//eden/mononoke/metaconfig:metaconfig_types",
         "//eden/mononoke/mononoke_types:mononoke_types",
+        "//eden/mononoke/repo_attributes/commit_derived_data_mapping:commit_derived_data_mapping",
+        "//eden/mononoke/repo_attributes/enabled_derived_data_types:enabled_derived_data_types",
         "//eden/mononoke/servers/slapi/slapi_server/context:context",
     ],
 )
