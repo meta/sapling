@@ -113,8 +113,6 @@ export default function PullRequestLabels(): React.ReactElement {
             text={name}
             fillColor={`#${color}`}
             onRemove={!viewerCanUpdate ? undefined : () => updateLabels({id, name, color}, true)}
-            onPointerEnterCapture={undefined}
-            onPointerLeaveCapture={undefined}
           />
         ))}
       </Box>

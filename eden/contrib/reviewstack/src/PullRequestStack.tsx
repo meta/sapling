@@ -123,10 +123,10 @@ export default function PullRequestStack(): React.ReactElement | null {
           </ActionList>
         </ActionMenu.Overlay>
       </ActionMenu>
-      <IconButton disabled={!hasPrev} icon={ArrowDownIcon} onClick={() => onNavigate(index + 1)}>
+      <IconButton disabled={!hasPrev} icon={ArrowDownIcon} onClick={() => onNavigate(index + 1)} aria-label="Prev">
         Prev
       </IconButton>
-      <IconButton disabled={!hasNext} icon={ArrowUpIcon} onClick={() => onNavigate(index - 1)}>
+      <IconButton disabled={!hasNext} icon={ArrowUpIcon} onClick={() => onNavigate(index - 1)} aria-label="Next">
         Next
       </IconButton>
     </ButtonGroup>

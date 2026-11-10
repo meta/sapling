@@ -50,10 +50,10 @@ export default function Pagination({
   return (
     <Box display="flex" alignItems="center" gridGap={2}>
       <Box display="flex" gridGap={1}>
-        <IconButton disabled={!hasPreviousPage} icon={ArrowLeftIcon} onClick={onPrev}>
+        <IconButton disabled={!hasPreviousPage} icon={ArrowLeftIcon} onClick={onPrev} aria-label="Prev">
           Prev
         </IconButton>
-        <IconButton disabled={!hasNextPage} icon={ArrowRightIcon} onClick={onNext}>
+        <IconButton disabled={!hasNextPage} icon={ArrowRightIcon} onClick={onNext} aria-label="Next">
           Next
         </IconButton>
       </Box>
