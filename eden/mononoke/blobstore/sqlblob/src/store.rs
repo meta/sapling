@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::hash::Hasher;
+use std::num::NonZeroU32;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -186,6 +187,13 @@ mononoke_queries! {
 
     read GetAllKeys() -> (Vec<u8>) {
         "SELECT id FROM data"
+    }
+
+    read GetKeysLikeAfter(pattern: &str, after: &str, limit: u64) -> (Vec<u8>) {
+        "SELECT id FROM data
+         WHERE id LIKE {pattern} ESCAPE '!' AND id > {after}
+         ORDER BY id
+         LIMIT {limit}"
     }
 
     read GetGenerationSizes() -> (Option<u64>, u64, u64) {
@@ -387,12 +395,89 @@ impl DataSqlStore {
         .try_flatten_stream()
     }
 
+    /// Returns up to `limit` keys from one shard that start with `prefix` and
+    /// sort after `after` in the shard's index order.
+    pub(crate) async fn get_keys_with_prefix_from_shard(
+        &self,
+        ctx: &CoreContext,
+        shard_num: usize,
+        prefix: &str,
+        after: Option<&str>,
+        limit: NonZeroU32,
+    ) -> Result<SqlblobKeyPage, Error> {
+        let conn = self.read_master_connection.get(shard_num).ok_or_else(|| {
+            format_err!(
+                "shard {shard_num} out of range (have {} shards)",
+                self.shard_count
+            )
+        })?;
+        let pattern = like_prefix_pattern(prefix);
+        let limit = u64::from(limit.get());
+        // The empty string sorts before every key.
+        let after = after.unwrap_or("");
+        let rows = GetKeysLikeAfter::query(
+            conn,
+            ctx.sql_query_telemetry(),
+            &pattern.as_str(),
+            &after,
+            &limit,
+        )
+        .await?;
+        let ids = rows
+            .into_iter()
+            .map(|(id,)| {
+                String::from_utf8(id)
+                    .map_err(|e| format_err!("non-UTF-8 key in sqlblob shard {shard_num}: {e}"))
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        let resume_after = if ids.len() as u64 == limit {
+            ids.last().cloned()
+        } else {
+            None
+        };
+        // LIKE may match case-insensitively, depending on collation.
+        let keys = ids
+            .into_iter()
+            .filter(|id| id.starts_with(prefix))
+            .collect();
+        Ok(SqlblobKeyPage { keys, resume_after })
+    }
+
+    pub(crate) fn shard_count(&self) -> usize {
+        self.shard_count.get()
+    }
+
     fn shard(&self, key: &str) -> usize {
         let mut hasher = XxHash32::with_seed(0);
         hasher.write(key.as_bytes());
         (hasher.finish() % self.shard_count.get() as u64) as usize
     }
 }
+
+/// Escapes `prefix` for use as a `LIKE ... ESCAPE '!'` pattern matching
+/// every string that starts with it.
+fn like_prefix_pattern(prefix: &str) -> String {
+    let mut pattern = String::with_capacity(prefix.len() + 1);
+    for c in prefix.chars() {
+        if matches!(c, '!' | '%' | '_') {
+            pattern.push('!');
+        }
+        pattern.push(c);
+    }
+    pattern.push('%');
+    pattern
+}
+
+/// One page of keys from a single SQL shard.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqlblobKeyPage {
+    /// Matching keys, in the shard's index order.
+    pub keys: Vec<String>,
+    /// Where the next page starts, or `None` when the shard has no more
+    /// matching keys.  A page may be empty and still have one.
+    pub resume_after: Option<String>,
+}
+
 pub(crate) enum ChunkGenerationState {
     NeedsInsertToShard(usize),
     Updated,

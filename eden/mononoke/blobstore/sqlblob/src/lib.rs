@@ -19,6 +19,7 @@ mod tests;
 use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
+use std::num::NonZeroU32;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -80,6 +81,7 @@ use crate::store::ChunkGenerationState;
 use crate::store::ChunkSqlStore;
 use crate::store::ChunkingMethod;
 use crate::store::DataSqlStore;
+pub use crate::store::SqlblobKeyPage;
 // Bring back the pre 0.20 bevahiour and allow either padded or un-padded base64 strings at decode time.
 const STANDARD_NO_PAD_INDIFFERENT: GeneralPurpose = GeneralPurpose::new(
     &STANDARD,
@@ -405,6 +407,28 @@ impl Sqlblob {
         shard_num: usize,
     ) -> impl Stream<Item = Result<String>> + use<> {
         self.data_store.get_keys_from_shard(ctx.clone(), shard_num)
+    }
+
+    /// Number of SQL shards keys are spread across.
+    pub fn shard_count(&self) -> usize {
+        self.data_store.shard_count()
+    }
+
+    /// Lists one page of the keys in shard `shard_num` that start with `prefix`,
+    /// reading at most `limit` rows from the primary.  Pages continue from
+    /// `after`, the previous page's `resume_after`.  A page may be empty and
+    /// still have a `resume_after`.
+    pub async fn get_keys_with_prefix_from_shard(
+        &self,
+        ctx: &CoreContext,
+        shard_num: usize,
+        prefix: &str,
+        after: Option<&str>,
+        limit: NonZeroU32,
+    ) -> Result<SqlblobKeyPage> {
+        self.data_store
+            .get_keys_with_prefix_from_shard(ctx, shard_num, prefix, after, limit)
+            .await
     }
 
     /// Returns a HashMap from generation->(size, chunk_count)

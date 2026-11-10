@@ -392,3 +392,150 @@ async fn generations(fb: FacebookInit) -> Result<(), Error> {
     }
     Ok(())
 }
+
+/// Keys listed by walking every shard a page at a time.
+struct PrefixListing {
+    keys: Vec<String>,
+    pages: usize,
+    /// Pages with no keys that still had a `resume_after`.
+    empty_pages_with_more: usize,
+}
+
+async fn list_keys_with_prefix(
+    ctx: &CoreContext,
+    bs: &CountedSqlblob,
+    prefix: &str,
+    limit: NonZeroU32,
+) -> Result<PrefixListing, Error> {
+    let mut listing = PrefixListing {
+        keys: Vec::new(),
+        pages: 0,
+        empty_pages_with_more: 0,
+    };
+    for shard in 0..bs.shard_count() {
+        let mut after = None;
+        loop {
+            let page = bs
+                .get_keys_with_prefix_from_shard(ctx, shard, prefix, after.as_deref(), limit)
+                .await?;
+            assert!(
+                page.keys.len() <= limit.get() as usize,
+                "a page must respect the limit"
+            );
+            listing.pages += 1;
+            if page.keys.is_empty() && page.resume_after.is_some() {
+                listing.empty_pages_with_more += 1;
+            }
+            listing.keys.extend(page.keys);
+            match page.resume_after {
+                Some(resume_after) => after = Some(resume_after),
+                None => break,
+            }
+        }
+    }
+    listing.keys.sort();
+    Ok(listing)
+}
+
+#[mononoke::fbinit_test]
+async fn test_get_keys_with_prefix_from_shard(fb: FacebookInit) -> Result<(), Error> {
+    let ctx = CoreContext::test_mock(fb);
+    let (_, config_store) = get_test_config_store();
+    let bs = Sqlblob::with_sqlite_in_memory(PutBehaviour::IfAbsent, &config_store, true, 0)?;
+
+    let wanted: Vec<String> = (0..7).map(|i| format!("repo0001.fam_x.{i:02}")).collect();
+    // `_`, `%` and `!` in the prefix must match literally, and matching is
+    // case-sensitive even where the database's LIKE is not.
+    let unwanted = [
+        "repo0001.famAx.00",
+        "repo0001.fam%x.00",
+        "repo0001.fam!x.00",
+        "repo0001.fam_y.00",
+        "repo0001.fam_x",
+        "REPO0001.FAM_X.00",
+    ];
+    for key in wanted.iter().map(String::as_str).chain(unwanted) {
+        bs.put(
+            &ctx,
+            key.to_string(),
+            BlobstoreBytes::from_bytes(Bytes::from_static(b"value")),
+        )
+        .await?;
+    }
+
+    let prefix = "repo0001.fam_x.";
+    let limit = NonZeroU32::new(2).expect("2 is non-zero");
+    let listing = list_keys_with_prefix(&ctx, &bs, prefix, limit).await?;
+    assert_eq!(
+        listing.keys, wanted,
+        "exactly the keys with the prefix are listed"
+    );
+    assert!(
+        listing.pages > bs.shard_count(),
+        "listing should take several pages"
+    );
+
+    assert!(
+        bs.get_keys_with_prefix_from_shard(&ctx, bs.shard_count(), "repo", None, limit)
+            .await
+            .is_err(),
+        "an out-of-range shard must be rejected"
+    );
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_get_keys_with_prefix_from_shard_case_insensitive_like(
+    fb: FacebookInit,
+) -> Result<(), Error> {
+    let ctx = CoreContext::test_mock(fb);
+    let (_, config_store) = get_test_config_store();
+    // sql_ext makes SQLite's `LIKE` case-sensitive.  Undoing that stands in for
+    // a case-insensitive MySQL collation, which returns keys that differ from
+    // the prefix only in case.
+    let bs = Sqlblob::with_sqlite(
+        PutBehaviour::IfAbsent,
+        |_| {
+            let con = open_sqlite_in_memory()?;
+            con.pragma_update(None, "case_sensitive_like", false)?;
+            con.execute_batch(Sqlblob::CREATION_QUERY)?;
+            Ok(con)
+        },
+        &config_store,
+        true,
+        0,
+    )?;
+
+    let wanted: Vec<String> = (0..3).map(|i| format!("repo0001.fam_x.{i:02}")).collect();
+    let case_variants = ["REPO0001.FAM_X.00", "Repo0001.Fam_X.01"];
+    for key in wanted.iter().map(String::as_str).chain(case_variants) {
+        bs.put(
+            &ctx,
+            key.to_string(),
+            BlobstoreBytes::from_bytes(Bytes::from_static(b"value")),
+        )
+        .await?;
+    }
+
+    let prefix = "repo0001.fam_x.";
+    let limit = NonZeroU32::new(2).expect("2 is non-zero");
+    let listing = list_keys_with_prefix(&ctx, &bs, prefix, limit).await?;
+    assert_eq!(
+        listing.keys, wanted,
+        "keys differing only in case are filtered out"
+    );
+
+    // Case variants sort first, so with one row per page a shard holding one
+    // starts with a page that is empty but resumes.
+    let one = NonZeroU32::new(1).expect("1 is non-zero");
+    let listing = list_keys_with_prefix(&ctx, &bs, prefix, one).await?;
+    assert_eq!(
+        listing.keys, wanted,
+        "an empty page must not end its shard's listing"
+    );
+    assert!(
+        listing.empty_pages_with_more > 0,
+        "a page holding only a case variant should be empty and resume"
+    );
+    Ok(())
+}
