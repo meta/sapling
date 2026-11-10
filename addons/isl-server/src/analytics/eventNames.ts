@@ -223,7 +223,8 @@ export type TrackEventName =
   | 'InlineSignalExpanded'
   | 'InlineSignalCollapsed'
   | 'InlineSignalHidden'
-  | 'InlineSignalDevmateClicked';
+  | 'InlineSignalDevmateClicked'
+  | 'DiffSummariesFetched';
 
 export type TrackErrorName =
   | 'BlameError'
