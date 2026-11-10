@@ -178,7 +178,10 @@ max-background-requests = 17
             self.assertEqual(use_io_uring, config["fuse"]["use-io-uring"])
             if use_io_uring:
                 self.assertTrue(config["fuse"]["io-uring-pre-create-queues"])
-                self.assertEqual(".*", config["fuse"]["io-uring-kernel-release-regex"])
+                self.assertEqual(
+                    edenclient.FUSE_IO_URING_KERNEL_RELEASE_REGEX,
+                    config["fuse"]["io-uring-kernel-release-regex"],
+                )
 
     @parameterized.expand([(False,), (True,)])
     def test_snapshot_transport_config_without_existing_file(

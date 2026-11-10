@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import tomllib
 import unittest
 import warnings
 from typing import Any
@@ -139,6 +140,18 @@ class IoUringTestMixinTest(unittest.TestCase):
                 self.assertEqual(
                     enabled, "io-uring-pre-create-queues = true" in fuse_config
                 )
+                parsed_fuse_config = tomllib.loads("[fuse]\n" + "\n".join(fuse_config))[
+                    "fuse"
+                ]
+                if enabled:
+                    self.assertEqual(
+                        edenclient.FUSE_IO_URING_KERNEL_RELEASE_REGEX,
+                        parsed_fuse_config["io-uring-kernel-release-regex"],
+                    )
+                else:
+                    self.assertNotIn(
+                        "io-uring-kernel-release-regex", parsed_fuse_config
+                    )
 
     def test_selects_io_uring(self) -> None:
         self.assertFalse(testcase.EdenTestCase().use_io_uring())

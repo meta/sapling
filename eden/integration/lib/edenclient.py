@@ -66,7 +66,9 @@ def require_io_uring_kernel() -> None:
 def fuse_transport_config(use_io_uring: bool) -> list[str]:
     settings = [f"use-io-uring = {'true' if use_io_uring else 'false'}"]
     if use_io_uring:
-        settings.append('io-uring-kernel-release-regex = ".*"')
+        settings.append(
+            f"io-uring-kernel-release-regex = {json.dumps(FUSE_IO_URING_KERNEL_RELEASE_REGEX)}"
+        )
         # Allocate queues before replying to INIT to allow devfuse fallback.
         settings.append("io-uring-pre-create-queues = true")
     return settings
