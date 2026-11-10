@@ -20,6 +20,8 @@ pub type Headers = Vec<(String, String)>;
 pub trait Provider: Send + Sync {
     /// Start tracing the current command.
     fn start(&self);
+    /// Record the code the process exits with, before `finish`.
+    fn exit_code(&self, code: i32);
     /// Finish the trace started by `start`.
     fn finish(&self);
     /// Propagation headers for an outgoing HTTP request.
@@ -65,6 +67,13 @@ fn active() -> Option<&'static dyn Provider> {
         .map(|provider| provider.as_ref())
 }
 
+/// Record the code the process exits with on the active trace.
+pub fn exit_code(code: i32) {
+    if let Some(provider) = active() {
+        provider.exit_code(code);
+    }
+}
+
 /// Propagation headers for an outgoing HTTP request to `url`.
 pub fn outgoing_http(url: &str) -> Headers {
     active().map_or_else(Vec::new, |provider| provider.outgoing_http(url))
@@ -77,18 +86,24 @@ pub fn outgoing_env() -> Headers {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicI32;
     use std::sync::atomic::AtomicUsize;
 
     use super::*;
 
     static STARTS: AtomicUsize = AtomicUsize::new(0);
     static FINISHES: AtomicUsize = AtomicUsize::new(0);
+    static EXIT_CODE: AtomicI32 = AtomicI32::new(0);
 
     struct TestProvider;
 
     impl Provider for TestProvider {
         fn start(&self) {
             STARTS.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn exit_code(&self, code: i32) {
+            EXIT_CODE.store(code, Ordering::Relaxed);
         }
 
         fn finish(&self) {
@@ -109,6 +124,8 @@ mod tests {
         register_provider(TestProvider);
         assert!(scope(false).is_none());
         assert_eq!(outgoing_env(), Headers::new());
+        exit_code(1);
+        assert_eq!(EXIT_CODE.load(Ordering::Relaxed), 0, "no trace, no code");
 
         let outer = scope(true).expect("outermost command should trace");
         assert!(
@@ -132,8 +149,12 @@ mod tests {
             .expect("traced request should succeed");
         traced.assert();
 
+        exit_code(3);
+        assert_eq!(EXIT_CODE.load(Ordering::Relaxed), 3);
         drop(outer);
         assert_eq!(FINISHES.load(Ordering::Relaxed), 1);
+        exit_code(4);
+        assert_eq!(EXIT_CODE.load(Ordering::Relaxed), 3, "no code after finish");
         assert_eq!(outgoing_env(), Headers::new(), "inactive after the scope");
         drop(scope(true).expect("a later command traces again"));
         assert_eq!(STARTS.load(Ordering::Relaxed), 2);

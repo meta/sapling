@@ -172,21 +172,25 @@ pub fn run_command(args: Vec<String>, io: &IO) -> i32 {
                 let _guard = span.enter();
 
                 sampling::init(dispatcher.config());
-                let _trace = distributed_tracing::scope(
+                let trace = distributed_tracing::scope(
                     dispatcher
                         .config()
                         .get_or_default("experimental", "enable-distributed-tracing")
                         .unwrap_or_default(),
                 );
 
-                dispatch_command(
+                let code = dispatch_command(
                     io,
                     dispatcher,
                     cwd,
                     Arc::downgrade(&in_scope),
                     start_time,
                     exiting_via_signal,
-                )
+                );
+                if trace.is_some() {
+                    distributed_tracing::exit_code(code);
+                }
+                code
             }
             Err(err) => {
                 errors::print_error(
@@ -1160,6 +1164,8 @@ fn setup_ctrlc() -> Arc<AtomicBool> {
             });
             let _ = recv.recv_timeout(Duration::from_millis(5));
         }
+
+        distributed_tracing::exit_code(128 | libc::SIGINT);
 
         // Run atexit handlers.
         atexit::drop_queued();
