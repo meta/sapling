@@ -67,7 +67,10 @@ struct FilenodeRunner {
 }
 
 impl FilenodeRunner {
-    async fn run(&mut self, filenodes_recv: &mut mpsc::Receiver<FileMessage>) {
+    async fn run(
+        &mut self,
+        filenodes_recv: &mut mpsc::Receiver<FileMessage>,
+    ) -> anyhow::Result<()> {
         let mut timer = interval(Duration::from_millis(self.config.flush_interval_ms as u64));
         while !self.cancelled() {
             let action = tokio::select! {
@@ -85,9 +88,11 @@ impl FilenodeRunner {
             };
             match action {
                 LoopAction::Continue => {}
-                LoopAction::Exit => return,
+                LoopAction::Exit => return Ok(()),
+                LoopAction::Fail(err) => return Err(err),
             }
         }
+        Ok(())
     }
 
     async fn handle_message(&mut self, msg: Option<FileMessage>) -> LoopAction {
@@ -134,7 +139,7 @@ impl FilenodeRunner {
             let senders = std::mem::take(&mut self.pending_senders);
             if let Err(e) = self.pipeline.barrier(senders).await {
                 tracing::error!("Filenodes flush failed: {:?}", e);
-                return LoopAction::Exit;
+                return LoopAction::Fail(e);
             }
         }
         self.poll_completions()
@@ -163,7 +168,7 @@ impl FilenodeRunner {
         let senders = std::mem::take(&mut self.pending_senders);
         if let Err(e) = self.pipeline.barrier(senders).await {
             tracing::error!("Filenodes flush failed: {:?}", e);
-            return LoopAction::Exit;
+            return LoopAction::Fail(e);
         }
         LoopAction::Exit
     }
@@ -249,8 +254,8 @@ impl FilenodeRunner {
         // This channel already logged the failure; drop locally
         // queued signals so downstream winds down silently
         // instead of logging the same failure again per signal.
-        self.pipeline.abort(err);
-        LoopAction::Exit
+        self.pipeline.abort(&err);
+        LoopAction::Fail(err)
     }
 
     // Drain completions after every select event so the watermark keeps
@@ -318,7 +323,6 @@ impl Manager for FilenodeManager {
             batch_filenodes: Vec::new(),
             pending_senders: Vec::new(),
         };
-        runner.run(filenodes_recv).await;
-        Ok(())
+        runner.run(filenodes_recv).await
     }
 }

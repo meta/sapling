@@ -324,7 +324,9 @@ impl SendManager {
 }
 
 trait Manager {
-    /// Runs the manager's loop until it stops.
+    /// Runs the manager's loop until it stops. Returns an error only when
+    /// this manager failed; winding down after an upstream manager failed,
+    /// a closed channel and cancellation all return `Ok`.
     fn run(
         &mut self,
         ctx: CoreContext,
@@ -339,6 +341,8 @@ pub(crate) enum LoopAction {
     Continue,
     /// Stop the loop and exit the runner.
     Exit,
+    /// Stop the loop and exit the runner because this manager failed.
+    Fail(anyhow::Error),
 }
 
 #[cfg(test)]

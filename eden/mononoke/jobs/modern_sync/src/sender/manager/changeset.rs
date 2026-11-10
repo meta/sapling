@@ -319,7 +319,9 @@ impl Manager for ChangesetManager {
                             let _ = sender.send(Err(anyhow::anyhow!(
                                 "Error processing changesets: {e:?}"
                             )));
-                            return Err(e);
+                            // The failure came from an upstream manager,
+                            // which reports it.
+                            return Ok(());
                         }
 
                         Some(ChangesetMessage::Log((_, lag)))
@@ -345,9 +347,7 @@ impl Manager for ChangesetManager {
                             }
                             Err(e) => {
                                 stat::log_upload_changeset_error(&ctx, changeset_ids, &e, now.elapsed());
-                                return Err(anyhow::anyhow!(
-                                    "Error processing changesets: {e:?}"
-                                ));
+                                return Err(e);
                             }
                         }
                     }
@@ -365,7 +365,7 @@ impl Manager for ChangesetManager {
                         }
                         Err(e) => {
                             stat::log_upload_changeset_error(&ctx, changeset_ids, &e, now.elapsed());
-                            return Err(anyhow::anyhow!("Error processing changesets: {e:?}"));
+                            return Err(e);
                         }
                     }
                 }

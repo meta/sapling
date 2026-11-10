@@ -109,7 +109,10 @@ impl ContentRunner {
         }
     }
 
-    async fn run(&mut self, content_recv: &mut mpsc::Receiver<ContentMessage>) {
+    async fn run(
+        &mut self,
+        content_recv: &mut mpsc::Receiver<ContentMessage>,
+    ) -> anyhow::Result<()> {
         let mut flush_timer = interval(Duration::from_millis(self.config.flush_interval_ms as u64));
         while !self.cancelled() {
             let action = tokio::select! {
@@ -127,9 +130,11 @@ impl ContentRunner {
             };
             match action {
                 LoopAction::Continue => {}
-                LoopAction::Exit => return,
+                LoopAction::Exit => return Ok(()),
+                LoopAction::Fail(err) => return Err(err),
             }
         }
+        Ok(())
     }
 
     async fn handle_message(&mut self, msg: Option<ContentMessage>) -> LoopAction {
@@ -170,7 +175,7 @@ impl ContentRunner {
             let senders = std::mem::take(&mut self.pending_senders);
             if let Err(e) = self.pipeline.barrier(senders).await {
                 tracing::error!("Error processing content: {:?}", e);
-                return LoopAction::Exit;
+                return LoopAction::Fail(e);
             }
         }
         self.poll_completions()
@@ -191,7 +196,7 @@ impl ContentRunner {
         let senders = std::mem::take(&mut self.pending_senders);
         if let Err(e) = self.pipeline.barrier(senders).await {
             tracing::error!("Error processing content: {:?}", e);
-            return LoopAction::Exit;
+            return LoopAction::Fail(e);
         }
         LoopAction::Exit
     }
@@ -266,8 +271,8 @@ impl ContentRunner {
         // This channel already logged the failure; drop locally
         // queued signals so downstream winds down silently
         // instead of logging the same failure again per signal.
-        self.pipeline.abort(err);
-        LoopAction::Exit
+        self.pipeline.abort(&err);
+        LoopAction::Fail(err)
     }
 
     // Drain completions after every select event so the watermark keeps
@@ -334,7 +339,6 @@ impl Manager for ContentManager {
             repo_blobstore.clone(),
             pipeline,
         );
-        runner.run(content_recv).await;
-        Ok(())
+        runner.run(content_recv).await
     }
 }

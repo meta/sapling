@@ -370,7 +370,7 @@ impl FlushPipeline {
                         // error line per queued signal; downstream treats
                         // the dropped signal as a wind-down.
                         let msg = format!("{err:?}");
-                        self.fail_all_pending(anyhow::Error::msg(msg.clone()), Vec::new());
+                        self.fail_all_pending(&anyhow::Error::msg(msg.clone()), Vec::new());
                         return Err(anyhow::Error::msg(msg));
                     }
                 }
@@ -388,7 +388,7 @@ impl FlushPipeline {
     /// Abort all in-flight workers and fail every held sender with `err`.
     /// After this the pipeline is spent; the manager loop must return.
     /// Synchronous: aborting only requests cancellation without waiting.
-    pub(crate) fn abort(&mut self, err: anyhow::Error) {
+    pub(crate) fn abort(&mut self, err: &anyhow::Error) {
         self.fail_all_pending(err, Vec::new());
     }
 
@@ -397,7 +397,7 @@ impl FlushPipeline {
     /// wind-down so downstream receives the error payload for every
     /// queued signal instead of a bare dropped channel.
     pub(crate) fn abort_with_pending(&mut self, err: anyhow::Error, extra: DoneSenders) {
-        self.fail_all_pending(err, extra);
+        self.fail_all_pending(&err, extra);
     }
 
     fn advance_watermark(&mut self) -> Option<anyhow::Error> {
@@ -479,7 +479,7 @@ impl FlushPipeline {
         }
     }
 
-    fn fail_all_pending(&mut self, err: anyhow::Error, extra: DoneSenders) {
+    fn fail_all_pending(&mut self, err: &anyhow::Error, extra: DoneSenders) {
         for handle in self.handles.drain(..) {
             handle.abort();
         }
@@ -822,7 +822,7 @@ mod tests {
 
         let mut pipeline = test_pipeline(4, None);
         let ran = Arc::new(AtomicBool::new(false));
-        pipeline.abort(anyhow!("boom"));
+        pipeline.abort(&anyhow!("boom"));
 
         // Spawn on a spent pipeline reports the stored failure without
         // running the work, and drops the new senders.
@@ -854,7 +854,7 @@ mod tests {
     #[mononoke::test]
     async fn poll_and_wait_after_abort_report_stored_failure() -> Result<()> {
         let mut pipeline = test_pipeline(4, None);
-        pipeline.abort(anyhow!("boom"));
+        pipeline.abort(&anyhow!("boom"));
 
         // Polling a spent pipeline reports the stored failure instead of
         // success, and waiting reports it instead of hanging on a channel
