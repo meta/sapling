@@ -412,8 +412,8 @@ def createremote(ui, repo, *pats, **opts) -> None:
                         )
                         storesnapshotmetadata(repo, continuationof_bytes, metadata)
                     ui.status(
-                        _("found bubble {} for {} via remote lookup\n").format(
-                            previousbubble, continuationof
+                        _("found bubble for {} via remote lookup\n").format(
+                            continuationof
                         ),
                         component="snapshot",
                     )
@@ -435,9 +435,7 @@ def createremote(ui, repo, *pats, **opts) -> None:
                 }
             }
             ui.status(
-                _("continuing from snapshot {} using bubble {}\n").format(
-                    continuationof, previousbubble
-                ),
+                _("continuing from snapshot {}\n").format(continuationof),
                 component="snapshot",
             )
         elif previousbubble is not None:

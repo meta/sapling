@@ -84,12 +84,12 @@ def list_snapshots(ui, repo, **opts) -> None:
         if fm.isplain() and snapshot_items:
             fm.plain(
                 _(
-                    "| Snapshot ID                                                      | Creation Time                  | Expiration Time                | Bubble ID  |\n"
+                    "| Snapshot ID                                                      | Creation Time                  | Expiration Time                |\n"
                 ),
             )
             fm.plain(
                 _(
-                    "|------------------------------------------------------------------|--------------------------------|--------------------------------|------------|\n"
+                    "|------------------------------------------------------------------|--------------------------------|--------------------------------|\n"
                 ),
             )
 
@@ -106,17 +106,12 @@ def list_snapshots(ui, repo, **opts) -> None:
             if fm.isplain():
                 # Human-readable output
                 created_at = metadata.get("created_at")
-                bubble = metadata.get("bubble")
                 expiration_timestamp = metadata.get("bubble_expiration_timestamp")
 
                 # Validate required metadata
                 if created_at is None:
                     raise error.Abort(
                         _("snapshot {} missing created_at metadata").format(cs_id)
-                    )
-                if bubble is None:
-                    raise error.Abort(
-                        _("snapshot {} missing bubble metadata").format(cs_id)
                     )
 
                 # Format timestamp using Sapling's datestr
@@ -134,7 +129,6 @@ def list_snapshots(ui, repo, **opts) -> None:
                 fm.write("id", "| %-64s", cs_id)
                 fm.write("created_at", " | %-30s", created_str)
                 fm.write("bubble_expiration_timestamp", " | %-30s", expiration_str)
-                fm.write("bubble", " | %-10s", str(bubble))
                 fm.plain(" |\n")
             else:
                 # JSON/template output - data is already set above
