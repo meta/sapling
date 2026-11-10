@@ -386,10 +386,24 @@ mod tests {
     use mononoke_macros::mononoke;
 
     use super::*;
+    use crate::sender::edenapi::NoopEdenapiSender;
 
     #[derive(Default)]
     struct TestMutableCounters {
         counters: RwLock<HashMap<String, i64>>,
+        /// Writes to this counter fail, as a SQL error would.
+        fail_writes_to: Option<String>,
+    }
+
+    impl TestMutableCounters {
+        fn check_writable(&self, name: &str) -> Result<()> {
+            match &self.fail_writes_to {
+                Some(failing) if failing == name => {
+                    Err(anyhow!("injected failure writing counter {name}"))
+                }
+                _ => Ok(()),
+            }
+        }
     }
 
     #[async_trait]
@@ -418,6 +432,7 @@ mod tests {
             value: i64,
             prev_value: Option<i64>,
         ) -> Result<bool> {
+            self.check_writable(name)?;
             let mut counters = self.counters.write().expect("test counter lock poisoned");
             if let Some(prev_value) = prev_value
                 && counters.get(name).copied() != Some(prev_value)
@@ -429,6 +444,10 @@ mod tests {
         }
 
         async fn set_counters(&self, _ctx: &CoreContext, counters: &[(&str, i64)]) -> Result<()> {
+            // Like the SQL transaction, a failing write applies none of them.
+            counters
+                .iter()
+                .try_for_each(|(name, _)| self.check_writable(name))?;
             self.counters
                 .write()
                 .expect("test counter lock poisoned")
@@ -487,6 +506,51 @@ mod tests {
             BookmarkUpdateLogId(130),
         );
         assert_eq!(counters.get_counter(&ctx, "completed").await?, Some(130));
+
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn failed_checkpoint_position_write(fb: FacebookInit) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let names = ModernSyncCounterNames::legacy();
+        // Entry 10 was checkpointed 500 commits in.
+        let counters = Arc::new(TestMutableCounters {
+            counters: RwLock::new(HashMap::from([
+                (names.current_entry.clone(), 10),
+                (names.batch_checkpoint.clone(), 500),
+            ])),
+            fail_writes_to: Some(names.batch_checkpoint.clone()),
+        });
+        let sender: Arc<dyn EdenapiSender + Send + Sync> = Arc::new(NoopEdenapiSender::default());
+
+        // Entry 11 reaches position 3, but writing the position fails.
+        let flushed = ChangesetManager::flush_batch(
+            "repo".to_owned(),
+            &ctx,
+            &sender,
+            counters.clone(),
+            &mut Vec::new(),
+            &mut VecDeque::new(),
+            &mut HashMap::from([(names.clone(), (3, 11))]),
+            &mut HashMap::new(),
+            &mut Vec::new(),
+            &mut None,
+        )
+        .await;
+        assert!(
+            flushed.is_err(),
+            "a failed checkpoint write must fail the flush"
+        );
+
+        let stored_pair = (
+            counters.get_counter(&ctx, &names.current_entry).await?,
+            counters.get_counter(&ctx, &names.batch_checkpoint).await?,
+        );
+        // FIXME: BUG! The entry id was written without its position. The pair
+        // now claims entry 11 is 500 commits in, so on resume the reader skips
+        // 500 commits of entry 11 that were never uploaded.
+        assert_eq!(stored_pair, (Some(11), Some(500)));
 
         Ok(())
     }
