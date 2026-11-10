@@ -162,9 +162,8 @@ fn main(fb: FacebookInit) -> Result<()> {
 
     let service_name = args
         .sharded_executor_args
-        .sharded_service_name
-        .as_ref()
-        .map(|_| ShardedService::DiffService);
+        .is_sharded()
+        .then_some(ShardedService::DiffService);
 
     // Held until after wait_until_terminated: dropping the manager aborts the
     // config reconcile loop, which is the only thing that rebuilds repos on

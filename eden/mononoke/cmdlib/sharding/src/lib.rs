@@ -5,22 +5,91 @@
  * GNU General Public License version 2.
  */
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use fbinit::FacebookInit;
 use sharding_ext::RepoShard;
+use tokio::runtime::Handle;
+use tokio::sync::oneshot::Receiver;
 
 pub mod args;
 #[cfg(fbcode_build)]
 mod facebook;
+mod local;
 #[cfg(not(fbcode_build))]
 mod oss;
 
 #[cfg(fbcode_build)]
 pub use facebook::*;
+pub use local::LocalShardExecutor;
 #[cfg(not(fbcode_build))]
 pub use oss::*;
+
+/// Runs a process's repos as ShardManager assigns them, or as a local shard
+/// file does (`--local-shardmanager-path`).
+pub enum ShardedProcessExecutor {
+    ShardManager(ShardManagerExecutor),
+    Local(LocalShardExecutor),
+}
+
+impl ShardedProcessExecutor {
+    /// An executor that ShardManager assigns repos to.
+    pub fn new(
+        fb: FacebookInit,
+        runtime_handle: Handle,
+        service_name: &'static str,
+        service_scope: &'static str,
+        timeout_secs: u64,
+        process_handle: Arc<dyn RepoShardedProcess>,
+        shard_healing: bool,
+        health_check_fn: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    ) -> Result<Self> {
+        Ok(Self::ShardManager(ShardManagerExecutor::new(
+            fb,
+            runtime_handle,
+            service_name,
+            service_scope,
+            timeout_secs,
+            process_handle,
+            shard_healing,
+            health_check_fn,
+        )?))
+    }
+
+    /// An executor that the shard file at `path` assigns repos to.
+    pub fn local(
+        path: PathBuf,
+        runtime_handle: Handle,
+        timeout_secs: u64,
+        process_handle: Arc<dyn RepoShardedProcess>,
+    ) -> Self {
+        Self::Local(LocalShardExecutor::new(
+            path,
+            runtime_handle,
+            timeout_secs,
+            process_handle,
+        ))
+    }
+
+    /// Runs the assigned repos until the terminate signal is received.
+    pub async fn block_and_execute(self, terminate_signal_receiver: Receiver<bool>) -> Result<()> {
+        match self {
+            Self::ShardManager(executor) => {
+                executor.block_and_execute(terminate_signal_receiver).await
+            }
+            Self::Local(executor) => {
+                executor
+                    .run(async {
+                        let _ = terminate_signal_receiver.await;
+                    })
+                    .await
+            }
+        }
+    }
+}
 
 /// Trait outlining the method responsible for performing the initial bootstrapping
 /// of the process with the context of the incoming repo. Implementer of this trait should

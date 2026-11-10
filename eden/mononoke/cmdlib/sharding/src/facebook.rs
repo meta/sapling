@@ -1084,7 +1084,7 @@ impl sm::ShardManagerHandler for ShardedProcessHandler {
 /// High-level entity abstracting the ShardManager dependency for executing
 /// sharded repos for a given process. Responsible for managing
 /// the ShardedProcessHandler for the given process.
-pub struct ShardedProcessExecutor {
+pub struct ShardManagerExecutor {
     /// The ShardManager client handle
     client: sm::client::ShardManagerClient,
     /// The core process executor handle responsible for maintaining the state
@@ -1092,7 +1092,7 @@ pub struct ShardedProcessExecutor {
     handler: Arc<ShardedProcessHandler>,
 }
 
-impl ShardedProcessExecutor {
+impl ShardManagerExecutor {
     pub fn new(
         fb: FacebookInit,
         runtime_handle: Handle,

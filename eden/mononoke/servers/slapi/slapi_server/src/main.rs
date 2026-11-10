@@ -315,9 +315,8 @@ fn main(fb: FacebookInit) -> Result<()> {
     // service name as None while opening repos.
     let service_name = args
         .sharded_executor_args
-        .sharded_service_name
-        .as_ref()
-        .map(|_| ShardedService::SaplingRemoteApi);
+        .is_sharded()
+        .then_some(ShardedService::SaplingRemoteApi);
     app.start_monitoring(&runtime, "mononoke_server", service.clone())?;
     app.start_stats_aggregation()?;
 

@@ -167,9 +167,8 @@ fn main(fb: FacebookInit) -> Result<()> {
 
     let service_name = args
         .sharded_executor_args
-        .sharded_service_name
-        .as_ref()
-        .map(|_| ShardedService::BookmarkService);
+        .is_sharded()
+        .then_some(ShardedService::BookmarkService);
     let repos_mgr = Arc::new(runtime.block_on(app.open_managed_repos(service_name))?);
 
     let bookmark_service =

@@ -9,19 +9,17 @@ rust_library(
     named_deps = {
         "folly-logging": "//common/rust/folly/logging:logging",
     },
-    # facebook.rs (and its tests) is fbcode-only; gate the test macro dep too.
-    test_deps = (
-        []
-        if rust_oss.is_oss_build()
-        else [
-            "//eden/mononoke/common/mononoke_macros:mononoke_macros",
-        ]
-    ),
+    test_deps = [
+        "fbsource//third-party/rust:tempfile",
+        "//eden/mononoke/common/mononoke_macros:mononoke_macros",
+    ],
     deps = [
         "fbsource//third-party/rust:anyhow",
         "fbsource//third-party/rust:async-trait",
         "fbsource//third-party/rust:clap",
+        "fbsource//third-party/rust:futures",
         "fbsource//third-party/rust:tokio",
+        "fbsource//third-party/rust:tracing",
         "//common/rust/shardmanager:shardmanager_lib",
         "//common/rust/shed/fbinit:fbinit",
         "//eden/mononoke/cmdlib/sharding_ext:sharding_ext",
@@ -30,8 +28,6 @@ rust_library(
         []
         if rust_oss.is_oss_build()
         else [
-            "fbsource//third-party/rust:futures",
-            "fbsource//third-party/rust:tracing",
             "//common/rust/shed/stats:stats",
         ]
     ),

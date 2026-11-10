@@ -8,15 +8,17 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use anyhow::bail;
 use fbinit::FacebookInit;
 use tokio::runtime::Handle;
 use tokio::sync::oneshot::Receiver;
 
 use crate::RepoShardedProcess;
 
-pub struct ShardedProcessExecutor {}
+/// ShardManager isn't available outside fbcode builds, so none can be made.
+pub enum ShardManagerExecutor {}
 
-impl ShardedProcessExecutor {
+impl ShardManagerExecutor {
     pub fn new(
         _fb: FacebookInit,
         _runtime_handle: Handle,
@@ -27,14 +29,10 @@ impl ShardedProcessExecutor {
         _shard_healing: bool,
         _health_check_fn: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
     ) -> Result<Self> {
-        unimplemented!("ShardedProcessExecutor is supported only for fbcode build")
+        bail!("ShardManager is not available in this build; use --local-shardmanager-path")
     }
 
     pub async fn block_and_execute(self, _terminate_signal_receiver: Receiver<bool>) -> Result<()> {
-        unimplemented!("ShardedProcessExecutor is supported only for fbcode build")
-    }
-
-    pub fn execute(&mut self) {
-        unimplemented!("ShardedProcessExecutor is supported only for fbcode build")
+        match self {}
     }
 }

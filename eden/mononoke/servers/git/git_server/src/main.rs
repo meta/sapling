@@ -350,9 +350,8 @@ fn main(fb: FacebookInit) -> Result<(), Error> {
     // service name as None while opening repos.
     let service_name = args
         .sharded_executor_args
-        .sharded_service_name
-        .as_ref()
-        .map(|_| ShardedService::MononokeGitServer);
+        .is_sharded()
+        .then_some(ShardedService::MononokeGitServer);
     app.start_monitoring(app.runtime(), SERVICE_NAME, AliveService)?;
     app.start_stats_aggregation()?;
     let rate_limiter = {

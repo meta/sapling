@@ -147,7 +147,7 @@ fn validate_args(args: &LoggerArgs) -> Result<()> {
     if args.selection_config.is_some() == !args.source.is_empty() {
         anyhow::bail!("pass exactly one of --selection-config or --source");
     }
-    if args.sharded_executor_args.clone().is_sharded() {
+    if args.sharded_executor_args.is_sharded() {
         if args.selection_config.is_none() {
             anyhow::bail!("sharded mode requires --selection-config");
         }
@@ -394,7 +394,7 @@ async fn sample_all(
 async fn async_main(app: MononokeApp) -> Result<()> {
     let args: LoggerArgs = app.args()?;
     validate_args(&args)?;
-    if args.sharded_executor_args.clone().is_sharded() {
+    if args.sharded_executor_args.is_sharded() {
         return run_sharded(app, &args).await;
     }
     let ctx = CoreContext::new(app.fb);
@@ -799,6 +799,7 @@ mod tests {
             sharded_executor_args: ShardedExecutorArgs {
                 sharded_service_name: sharded.then(|| "svc".to_string()),
                 sharded_scope_name: sharded.then(|| "scope".to_string()),
+                local_shardmanager_path: None,
             },
         }
     }
