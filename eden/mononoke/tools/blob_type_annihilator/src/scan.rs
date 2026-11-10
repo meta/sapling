@@ -34,6 +34,7 @@ use crate::adapters::ComponentStore;
 use crate::policy::KeyRecipe;
 use crate::policy::PhysicalEncoding;
 use crate::policy::parse_physical_key;
+use crate::progress::Phase;
 use crate::scope::Plan;
 use crate::scope::PlannedComponent;
 use crate::state::StagedLines;
@@ -373,12 +374,18 @@ pub async fn cell_has_keys(
     Ok(false)
 }
 
+/// Number of partitions of each cell.
+pub fn partition_count(digits: u8) -> usize {
+    partition_hexes(digits).count()
+}
+
 /// Runs `run` on every partition of `cells`, `concurrency` at a time,
-/// yielding each result as it finishes.
+/// recording each in `phase` and yielding its result as it finishes.
 pub fn run_partitions<'r, 'p, T, F, Fut>(
     cells: &'r [Cell<'p>],
     digits: u8,
     concurrency: NonZeroUsize,
+    phase: &'r Phase,
     run: F,
 ) -> impl Stream<Item = (Cell<'p>, String, Result<T>)> + 'r
 where
@@ -395,6 +402,7 @@ where
             let partition = run(cell, hex.clone());
             async move {
                 let result = partition.await;
+                phase.record(&result);
                 (cell, hex, result)
             }
         })

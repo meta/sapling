@@ -14,6 +14,7 @@ use futures::stream::StreamExt;
 use mononoke_app::MononokeApp;
 use tracing::warn;
 
+use crate::progress::Phase;
 use crate::run::Run;
 use crate::run::RunArgs;
 use crate::scan;
@@ -56,6 +57,13 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
     let digits = plan.request.partition_digits;
 
     if args.exists {
+        let reporter = args.run.progress.start(Phase::new(
+            "scan --exists",
+            "cells",
+            cells.len(),
+            &["present", "absent", "unknown"],
+        ));
+        let phase = reporter.phase();
         let mut results = stream::iter(&cells)
             .map(|cell| {
                 let (ctx, stores) = (&ctx, &stores);
@@ -64,6 +72,11 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
                         scan::cell_has_keys(ctx, stores.get(&cell.component.id)?, *cell).await
                     }
                     .await;
+                    phase.unit_done_as(match &result {
+                        Ok(true) => "present",
+                        Ok(false) => "absent",
+                        Err(_) => "unknown",
+                    });
                     (cell, result)
                 }
             })
@@ -80,25 +93,38 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
             }
         }
         drop(results);
+        reporter.finish().await;
         if unknown > 0 {
             bail!("{unknown} cells could not be checked");
         }
         return Ok(());
     }
 
-    let failures = scan::run_partitions(&cells, digits, args.scan.scan_concurrency, |cell, hex| {
-        let (ctx, run, stores) = (&ctx, &run, &stores);
-        let concurrency = args.scan.classify_concurrency;
-        async move {
-            let ictx = InventoryContext {
-                ctx,
-                state: &run.state,
-                store: stores.get(&cell.component.id)?,
-                concurrency,
-            };
-            scan::inventory_partition(ictx, cell, &hex).await
-        }
-    })
+    let reporter = args.run.progress.start(Phase::new(
+        "scan",
+        "partitions",
+        cells.len() * scan::partition_count(digits),
+        &["failed"],
+    ));
+    let failures = scan::run_partitions(
+        &cells,
+        digits,
+        args.scan.scan_concurrency,
+        reporter.phase(),
+        |cell, hex| {
+            let (ctx, run, stores) = (&ctx, &run, &stores);
+            let concurrency = args.scan.classify_concurrency;
+            async move {
+                let ictx = InventoryContext {
+                    ctx,
+                    state: &run.state,
+                    store: stores.get(&cell.component.id)?,
+                    concurrency,
+                };
+                scan::inventory_partition(ictx, cell, &hex).await
+            }
+        },
+    )
     .filter(|(cell, hex, result)| {
         if let Err(e) = result {
             warn!("partition {hex} of {cell} failed: {e:#}");
@@ -107,6 +133,7 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
     })
     .count()
     .await;
+    reporter.finish().await;
 
     scan::print_inventory(&run.state, &cells, digits).await?;
     if failures > 0 {

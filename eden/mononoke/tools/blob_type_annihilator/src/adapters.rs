@@ -38,6 +38,9 @@ use readonlyblob::ReadOnlyBlobstore;
 use sqlblob::Sqlblob;
 use throttledblob::ThrottledBlob;
 
+use crate::progress::STORE_STATS;
+use crate::progress::StoreOp;
+
 #[derive(Args, Clone, Debug)]
 pub struct AdapterOptions {
     /// Rows read per SQL query when enumerating SQLblob keys
@@ -277,6 +280,8 @@ impl ComponentStore {
             }
             (_, cursor) => bail!("cursor {cursor:?} does not belong to this store"),
         };
+        STORE_STATS.record(StoreOp::PageListed);
+        STORE_STATS.add(StoreOp::KeySeen, page.keys.len());
         Ok(page)
     }
 
@@ -285,6 +290,7 @@ impl ComponentStore {
     }
 
     pub async fn get(&self, ctx: &CoreContext, key: &str) -> Result<Option<BlobstoreBytes>> {
+        STORE_STATS.record(StoreOp::ValueRead);
         Ok(self
             .blobstore
             .get(ctx, key)
@@ -314,7 +320,10 @@ impl ComponentStore {
     /// absent is reported as already absent.
     pub async fn unlink(&self, ctx: &CoreContext, key: &str) -> Result<UnlinkOutcome> {
         match self.blobstore.unlink(ctx, key).await {
-            Ok(()) => Ok(UnlinkOutcome::Unlinked),
+            Ok(()) => {
+                STORE_STATS.record(StoreOp::KeyUnlinked);
+                Ok(UnlinkOutcome::Unlinked)
+            }
             Err(unlink_error) => match self.is_present(ctx, key).await {
                 Ok(false) => Ok(UnlinkOutcome::AlreadyAbsent),
                 Ok(true) => Err(unlink_error.context(format!("unlinking {key}"))),

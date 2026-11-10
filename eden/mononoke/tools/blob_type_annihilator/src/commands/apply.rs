@@ -28,6 +28,7 @@ use crate::metadata::RepoMetadata;
 use crate::pack_rewrite::PackOptions;
 use crate::pack_rewrite::freeze;
 use crate::pack_rewrite::missing_pack_note;
+use crate::progress::Phase;
 use crate::run::Run;
 use crate::run::RunArgs;
 use crate::run::Stores;
@@ -107,9 +108,16 @@ impl<'a> Apply<'a> {
             .cells
             .chunk_by(|a, b| a.component.id == b.component.id && a.repo_id == b.repo_id)
             .collect();
+        let reporter = self.args.run.progress.start(Phase::new(
+            "pack freeze",
+            "component repos",
+            groups.len(),
+            &[],
+        ));
         for group in groups {
             let summary =
                 freeze(&self.run.state, &self.plan().digest, self.digits(), group).await?;
+            reporter.phase().unit_done();
             if let Some(cell) = group.first() {
                 println!(
                     "{} repo {}: {} pack tasks covering {} packed aliases",
@@ -117,6 +125,7 @@ impl<'a> Apply<'a> {
                 );
             }
         }
+        reporter.finish().await;
         Ok(())
     }
 
@@ -139,10 +148,17 @@ impl<'a> Apply<'a> {
     /// deleted.
     async fn reset_metadata(&self) -> Result<Vec<(RepositoryId, RepoMetadata)>> {
         let repo_ids: BTreeSet<RepositoryId> = self.cells.iter().map(|cell| cell.repo_id).collect();
+        let reporter = self.args.run.progress.start(Phase::new(
+            "metadata reset",
+            "repos",
+            repo_ids.len(),
+            &[],
+        ));
         let mut repos = Vec::new();
         for repo_id in repo_ids {
             let md = RepoMetadata::open(self.app, &self.plan().repo(repo_id)?.name).await?;
             let outcome = self.metadata_context(&md, repo_id).reset().await?;
+            reporter.phase().unit_done();
             println!(
                 "repo {repo_id} metadata: {} mapping rows deleted, {} shared-cache entries evicted, {} batches not invalidated, unapproved rows left {:?}",
                 outcome.rows_deleted,
@@ -152,16 +168,25 @@ impl<'a> Apply<'a> {
             );
             repos.push((repo_id, md));
         }
+        reporter.finish().await;
         Ok(repos)
     }
 
     /// Applies every partition, returning the totals of each cell.
     async fn apply_partitions(&self) -> Result<BTreeMap<CellKey<'a>, ApplyTotals>> {
         let unlink = self.args.apply.unlink_settings();
+        let reporter = self.args.run.progress.start(Phase::new(
+            "apply",
+            "partitions",
+            self.cells.len() * scan::partition_count(self.digits()),
+            &["failed", "failed keys"],
+        ));
+        let phase = reporter.phase();
         let totals = scan::run_partitions(
             self.cells,
             self.digits(),
             self.args.apply.partition_concurrency,
+            phase,
             |cell, hex| {
                 let unlink = &unlink;
                 async move {
@@ -175,7 +200,9 @@ impl<'a> Apply<'a> {
                         unlink,
                         pack: &self.args.pack,
                     };
-                    apply_partition(&actx, &hex).await
+                    let result = apply_partition(&actx, &hex).await?;
+                    phase.add("failed keys", result.outcome.counts.failed.len() as u64);
+                    Ok(result)
                 }
             },
         )
@@ -190,6 +217,7 @@ impl<'a> Apply<'a> {
             future::ready(totals)
         })
         .await;
+        reporter.finish().await;
         Ok(totals)
     }
 
@@ -197,11 +225,18 @@ impl<'a> Apply<'a> {
     /// mapping's shared-cache entry, now the blobs are gone.  Returns how
     /// many repositories failed.
     async fn final_pass(&self, repos: &[(RepositoryId, RepoMetadata)]) -> usize {
+        let reporter = self.args.run.progress.start(Phase::new(
+            "final metadata pass",
+            "repos",
+            repos.len(),
+            &["failed"],
+        ));
         let mut failed = 0;
         for (repo_id, md) in repos {
             let mctx = self.metadata_context(md, *repo_id);
             let result =
                 async { anyhow::Ok((mctx.reset().await?, mctx.evict_journalled().await?)) }.await;
+            reporter.phase().record(&result);
             match result {
                 Ok((rescan, pass)) => println!(
                     "repo {repo_id} final metadata pass: {} mapping rows deleted, {} shared-cache entries evicted again",
@@ -213,6 +248,7 @@ impl<'a> Apply<'a> {
                 }
             }
         }
+        reporter.finish().await;
         failed
     }
 }

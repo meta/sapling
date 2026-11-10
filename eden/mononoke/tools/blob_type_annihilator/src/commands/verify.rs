@@ -15,6 +15,7 @@ use futures::stream;
 use futures::stream::StreamExt;
 use mononoke_app::MononokeApp;
 
+use crate::progress::Phase;
 use crate::run::Run;
 use crate::run::RunArgs;
 use crate::verify;
@@ -48,12 +49,16 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
     let (run, stores) = Run::open_with_stores(&app, &args.run, &[]).await?;
     let plan = run.plan();
     let concurrency = args.concurrency.get();
+    let progress = &args.run.progress;
 
-    let cells = stream::iter(run.cells(&stores))
+    let cells = run.cells(&stores);
+    let reporter = progress.start(Phase::new("verify cells", "cells", cells.len(), &[]));
+    let phase = reporter.phase();
+    let cells = stream::iter(cells)
         .map(|cell| {
             let (ctx, stores) = (&ctx, &stores);
             async move {
-                match stores.get(&cell.component.id) {
+                let result = match stores.get(&cell.component.id) {
                     Ok(store) => verify::check_cell(ctx, store, cell).await,
                     Err(e) => CellResult {
                         component: cell.component.id.clone(),
@@ -63,12 +68,15 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
                             error: format!("{e:#}"),
                         },
                     },
-                }
+                };
+                phase.unit_done();
+                result
             }
         })
         .buffered(concurrency)
         .collect()
         .await;
+    reporter.finish().await;
 
     let components = run.components(&[])?;
     let families: Vec<Family<'_>> = components
@@ -85,11 +93,18 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
             })
         })
         .collect();
+    let reporter = progress.start(Phase::new(
+        "verify family audits",
+        "families",
+        families.len(),
+        &[],
+    ));
+    let phase = reporter.phase();
     let audits = stream::iter(families)
         .map(|family| {
             let (ctx, stores) = (&ctx, &stores);
             async move {
-                match stores.get(&family.component.id) {
+                let audit = match stores.get(&family.component.id) {
                     Ok(store) => verify::audit_family(ctx, store, family).await,
                     Err(e) => FamilyAudit {
                         component: family.component.id.clone(),
@@ -99,12 +114,15 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
                         unknown: Default::default(),
                         error: Some(format!("{e:#}")),
                     },
-                }
+                };
+                phase.unit_done();
+                audit
             }
         })
         .buffered(concurrency)
         .collect()
         .await;
+    reporter.finish().await;
 
     let probe = MetadataProbe {
         ctx: &ctx,
@@ -112,11 +130,26 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
         selection: &plan.request.selection,
         sample: args.metadata_sample,
     };
+    let reporter = progress.start(Phase::new(
+        "verify metadata",
+        "repos",
+        plan.repos.len(),
+        &[],
+    ));
+    let phase = reporter.phase();
     let metadata = stream::iter(&plan.repos)
-        .map(|repo| verify::check_repo_metadata(&app, &probe, repo))
+        .map(|repo| {
+            let (app, probe) = (&app, &probe);
+            async move {
+                let result = verify::check_repo_metadata(app, probe, repo).await;
+                phase.unit_done();
+                result
+            }
+        })
         .buffered(concurrency)
         .collect()
         .await;
+    reporter.finish().await;
 
     let packs = stream::iter(&components)
         .flat_map(|component| {

@@ -19,6 +19,7 @@ use mononoke_app::MononokeApp;
 
 use crate::adapters::AdapterOptions;
 use crate::adapters::ComponentStore;
+use crate::progress::ProgressOptions;
 use crate::scan;
 use crate::scan::Cell;
 use crate::scope;
@@ -36,6 +37,9 @@ pub struct RunArgs {
 
     #[clap(flatten)]
     pub adapter: AdapterOptions,
+
+    #[clap(flatten)]
+    pub progress: ProgressOptions,
 }
 
 /// The opened stores of a run, by component id.

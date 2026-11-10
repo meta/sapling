@@ -20,6 +20,7 @@ mod commands;
 mod metadata;
 mod pack_rewrite;
 mod policy;
+mod progress;
 mod run;
 mod scan;
 mod scope;
