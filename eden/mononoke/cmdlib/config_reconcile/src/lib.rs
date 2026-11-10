@@ -14,6 +14,9 @@
 //! idempotently, so correctness depends only on *"a reconcile eventually runs"*,
 //! never on which event fired in what order.
 //!
+//! A shared-config change drifts every repo at once. [`Splay`] spreads the
+//! resulting rebuilds over a window, each repo at a fixed [`splay_offset`].
+//!
 //! The crate is deliberately decoupled from Mononoke's config/repo internals:
 //! callers implement [`ConfigSource`] and [`RepoManager`]. That keeps this crate
 //! free of config-store, repo-factory, JustKnobs, and stats dependencies, and
@@ -21,11 +24,15 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::time::Duration;
+use std::time::Instant;
 
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::stream;
 use futures::stream::StreamExt;
+use sha2::Digest;
+use sha2::Sha256;
 
 /// Content generation of a built repo: hashes captured at build time. Changes
 /// only on real content change, not a no-op configerator version bump.
@@ -123,6 +130,38 @@ pub trait RepoManager: Sync {
     fn drop_repo(&self, name: &str);
 }
 
+/// How a pass spreads the rebuilds that a shared-config change causes.
+///
+/// A loaded repo whose only drift is the shared generation rebuilds at its
+/// [`splay_offset`] after the controller first saw that generation. A repo whose
+/// own spec changed rebuilds at once, and its build reads the current shared
+/// config, so it takes both changes together. Builds, drops and retries are
+/// never delayed.
+#[derive(Clone, Copy, Debug)]
+pub struct Splay {
+    pub window: Duration,
+    pub now: Instant,
+}
+
+/// The shared generation the controller is converging to and when it first saw
+/// it. The caller carries it from one pass to the next; offsets count from
+/// `since`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SharedGenSeen {
+    pub shared_gen: u64,
+    pub since: Instant,
+}
+
+/// The point in `window` at which `repo_name` rebuilds after a shared-config
+/// change: the first byte of the SHA-256 of its name, as a fraction of 256. That
+/// byte is the bucket of the repo's spec in configerator
+/// (`scm/mononoke/repos/<kind>/<bucket>/<name>`), so every host rebuilds repos in
+/// the same order.
+pub fn splay_offset(repo_name: &str, window: Duration) -> Duration {
+    let bucket = Sha256::digest(repo_name.as_bytes())[0];
+    window.saturating_mul(u32::from(bucket)) / 256
+}
+
 /// Result of one reconcile pass: the next state plus a summary for the caller to
 /// log / turn into metrics (keeps this crate free of stats/tracing deps).
 #[derive(Debug, Default)]
@@ -132,17 +171,47 @@ pub struct ReconcileOutcome {
     pub rebuilt: usize,
     pub dropped: usize,
     pub failed: Vec<String>,
+    /// Loaded repos waiting for their splay offset.
+    pub deferred: usize,
+    /// When the earliest waiting repo is due; `None` when none is waiting.
+    pub next_due: Option<Instant>,
+    /// To pass to the next pass.
+    pub shared_gen_seen: Option<SharedGenSeen>,
+}
+
+/// When a repo whose only drift is the shared generation may rebuild.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SplaySchedule {
+    pub(crate) since: Instant,
+    pub(crate) now: Instant,
+    pub(crate) window: Duration,
+}
+
+impl SplaySchedule {
+    fn due(&self, repo_name: &str) -> Instant {
+        self.since + splay_offset(repo_name, self.window)
+    }
+}
+
+/// The actions for one pass, plus the repos left waiting for their offset.
+#[derive(Debug, Default)]
+pub(crate) struct Plan {
+    pub(crate) actions: HashMap<String, RepoAction>,
+    pub(crate) deferred: usize,
+    pub(crate) next_due: Option<Instant>,
 }
 
 /// Compute the action (if any) for each repo. Pure — the whole decision surface
-/// is unit-testable, including the config SEVs as regression cases.
+/// is unit-testable, including the config SEVs as regression cases. With no
+/// `schedule`, drift in the shared generation alone rebuilds at once.
 pub(crate) fn compute_actions(
     state: &HashMap<String, RepoState>,
     loaded: &HashSet<String>,
     manifest: &[ManifestEntry],
     desired: &HashMap<String, DesiredRepo>,
     shared_gen: u64,
-) -> HashMap<String, RepoAction> {
+    schedule: Option<&SplaySchedule>,
+) -> Plan {
     let is_deep: HashMap<&str, bool> = manifest
         .iter()
         .map(|e| (e.name.as_str(), e.is_deep_sharded))
@@ -156,51 +225,77 @@ pub(crate) fn compute_actions(
     candidates.extend(loaded.iter().map(String::as_str));
     candidates.extend(state.keys().map(String::as_str));
 
-    candidates
-        .into_iter()
-        .filter_map(|name| {
-            let deep = is_deep.get(name).copied().unwrap_or(false);
-            let d = desired.get(name);
-            let is_loaded = loaded.contains(name);
-            let in_manifest = manifest_names.contains(name);
-            let served_gen = state.get(name).and_then(RepoState::generation);
+    let mut plan = Plan::default();
+    for name in candidates {
+        let deep = is_deep.get(name).copied().unwrap_or(false);
+        let d = desired.get(name);
+        let is_loaded = loaded.contains(name);
+        let in_manifest = manifest_names.contains(name);
+        let served_gen = state.get(name).and_then(RepoState::generation);
 
-            let action = if is_loaded && !deep && (!in_manifest || d.is_some_and(|d| !d.enabled)) {
-                // Positive-evidence drop: gone from the manifest, or disabled.
-                // Never deep; never on an unreadable spec (d == None keeps it).
-                Some(RepoAction::Drop)
-            } else if !is_loaded && !deep && d.is_some_and(|d| d.enabled) {
-                // New shallow enabled member.
-                Some(RepoAction::Build)
-            } else if is_loaded && d.is_some_and(|d| d.enabled) {
-                // Loaded + enabled (shallow or deep): rebuild on real drift, or
-                // if there is no known-good generation (prior failure / seeded).
-                let drifted = match (d, served_gen) {
-                    (Some(d), Some(g)) => d.spec_hash != g.spec_hash || g.shared_gen != shared_gen,
-                    _ => true,
-                };
-                drifted.then_some(RepoAction::Rebuild)
-            } else {
-                None
-            };
-            action.map(|a| (name.to_string(), a))
-        })
-        .collect()
+        let action = if is_loaded && !deep && (!in_manifest || d.is_some_and(|d| !d.enabled)) {
+            // Positive-evidence drop: gone from the manifest, or disabled.
+            // Never deep; never on an unreadable spec (d == None keeps it).
+            Some(RepoAction::Drop)
+        } else if !is_loaded && !deep && d.is_some_and(|d| d.enabled) {
+            // New shallow enabled member.
+            Some(RepoAction::Build)
+        } else if is_loaded && d.is_some_and(|d| d.enabled) {
+            // Loaded + enabled (shallow or deep): rebuild on real drift, or
+            // if there is no known-good generation (prior failure / seeded).
+            match (d, served_gen) {
+                (Some(d), Some(g)) if d.spec_hash != g.spec_hash => Some(RepoAction::Rebuild),
+                (Some(_), Some(g)) if g.shared_gen != shared_gen => {
+                    match schedule.map(|s| (s.due(name), s.now)) {
+                        Some((due, now)) if due > now => {
+                            plan.deferred += 1;
+                            plan.next_due = Some(plan.next_due.map_or(due, |next| next.min(due)));
+                            None
+                        }
+                        _ => Some(RepoAction::Rebuild),
+                    }
+                }
+                (Some(_), Some(_)) => None,
+                _ => Some(RepoAction::Rebuild),
+            }
+        } else {
+            None
+        };
+        if let Some(action) = action {
+            plan.actions.insert(name.to_string(), action);
+        }
+    }
+    plan
 }
 
 /// Run one level-triggered reconciliation pass. Reads live desired state via
 /// `config`, diffs it against `current_state` (plus the actually-loaded repos),
 /// and converges via `manager`. Returns the next state + a summary. Builds run
 /// concurrently up to `concurrency`; a failed build is non-destructive.
+/// `shared_gen_seen` is the previous pass's [`ReconcileOutcome::shared_gen_seen`].
 pub async fn reconcile<C: ConfigSource, M: RepoManager>(
     config: &C,
     manager: &M,
     current_state: &HashMap<String, RepoState>,
     concurrency: usize,
+    splay: Splay,
+    shared_gen_seen: Option<SharedGenSeen>,
 ) -> Result<ReconcileOutcome> {
     let manifest = config.manifest();
     let shared_gen = config.shared_generation()?;
     let loaded = manager.loaded_names();
+    let seen = match shared_gen_seen {
+        Some(seen) if seen.shared_gen == shared_gen => seen,
+        _ => SharedGenSeen {
+            shared_gen,
+            since: splay.now,
+        },
+    };
+    let schedule = SplaySchedule {
+        since: seen.since,
+        now: splay.now,
+        window: splay.window,
+    };
 
     // Live desired state for every manifest member the controller can read.
     let desired: HashMap<String, DesiredRepo> = manifest
@@ -229,10 +324,24 @@ pub async fn reconcile<C: ConfigSource, M: RepoManager>(
         }
     }
 
-    let actions = compute_actions(&state, &loaded, &manifest, &desired, shared_gen);
+    let Plan {
+        actions,
+        deferred,
+        next_due,
+    } = compute_actions(
+        &state,
+        &loaded,
+        &manifest,
+        &desired,
+        shared_gen,
+        Some(&schedule),
+    );
     if actions.is_empty() {
         return Ok(ReconcileOutcome {
             next_state: state,
+            deferred,
+            next_due,
+            shared_gen_seen: Some(seen),
             ..Default::default()
         });
     }
@@ -242,7 +351,12 @@ pub async fn reconcile<C: ConfigSource, M: RepoManager>(
         .map(|e| (e.name.as_str(), e.is_deep_sharded))
         .collect();
 
-    let mut outcome = ReconcileOutcome::default();
+    let mut outcome = ReconcileOutcome {
+        deferred,
+        next_due,
+        shared_gen_seen: Some(seen),
+        ..Default::default()
+    };
 
     // Drops first: synchronous and cheap, and free membership before builds.
     for name in actions

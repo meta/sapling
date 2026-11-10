@@ -11,6 +11,7 @@ license = "GPLv2+"
 anyhow = "1.0.104"
 async-trait = "0.1.92"
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
+sha2 = "0.10.6"
 
 [dev-dependencies]
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }

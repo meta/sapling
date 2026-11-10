@@ -31,6 +31,7 @@ use config_reconcile::ManifestEntry;
 use config_reconcile::RepoGeneration;
 use config_reconcile::RepoManager;
 use config_reconcile::RepoState;
+use config_reconcile::Splay;
 use facet::AsyncBuildable;
 use futures::FutureExt;
 use futures::future::BoxFuture;
@@ -837,9 +838,18 @@ where
                 redaction_disabled: self.redaction_disabled,
             };
             let current = self.reconcile_state.load_full();
-            let outcome =
-                config_reconcile::reconcile(&config, &manager, &current, REPOS_MANAGER_CONCURRENCY)
-                    .await?;
+            let outcome = config_reconcile::reconcile(
+                &config,
+                &manager,
+                &current,
+                REPOS_MANAGER_CONCURRENCY,
+                Splay {
+                    window: Duration::ZERO,
+                    now: Instant::now(),
+                },
+                None,
+            )
+            .await?;
 
             if outcome.built + outcome.rebuilt + outcome.dropped > 0 || !outcome.failed.is_empty() {
                 info!(
