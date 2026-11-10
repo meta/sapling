@@ -86,6 +86,18 @@ impl MemcacheHandler {
         }
     }
 
+    /// Deletes `key`.  Deleting an absent key succeeds.
+    pub async fn del(&self, key: String) -> Result<()> {
+        match self {
+            MemcacheHandler::Real(client) => client.del(key).await,
+            MemcacheHandler::Mock(store) => {
+                store.del(&key);
+                Ok(())
+            }
+            MemcacheHandler::Noop => Ok(()),
+        }
+    }
+
     pub fn create_mock() -> Self {
         MemcacheHandler::Mock(MockStore::new())
     }

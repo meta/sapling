@@ -64,6 +64,10 @@ impl<T: Clone> MockStore<T> {
         value
     }
 
+    pub fn del(&self, key: &str) {
+        self.data.lock().expect("poisoned lock").remove(key);
+    }
+
     pub fn set(&self, key: &str, value: T) {
         self.set_count.fetch_add(1, Ordering::SeqCst);
         self.data
@@ -129,5 +133,16 @@ mod test {
                 hits: 1
             }
         );
+    }
+
+    #[mononoke::test]
+    fn test_del() {
+        let store = MockStore::new();
+        store.set("foo", 1);
+        store.set("bar", 2);
+        store.del("foo");
+        store.del("absent");
+        assert_eq!(store.get(&"foo".to_string()), None);
+        assert_eq!(store.get(&"bar".to_string()), Some(2));
     }
 }
