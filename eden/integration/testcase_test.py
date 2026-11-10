@@ -114,7 +114,7 @@ class IoUringTestMixinTest(unittest.TestCase):
                     mock.patch.object(
                         testcase.os,
                         "uname",
-                        return_value=mock.Mock(release="6.13.2-0_fbk7"),
+                        return_value=mock.Mock(release="6.16.1-0_fbk9"),
                         create=True,
                     ),
                     warnings.catch_warnings(),
@@ -147,11 +147,32 @@ class IoUringTestMixinTest(unittest.TestCase):
 
     @parameterized.expand(
         [
-            ("6.13.2-0_fbk7", True),
-            ("6.16.4-0_fbk1", True),
+            ("7.0.0", True),
+            ("7.1.0-0_fbk1", True),
+            ("6.16.1-0_fbk9", True),
+            ("6.16.1-0_fbk9_rc0_0_gf85c5b8bc889", True),
+            ("6.16.1-0_fbk9_hotfix1", True),
+            ("6.16.1_fbk9", True),
+            ("6.16.1.2-0_fbk9_flavor", True),
+            ("6.16.1-0_fbk10", True),
+            ("6.16.1-0_fbk11_rc0", True),
+            ("6.16.1-0_fbk90", True),
+            ("6.16.1-0_fbk100_hotfix1", True),
+            ("6.13.2-0_fbk7", False),
+            ("6.13.2-0_fbk9", False),
             ("6.13.2-generic", False),
+            ("6.16.4-0_fbk1", False),
+            ("6.16.1-0_fbk5", False),
+            ("6.16.1-0_fbk8_hotfix1", False),
+            ("6.16.1-generic", False),
+            ("6.16.1-0_fbk9extra", False),
+            ("6.16.1-0_fbk10extra", False),
+            ("6.16.1-0_fbk", False),
             ("6.12.0_fbk1", False),
-            ("6.17.0_fbk1", False),
+            ("6.17.0_fbk9", False),
+            ("17.0.0", False),
+            ("prefix7.0.0", False),
+            ("", False),
         ]
     )
     def test_kernel_gate(self, release: str, supported: bool) -> None:
@@ -169,7 +190,8 @@ class IoUringTestMixinTest(unittest.TestCase):
                 create=True,
             ),
             mock.patch.object(case, "__unittest_skip__", False, create=True),
-            mock.patch.object(case, "runTest", return_value=None, create=True),
+            mock.patch.object(case, "runTest", return_value=None, create=True) as body,
+            mock.patch.object(case, "init_eden_client") as init_client,
             mock.patch.object(case, "setup_eden_test") as setup,
         ):
             result = unittest.TestResult()
@@ -183,7 +205,9 @@ class IoUringTestMixinTest(unittest.TestCase):
             setup.assert_called_once()
         else:
             setup.assert_not_called()
-            self.assertIn("requires an fbk", result.skipped[0][1])
+            init_client.assert_not_called()
+            body.assert_not_called()
+            self.assertIn("requires kernel 7.x or 6.16-fbk9+", result.skipped[0][1])
 
     @parameterized.expand([("darwin",), ("win32",)])
     def test_non_linux_is_skipped_before_starting_eden(self, platform: str) -> None:
@@ -195,7 +219,7 @@ class IoUringTestMixinTest(unittest.TestCase):
             class IoUringCase(testcase.IoUringTestMixin, testcase.EdenTestCase):
                 pass
 
-            with self.assertRaisesRegex(unittest.SkipTest, "requires an fbk"):
+            with self.assertRaisesRegex(unittest.SkipTest, "requires kernel 7.x"):
                 IoUringCase().setUp()
             setup.assert_not_called()
 

@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import pathlib
+import re
 import shlex
 import shutil
 import signal
@@ -51,12 +52,15 @@ EDENFS_START_TIMEOUT = 120
 EDENFS_STOP_TIMEOUT = 240
 
 
+FUSE_IO_URING_KERNEL_RELEASE_REGEX = r"^(7\.|6\.16\.[^_]*_fbk(9|[1-9][0-9]+)(_|$))"
+
+
 def require_io_uring_kernel() -> None:
     release = os.uname().release if sys.platform == "linux" else ""
-    # The FUSE io_uring ABI is kernel-specific; extend this allowlist
-    # when another fbk release is validated.
-    if "fbk" not in release or not release.startswith(("6.13.", "6.16.")):
-        raise unittest.SkipTest("requires an fbk 6.13 or 6.16 FUSE io_uring kernel")
+    if re.search(FUSE_IO_URING_KERNEL_RELEASE_REGEX, release) is None:
+        raise unittest.SkipTest(
+            f"requires kernel 7.x or 6.16-fbk9+ for safe FUSE io_uring (running {release!r})"
+        )
 
 
 def fuse_transport_config(use_io_uring: bool) -> list[str]:
