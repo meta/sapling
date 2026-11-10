@@ -409,10 +409,10 @@ mod tests {
 
     fn repo_config_by_id(repo_configs: &RepoConfigs, id: RepositoryId) -> Result<RepoConfig> {
         repo_configs
-            .repos
-            .values()
+            .iter()
+            .map(|(_, config)| config)
             .find(|config| config.repoid == id)
-            .map(|config| (**config).clone())
+            .cloned()
             .ok_or_else(|| anyhow::anyhow!("no config for {id}"))
     }
 

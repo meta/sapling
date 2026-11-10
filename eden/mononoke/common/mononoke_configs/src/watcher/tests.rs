@@ -142,8 +142,14 @@ async fn test_apply_per_repo_update_calls_receivers() {
             receiver.clone() as Arc<dyn ConfigUpdateReceiver>
         ]));
 
-    let succeeded =
-        apply_per_repo_update("foo", repo_config_with_id(42), &repo_configs, &receivers).await;
+    let succeeded = apply_per_repo_update(
+        "foo",
+        repo_config_with_id(42),
+        RepoConfigSource::default(),
+        &repo_configs,
+        &receivers,
+    )
+    .await;
     assert!(succeeded);
 
     let calls = receiver.calls.lock().await;
@@ -163,8 +169,14 @@ async fn test_apply_per_repo_update_patches_bulk_arc() {
     let receivers: Swappable<Vec<Arc<dyn ConfigUpdateReceiver>>> =
         Arc::new(ArcSwap::from_pointee(vec![]));
 
-    let succeeded =
-        apply_per_repo_update("foo", repo_config_with_id(7), &repo_configs, &receivers).await;
+    let succeeded = apply_per_repo_update(
+        "foo",
+        repo_config_with_id(7),
+        RepoConfigSource::default(),
+        &repo_configs,
+        &receivers,
+    )
+    .await;
     assert!(succeeded);
 
     let after = repo_configs.load();
@@ -172,7 +184,7 @@ async fn test_apply_per_repo_update_patches_bulk_arc() {
         .repos
         .get("foo")
         .expect("foo should be in bulk Arc after per-repo apply");
-    assert_eq!(stored.repoid.id(), 7);
+    assert_eq!(stored.config.repoid.id(), 7);
 }
 
 // Regression: a repo added via apply_per_repo_update is findable by id.
@@ -182,8 +194,14 @@ async fn test_apply_per_repo_update_maintains_id_index() {
     let receivers: Swappable<Vec<Arc<dyn ConfigUpdateReceiver>>> =
         Arc::new(ArcSwap::from_pointee(vec![]));
 
-    let succeeded =
-        apply_per_repo_update("foo", repo_config_with_id(7), &repo_configs, &receivers).await;
+    let succeeded = apply_per_repo_update(
+        "foo",
+        repo_config_with_id(7),
+        RepoConfigSource::default(),
+        &repo_configs,
+        &receivers,
+    )
+    .await;
     assert!(succeeded);
 
     let after = repo_configs.load();
@@ -209,8 +227,14 @@ async fn test_apply_per_repo_update_arc_patched_before_receiver_called() {
             receiver.clone() as Arc<dyn ConfigUpdateReceiver>
         ]));
 
-    let succeeded =
-        apply_per_repo_update("foo", repo_config_with_id(99), &repo_configs, &receivers).await;
+    let succeeded = apply_per_repo_update(
+        "foo",
+        repo_config_with_id(99),
+        RepoConfigSource::default(),
+        &repo_configs,
+        &receivers,
+    )
+    .await;
     assert!(succeeded);
 
     let calls = receiver.calls.lock().await;
@@ -220,7 +244,7 @@ async fn test_apply_per_repo_update_arc_patched_before_receiver_called() {
         .get("foo")
         .expect("bulk Arc must contain new config BEFORE receiver is called");
     assert_eq!(
-        in_snapshot.repoid.id(),
+        in_snapshot.config.repoid.id(),
         99,
         "receiver must observe the new config in the bulk Arc",
     );
@@ -244,8 +268,14 @@ async fn test_apply_per_repo_update_fans_out_to_all_receivers() {
             r2.clone() as Arc<dyn ConfigUpdateReceiver>,
         ]));
 
-    let succeeded =
-        apply_per_repo_update("bar", repo_config_with_id(11), &repo_configs, &receivers).await;
+    let succeeded = apply_per_repo_update(
+        "bar",
+        repo_config_with_id(11),
+        RepoConfigSource::default(),
+        &repo_configs,
+        &receivers,
+    )
+    .await;
     assert!(succeeded);
 
     assert_eq!(r1.calls.lock().await.len(), 1, "first receiver called");
@@ -285,8 +315,14 @@ async fn test_apply_per_repo_update_receiver_error_does_not_block_others() {
             healthy.clone() as Arc<dyn ConfigUpdateReceiver>,
         ]));
 
-    let succeeded =
-        apply_per_repo_update("baz", repo_config_with_id(3), &repo_configs, &receivers).await;
+    let succeeded = apply_per_repo_update(
+        "baz",
+        repo_config_with_id(3),
+        RepoConfigSource::default(),
+        &repo_configs,
+        &receivers,
+    )
+    .await;
     assert!(!succeeded, "must return false when any receiver fails");
 
     assert_eq!(
@@ -862,6 +898,7 @@ async fn test_manifest_reload_retains_served_repo_on_spec_parse_failure() {
             .repos
             .get("repo/x")
             .expect("repo/x must be served after the initial good pass")
+            .config
             .repoid
             .id(),
         1,
@@ -887,6 +924,7 @@ async fn test_manifest_reload_retains_served_repo_on_spec_parse_failure() {
             .repos
             .get("repo/x")
             .expect("repo/x must STAY served: transient spec parse failure must keep the last known good per-repo config")
+            .config
             .repoid
             .id(),
         1,
@@ -897,6 +935,7 @@ async fn test_manifest_reload_retains_served_repo_on_spec_parse_failure() {
             .repos
             .get("repo/y")
             .expect("the unrelated new repo/y must appear")
+            .config
             .repoid
             .id(),
         2,
@@ -904,7 +943,7 @@ async fn test_manifest_reload_retains_served_repo_on_spec_parse_failure() {
     );
 }
 
-fn served_config(fx: &ReloadFixture, name: &str) -> Arc<RepoConfig> {
+fn served_entry(fx: &ReloadFixture, name: &str) -> Arc<RepoConfigEntry> {
     fx.repo_configs
         .load()
         .repos
@@ -923,7 +962,7 @@ async fn test_manifest_reload_reuses_parse_for_unchanged_spec() {
     let mut fx = ReloadFixture::new(&v0, &[]);
     fx.put_spec(X_PATH, &valid_repo_spec_json(1, "repo/x"), 0);
     fx.run().await;
-    let x_before = served_config(&fx, "repo/x");
+    let x_before = served_entry(&fx, "repo/x");
 
     fx.put_spec(Y_PATH, &valid_repo_spec_json(2, "repo/y"), 1);
     let v1 = good_manifest(
@@ -937,11 +976,11 @@ async fn test_manifest_reload_reuses_parse_for_unchanged_spec() {
     fx.run().await;
 
     assert!(
-        Arc::ptr_eq(&x_before, &served_config(&fx, "repo/x")),
+        Arc::ptr_eq(&x_before, &served_entry(&fx, "repo/x")),
         "repo/x's spec did not change, so the pass must serve the same parsed config, not a re-parse"
     );
     assert_eq!(
-        served_config(&fx, "repo/y").repoid.id(),
+        served_entry(&fx, "repo/y").config.repoid.id(),
         2,
         "the newly added repo/y must be parsed and served"
     );
@@ -962,7 +1001,7 @@ async fn test_manifest_reload_reparses_changed_spec() {
     let mut fx = ReloadFixture::new(&v0, &[]);
     fx.put_spec(X_PATH, &valid_repo_spec_json(1, "repo/x"), 0);
     fx.run().await;
-    let x_before = served_config(&fx, "repo/x");
+    let x_before = served_entry(&fx, "repo/x");
 
     fx.put_spec(X_PATH, &valid_repo_spec_json(11, "repo/x"), 1);
     fx.put_spec(Y_PATH, &valid_repo_spec_json(2, "repo/y"), 1);
@@ -976,13 +1015,13 @@ async fn test_manifest_reload_reparses_changed_spec() {
     fx.swap_manifest(&v1, 2);
     fx.run().await;
 
-    let x_after = served_config(&fx, "repo/x");
+    let x_after = served_entry(&fx, "repo/x");
     assert!(
         !Arc::ptr_eq(&x_before, &x_after),
         "a changed spec must not be served from the previous parse"
     );
     assert_eq!(
-        x_after.repoid.id(),
+        x_after.config.repoid.id(),
         11,
         "repo/x must be served from its new spec"
     );
@@ -997,7 +1036,7 @@ async fn test_manifest_reload_reparses_all_on_storage_change() {
     let mut fx = ReloadFixture::new(&v0, &[]);
     fx.put_spec(X_PATH, &valid_repo_spec_json(1, "repo/x"), 0);
     fx.run().await;
-    let x_before = served_config(&fx, "repo/x");
+    let x_before = served_entry(&fx, "repo/x");
 
     let mut v1 = v0.clone();
     let extra = v1.storage[TEST_STORAGE].clone();
@@ -1006,7 +1045,7 @@ async fn test_manifest_reload_reparses_all_on_storage_change() {
     fx.run().await;
 
     assert!(
-        !Arc::ptr_eq(&x_before, &served_config(&fx, "repo/x")),
+        !Arc::ptr_eq(&x_before, &served_entry(&fx, "repo/x")),
         "a storage change must re-parse repo/x even though its spec is unchanged"
     );
 }
@@ -1053,7 +1092,7 @@ async fn test_manifest_reload_keeps_parses_on_failed_pass() {
     let mut fx = ReloadFixture::new(&v0, &[]);
     fx.put_spec(X_PATH, &valid_repo_spec_json(1, "repo/x"), 0);
     fx.run().await;
-    let x_before = served_config(&fx, "repo/x");
+    let x_before = served_entry(&fx, "repo/x");
 
     fx.swap_manifest(&unparsable_manifest(vec![]), 1);
     fx.run().await;
@@ -1066,7 +1105,7 @@ async fn test_manifest_reload_keeps_parses_on_failed_pass() {
     fx.swap_manifest(&v2, 2);
     fx.run().await;
     assert!(
-        Arc::ptr_eq(&x_before, &served_config(&fx, "repo/x")),
+        Arc::ptr_eq(&x_before, &served_entry(&fx, "repo/x")),
         "the recovering pass must reuse repo/x's parse"
     );
 }
@@ -1082,14 +1121,14 @@ async fn test_manifest_reload_reparses_when_served_config_replaced() {
     let mut fx = ReloadFixture::new(&v0, &[]);
     fx.put_spec(X_PATH, &valid_repo_spec_json(1, "repo/x"), 0);
     fx.run().await;
-    let cached = served_config(&fx, "repo/x");
+    let cached = served_entry(&fx, "repo/x");
 
     fx.repo_configs.rcu(|current| {
         let mut next = (**current).clone();
         next.insert_repo("repo/x".to_string(), repo_config_with_id(1));
         next
     });
-    let replaced = served_config(&fx, "repo/x");
+    let replaced = served_entry(&fx, "repo/x");
 
     fx.put_spec(Y_PATH, &valid_repo_spec_json(2, "repo/y"), 1);
     let v1 = good_manifest(
@@ -1102,7 +1141,7 @@ async fn test_manifest_reload_reparses_when_served_config_replaced() {
     fx.swap_manifest(&v1, 2);
     fx.run().await;
 
-    let x_after = served_config(&fx, "repo/x");
+    let x_after = served_entry(&fx, "repo/x");
     assert!(
         !Arc::ptr_eq(&cached, &x_after),
         "the cached parse is no longer what is served, so it must not be reused"
@@ -1124,7 +1163,7 @@ async fn test_manifest_reload_carries_parse_across_spec_failure() {
     let mut fx = ReloadFixture::new(&v0, &[]);
     fx.put_spec(X_PATH, &valid_repo_spec_json(1, "repo/x"), 0);
     fx.run().await;
-    let x_good = served_config(&fx, "repo/x");
+    let x_good = served_entry(&fx, "repo/x");
 
     // X's spec goes bad; adding Y triggers a bulk pass.
     fx.put_spec(X_PATH, "{}", 1);
@@ -1139,14 +1178,14 @@ async fn test_manifest_reload_carries_parse_across_spec_failure() {
     fx.swap_manifest(&v1, 2);
     fx.run().await;
     assert!(
-        Arc::ptr_eq(&x_good, &served_config(&fx, "repo/x")),
+        Arc::ptr_eq(&x_good, &served_entry(&fx, "repo/x")),
         "a failed spec parse must keep serving the last good config"
     );
     assert!(
         fx.state
             .parsed_specs
             .get("repo/x")
-            .is_some_and(|parsed| Arc::ptr_eq(&parsed.config, &x_good)),
+            .is_some_and(|parsed| Arc::ptr_eq(&parsed.entry, &x_good)),
         "the last good parse must be carried into the next pass"
     );
 
@@ -1164,7 +1203,7 @@ async fn test_manifest_reload_carries_parse_across_spec_failure() {
     fx.swap_manifest(&v2, 4);
     fx.run().await;
     assert!(
-        Arc::ptr_eq(&x_good, &served_config(&fx, "repo/x")),
+        Arc::ptr_eq(&x_good, &served_entry(&fx, "repo/x")),
         "a spec restored to its last good content must reuse the carried parse"
     );
 }
@@ -1178,7 +1217,7 @@ async fn test_manifest_reload_reparses_all_when_knob_off() {
     let mut fx = ReloadFixture::new(&v0, &[]);
     fx.put_spec(X_PATH, &valid_repo_spec_json(1, "repo/x"), 0);
     fx.run().await;
-    let x_before = served_config(&fx, "repo/x");
+    let x_before = served_entry(&fx, "repo/x");
 
     let v1 = good_manifest("tier_v1", vec![spec_entry("repo/x", 1, X_PATH)]);
     fx.swap_manifest(&v1, 1);
@@ -1192,7 +1231,7 @@ async fn test_manifest_reload_reparses_all_when_knob_off() {
     .await;
 
     assert!(
-        !Arc::ptr_eq(&x_before, &served_config(&fx, "repo/x")),
+        !Arc::ptr_eq(&x_before, &served_entry(&fx, "repo/x")),
         "with the kill switch off, an unchanged spec must still be re-parsed"
     );
 }

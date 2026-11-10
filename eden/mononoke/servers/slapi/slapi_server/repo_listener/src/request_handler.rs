@@ -25,7 +25,7 @@ use futures::stream::TryStreamExt;
 use futures_stats::TimedFutureExt;
 use hgproto::HgProtoHandler;
 use hgproto::sshproto;
-use metaconfig_types::RepoConfigRef;
+use metaconfig_types::RepoConfigSourceRef;
 use mononoke_api::Mononoke;
 use mononoke_api::Repo;
 use qps::Qps;
@@ -92,10 +92,11 @@ pub async fn request_handler(
     scuba = scuba.with_seq("seq");
     scuba.add("repo", reponame);
     // Per-repo config provenance; mutation id is always None until plumbed.
-    if let Some(version) = repo.repo_config().config_version.clone() {
+    let source = repo.repo_config_source();
+    if let Some(version) = source.version.clone() {
         scuba.add("repo_config_version", version);
     }
-    if let Some(mutation_id) = repo.repo_config().config_mutation_id {
+    if let Some(mutation_id) = source.mutation_id {
         scuba.add("repo_config_mutation_id", mutation_id);
     }
     scuba.add_metadata(&metadata);

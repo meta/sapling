@@ -1001,7 +1001,6 @@ impl SourceControlServiceImpl {
         let remote_diff_config = self
             .configs
             .repo_configs()
-            .repos
             .get(repo_name)
             .and_then(|config| config.remote_diff_config.clone());
         let diff_router = self.diff_router(remote_diff_config.as_ref());

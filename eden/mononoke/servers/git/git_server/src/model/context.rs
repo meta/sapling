@@ -18,6 +18,7 @@ use gotham_ext::middleware::request_context::RequestContext;
 use gotham_ext::middleware::scuba::ScubaMiddlewareState;
 use metaconfig_parser::RepoConfigs;
 use metaconfig_types::RepoConfigRef;
+use metaconfig_types::RepoConfigSourceRef;
 use mononoke_api::Mononoke;
 use mononoke_app::args::TLSArgs;
 use mononoke_repos::MononokeRepos;
@@ -64,11 +65,11 @@ impl RepositoryRequestContext {
         let request_context = git_ctx.request_context(ctx, method_info, pushvars).await?;
 
         // Per-repo config provenance; mutation id is always None until plumbed.
-        let repo_config = request_context.repo.repo_config();
+        let source = request_context.repo.repo_config_source();
         ScubaMiddlewareState::try_borrow_add_repo_config_provenance(
             state,
-            repo_config.config_version.as_deref(),
-            repo_config.config_mutation_id,
+            source.version.as_deref(),
+            source.mutation_id,
         );
 
         Ok(request_context)

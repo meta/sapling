@@ -89,6 +89,7 @@ use metaconfig_parser::RepoConfigs;
 #[cfg(fbcode_build)]
 use metaconfig_parser::StorageConfigs;
 use metaconfig_types::ArcRepoConfig;
+use metaconfig_types::ArcRepoConfigSource;
 use metaconfig_types::BlameVersion;
 use metaconfig_types::BubbleDeletionMode;
 #[cfg(fbcode_build)]
@@ -103,6 +104,7 @@ use metaconfig_types::InferredCopyFromConfig;
 use metaconfig_types::InfinitepushNamespace;
 use metaconfig_types::InfinitepushParams;
 use metaconfig_types::RepoConfig;
+use metaconfig_types::RepoConfigSource;
 use metaconfig_types::SourceControlServiceParams;
 use metaconfig_types::UnodeVersion;
 #[cfg(fbcode_build)]
@@ -512,6 +514,11 @@ impl TestRepoFactory {
     /// Construct RepoConfig based on the config in the factory.
     pub fn repo_config(&self) -> ArcRepoConfig {
         Arc::new(self.config.clone())
+    }
+
+    /// Test repos are not loaded from configerator, so they have no source.
+    pub fn repo_config_source(&self) -> ArcRepoConfigSource {
+        Arc::new(RepoConfigSource::default())
     }
 
     /// Construct RepoIdentity based on the config and name in the factory.

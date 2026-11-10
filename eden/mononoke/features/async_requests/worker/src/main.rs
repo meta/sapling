@@ -165,9 +165,8 @@ fn configured_repo_ids(repos_mgr: &MononokeReposManager<Repo>) -> Vec<Repository
     repos_mgr
         .configs()
         .repo_configs()
-        .repos
-        .values()
-        .map(|config| config.repoid)
+        .iter()
+        .map(|(_, config)| config.repoid)
         .collect()
 }
 

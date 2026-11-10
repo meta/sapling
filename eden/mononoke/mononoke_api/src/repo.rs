@@ -122,6 +122,8 @@ use mercurial_mutation::HgMutationStore;
 use mercurial_types::Globalrev;
 use metaconfig_types::RepoConfig;
 use metaconfig_types::RepoConfigRef;
+use metaconfig_types::RepoConfigSource;
+use metaconfig_types::RepoConfigSourceRef;
 use mononoke_repos::MononokeRepos;
 use mononoke_types::ContentId;
 use mononoke_types::ContentManifestId;
@@ -286,6 +288,9 @@ pub struct Repo {
 
     #[facet]
     pub repo_config: RepoConfig,
+
+    #[facet]
+    pub repo_config_source: RepoConfigSource,
 
     #[facet]
     pub repo_ephemeral_store: RepoEphemeralStore,
@@ -891,6 +896,13 @@ impl<R: RepoHandlerBaseRef> RepoContext<R> {
             .maybe_push_redirector_base
             .as_ref()
             .map(AsRef::as_ref)
+    }
+}
+
+impl<R: RepoConfigSourceRef> RepoContext<R> {
+    /// Where the referenced repository's configuration came from.
+    pub fn config_source(&self) -> &RepoConfigSource {
+        self.repo.repo_config_source()
     }
 }
 

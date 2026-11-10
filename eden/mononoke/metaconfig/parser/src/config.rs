@@ -29,6 +29,7 @@ use metaconfig_types::ObjectsCountMultiplier;
 use metaconfig_types::Redaction;
 use metaconfig_types::RedactionConfig;
 use metaconfig_types::RepoConfig;
+use metaconfig_types::RepoConfigSource;
 use metaconfig_types::RepoReadOnly;
 use metaconfig_types::StorageConfig;
 use mononoke_types::RepositoryId;
@@ -48,13 +49,34 @@ const HOOK_MAX_FILE_SIZE_DEFAULT: u64 = 8 * 1024 * 1024; // 8MiB
 /// Holds configuration for repositories.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RepoConfigs {
-    /// Configs for all repos. Persistent + `Arc`-shared so a copy-on-write update
-    /// behind `ArcSwap` is O(1) clone + O(log N), not a whole-map deep clone.
-    pub repos: ImHashMap<String, Arc<RepoConfig>>,
+    /// Configs for all repos, each with where it came from. Persistent +
+    /// `Arc`-shared so a copy-on-write update behind `ArcSwap` is O(1) clone +
+    /// O(log N), not a whole-map deep clone.
+    pub repos: ImHashMap<String, Arc<RepoConfigEntry>>,
     /// Index from RepositoryId to repo name for O(1) lookup by id
     pub repos_by_id: ImHashMap<RepositoryId, String>,
     /// Common configs for all repos
     pub common: CommonConfig,
+}
+
+/// One repo's config and where it came from.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RepoConfigEntry {
+    /// The repo's config.
+    pub config: RepoConfig,
+    /// Where the config came from; empty for a config not loaded through a
+    /// per-repo config handle.
+    pub source: RepoConfigSource,
+}
+
+impl From<RepoConfig> for RepoConfigEntry {
+    /// A config with no recorded source.
+    fn from(config: RepoConfig) -> Self {
+        Self {
+            config,
+            source: RepoConfigSource::default(),
+        }
+    }
 }
 
 /// Creates a ConfigHandle for a TierManifest from a Configerator path.
@@ -485,9 +507,6 @@ fn build_repo_config(
         remote_diff_config,
         commit_rate_limit_config,
         p4_source,
-        // Populated by the versioned ConfigHandle load path, never at parse time.
-        config_version: None,
-        config_mutation_id: None,
     })
 }
 
@@ -617,7 +636,7 @@ impl RepoConfigs {
             .collect();
         let repos = repos
             .into_iter()
-            .map(|(name, config)| (name, Arc::new(config)))
+            .map(|(name, config)| (name, Arc::new(RepoConfigEntry::from(config))))
             .collect();
         Self {
             repos,
@@ -627,10 +646,13 @@ impl RepoConfigs {
     }
 
     /// Build from an already-`Arc`-wrapped persistent map, deriving `repos_by_id`.
-    pub fn from_arc_map(repos: ImHashMap<String, Arc<RepoConfig>>, common: CommonConfig) -> Self {
+    pub fn from_arc_map(
+        repos: ImHashMap<String, Arc<RepoConfigEntry>>,
+        common: CommonConfig,
+    ) -> Self {
         let repos_by_id = repos
             .iter()
-            .map(|(name, config)| (config.repoid, name.clone()))
+            .map(|(name, entry)| (entry.config.repoid, name.clone()))
             .collect();
         Self {
             repos,
@@ -639,10 +661,27 @@ impl RepoConfigs {
         }
     }
 
+    /// Get individual `RepoConfig`, given its repo name.
+    pub fn get(&self, name: &str) -> Option<&RepoConfig> {
+        self.repos.get(name).map(|entry| &entry.config)
+    }
+
+    /// Get individual `RepoConfig` and where it came from, given its repo name.
+    pub fn get_with_source(&self, name: &str) -> Option<(&RepoConfig, &RepoConfigSource)> {
+        self.repos
+            .get(name)
+            .map(|entry| (&entry.config, &entry.source))
+    }
+
+    /// Every repo's name and `RepoConfig`.
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &RepoConfig)> {
+        self.repos.iter().map(|(name, entry)| (name, &entry.config))
+    }
+
     /// Get individual `RepoConfig`, given a repo_id. O(1) via index.
     pub fn get_repo_config(&self, repo_id: RepositoryId) -> Option<(&String, &RepoConfig)> {
         let name = self.repos_by_id.get(&repo_id)?;
-        self.repos.get(name).map(|config| (name, &**config))
+        self.get(name).map(|config| (name, config))
     }
 
     /// O(1) lookup by raw repo id (i32). Constructs RepositoryId internally
@@ -653,21 +692,22 @@ impl RepoConfigs {
 
     /// Insert a repo and update the ID index.
     /// Cleans up stale index entries if the repo's ID changed.
-    pub fn insert_repo(&mut self, name: String, config: RepoConfig) {
-        if let Some(old_config) = self.repos.get(&name) {
-            if old_config.repoid != config.repoid {
-                self.repos_by_id.remove(&old_config.repoid);
+    pub fn insert_repo(&mut self, name: String, entry: impl Into<RepoConfigEntry>) {
+        let entry = entry.into();
+        if let Some(old) = self.repos.get(&name) {
+            if old.config.repoid != entry.config.repoid {
+                self.repos_by_id.remove(&old.config.repoid);
             }
         }
-        self.repos_by_id.insert(config.repoid, name.clone());
-        self.repos.insert(name, Arc::new(config));
+        self.repos_by_id.insert(entry.config.repoid, name.clone());
+        self.repos.insert(name, Arc::new(entry));
     }
 
     /// Remove a repo, keeping `repos` and `repos_by_id` consistent. Returns whether it existed.
     pub fn remove_repo(&mut self, name: &str) -> bool {
         match self.repos.remove(name) {
-            Some(config) => {
-                self.repos_by_id.remove(&config.repoid);
+            Some(entry) => {
+                self.repos_by_id.remove(&entry.config.repoid);
                 true
             }
             None => false,
@@ -1734,8 +1774,6 @@ mod test {
                 remote_diff_config: None,
                 commit_rate_limit_config: None,
                 p4_source: None,
-                config_version: None,
-                config_mutation_id: None,
             },
         );
 
@@ -1824,8 +1862,6 @@ mod test {
                 remote_diff_config: None,
                 commit_rate_limit_config: None,
                 p4_source: None,
-                config_version: None,
-                config_mutation_id: None,
             },
         );
         assert_eq!(
@@ -1864,9 +1900,9 @@ mod test {
         );
 
         // Wrap expected values in Arc to match the persistent map.
-        let repos: ImHashMap<String, Arc<RepoConfig>> = repos
+        let repos: ImHashMap<String, Arc<RepoConfigEntry>> = repos
             .into_iter()
-            .map(|(name, config)| (name, Arc::new(config)))
+            .map(|(name, config)| (name, Arc::new(RepoConfigEntry::from(config))))
             .collect();
         assert_eq!(
             repoconfig.repos.get("www"),
@@ -1993,7 +2029,7 @@ mod test {
         .expect("config should parse");
 
         assert_eq!(
-            configs.repos["fbsource"].hooks[0].config.bypasses,
+            configs.repos["fbsource"].config.hooks[0].config.bypasses,
             vec![HookBypassCondition::permission_group("group1").with_actor(HookBypassActor::Any)],
         );
     }
@@ -2013,7 +2049,7 @@ mod test {
         .expect("config should parse");
 
         assert_eq!(
-            configs.repos["fbsource"].hooks[0].config.bypasses,
+            configs.repos["fbsource"].config.hooks[0].config.bypasses,
             vec![
                 HookBypassCondition::pushvar("ALLOW", "true").with_permission_group("group1"),
                 HookBypassCondition::commit_message("@allow").with_permission_group("group1"),
@@ -2025,7 +2061,7 @@ mod test {
         let configs = load_configs_with_hook1(r#"bypass_commit_string="@allow""#)
             .expect("config should parse");
         assert_eq!(
-            configs.repos["fbsource"].hooks[0].config.bypasses,
+            configs.repos["fbsource"].config.hooks[0].config.bypasses,
             vec![HookBypassCondition::commit_message("@allow").with_actor(HookBypassActor::Any)],
         );
     }
@@ -2047,7 +2083,7 @@ mod test {
         .expect("config should parse");
 
         assert_eq!(
-            configs.repos["fbsource"].hooks[0].config.bypasses,
+            configs.repos["fbsource"].config.hooks[0].config.bypasses,
             vec![
                 HookBypassCondition::pushvar("ALLOW", "true").with_permission_group("group1"),
                 HookBypassCondition {
@@ -2114,7 +2150,10 @@ mod test {
         )
         .expect("config should parse");
 
-        assert_eq!(configs.repos["fbsource"].hooks[0].config.bypasses, vec![]);
+        assert_eq!(
+            configs.repos["fbsource"].config.hooks[0].config.bypasses,
+            vec![]
+        );
     }
 
     #[mononoke::test]
@@ -2331,9 +2370,9 @@ mod test {
             }
         };
 
-        let expected: ImHashMap<String, Arc<RepoConfig>> = expected
+        let expected: ImHashMap<String, Arc<RepoConfigEntry>> = expected
             .into_iter()
-            .map(|(name, config)| (name, Arc::new(config)))
+            .map(|(name, config)| (name, Arc::new(RepoConfigEntry::from(config))))
             .collect();
         assert_eq!(
             res.repos, expected,
@@ -2469,9 +2508,9 @@ mod test {
             }
         };
 
-        let expected: ImHashMap<String, Arc<RepoConfig>> = expected
+        let expected: ImHashMap<String, Arc<RepoConfigEntry>> = expected
             .into_iter()
-            .map(|(name, config)| (name, Arc::new(config)))
+            .map(|(name, config)| (name, Arc::new(RepoConfigEntry::from(config))))
             .collect();
         assert_eq!(
             res.repos, expected,
@@ -2534,7 +2573,7 @@ mod test {
         let res = load_test_configs(&paths).expect("Read configs failed");
 
         if let BlobConfig::MultiplexedWal { blobstores, .. } =
-            &res.repos["test"].storage_config.blobstore
+            &res.repos["test"].config.storage_config.blobstore
         {
             let expected_blobstores = vec![
                 (
@@ -2704,7 +2743,6 @@ mod test {
         );
 
         let repo = repo_configs
-            .repos
             .get("test/repo")
             .expect("test/repo should be present");
         assert_eq!(repo.repoid, RepositoryId::new(42));

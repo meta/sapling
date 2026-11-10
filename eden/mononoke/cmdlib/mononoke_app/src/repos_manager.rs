@@ -47,6 +47,7 @@ use metaconfig_parser::storage_generation;
 use metaconfig_types::CommitIdentityScheme;
 use metaconfig_types::Redaction;
 use metaconfig_types::RepoConfig;
+use metaconfig_types::RepoConfigSource;
 use metaconfig_types::ShardedService;
 use mononoke_api::Mononoke;
 use mononoke_api::MononokeRepo;
@@ -186,10 +187,10 @@ where
         let build_permits = self.build_permits.clone();
         async move {
             let _permit = build_permits.acquire_owned().await?;
-            // get_or_load_repo_config subscribes the per-repo ConfigHandle
-            // internally.
-            let mut repo_config = configs
-                .get_or_load_repo_config(&repo_name)
+            // get_or_load_repo_config_and_source subscribes the per-repo
+            // ConfigHandle internally.
+            let (mut repo_config, source) = configs
+                .get_or_load_repo_config_and_source(&repo_name)
                 .inspect_err(|_| STATS::lazy_repo_build_failed.add_value(1))?;
             if redaction_disabled {
                 repo_config.redaction = Redaction::Disabled;
@@ -197,7 +198,7 @@ where
             let common_config = configs.repo_configs().common.clone();
             let start = Instant::now();
             let repo = repo_factory
-                .build(repo_name.clone(), repo_config, common_config)
+                .build(repo_name.clone(), repo_config, common_config, source)
                 .await
                 .inspect_err(|_| STATS::lazy_repo_build_failed.add_value(1))?;
             STATS::lazy_repo_build_duration_ms.add_value(start.elapsed().as_millis() as i64);
@@ -332,11 +333,18 @@ impl<Repo> MononokeReposManager<Repo> {
     /// Return a repo config for a named repo.  This reads from the main
     /// configuration, so doesn't need to be a currently managed repo.
     pub fn repo_config(&self, repo_name: &str) -> Result<RepoConfig> {
-        let mut repo_config = self.configs.get_or_load_repo_config(repo_name)?;
+        self.repo_config_and_source(repo_name)
+            .map(|(config, _)| config)
+    }
+
+    /// [`Self::repo_config`] with where the config came from.
+    fn repo_config_and_source(&self, repo_name: &str) -> Result<(RepoConfig, RepoConfigSource)> {
+        let (mut repo_config, source) =
+            self.configs.get_or_load_repo_config_and_source(repo_name)?;
         if self.redaction_disabled {
             repo_config.redaction = Redaction::Disabled;
         }
-        Ok(repo_config)
+        Ok((repo_config, source))
     }
 
     /// Construct and add a new repo to the managed repo collection.
@@ -344,17 +352,18 @@ impl<Repo> MononokeReposManager<Repo> {
     where
         Repo: for<'builder> AsyncBuildable<'builder, RepoFactoryBuilder<'builder>>,
     {
-        // get_or_load_repo_config (called via repo_config) subscribes the
-        // per-repo ConfigHandle internally.
-        let repo_config = self
-            .repo_config(repo_name)
+        // get_or_load_repo_config_and_source (called via
+        // repo_config_and_source) subscribes the per-repo ConfigHandle
+        // internally.
+        let (repo_config, source) = self
+            .repo_config_and_source(repo_name)
             .inspect_err(|_| STATS::add_repo_failed.add_value(1))?;
         let repo_id = repo_config.repoid.id();
         let common_config = self.configs.repo_configs().common.clone();
         let start = Instant::now();
         let repo = self
             .repo_factory
-            .build(repo_name.to_string(), repo_config, common_config)
+            .build(repo_name.to_string(), repo_config, common_config, source)
             .await
             .inspect_err(|_| STATS::add_repo_failed.add_value(1))?;
         STATS::add_repo_build_duration_ms.add_value(start.elapsed().as_millis() as i64);
@@ -392,7 +401,7 @@ impl<Repo> MononokeReposManager<Repo> {
     /// now unless its config defers the build to the repo's first request.
     ///
     /// Resolving the config here means the eager path resolves it twice, but
-    /// `get_or_load_repo_config` serves the second from its cache.
+    /// `get_or_load_repo_config_and_source` serves the second from its cache.
     pub async fn add_repo_for_service(
         &self,
         repo_name: &str,
@@ -475,14 +484,14 @@ impl<Repo> MononokeReposManager<Repo> {
             .into_iter()
             .unique()
             .map(|repo_name| {
-                self.repo_config(&repo_name)
-                    .map(|repo_config| (repo_name, repo_config))
+                self.repo_config_and_source(&repo_name)
+                    .map(|(repo_config, source)| (repo_name, repo_config, source))
             })
             .collect::<Result<Vec<_>>>()?;
         let total = repo_configs.len();
         let completed = Arc::new(AtomicUsize::new(0));
         let repos_input = stream::iter(repo_configs)
-            .map(|(repo_name, repo_config)| {
+            .map(|(repo_name, repo_config, source)| {
                 let repo_factory = self.repo_factory.clone();
                 let name = repo_name.clone();
                 let common_config = self.configs.repo_configs().common.clone();
@@ -493,7 +502,7 @@ impl<Repo> MononokeReposManager<Repo> {
                     let start = Instant::now();
                     info!("Initializing repo: {}", &repo_name);
                     let repo = repo_factory
-                        .build(name, repo_config, common_config)
+                        .build(name, repo_config, common_config, source)
                         .await
                         .with_context(|| format!("Failed to initialize repo '{repo_name}'"))?;
                     let n = completed.fetch_add(1, Ordering::Relaxed) + 1;
@@ -713,15 +722,14 @@ where
         deep: bool,
         storage_gen: u64,
     ) -> Result<Option<RepoGeneration>> {
-        let (spec, version) = self
+        let (spec, source) = self
             .configs
-            .live_repo_spec_with_version(name)
+            .live_repo_spec_with_source(name)
             .context("reconcile: no live RepoSpec (unsubscribed or unreadable)")?;
         let spec_hash = spec_hash(&spec)?;
         let manifest = self.configs.manifest().context("reconcile: no manifest")?;
         let mut repo_config =
             parse_repo_spec(Arc::unwrap_or_clone(spec), &self.tier, &manifest.storage)?;
-        repo_config.config_version = version;
         if self.redaction_disabled {
             repo_config.redaction = Redaction::Disabled;
         }
@@ -729,7 +737,7 @@ where
         let common_config = self.configs.repo_configs().common.clone();
         let repo = self
             .repo_factory
-            .build(name.to_string(), repo_config, common_config)
+            .build(name.to_string(), repo_config, common_config, source)
             .await?;
         // The build (async) is done; the insert below is synchronous and takes
         // the MononokeRepos update lock internally — no lock across an await.
@@ -1079,8 +1087,7 @@ impl MononokeConfigUpdateReceiver {
     /// Rebuild the tier-wide repo names map from `repo_configs` (the full
     /// tier config, not the per-task subset) and atomically swap it in.
     fn refresh_repo_names_in_tier(&self, repo_configs: &RepoConfigs) {
-        let names =
-            build_repo_names_in_tier(repo_configs.repos.iter().map(|(k, v)| (k, v.as_ref())));
+        let names = build_repo_names_in_tier(repo_configs.iter());
         self.repo_names_in_tier.store(Arc::new(names));
     }
 

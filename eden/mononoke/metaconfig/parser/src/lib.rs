@@ -16,6 +16,7 @@ pub mod errors;
 
 pub use convert::Convert;
 
+pub use crate::config::RepoConfigEntry;
 pub use crate::config::RepoConfigs;
 pub use crate::config::StorageConfigs;
 pub use crate::config::configerator_manifest_handle;

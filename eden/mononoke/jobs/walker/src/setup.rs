@@ -22,6 +22,7 @@ use metaconfig_types::CommonConfig;
 use metaconfig_types::MetadataDatabaseConfig;
 use metaconfig_types::Redaction;
 use metaconfig_types::RepoConfig;
+use metaconfig_types::RepoConfigSource;
 use metaconfig_types::WalkerJobParams;
 use metaconfig_types::WalkerJobType;
 use mononoke_app::MononokeApp;
@@ -452,7 +453,12 @@ async fn setup_repo<'a>(
     ));
 
     let repo: Repo = repo_factory
-        .build(repo_name.clone(), repo_config.clone(), common_config)
+        .build(
+            repo_name.clone(),
+            repo_config.clone(),
+            common_config,
+            RepoConfigSource::default(),
+        )
         .await?;
 
     Ok((

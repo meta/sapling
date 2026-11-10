@@ -470,9 +470,10 @@ impl MononokeApp {
             .map(|(repo_name, repo_config)| {
                 let repo_factory = self.repo_factory.clone();
                 let common_config = common_config.clone();
+                let source = self.configs.repo_config_source(&repo_name);
                 async move {
                     repo_factory
-                        .build(repo_name, repo_config, common_config)
+                        .build(repo_name, repo_config, common_config, source)
                         .await
                 }
             })
@@ -504,9 +505,10 @@ impl MononokeApp {
         let repo_arg = repo_args.as_repo_arg();
         let (repo_name, repo_config) = self.repo_config(repo_arg)?;
         let common_config = self.repo_configs().common.clone();
+        let source = self.configs.repo_config_source(&repo_name);
         let repo = self
             .repo_factory
-            .build(repo_name, repo_config, common_config)
+            .build(repo_name, repo_config, common_config, source)
             .await?;
         Ok(repo)
     }
@@ -524,9 +526,10 @@ impl MononokeApp {
             .get_or_load_repo_config_by_id(repo_id.id())
             .with_context(|| format!("unknown repoid: {repo_id:?}"))?;
         let common_config = self.repo_configs().common.clone();
+        let source = self.configs.repo_config_source(&repo_name);
         let repo = self
             .repo_factory
-            .build(repo_name, repo_config, common_config)
+            .build(repo_name, repo_config, common_config, source)
             .await?;
         Ok(repo)
     }
@@ -544,11 +547,12 @@ impl MononokeApp {
         let repo_arg = repo_args.as_repo_arg();
         let (repo_name, repo_config) = self.repo_config(repo_arg)?;
         let common_config = self.repo_configs().common.clone();
+        let source = self.configs.repo_config_source(&repo_name);
         let mut repo_factory = self.repo_factory.clone();
         let repo_factory = Arc::make_mut(&mut repo_factory);
         customize_repo_factory(repo_factory);
         let repo = repo_factory
-            .build(repo_name, repo_config, common_config)
+            .build(repo_name, repo_config, common_config, source)
             .await?;
         Ok(repo)
     }
@@ -566,12 +570,13 @@ impl MononokeApp {
         let repo_arg = repo_args.as_repo_arg();
         let (repo_name, mut repo_config) = self.repo_config(repo_arg)?;
         let common_config = self.repo_configs().common.clone();
+        let source = self.configs.repo_config_source(&repo_name);
         repo_config.redaction = Redaction::Disabled;
         let mut repo_factory = self.repo_factory.clone();
         let repo_factory = Arc::make_mut(&mut repo_factory);
         customize_repo_factory(repo_factory);
         let repo = repo_factory
-            .build(repo_name, repo_config, common_config)
+            .build(repo_name, repo_config, common_config, source)
             .await?;
         Ok(repo)
     }
@@ -585,10 +590,11 @@ impl MononokeApp {
         let repo_arg = repo_args.as_repo_arg();
         let (repo_name, mut repo_config) = self.repo_config(repo_arg)?;
         let common_config = self.repo_configs().common.clone();
+        let source = self.configs.repo_config_source(&repo_name);
         repo_config.redaction = Redaction::Disabled;
         let repo = self
             .repo_factory
-            .build(repo_name, repo_config, common_config)
+            .build(repo_name, repo_config, common_config, source)
             .await?;
         Ok(repo)
     }
@@ -604,6 +610,7 @@ impl MononokeApp {
     {
         let (repo_name, mut repo_config) = self.repo_config(repo_arg.as_repo_arg())?;
         let common_config = self.repo_configs().common.clone();
+        let source = self.configs.repo_config_source(&repo_name);
         if let Some(id) = maybe_inner_blobstore_id {
             self.override_blobconfig(&mut repo_config.storage_config.blobstore, id)?;
         }
@@ -620,7 +627,7 @@ impl MononokeApp {
         }
         let repo = self
             .repo_factory
-            .build(repo_name, repo_config, common_config)
+            .build(repo_name, repo_config, common_config, source)
             .await?;
         Ok(repo)
     }
@@ -637,6 +644,7 @@ impl MononokeApp {
     {
         let (repo_name, mut repo_config) = self.repo_config(repo_arg.as_repo_arg())?;
         let common_config = self.repo_configs().common.clone();
+        let source = self.configs.repo_config_source(&repo_name);
         if let Some(id) = maybe_inner_blobstore_id {
             self.override_blobconfig(&mut repo_config.storage_config.blobstore, id)?;
         }
@@ -654,7 +662,7 @@ impl MononokeApp {
         repo_config.redaction = Redaction::Disabled;
         let repo = self
             .repo_factory
-            .build(repo_name, repo_config, common_config)
+            .build(repo_name, repo_config, common_config, source)
             .await?;
         Ok(repo)
     }
@@ -672,12 +680,20 @@ impl MononokeApp {
         let (target_repo_name, target_repo_config) =
             self.repo_config(repo_args.target_repo.as_repo_arg())?;
         let common_config = self.repo_configs().common.clone();
-        let source_repo_fut =
-            self.repo_factory
-                .build(source_repo_name, source_repo_config, common_config.clone());
-        let target_repo_fut =
-            self.repo_factory
-                .build(target_repo_name, target_repo_config, common_config);
+        let source_source = self.configs.repo_config_source(&source_repo_name);
+        let target_source = self.configs.repo_config_source(&target_repo_name);
+        let source_repo_fut = self.repo_factory.build(
+            source_repo_name,
+            source_repo_config,
+            common_config.clone(),
+            source_source,
+        );
+        let target_repo_fut = self.repo_factory.build(
+            target_repo_name,
+            target_repo_config,
+            common_config,
+            target_source,
+        );
 
         let (source_repo, target_repo) = try_join!(source_repo_fut, target_repo_fut)?;
         Ok((source_repo, target_repo))

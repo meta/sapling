@@ -370,11 +370,11 @@ where
         let repo = get_repo(&sctx, &rctx, path.repo(), None).await?;
 
         // Per-repo config provenance; mutation id is always None until plumbed.
-        let repo_config = repo.repo_ctx().config();
+        let source = repo.repo_ctx().config_source();
         ScubaMiddlewareState::try_borrow_add_repo_config_provenance(
             &mut state,
-            repo_config.config_version.as_deref(),
-            repo_config.config_mutation_id,
+            source.version.as_deref(),
+            source.mutation_id,
         );
 
         let request = parse_wire_request::<<Handler::Request as ToWire>::Wire>(&mut state).await?;

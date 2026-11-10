@@ -44,6 +44,7 @@ use gotham_ext::middleware::TlsSessionDataMiddleware;
 use gotham_ext::serve;
 use http::header::HeaderValue;
 use metaconfig_types::RepoConfig;
+use metaconfig_types::RepoConfigSource;
 use metaconfig_types::ShardedService;
 use mononoke_app::MononokeApp;
 use mononoke_app::MononokeAppBuilder;
@@ -100,6 +101,9 @@ pub struct Repo {
 
     #[facet]
     repo_config: RepoConfig,
+
+    #[facet]
+    repo_config_source: RepoConfigSource,
 
     #[facet]
     filestore_config: FilestoreConfig,

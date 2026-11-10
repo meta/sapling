@@ -37,6 +37,7 @@ use cached_config::ConfigUpdateWatcher;
 use futures::future::join_all;
 use futures::stream::FuturesUnordered;
 use futures::stream::StreamExt;
+use metaconfig_parser::RepoConfigEntry;
 use metaconfig_parser::RepoConfigs;
 use metaconfig_parser::StorageConfigs;
 use metaconfig_parser::configerator_repo_spec_handle;
@@ -44,6 +45,7 @@ use metaconfig_parser::parse_manifest_common_and_storage;
 use metaconfig_parser::parse_repo_spec;
 use metaconfig_types::CommonConfig;
 use metaconfig_types::RepoConfig;
+use metaconfig_types::RepoConfigSource;
 use repos::RepoSpec;
 use repos::TierManifest;
 use stats::prelude::*;
@@ -56,6 +58,7 @@ use tracing::warn;
 use crate::STATS;
 use crate::Swappable;
 use crate::receiver::ConfigUpdateReceiver;
+use crate::source_of;
 
 const LIVENESS_INTERVAL: Duration = Duration::from_secs(300);
 
@@ -179,8 +182,8 @@ async fn dispatch_apply_repo_update(
     receiver.apply_repo_update(&repo_name, &repo_config).await
 }
 
-/// Applies a per-repo config update atomically against the bulk `RepoConfigs`
-/// Arc and the receiver-side state.
+/// Applies a per-repo config update, the config and where it came from,
+/// atomically against the bulk `RepoConfigs` Arc and the receiver-side state.
 ///
 /// **Ordering matters**: the bulk Arc is patched FIRST so receivers that read
 /// `MononokeConfigs::repo_configs()` during `apply_repo_update` see the new
@@ -194,6 +197,7 @@ async fn dispatch_apply_repo_update(
 async fn apply_per_repo_update(
     repo_name: &str,
     new_config: RepoConfig,
+    source: RepoConfigSource,
     repo_configs: &Swappable<RepoConfigs>,
     update_receivers: &Swappable<Vec<Arc<dyn ConfigUpdateReceiver>>>,
 ) -> bool {
@@ -204,7 +208,13 @@ async fn apply_per_repo_update(
     repo_configs.rcu(|current| {
         let mut next = (**current).clone();
         // Via insert_repo to keep repos_by_id consistent (and Arc-wrap).
-        next.insert_repo(repo_name.to_owned(), new_config.clone());
+        next.insert_repo(
+            repo_name.to_owned(),
+            RepoConfigEntry {
+                config: new_config.clone(),
+                source: source.clone(),
+            },
+        );
         next
     });
 
@@ -349,7 +359,7 @@ struct ReloadState {
 #[derive(Clone)]
 struct ParsedSpec {
     spec: Arc<RepoSpec>,
-    config: Arc<RepoConfig>,
+    entry: Arc<RepoConfigEntry>,
 }
 
 /// One reload pass; everything fallible returns before the commit.
@@ -494,28 +504,36 @@ async fn run_manifest_reload_pass(
                         && served
                             .repos
                             .get(&entry.repo_name)
-                            .is_some_and(|config| Arc::ptr_eq(config, &parsed.config))
+                            .is_some_and(|served| Arc::ptr_eq(served, &parsed.entry))
                 });
                 if let Some(parsed) = reusable {
                     STATS::bulk_reload_spec_reused.add_value(1);
-                    repos.insert(entry.repo_name.clone(), parsed.config.clone());
+                    repos.insert(entry.repo_name.clone(), parsed.entry.clone());
                     // Hold the live Arc, not the old one, so a no-op version bump does not pin a duplicate.
                     parsed_specs.insert(
                         entry.repo_name.clone(),
                         ParsedSpec {
                             spec,
-                            config: parsed.config.clone(),
+                            entry: parsed.entry.clone(),
                         },
                     );
                     continue;
                 }
                 STATS::bulk_reload_spec_parsed.add_value(1);
                 match parse_repo_spec(RepoSpec::clone(&spec), tier, &current_manifest.storage) {
-                    Ok(mut config) => {
-                        config.config_version = version_info.map(|info| info.version);
-                        let config = Arc::new(config);
-                        repos.insert(entry.repo_name.clone(), config.clone());
-                        parsed_specs.insert(entry.repo_name.clone(), ParsedSpec { spec, config });
+                    Ok(config) => {
+                        let parsed_entry = Arc::new(RepoConfigEntry {
+                            config,
+                            source: source_of(version_info),
+                        });
+                        repos.insert(entry.repo_name.clone(), parsed_entry.clone());
+                        parsed_specs.insert(
+                            entry.repo_name.clone(),
+                            ParsedSpec {
+                                spec,
+                                entry: parsed_entry,
+                            },
+                        );
                     }
                     Err(e) => {
                         error!(
@@ -525,8 +543,8 @@ async fn run_manifest_reload_pass(
                         );
                         STATS::per_repo_refresh_failure_count.add_value(1);
                         // Keep-last-known-good: never drop a served repo on a transient failure.
-                        if let Some(served_config) = served.repos.get(&entry.repo_name) {
-                            repos.insert(entry.repo_name.clone(), served_config.clone());
+                        if let Some(served_entry) = served.repos.get(&entry.repo_name) {
+                            repos.insert(entry.repo_name.clone(), served_entry.clone());
                         }
                         // Carry the last good parse so a spec fixed back to it is not re-parsed.
                         if let Some(parsed) = previous {
@@ -552,9 +570,9 @@ async fn run_manifest_reload_pass(
         .collect();
     repo_configs.rcu(|current| {
         let mut repos = merged.repos.clone();
-        for (name, config) in current.repos.iter() {
+        for (name, entry) in current.repos.iter() {
             if manifest_names.contains(name.as_str()) && !repos.contains_key(name) {
-                repos.insert(name.clone(), config.clone());
+                repos.insert(name.clone(), entry.clone());
             }
         }
         RepoConfigs::from_arc_map(repos, merged.common.clone())
@@ -683,7 +701,7 @@ async fn handle_per_repo_fire(
 
     // Cheap Arc clone; parse_repo_spec consumes the original below.
     let applied_spec = spec.clone();
-    let mut new_config = match parse_repo_spec(
+    let new_config = match parse_repo_spec(
         Arc::unwrap_or_clone(spec),
         tier,
         &manifest_for_storage.storage,
@@ -697,10 +715,11 @@ async fn handle_per_repo_fire(
         }
     };
     // Version reflects the last content-changing parse: spurious bumps are deduped above.
-    new_config.config_version = version_info.map(|info| info.version);
+    let source = source_of(version_info);
 
     info!("Per-repo config refresh: {name}");
-    let succeeded = apply_per_repo_update(&name, new_config, repo_configs, update_receivers).await;
+    let succeeded =
+        apply_per_repo_update(&name, new_config, source, repo_configs, update_receivers).await;
     if succeeded {
         STATS::per_repo_refresh_count.add_value(1);
         // Record applied content for dedup, but only once a receiver exists to act

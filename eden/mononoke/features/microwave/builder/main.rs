@@ -40,6 +40,7 @@ use futures::channel::mpsc;
 use futures::future;
 use mercurial_derivation::MappedHgChangesetId;
 use metaconfig_types::CacheWarmupParams;
+use metaconfig_types::RepoConfigSource;
 use microwave::Snapshot;
 use microwave::SnapshotLocation;
 use mononoke_app::MononokeApp;
@@ -191,7 +192,9 @@ async fn async_main(app: MononokeApp) -> Result<(), Error> {
 
                 let warmup = async move {
                     let cache_warmup = config.cache_warmup.clone();
-                    let repo: Repo = repo_factory.build(name, config, common_config).await?;
+                    let repo: Repo = repo_factory
+                        .build(name, config, common_config, RepoConfigSource::default())
+                        .await?;
 
                     // Rewind bookmarks to the point where we have derived data. Cache
                     // warmup requires filenodes to be present.

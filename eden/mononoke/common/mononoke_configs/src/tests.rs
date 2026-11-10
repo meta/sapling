@@ -431,7 +431,7 @@ fn test_load_all_repo_configs_checked_unions_and_partitions() {
 // A split-loaded repo must record the source-reported config version;
 // mutation id is not plumbed yet and must stay None.
 #[mononoke::test]
-fn test_get_or_load_repo_config_records_config_version() {
+fn test_get_or_load_repo_config_records_config_source() {
     let spec_path = "test/repos/good";
     let manifest_path = "test/manifest";
     let manifest = TierManifest {
@@ -464,35 +464,35 @@ fn test_get_or_load_repo_config_records_config_version() {
     cfg.config_store = Some(store);
     cfg.tier_name = Some(TEST_TIER.to_string());
 
-    let config = cfg
-        .get_or_load_repo_config("good/repo")
+    let (_, source) = cfg
+        .get_or_load_repo_config_and_source("good/repo")
         .expect("split-loaded repo must load");
 
     assert_eq!(
-        config.config_version.as_deref(),
+        source.version.as_deref(),
         Some("config-version-7"),
         "split-loaded repo must record the source-reported config version"
     );
     assert_eq!(
-        config.config_mutation_id, None,
+        source.mutation_id, None,
         "mutation id is not plumbed yet and must stay None"
     );
 
     // The cached fast path must serve the same provenance.
-    let cached = cfg
-        .get_or_load_repo_config("good/repo")
+    let (_, cached) = cfg
+        .get_or_load_repo_config_and_source("good/repo")
         .expect("cached repo must load");
     assert_eq!(
-        cached.config_version.as_deref(),
-        Some("config-version-7"),
-        "the cached entry must carry the same recorded config version"
+        cached, source,
+        "the cached entry must carry the same source"
     );
+    assert_eq!(cfg.repo_config_source("good/repo"), source);
 
-    // Reconcile builds from the live spec, which reports the same version.
-    let (_, version) = cfg
-        .live_repo_spec_with_version("good/repo")
+    // Reconcile builds from the live spec, which reports the same source.
+    let (_, live) = cfg
+        .live_repo_spec_with_source("good/repo")
         .expect("a subscribed repo has a live spec");
-    assert_eq!(version.as_deref(), Some("config-version-7"));
+    assert_eq!(live, source);
 }
 
 // --- Sourcing `common`/`storage` from the manifest ---

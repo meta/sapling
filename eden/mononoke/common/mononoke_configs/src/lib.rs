@@ -30,7 +30,9 @@ use anyhow::anyhow;
 use arc_swap::ArcSwap;
 use cached_config::ConfigHandle;
 use cached_config::ConfigStore;
+use cached_config::ConfigVersionInfo;
 use cloned::cloned;
+use metaconfig_parser::RepoConfigEntry;
 use metaconfig_parser::RepoConfigs;
 use metaconfig_parser::StorageConfigs;
 use metaconfig_parser::configerator_manifest_handle;
@@ -38,6 +40,7 @@ use metaconfig_parser::configerator_repo_spec_handle;
 use metaconfig_parser::parse_manifest_common_and_storage;
 use metaconfig_parser::parse_repo_spec;
 use metaconfig_types::RepoConfig;
+use metaconfig_types::RepoConfigSource;
 use repos::RepoSpec;
 use repos::TierManifest;
 use stats::prelude::*;
@@ -254,16 +257,25 @@ impl MononokeConfigs {
             .map(|handle| handle.get())
     }
 
-    /// [`Self::live_repo_spec`] with the configerator version of that spec, for
-    /// a config built from it to record.
-    pub fn live_repo_spec_with_version(
+    /// [`Self::live_repo_spec`] with where that spec came from, for a repo built
+    /// from it.
+    pub fn live_repo_spec_with_source(
         &self,
         repo_name: &str,
-    ) -> Option<(Arc<RepoSpec>, Option<String>)> {
+    ) -> Option<(Arc<RepoSpec>, RepoConfigSource)> {
         self.repo_handles.read().ok()?.get(repo_name).map(|handle| {
             let (spec, version_info) = handle.get_with_version();
-            (spec, version_info.map(|info| info.version))
+            (spec, source_of(version_info))
         })
+    }
+
+    /// Where the config of a repo in [`Self::repo_configs`] came from.
+    pub fn repo_config_source(&self, repo_name: &str) -> RepoConfigSource {
+        self.repo_configs
+            .load()
+            .get_with_source(repo_name)
+            .map(|(_, source)| source.clone())
+            .unwrap_or_default()
     }
 
     /// Is automatic update of the underlying configuration enabled?
@@ -314,7 +326,8 @@ impl MononokeConfigs {
     }
 
     /// Create a per-repo ConfigHandle on-demand. Reached from ShardManager
-    /// on_add_shard via `repos_manager::add_repo` -> `get_or_load_repo_config`;
+    /// on_add_shard via `repos_manager::add_repo` ->
+    /// `get_or_load_repo_config_and_source`;
     /// nothing in the sharding layer calls it directly.
     pub fn load_repo_config_handle(&self, repo_name: &str) -> Result<()> {
         // Fast path: already loaded
@@ -466,26 +479,36 @@ impl MononokeConfigs {
 
     /// Load a repo config on-demand. Checks the repo_configs cache first,
     /// falls back to loading from the TierManifest via ConfigHandle.
+    pub fn get_or_load_repo_config(&self, repo_name: &str) -> Result<RepoConfig> {
+        self.get_or_load_repo_config_and_source(repo_name)
+            .map(|(config, _)| config)
+    }
+
+    /// [`Self::get_or_load_repo_config`] with where the config came from, both
+    /// from the same snapshot.
     ///
     /// Thread-safe: uses `ArcSwap::rcu` for write serialization. The closure
     /// inside `rcu` runs at least once (possibly multiple times on CAS retry),
     /// so the expensive work — ConfigHandle subscription, RepoSpec parsing —
     /// happens once OUTSIDE the closure.
-    pub fn get_or_load_repo_config(&self, repo_name: &str) -> Result<RepoConfig> {
+    pub fn get_or_load_repo_config_and_source(
+        &self,
+        repo_name: &str,
+    ) -> Result<(RepoConfig, RepoConfigSource)> {
         // Subscribe per-repo handle before the cache lookup — otherwise the
         // fast path returns a legacy-blob entry without ever subscribing,
         // and a subsequent blob hot-reload silently drops the repo. S678887.
         self.ensure_repo_config_handle(repo_name)?;
         // Fast path: lock-free read from cache (covers both legacy blob
         // and previously loaded split-config repos)
-        if let Some(config) = self.repo_configs.load_full().repos.get(repo_name) {
-            return Ok((**config).clone());
+        if let Some((config, source)) = self.repo_configs.load().get_with_source(repo_name) {
+            return Ok((config.clone(), source.clone()));
         }
 
         // Slow path: try loading from manifest. If split-loading infrastructure
         // is unavailable (no manifest, no config store), this will fail and
         // we return the error — the fast path above already checked the legacy blob.
-        let repo_config = self.load_and_parse_repo_config(repo_name)?;
+        let (repo_config, source) = self.load_and_parse_repo_config(repo_name)?;
 
         // Insert into cache via rcu. The closure is idempotent: on CAS retry
         // it re-runs against a fresher snapshot, and if a concurrent writer
@@ -494,7 +517,13 @@ impl MononokeConfigs {
         self.repo_configs.rcu(|current| {
             let mut next = (**current).clone();
             if !next.repos.contains_key(repo_name) {
-                next.insert_repo(repo_name.to_owned(), repo_config.clone());
+                next.insert_repo(
+                    repo_name.to_owned(),
+                    RepoConfigEntry {
+                        config: repo_config.clone(),
+                        source: source.clone(),
+                    },
+                );
             }
             next
         });
@@ -502,12 +531,16 @@ impl MononokeConfigs {
         // All paths leave the cache containing some entry for repo_name with
         // the same value (configs for one repo at one snapshot are
         // deterministic). Return what we parsed.
-        Ok(repo_config)
+        Ok((repo_config, source))
     }
 
-    /// Subscribe to a repo's ConfigHandle and parse its RepoSpec into a RepoConfig.
-    /// This is the shared helper for get_or_load_repo_config and batch_load_repo_configs.
-    fn load_and_parse_repo_config(&self, repo_name: &str) -> Result<RepoConfig> {
+    /// Subscribe to a repo's ConfigHandle and parse its RepoSpec into a RepoConfig,
+    /// with where it came from. This is the shared helper for
+    /// get_or_load_repo_config_and_source and batch_load_repo_configs.
+    fn load_and_parse_repo_config(
+        &self,
+        repo_name: &str,
+    ) -> Result<(RepoConfig, RepoConfigSource)> {
         self.load_repo_config_handle(repo_name)?;
         let handle = self
             .repo_handles
@@ -526,11 +559,10 @@ impl MononokeConfigs {
             .as_ref()
             .context("manifest handle required for split-loading")?
             .get();
-        let mut repo_config =
+        let repo_config =
             parse_repo_spec(Arc::unwrap_or_clone(repo_spec), tier, &manifest.storage)?;
         // Provenance comes only from the ConfigHandle accessor, never from thrift RepoSpec fields.
-        repo_config.config_version = version_info.map(|info| info.version);
-        Ok(repo_config)
+        Ok((repo_config, source_of(version_info)))
     }
 
     /// Batch-load repo configs, surfacing per-repo parse failures instead of
@@ -557,8 +589,8 @@ impl MononokeConfigs {
         let mut missing: Vec<String> = Vec::new();
 
         for name in repo_names {
-            if let Some(config) = current.repos.get(name.as_str()) {
-                results.push((name.clone(), (**config).clone()));
+            if let Some(config) = current.get(name.as_str()) {
+                results.push((name.clone(), config.clone()));
             } else {
                 missing.push(name.clone());
             }
@@ -574,11 +606,11 @@ impl MononokeConfigs {
         // Step 2: Subscribe to ConfigHandles + parse OUTSIDE rcu. Accumulate
         // per-repo parse failures instead of dropping them, so the caller can
         // decide whether to fail closed.
-        let mut newly_loaded: Vec<(String, RepoConfig)> = Vec::new();
+        let mut newly_loaded: Vec<(String, RepoConfig, RepoConfigSource)> = Vec::new();
         let mut failed: Vec<(String, anyhow::Error)> = Vec::new();
         for name in &missing {
             match self.load_and_parse_repo_config(name) {
-                Ok(config) => newly_loaded.push((name.clone(), config)),
+                Ok((config, source)) => newly_loaded.push((name.clone(), config, source)),
                 Err(e) => failed.push((name.clone(), e)),
             }
         }
@@ -591,16 +623,26 @@ impl MononokeConfigs {
         if !newly_loaded.is_empty() {
             self.repo_configs.rcu(|current| {
                 let mut next = (**current).clone();
-                for (name, config) in &newly_loaded {
+                for (name, config, source) in &newly_loaded {
                     if !next.repos.contains_key(name.as_str()) {
-                        next.insert_repo(name.clone(), config.clone());
+                        next.insert_repo(
+                            name.clone(),
+                            RepoConfigEntry {
+                                config: config.clone(),
+                                source: source.clone(),
+                            },
+                        );
                     }
                 }
                 next
             });
         }
 
-        results.extend(newly_loaded);
+        results.extend(
+            newly_loaded
+                .into_iter()
+                .map(|(name, config, _)| (name, config)),
+        );
         Ok(BatchLoadOutcome {
             loaded: results,
             failed,
@@ -664,7 +706,7 @@ impl MononokeConfigs {
         let current = self.repo_configs.load_full();
         if let Some((name, config)) = current.get_repo_config_by_raw_id(repo_id) {
             let name = name.clone();
-            // See get_or_load_repo_config — S678887.
+            // See get_or_load_repo_config_and_source — S678887.
             self.ensure_repo_config_handle(&name)?;
             return Ok((name, config.clone()));
         }
@@ -698,6 +740,14 @@ impl Drop for MononokeConfigs {
         if let Some(liveness_updater) = self.maybe_liveness_updater.as_ref() {
             liveness_updater.abort();
         }
+    }
+}
+
+/// Where a config parsed from a config handle's current snapshot came from.
+pub(crate) fn source_of(version_info: Option<ConfigVersionInfo>) -> RepoConfigSource {
+    RepoConfigSource {
+        version: version_info.map(|info| info.version),
+        mutation_id: None,
     }
 }
 

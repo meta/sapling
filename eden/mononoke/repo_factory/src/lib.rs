@@ -145,6 +145,7 @@ use mercurial_mutation::CachedHgMutationStore;
 use mercurial_mutation::SqlHgMutationStoreBuilder;
 use metaconfig_types::ArcCommonConfig;
 use metaconfig_types::ArcRepoConfig;
+use metaconfig_types::ArcRepoConfigSource;
 use metaconfig_types::BlobConfig;
 use metaconfig_types::CommitIdentityScheme;
 use metaconfig_types::CommonConfig;
@@ -154,6 +155,7 @@ use metaconfig_types::Redaction;
 #[cfg(fbcode_build)]
 use metaconfig_types::RemoteDerivationConfig;
 use metaconfig_types::RepoConfig;
+use metaconfig_types::RepoConfigSource;
 use metaconfig_types::RepoReadOnly;
 #[cfg(fbcode_build)]
 use metaconfig_types::ZelosConfig;
@@ -862,10 +864,22 @@ pub enum RepoFactoryError {
     PushRedirectConfig,
 }
 
-#[facet::factory(name: String, repo_config_param: RepoConfig, common_config_param: CommonConfig)]
+#[facet::factory(
+    name: String,
+    repo_config_param: RepoConfig,
+    common_config_param: CommonConfig,
+    repo_config_source_param: RepoConfigSource
+)]
 impl RepoFactory {
     pub fn repo_config(&self, repo_config_param: &RepoConfig) -> ArcRepoConfig {
         Arc::new(repo_config_param.clone())
+    }
+
+    pub fn repo_config_source(
+        &self,
+        repo_config_source_param: &RepoConfigSource,
+    ) -> ArcRepoConfigSource {
+        Arc::new(repo_config_source_param.clone())
     }
 
     pub fn common_config(&self, common_config_param: &CommonConfig) -> ArcCommonConfig {

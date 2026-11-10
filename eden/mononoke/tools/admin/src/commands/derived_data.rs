@@ -275,7 +275,6 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
             .map(|entry| (RepositoryId::new(entry.repo_id), entry.repo_name.clone()))
             .chain(
                 repo_configs
-                    .repos
                     .iter()
                     .map(|(name, repo_config)| (repo_config.repoid, name.clone())),
             )

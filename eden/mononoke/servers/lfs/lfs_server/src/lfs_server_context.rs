@@ -50,6 +50,7 @@ use lfs_protocol::RequestBatch;
 use lfs_protocol::RequestObject;
 use lfs_protocol::ResponseBatch;
 use metaconfig_types::RepoConfigRef;
+use metaconfig_types::RepoConfigSourceRef;
 use mononoke_app::args::TLSArgs;
 use mononoke_macros::mononoke;
 use mononoke_types::ContentId;
@@ -379,11 +380,11 @@ impl RepositoryRequestContext {
             .await?;
 
         // Per-repo config provenance; mutation id is always None until plumbed.
-        let repo_config = request_context.repo.repo_config();
+        let source = request_context.repo.repo_config_source();
         ScubaMiddlewareState::try_borrow_add_repo_config_provenance(
             state,
-            repo_config.config_version.as_deref(),
-            repo_config.config_mutation_id,
+            source.version.as_deref(),
+            source.mutation_id,
         );
 
         Ok(request_context)
