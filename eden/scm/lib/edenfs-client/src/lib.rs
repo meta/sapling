@@ -21,4 +21,3 @@ pub use crate::utils::EdenCmdType;
 pub use crate::utils::build_eden_command;
 pub use crate::utils::build_eden_command_type;
 pub use crate::utils::get_client_dir;
-pub use crate::utils::run_eden_remove;

@@ -32,8 +32,8 @@ pub(super) fn run_direct_eden_remove(
     repo: &Repo,
     path: &Path,
 ) -> Result<bool> {
-    // `edenfs.basepath` lets tests point at a non-default EdenFS deployment;
-    // the subprocess path honors it the same way (see `build_eden_command_type`).
+    // `edenfs.basepath` lets tests point at a non-default EdenFS deployment, as it does for
+    // `eden clone` (see `build_eden_command_type`).
     let base_path = repo.config().get_opt::<PathBuf>("edenfs", "basepath")?;
     let (config_dir, etc_eden_dir, home_dir) = match base_path {
         Some(base_path) => (

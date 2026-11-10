@@ -89,24 +89,3 @@ pub fn build_eden_command_type(config: &dyn Config, cmd_type: EdenCmdType) -> Re
 pub fn build_eden_command(config: &dyn Config) -> Result<Command> {
     build_eden_command_type(config, EdenCmdType::Rust)
 }
-
-/// Remove an EdenFS checkout by running `edenfsctl remove -y <path>`.
-/// TODO: Inline the Rust implementation of edenfsctl remove rather than shelling out.
-pub fn run_eden_remove(config: &dyn Config, path: &Path) -> Result<()> {
-    let mut cmd = build_eden_command(config)?;
-    cmd.env("EDENFSCTL_ONLY_RUST", "1");
-    cmd.args(["remove", "-y"]);
-    cmd.arg(path);
-    let output = cmd
-        .output()
-        .with_context(|| format!("failed to execute eden remove for {}", path.display()))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!(
-            "eden remove failed for {}: {}",
-            path.display(),
-            stderr.trim()
-        );
-    }
-    Ok(())
-}

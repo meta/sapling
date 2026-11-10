@@ -110,7 +110,6 @@ pub fn doc() -> &'static str {
       worktree.path-generator=CMD              Shell command to generate PATH when omitted
       worktree.snapshot-direct-copy=true       Use direct copy for --snapshot
       worktree.git-enabled=true                Enable worktree commands in native Git repositories
-      worktree.direct-eden-removal=false       Remove EdenFS checkouts via edenfsctl instead of in-process (default: true)
       worktree.check-shelves-on-remove=false   Let remove delete a checkout with shelved changes without --force (default: true)
 
     In native Git repositories, `add` creates a detached checkout and `remove`
