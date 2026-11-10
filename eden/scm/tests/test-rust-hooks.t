@@ -181,6 +181,34 @@ first.)
   hook call 4
   hook call 5
 
+Python fallback gets the original arguments after Python pre-hooks:
+  $ newclientrepo fallbackargv
+  $ echo a > f
+  $ sl commit -qAm A
+  $ echo b > f
+  $ sl commit -qm B
+  $ cat > count.py << 'EOF'
+  > import sys
+  > def main(io, repo, **kwargs):
+  >     sys.hook_calls = getattr(sys, "hook_calls", 0) + 1
+  >     io.write_err(b"hook call %d\n" % sys.hook_calls)
+  > EOF
+  $ cat > argv.py << 'EOF'
+  > import sys
+  > def main(io, repo, **kwargs):
+  >     io.write_err(("argv: %r\n" % sys.argv[1:]).encode())
+  >     assert sys.hook_calls == 4
+  > EOF
+  $ setconfig profiling.always-on-enabled=false 'alias.argv-goto=goto --inactive' hooks.pre-goto.first=python:count.py:main hooks.pre-goto.second=python:count.py:main hooks.update.argv=python:argv.py:main
+  >>> repo = os.path.join(os.environ["TESTTMP"], "fallbackargv")
+  >>> proc = subprocess.run([os.environ["HGEXECUTABLEPATH"], "argv-goto", ".^"], cwd=repo, capture_output=True)
+  >>> assert proc.returncode == 0, proc.stderr.decode()
+  >>> print(proc.stderr.decode(), end="")  # FIXME: argv should include ['argv-goto', '.^'] after the fallback fix.
+  hook call 1
+  hook call 2
+  hook call 3
+  hook call 4
+  argv: []
 
 "pre" hooks abort on error:
   $ newclientrepo
