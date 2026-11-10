@@ -609,6 +609,16 @@ function backfill_mapping {
     "$@"
 }
 
+function blob_type_annihilator {
+  render_mononoke_config
+  GLOG_minloglevel=5 "$MONONOKE_BLOB_TYPE_ANNIHILATOR" \
+    "${CACHE_ARGS[@]}" \
+    "${COMMON_ARGS[@]}" \
+    --config-tier "$MONONOKE_CONFIG_TIER" \
+    --tracing-test-format \
+    "$@"
+}
+
 function bonsai_verify {
   render_mononoke_config
   GLOG_minloglevel=5 "$MONONOKE_BONSAI_VERIFY" \

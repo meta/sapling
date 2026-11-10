@@ -1,0 +1,16 @@
+load(
+    "//eden/mononoke/tests/integration/facebook:fb_manifest_deps.bzl",
+    "dott_test",
+)
+
+oncall("scm_server_infra")
+
+dott_test(
+    name = "blob_type_annihilator",
+    dott_files = glob(["*.t"]),
+    deps = [
+        "//eden/mononoke/tools/admin:admin",
+        "//eden/mononoke/tools/blob_type_annihilator:blob_type_annihilator",
+        "//eden/mononoke/tools/testtool:testtool",
+    ],
+)

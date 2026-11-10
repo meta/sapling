@@ -12,6 +12,10 @@
 //! stem, and a 64-digit lowercase hexadecimal hash ending the logical key.
 //! Adding a family is a reviewed code change, never a runtime option.
 
+use std::collections::BTreeSet;
+
+use anyhow::Result;
+use anyhow::bail;
 use clap::ValueEnum;
 use mononoke_types::DerivableType;
 use mononoke_types::RepositoryId;
@@ -253,10 +257,45 @@ pub fn parse_physical_key(key: &str) -> Option<(RetiredKey<'_>, PhysicalEncoding
     }
 }
 
+/// The set of retired types a run deletes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Selection {
+    types: BTreeSet<RetiredBlobType>,
+}
+
+impl Selection {
+    /// Builds a selection, rejecting one that would leave a selected type's
+    /// dependents referring to deleted blobs.
+    pub fn new(types: impl IntoIterator<Item = RetiredBlobType>) -> Result<Self> {
+        let types: BTreeSet<_> = types.into_iter().collect();
+        if types.is_empty() {
+            bail!("select at least one retired type");
+        }
+        for blob_type in &types {
+            for dependent in blob_type.dependents() {
+                if !types.contains(dependent) {
+                    bail!(
+                        "{blob_type} cannot be retired without {dependent}, which refers to its blobs"
+                    );
+                }
+            }
+        }
+        Ok(Self { types })
+    }
+
+    pub fn types(&self) -> impl Iterator<Item = RetiredBlobType> + '_ {
+        self.types.iter().copied()
+    }
+
+    pub fn recipes(&self) -> impl Iterator<Item = &'static KeyRecipe> + '_ {
+        RECIPES
+            .iter()
+            .filter(|recipe| self.types.contains(&recipe.blob_type))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-
     use mononoke_macros::mononoke;
 
     use super::*;
@@ -442,6 +481,26 @@ mod tests {
                 "{name} must not be selectable"
             );
         }
+    }
+
+    #[mononoke::test]
+    fn selection_requires_dependents() {
+        assert!(Selection::new([]).is_err());
+        assert!(Selection::new([RetiredBlobType::HistoryManifests]).is_err());
+        assert!(
+            Selection::new([
+                RetiredBlobType::HistoryManifests,
+                RetiredBlobType::FastlogV2
+            ])
+            .is_err()
+        );
+        let all = Selection::new(RetiredBlobType::all()).expect("the full group is valid");
+        assert_eq!(all.recipes().count(), RECIPES.len());
+
+        assert!(
+            Selection::new([RetiredBlobType::BlameV3]).is_ok(),
+            "a leaf type is valid"
+        );
     }
 
     #[mononoke::test]

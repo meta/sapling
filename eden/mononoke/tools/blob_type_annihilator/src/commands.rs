@@ -7,5 +7,7 @@
 
 mononoke_app::subcommands! {
     mod check_key;
+    mod plan;
     mod recipes;
+    mod scan;
 }

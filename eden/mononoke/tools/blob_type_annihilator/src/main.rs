@@ -14,8 +14,13 @@ use fbinit::FacebookInit;
 use mononoke_app::MononokeApp;
 use mononoke_app::MononokeAppBuilder;
 
+mod adapters;
 mod commands;
 mod policy;
+mod run;
+mod scan;
+mod scope;
+mod state;
 
 /// Remove retired derived data blob families from repository storage.
 #[derive(Parser)]

@@ -14,6 +14,7 @@ MONONOKE_BINS = {
     "MONONOKE_BACKFILL_MAPPING": "backfill_mapping",
     "MONONOKE_BENCHMARK_FILESTORE": "benchmark_filestore",
     "MONONOKE_BLOBSTORE_HEALER": "blobstore_healer",
+    "MONONOKE_BLOB_TYPE_ANNIHILATOR": "blob_type_annihilator",
     "MONONOKE_BONSAI_VERIFY": "bonsai_verify",
     "MONONOKE_CHECK_GIT_WC": "check_git_wc",
     "MONONOKE_GITEXPORT": "gitexport",
