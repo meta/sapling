@@ -12,7 +12,7 @@ name = "packetline_test"
 path = "test/packetline_test.rs"
 
 [dependencies]
-faster-hex = "0.10.1"
+faster-hex = "1.0.0"
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }

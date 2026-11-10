@@ -18,7 +18,7 @@ use clap::ArgAction;
 use clap::ArgGroup;
 use clap::ArgMatches;
 use clap::builder::ValueRange;
-use faster_hex::hex_decode;
+use faster_hex::hex_decode_array;
 use faster_hex::hex_string;
 
 pub(crate) const ARG_COMMIT_ID: &str = "commit-id";
@@ -467,14 +467,6 @@ fn get_commit_ids_with_names<Names: CommitIdNames>(
     Ok((positional_commit_ids, named_commit_ids))
 }
 
-/// Decode hex into `dst`, requiring the input to fill it exactly.
-fn hex_decode_exact(src: &str, dst: &mut [u8]) -> Result<(), faster_hex::Error> {
-    if src.len() != dst.len() * 2 {
-        return Err(faster_hex::Error::InvalidLength(dst.len() * 2));
-    }
-    hex_decode(src.as_bytes(), dst)
-}
-
 /// Get the commit ids specified by the user.  They are returned in the order specified.
 fn get_commit_ids_impl(matches: &ArgMatches) -> Result<BTreeMap<usize, CommitId>, Error> {
     let bubble_id = matches
@@ -495,8 +487,7 @@ fn get_commit_ids_impl(matches: &ArgMatches) -> Result<BTreeMap<usize, CommitId>
         matches.get_many::<String>(ARG_HG_COMMIT_ID),
     ) {
         for (index, value) in indices.zip(values) {
-            let mut id = [0; 20];
-            hex_decode_exact(value, &mut id)?;
+            let id = hex_decode_array::<20>(value.as_bytes())?;
             commit_ids.insert(index, CommitId::HgId(id));
         }
     }
@@ -505,8 +496,7 @@ fn get_commit_ids_impl(matches: &ArgMatches) -> Result<BTreeMap<usize, CommitId>
         matches.get_many::<String>(ARG_BONSAI_ID),
     ) {
         for (index, value) in indices.zip(values) {
-            let mut id = [0; 32];
-            hex_decode_exact(value, &mut id)?;
+            let id = hex_decode_array::<32>(value.as_bytes())?;
             commit_ids.insert(index, CommitId::BonsaiId(id));
         }
     }
@@ -515,8 +505,7 @@ fn get_commit_ids_impl(matches: &ArgMatches) -> Result<BTreeMap<usize, CommitId>
         matches.get_many::<String>(ARG_SNAPSHOT_ID),
     ) {
         for (index, value) in indices.zip(values) {
-            let mut id = [0; 32];
-            hex_decode_exact(value, &mut id)?;
+            let id = hex_decode_array::<32>(value.as_bytes())?;
             commit_ids.insert(index, CommitId::EphemeralBonsai(id, bubble_id));
         }
     }
@@ -525,8 +514,7 @@ fn get_commit_ids_impl(matches: &ArgMatches) -> Result<BTreeMap<usize, CommitId>
         matches.get_many::<String>(ARG_GIT_SHA1),
     ) {
         for (index, value) in indices.zip(values) {
-            let mut hash = [0; 20];
-            hex_decode_exact(value, &mut hash)?;
+            let hash = hex_decode_array::<20>(value.as_bytes())?;
             commit_ids.insert(index, CommitId::GitSha1(hash));
         }
     }

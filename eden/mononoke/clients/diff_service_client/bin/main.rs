@@ -24,7 +24,7 @@ use diff_service_if as thrift;
 use diff_service_if::DiffContentType;
 use diff_service_if::DiffFileType;
 use diff_service_if::DiffGeneratedStatus;
-use faster_hex::hex_decode;
+use faster_hex::hex_decode_array;
 use fbinit::FacebookInit;
 use futures::StreamExt;
 use mononoke_types::ContentId;
@@ -79,19 +79,10 @@ enum CommitScheme {
     EphemeralBonsai,
 }
 
-/// Decode hex into `dst`, requiring the input to fill it exactly.
-fn hex_decode_exact(src: &str, dst: &mut [u8]) -> Result<(), faster_hex::Error> {
-    if src.len() != dst.len() * 2 {
-        return Err(faster_hex::Error::InvalidLength(dst.len() * 2));
-    }
-    hex_decode(src.as_bytes(), dst)
-}
-
 fn parse_commit_id(id_str: &str, scheme: CommitScheme, bubble_id: Option<u64>) -> Result<CommitId> {
     match scheme {
         CommitScheme::Bonsai => {
-            let mut id = [0; 32];
-            hex_decode_exact(id_str, &mut id)?;
+            let id = hex_decode_array::<32>(id_str.as_bytes())?;
             let bubble = bubble_id.and_then(NonZeroU64::new);
             if bubble.is_some() {
                 Ok(CommitId::EphemeralBonsai(id, bubble))
@@ -100,20 +91,17 @@ fn parse_commit_id(id_str: &str, scheme: CommitScheme, bubble_id: Option<u64>) -
             }
         }
         CommitScheme::Hg => {
-            let mut id = [0; 20];
-            hex_decode_exact(id_str, &mut id)?;
+            let id = hex_decode_array::<20>(id_str.as_bytes())?;
             Ok(CommitId::HgId(id))
         }
         CommitScheme::Git => {
-            let mut id = [0; 20];
-            hex_decode_exact(id_str, &mut id)?;
+            let id = hex_decode_array::<20>(id_str.as_bytes())?;
             Ok(CommitId::GitSha1(id))
         }
         CommitScheme::Globalrev => Ok(CommitId::Globalrev(id_str.parse()?)),
         CommitScheme::Svnrev => Ok(CommitId::Svnrev(id_str.parse()?)),
         CommitScheme::EphemeralBonsai => {
-            let mut id = [0; 32];
-            hex_decode_exact(id_str, &mut id)?;
+            let id = hex_decode_array::<32>(id_str.as_bytes())?;
             let bubble = bubble_id.and_then(NonZeroU64::new);
             Ok(CommitId::EphemeralBonsai(id, bubble))
         }

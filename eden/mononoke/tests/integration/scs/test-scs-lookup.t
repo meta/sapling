@@ -140,7 +140,7 @@ multiple lookup using git and hg to identify commits
 
 multiple lookup using prefix git and hg aborts execution if one of the commits fails to resolve
   $ scsc lookup --repo repo --git "$GIT_SHA_PREFIX" --hg-commit-id "$GREV" -S bonsai,hg,globalrev
-  *scsc: error: error: Invalid input length 40 (glob)
+  *scsc: error: error: hex input length must be even (glob)
   [1]
 
 multiple lookup using prefix git and hg to identify commits
