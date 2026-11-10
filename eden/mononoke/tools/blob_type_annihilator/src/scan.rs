@@ -22,6 +22,7 @@ use clap::Args;
 use context::CoreContext;
 use derive_more::Display;
 use futures::Stream;
+use futures::future;
 use futures::stream;
 use futures::stream::StreamExt;
 use futures::stream::TryStreamExt;
@@ -321,6 +322,11 @@ pub(crate) async fn classify_spawned(
     }
 }
 
+enum Classified {
+    Unknown(String),
+    Record(InventoryRecord),
+}
+
 /// What recording a partition's inventory needs.
 #[derive(Clone, Copy)]
 pub struct InventoryContext<'a> {
@@ -351,33 +357,38 @@ pub async fn inventory_partition(
     let prefix = cell.prefix(hex);
     let mut inventory = PartitionInventory::start(state, &cell, hex).await?;
     let mut seen = HashSet::new();
-    let mut pages = store.pages(ctx, &prefix);
-    while let Some(keys) = pages
+    let mut duplicates = 0;
+    // Listing and envelope reads overlap; a key listed twice is read once.
+    let mut listed = store
+        .pages(ctx, &prefix)
+        .map_ok(|keys| stream::iter(keys.into_iter().map(anyhow::Ok)))
+        .try_flatten()
+        .try_filter(|key| {
+            let fresh = seen.insert(key.clone());
+            duplicates += u64::from(!fresh);
+            future::ready(fresh)
+        })
+        .map_ok(|key| async move {
+            match cell.holds(&key) {
+                Some(encoding) => classify_spawned(ctx, store, key, encoding)
+                    .await
+                    .map(Classified::Record),
+                None => Ok(Classified::Unknown(key)),
+            }
+        })
+        .try_buffer_unordered(concurrency.get());
+    while let Some(classified) = listed
         .try_next()
         .await
         .with_context(|| format!("enumerating {prefix}"))?
     {
-        let mut fresh = Vec::new();
-        for key in keys {
-            if !seen.insert(key.clone()) {
-                inventory.summary.duplicates += 1;
-                continue;
-            }
-            match cell.holds(&key) {
-                Some(encoding) => fresh.push((key, encoding)),
-                None => inventory.summary.unknown.note(key),
-            }
-        }
-        let records: Vec<InventoryRecord> = stream::iter(fresh)
-            .map(|(key, encoding)| classify(ctx, store, key, encoding))
-            .buffered(concurrency.get())
-            .try_collect()
-            .await?;
-        for record in &records {
-            inventory.record(record).await?;
+        match classified {
+            Classified::Unknown(key) => inventory.summary.unknown.note(key),
+            Classified::Record(record) => inventory.record(&record).await?,
         }
     }
-    drop(pages);
+    drop(listed);
+    inventory.summary.duplicates = duplicates;
     inventory.commit(state, &cell, hex).await
 }
 

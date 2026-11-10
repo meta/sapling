@@ -13,6 +13,7 @@
 //! readonly and throttling wrappers the global storage options select.
 
 use std::num::NonZeroU32;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -32,6 +33,7 @@ use clap::Args;
 use context::CoreContext;
 use futures::Stream;
 use futures::stream;
+use futures::stream::StreamExt;
 use metaconfig_types::BlobConfig;
 use mononoke_app::MononokeApp;
 use mononoke_types::BlobstoreBytes;
@@ -58,6 +60,12 @@ pub struct AdapterOptions {
     /// further retry doubles the delay, up to 30 seconds
     #[clap(long, default_value_t = 1000, value_parser = clap::value_parser!(u64).range(0..=30_000))]
     pub list_retry_delay_ms: u64,
+
+    /// SQLblob shards listed at the same time for each prefix being listed.
+    /// Each command lists several prefixes at once, so a store sees up to
+    /// this many queries per prefix in flight
+    #[clap(long, default_value_t = NonZeroUsize::new(64).expect("64 is non-zero"))]
+    pub list_concurrency: NonZeroUsize,
 }
 
 /// Where the next page of an enumeration starts.
@@ -65,7 +73,7 @@ pub struct AdapterOptions {
 enum Cursor {
     KeySourceStart,
     KeySource(BlobstoreKeyParam),
-    /// Within `shard`, moving on to the next shard at its end.
+    /// Within `shard` only.
     Sql {
         shard: usize,
         after: Option<String>,
@@ -104,6 +112,8 @@ pub struct ComponentStore {
     /// Reads, checks and writes keys.
     blobstore: Arc<dyn Blobstore>,
     list_retry: RetryPolicy,
+    /// Independent listings (SQL shards) of one prefix run at the same time.
+    list_concurrency: NonZeroUsize,
 }
 
 /// The inclusive range covering every key starting with `prefix`: it also
@@ -147,6 +157,7 @@ impl ComponentStore {
             blobstore: Arc::new(store.clone()),
             backend: Backend::KeySource(store),
             list_retry: RetryPolicy::once(),
+            list_concurrency: NonZeroUsize::MIN,
         }
     }
 
@@ -157,12 +168,21 @@ impl ComponentStore {
             blobstore: store.clone(),
             backend: Backend::Sql { store, page_size },
             list_retry: RetryPolicy::once(),
+            list_concurrency: NonZeroUsize::MIN,
         }
     }
 
     #[cfg(test)]
     pub fn with_list_retry(self, list_retry: RetryPolicy) -> Self {
         Self { list_retry, ..self }
+    }
+
+    #[cfg(test)]
+    pub fn with_list_concurrency(self, list_concurrency: NonZeroUsize) -> Self {
+        Self {
+            list_concurrency,
+            ..self
+        }
     }
 
     /// This store with the storage options applied, as `open` applies them.
@@ -218,37 +238,41 @@ impl ComponentStore {
                 options.list_attempts,
                 Duration::from_millis(options.list_retry_delay_ms),
             )?,
+            list_concurrency: options.list_concurrency,
             ..store
         })
     }
 
-    fn listing_start(&self) -> Cursor {
+    /// Where each independent listing of a prefix starts: one listing for a
+    /// key source, one per shard for SQLblob.
+    fn listing_starts(&self) -> Vec<Cursor> {
         match &self.backend {
-            Backend::KeySource(_) => Cursor::KeySourceStart,
-            Backend::Sql { .. } => Cursor::Sql {
-                shard: 0,
-                after: None,
-            },
+            Backend::KeySource(_) => vec![Cursor::KeySourceStart],
+            Backend::Sql { store, .. } => (0..store.shard_count())
+                .map(|shard| Cursor::Sql { shard, after: None })
+                .collect(),
         }
     }
 
-    /// Every page of keys starting with `prefix`, in listing order.  A
-    /// failed listing yields its error and ends the stream, so a consumer
-    /// must stop at the first error rather than treat the keys it has seen
-    /// as complete.
+    /// Every page of keys starting with `prefix`, running up to
+    /// `list_concurrency` independent listings at once.  Pages arrive in no
+    /// particular order.  A failed listing yields its error and ends, so a
+    /// consumer must stop at the first error rather than treat the keys it
+    /// has seen as complete.
     pub fn pages<'a>(
         &'a self,
         ctx: &'a CoreContext,
         prefix: &'a str,
     ) -> impl Stream<Item = Result<Vec<String>>> + 'a {
-        Box::pin(stream::unfold(
-            Some(self.listing_start()),
-            move |cursor| async move {
-                let page = self.enumerate_page(ctx, prefix, cursor?).await;
-                let next = page.as_ref().ok().and_then(|page| page.next.clone());
-                Some((page.map(|page| page.keys), next))
-            },
-        ))
+        stream::iter(self.listing_starts())
+            .map(move |start| {
+                Box::pin(stream::unfold(Some(start), move |cursor| async move {
+                    let page = self.enumerate_page(ctx, prefix, cursor?).await;
+                    let next = page.as_ref().ok().and_then(|page| page.next.clone());
+                    Some((page.map(|page| page.keys), next))
+                }))
+            })
+            .flatten_unordered(self.list_concurrency.get())
     }
 
     /// Fetches one page of keys starting with `prefix`, retrying failed
@@ -307,20 +331,12 @@ impl ComponentStore {
                         *page_size,
                     )
                     .await?;
-                let next = match page.resume_after {
-                    Some(after) => Some(Cursor::Sql {
+                Page {
+                    keys: page.keys,
+                    next: page.resume_after.map(|after| Cursor::Sql {
                         shard,
                         after: Some(after),
                     }),
-                    None if shard + 1 < store.shard_count() => Some(Cursor::Sql {
-                        shard: shard + 1,
-                        after: None,
-                    }),
-                    None => None,
-                };
-                Page {
-                    keys: page.keys,
-                    next,
                 }
             }
             (_, cursor) => bail!("cursor {cursor:?} does not belong to this store"),
@@ -516,21 +532,26 @@ mod tests {
     async fn sql_enumeration_crosses_shards_with_small_pages(fb: FacebookInit) -> Result<()> {
         let ctx = CoreContext::test_mock(fb);
         let (_, config_store) = sqlblob::get_test_config_store();
-        let sql = Arc::new(
-            Sqlblob::with_sqlite_in_memory(PutBehaviour::IfAbsent, &config_store, true, 0)?
-                .into_inner(),
-        );
         let wanted: Vec<String> = (0..9).map(|i| format!("repo0001.x.{i}")).collect();
-        for key in wanted.iter().chain(&["repo0002.x.0".to_string()]) {
-            sql.put(&ctx, key.clone(), value(b"v")).await?;
+        // Shards listed one at a time and concurrently find the same keys,
+        // in pages of at most two from single shards.
+        for concurrency in [1, 4] {
+            let sql = Arc::new(
+                Sqlblob::with_sqlite_in_memory(PutBehaviour::IfAbsent, &config_store, true, 0)?
+                    .into_inner(),
+            );
+            for key in wanted.iter().chain(&["repo0002.x.0".to_string()]) {
+                sql.put(&ctx, key.clone(), value(b"v")).await?;
+            }
+            let store = ComponentStore::sql(sql, NonZeroU32::new(2).expect("2 is non-zero"))
+                .with_list_concurrency(NonZeroUsize::new(concurrency).expect("non-zero"));
+            let pages: Vec<Vec<String>> = store.pages(&ctx, "repo0001.x.").try_collect().await?;
+            assert!(pages.iter().all(|page| page.len() <= 2));
+            assert!(pages.len() > 2, "listing takes several pages");
+            let mut keys: Vec<String> = pages.into_iter().flatten().collect();
+            keys.sort();
+            assert_eq!(keys, wanted, "concurrency {concurrency}");
         }
-        let store = ComponentStore::sql(sql, NonZeroU32::new(2).expect("2 is non-zero"));
-        let pages: Vec<Vec<String>> = store.pages(&ctx, "repo0001.x.").try_collect().await?;
-        assert!(pages.iter().all(|page| page.len() <= 2));
-        assert!(pages.len() > 2, "listing takes several pages");
-        let mut keys: Vec<String> = pages.into_iter().flatten().collect();
-        keys.sort();
-        assert_eq!(keys, wanted);
         Ok(())
     }
 
