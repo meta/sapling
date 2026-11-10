@@ -14,7 +14,6 @@ use context::CoreContext;
 use futures::channel::oneshot;
 use mercurial_types::HgFileNodeId;
 use metaconfig_types::ModernSyncChannelConfig;
-use mononoke_macros::mononoke;
 use stats::define_stats;
 use stats::prelude::*;
 use tokio::sync::mpsc;
@@ -289,38 +288,37 @@ impl FilenodeRunner {
 }
 
 impl Manager for FilenodeManager {
-    fn start(
-        self,
+    async fn run(
+        &mut self,
         ctx: CoreContext,
         reponame: String,
         filenodes_es: Arc<dyn EdenapiSender + Send + Sync>,
         cancellation_requested: Arc<AtomicBool>,
-    ) {
-        mononoke::spawn_task(async move {
-            let Self {
-                config,
-                mut filenodes_recv,
-            } = self;
-            // Filenodes carry bare IDs with unknown sizes, so only the
-            // request semaphore bounds this channel; see the byte-pool docs.
-            let pipeline = FlushPipeline::new(
-                reponame.clone(),
-                "filenodes",
-                config.max_concurrent_flushes,
-                None,
-            );
-            let mut runner = FilenodeRunner {
-                ctx,
-                reponame,
-                filenodes_es,
-                cancellation_requested,
-                config,
-                pipeline,
-                encountered_error: None,
-                batch_filenodes: Vec::new(),
-                pending_senders: Vec::new(),
-            };
-            runner.run(&mut filenodes_recv).await;
-        });
+    ) -> anyhow::Result<()> {
+        let Self {
+            config,
+            filenodes_recv,
+        } = self;
+        // Filenodes carry bare IDs with unknown sizes, so only the
+        // request semaphore bounds this channel; see the byte-pool docs.
+        let pipeline = FlushPipeline::new(
+            reponame.clone(),
+            "filenodes",
+            config.max_concurrent_flushes,
+            None,
+        );
+        let mut runner = FilenodeRunner {
+            ctx,
+            reponame,
+            filenodes_es,
+            cancellation_requested,
+            config: config.clone(),
+            pipeline,
+            encountered_error: None,
+            batch_filenodes: Vec::new(),
+            pending_senders: Vec::new(),
+        };
+        runner.run(filenodes_recv).await;
+        Ok(())
     }
 }

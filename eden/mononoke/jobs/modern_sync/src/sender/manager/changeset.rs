@@ -21,7 +21,6 @@ use futures::channel::oneshot;
 use itertools::Itertools;
 use mercurial_types::blobs::HgBlobChangeset;
 use metaconfig_types::ModernSyncChannelConfig;
-use mononoke_macros::mononoke;
 use mononoke_types::BonsaiChangeset;
 use mutable_counters::ArcMutableCounters;
 use mutable_counters::MutableCounters;
@@ -214,149 +213,127 @@ impl ChangesetManager {
 }
 
 impl Manager for ChangesetManager {
-    fn start(
-        mut self,
+    async fn run(
+        &mut self,
         ctx: CoreContext,
         reponame: String,
         changeset_es: Arc<dyn EdenapiSender + Send + Sync>,
         cancellation_requested: Arc<AtomicBool>,
-    ) {
-        mononoke::spawn_task(async move {
-            let changeset_recv = &mut self.changeset_recv;
-            let mc = &self.mc;
+    ) -> Result<()> {
+        let changeset_recv = &mut self.changeset_recv;
+        let mc = &self.mc;
 
-            let mut encountered_error: Option<anyhow::Error> = None;
+        let mut encountered_error: Option<anyhow::Error> = None;
 
-            let mut pending_log = VecDeque::new();
+        let mut pending_log = VecDeque::new();
 
-            let mut latest_in_entry_checkpoints = HashMap::new();
-            let mut latest_entry_ids = HashMap::new();
-            let mut latest_bookmark_chain: Vec<BookmarkInfo> = Vec::new();
-            let mut pending_notification = None;
+        let mut latest_in_entry_checkpoints = HashMap::new();
+        let mut latest_entry_ids = HashMap::new();
+        let mut latest_bookmark_chain: Vec<BookmarkInfo> = Vec::new();
+        let mut pending_notification = None;
 
-            let mut current_batch = Vec::new();
-            let mut flush_timer =
-                interval(Duration::from_millis(self.config.flush_interval_ms as u64));
+        let mut current_batch = Vec::new();
+        let mut flush_timer = interval(Duration::from_millis(self.config.flush_interval_ms as u64));
 
-            while !cancellation_requested.load(Ordering::Relaxed) {
-                tokio::select! {
+        while !cancellation_requested.load(Ordering::Relaxed) {
+            tokio::select! {
 
-                    msg = changeset_recv.recv() => {
+                msg = changeset_recv.recv() => {
 
-                        tracing::debug!(
-                            "Changeset channel capacity: {} max capacity: {} in queue: {}",
-                            changeset_recv.capacity(),
-                            self.config.channel_size,
-                            changeset_recv.len()
-                        );
-                        STATS::changesets_queue_capacity.set_value(ctx.fb, changeset_recv.capacity() as i64, (reponame.clone(),));
-                        STATS::changesets_queue_len.add_value(changeset_recv.len() as i64, (reponame.clone(),));
-                        STATS::changesets_queue_max_capacity.set_value(ctx.fb, changeset_recv.max_capacity() as i64, (reponame.clone(),));
-                        match msg {
-                            Some(ChangesetMessage::WaitForFilesAndTrees(
-                                files_receiver,
-                                trees_receiver,
-                            )) => {
-                                // Read outcome from files and trees upload
-                                let start = std::time::Instant::now();
-                                match tokio::try_join!(files_receiver, trees_receiver) {
-                                    Ok((res_files, res_trees)) => {
-                                        if res_files.is_err() || res_trees.is_err() {
-                                            tracing::error!(
-                                                "Error processing files/trees: {:?} {:?}",
-                                                res_files,
-                                                res_trees
-                                            );
-                                            encountered_error.get_or_insert(anyhow::anyhow!(
-                                                "Files/trees error received. Winding down changesets sender.",
-                                            ));
-                                        }
-                                        let elapsed = start.elapsed().as_secs();
-                                        STATS::trees_files_wait_time_s
-                                            .add_value(elapsed as i64, (reponame.clone(),));
-                                    }
-                                    Err(e) => {
+                    tracing::debug!(
+                        "Changeset channel capacity: {} max capacity: {} in queue: {}",
+                        changeset_recv.capacity(),
+                        self.config.channel_size,
+                        changeset_recv.len()
+                    );
+                    STATS::changesets_queue_capacity.set_value(ctx.fb, changeset_recv.capacity() as i64, (reponame.clone(),));
+                    STATS::changesets_queue_len.add_value(changeset_recv.len() as i64, (reponame.clone(),));
+                    STATS::changesets_queue_max_capacity.set_value(ctx.fb, changeset_recv.max_capacity() as i64, (reponame.clone(),));
+                    match msg {
+                        Some(ChangesetMessage::WaitForFilesAndTrees(
+                            files_receiver,
+                            trees_receiver,
+                        )) => {
+                            // Read outcome from files and trees upload
+                            let start = std::time::Instant::now();
+                            match tokio::try_join!(files_receiver, trees_receiver) {
+                                Ok((res_files, res_trees)) => {
+                                    if res_files.is_err() || res_trees.is_err() {
+                                        tracing::error!(
+                                            "Error processing files/trees: {:?} {:?}",
+                                            res_files,
+                                            res_trees
+                                        );
                                         encountered_error.get_or_insert(anyhow::anyhow!(
-                                            "Error waiting for files/trees error received {e:#}"
+                                            "Files/trees error received. Winding down changesets sender.",
                                         ));
                                     }
-                                }
-                            }
-
-                            Some(ChangesetMessage::Changeset((hg_cs, bcs)))
-                                if encountered_error.is_none() =>
-                            {
-                                current_batch.push((hg_cs, bcs));
-                            }
-
-                            Some(ChangesetMessage::CheckpointInEntry {
-                                position,
-                                entry_id,
-                                counter_names,
-                            })
-                                if encountered_error.is_none() =>
-                            {
-                                latest_in_entry_checkpoints
-                                    .insert(counter_names, (position, entry_id));
-                            }
-
-                            Some(ChangesetMessage::FinishEntry(bookmark))
-                                if encountered_error.is_none() =>
-                            {
-                                // Accumulate the contiguous chain of moves. The
-                                // flush replays every move to the replica so it
-                                // reuses each source log id.
-                                latest_entry_ids
-                                    .insert(bookmark.counter_names.clone(), bookmark.log_id);
-                                latest_bookmark_chain.push(bookmark);
-                            }
-
-                            Some(ChangesetMessage::NotifyCompletion(sender))
-                                if encountered_error.is_none() =>
-                            {
-                                pending_notification = Some(sender);
-                            }
-
-                            Some(ChangesetMessage::NotifyCompletion(sender)) => {
-                                let e = encountered_error.unwrap();
-                                let _ = sender.send(Err(anyhow::anyhow!(
-                                    "Error processing changesets: {e:?}"
-                                )));
-                                return Err(e);
-                            }
-
-                            Some(ChangesetMessage::Log((_, lag)))
-                                if encountered_error.is_none() =>
-                            {
-                                pending_log.push_back(lag);
-                            }
-                            None => break,
-
-                            // Ignore any other action if there's an error
-                            _ => {}
-                        }
-
-                        if current_batch.len() >= self.config.batch_size as usize {
-                            let now = std::time::Instant::now();
-                            let changeset_ids = current_batch.iter().map(|c| c.1.get_changeset_id()).collect::<Vec<_>>();
-                            stat::log_upload_changeset_start(&ctx, changeset_ids.clone());
-                            match ChangesetManager::flush_batch(reponame.clone(), &ctx, &changeset_es, mc.clone(), &mut current_batch, &mut pending_log, &mut latest_in_entry_checkpoints, &mut latest_entry_ids, &mut latest_bookmark_chain, &mut pending_notification)
-                            .await
-                            {
-                                Ok(()) => {
-                                    stat::log_upload_changeset_done(&ctx, changeset_ids, now.elapsed());
+                                    let elapsed = start.elapsed().as_secs();
+                                    STATS::trees_files_wait_time_s
+                                        .add_value(elapsed as i64, (reponame.clone(),));
                                 }
                                 Err(e) => {
-                                    stat::log_upload_changeset_error(&ctx, changeset_ids, &e, now.elapsed());
-                                    return Err(anyhow::anyhow!(
-                                        "Error processing changesets: {e:?}"
+                                    encountered_error.get_or_insert(anyhow::anyhow!(
+                                        "Error waiting for files/trees error received {e:#}"
                                     ));
                                 }
                             }
                         }
+
+                        Some(ChangesetMessage::Changeset((hg_cs, bcs)))
+                            if encountered_error.is_none() =>
+                        {
+                            current_batch.push((hg_cs, bcs));
+                        }
+
+                        Some(ChangesetMessage::CheckpointInEntry {
+                            position,
+                            entry_id,
+                            counter_names,
+                        })
+                            if encountered_error.is_none() =>
+                        {
+                            latest_in_entry_checkpoints
+                                .insert(counter_names, (position, entry_id));
+                        }
+
+                        Some(ChangesetMessage::FinishEntry(bookmark))
+                            if encountered_error.is_none() =>
+                        {
+                            // Accumulate the contiguous chain of moves. The
+                            // flush replays every move to the replica so it
+                            // reuses each source log id.
+                            latest_entry_ids
+                                .insert(bookmark.counter_names.clone(), bookmark.log_id);
+                            latest_bookmark_chain.push(bookmark);
+                        }
+
+                        Some(ChangesetMessage::NotifyCompletion(sender))
+                            if encountered_error.is_none() =>
+                        {
+                            pending_notification = Some(sender);
+                        }
+
+                        Some(ChangesetMessage::NotifyCompletion(sender)) => {
+                            let e = encountered_error.unwrap();
+                            let _ = sender.send(Err(anyhow::anyhow!(
+                                "Error processing changesets: {e:?}"
+                            )));
+                            return Err(e);
+                        }
+
+                        Some(ChangesetMessage::Log((_, lag)))
+                            if encountered_error.is_none() =>
+                        {
+                            pending_log.push_back(lag);
+                        }
+                        None => break,
+
+                        // Ignore any other action if there's an error
+                        _ => {}
                     }
-                    _ = flush_timer.tick() =>
-                    {
+
+                    if current_batch.len() >= self.config.batch_size as usize {
                         let now = std::time::Instant::now();
                         let changeset_ids = current_batch.iter().map(|c| c.1.get_changeset_id()).collect::<Vec<_>>();
                         stat::log_upload_changeset_start(&ctx, changeset_ids.clone());
@@ -364,19 +341,38 @@ impl Manager for ChangesetManager {
                         .await
                         {
                             Ok(()) => {
-                                    stat::log_upload_changeset_done(&ctx, changeset_ids, now.elapsed());
+                                stat::log_upload_changeset_done(&ctx, changeset_ids, now.elapsed());
                             }
                             Err(e) => {
                                 stat::log_upload_changeset_error(&ctx, changeset_ids, &e, now.elapsed());
-                                return Err(anyhow::anyhow!("Error processing changesets: {e:?}"));
+                                return Err(anyhow::anyhow!(
+                                    "Error processing changesets: {e:?}"
+                                ));
                             }
                         }
                     }
                 }
+                _ = flush_timer.tick() =>
+                {
+                    let now = std::time::Instant::now();
+                    let changeset_ids = current_batch.iter().map(|c| c.1.get_changeset_id()).collect::<Vec<_>>();
+                    stat::log_upload_changeset_start(&ctx, changeset_ids.clone());
+                    match ChangesetManager::flush_batch(reponame.clone(), &ctx, &changeset_es, mc.clone(), &mut current_batch, &mut pending_log, &mut latest_in_entry_checkpoints, &mut latest_entry_ids, &mut latest_bookmark_chain, &mut pending_notification)
+                    .await
+                    {
+                        Ok(()) => {
+                                stat::log_upload_changeset_done(&ctx, changeset_ids, now.elapsed());
+                        }
+                        Err(e) => {
+                            stat::log_upload_changeset_error(&ctx, changeset_ids, &e, now.elapsed());
+                            return Err(anyhow::anyhow!("Error processing changesets: {e:?}"));
+                        }
+                    }
+                }
             }
+        }
 
-            Ok(())
-        });
+        Ok(())
     }
 }
 
@@ -387,6 +383,7 @@ mod tests {
 
     use async_trait::async_trait;
     use fbinit::FacebookInit;
+    use mononoke_macros::mononoke;
 
     use super::*;
 

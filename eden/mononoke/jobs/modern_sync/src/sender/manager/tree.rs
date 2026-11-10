@@ -14,7 +14,6 @@ use context::CoreContext;
 use futures::channel::oneshot;
 use mercurial_types::HgManifestId;
 use metaconfig_types::ModernSyncChannelConfig;
-use mononoke_macros::mononoke;
 use stats::define_stats;
 use stats::prelude::*;
 use tokio::sync::mpsc;
@@ -282,38 +281,34 @@ impl TreeRunner {
 }
 
 impl Manager for TreeManager {
-    fn start(
-        self,
+    async fn run(
+        &mut self,
         ctx: CoreContext,
         reponame: String,
         trees_es: Arc<dyn EdenapiSender + Send + Sync>,
         cancellation_requested: Arc<AtomicBool>,
-    ) {
-        mononoke::spawn_task(async move {
-            let Self {
-                config,
-                mut trees_recv,
-            } = self;
-            // Trees carry bare IDs with unknown sizes, so only the request
-            // semaphore bounds this channel; see the byte-pool docs.
-            let pipeline = FlushPipeline::new(
-                reponame.clone(),
-                "trees",
-                config.max_concurrent_flushes,
-                None,
-            );
-            let mut runner = TreeRunner {
-                ctx,
-                reponame,
-                trees_es,
-                cancellation_requested,
-                config,
-                pipeline,
-                encountered_error: None,
-                batch_trees: Vec::new(),
-                pending_senders: Vec::new(),
-            };
-            runner.run(&mut trees_recv).await;
-        });
+    ) -> anyhow::Result<()> {
+        let Self { config, trees_recv } = self;
+        // Trees carry bare IDs with unknown sizes, so only the request
+        // semaphore bounds this channel; see the byte-pool docs.
+        let pipeline = FlushPipeline::new(
+            reponame.clone(),
+            "trees",
+            config.max_concurrent_flushes,
+            None,
+        );
+        let mut runner = TreeRunner {
+            ctx,
+            reponame,
+            trees_es,
+            cancellation_requested,
+            config: config.clone(),
+            pipeline,
+            encountered_error: None,
+            batch_trees: Vec::new(),
+            pending_senders: Vec::new(),
+        };
+        runner.run(trees_recv).await;
+        Ok(())
     }
 }

@@ -21,7 +21,6 @@ use futures::StreamExt;
 use futures::TryStreamExt;
 use futures::stream;
 use metaconfig_types::ModernSyncChannelConfig;
-use mononoke_macros::mononoke;
 use mononoke_types::ContentId;
 use repo_blobstore::RepoBlobstore;
 use stats::define_stats;
@@ -306,37 +305,36 @@ impl ContentRunner {
 }
 
 impl Manager for ContentManager {
-    fn start(
-        self,
+    async fn run(
+        &mut self,
         ctx: CoreContext,
         reponame: String,
         content_es: Arc<dyn EdenapiSender + Send + Sync>,
         cancellation_requested: Arc<AtomicBool>,
-    ) {
-        mononoke::spawn_task(async move {
-            let Self {
-                max_blob_bytes,
-                config,
-                mut content_recv,
-                repo_blobstore,
-            } = self;
-            let pipeline = FlushPipeline::new(
-                reponame.clone(),
-                "content",
-                config.max_concurrent_flushes,
-                Some(config.max_bytes_in_flight),
-            );
-            let mut runner = ContentRunner::new(
-                ctx,
-                reponame,
-                content_es,
-                cancellation_requested,
-                max_blob_bytes,
-                config,
-                repo_blobstore,
-                pipeline,
-            );
-            runner.run(&mut content_recv).await;
-        });
+    ) -> anyhow::Result<()> {
+        let Self {
+            max_blob_bytes,
+            config,
+            content_recv,
+            repo_blobstore,
+        } = self;
+        let pipeline = FlushPipeline::new(
+            reponame.clone(),
+            "content",
+            config.max_concurrent_flushes,
+            Some(config.max_bytes_in_flight),
+        );
+        let mut runner = ContentRunner::new(
+            ctx,
+            reponame,
+            content_es,
+            cancellation_requested,
+            *max_blob_bytes,
+            config.clone(),
+            repo_blobstore.clone(),
+            pipeline,
+        );
+        runner.run(content_recv).await;
+        Ok(())
     }
 }

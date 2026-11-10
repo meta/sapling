@@ -76,6 +76,32 @@ impl ModernSyncCounterNames {
     }
 }
 
+/// Runs each manager as its own task, with the arguments every manager
+/// shares.
+struct ManagerSpawner {
+    ctx: CoreContext,
+    reponame: String,
+    external_sender: Arc<dyn EdenapiSender + Send + Sync>,
+    cancellation_requested: Arc<AtomicBool>,
+}
+
+impl ManagerSpawner {
+    fn spawn<M>(&self, mut manager: M)
+    where
+        M: Manager + Send + 'static,
+    {
+        let ctx = self.ctx.clone();
+        let reponame = self.reponame.clone();
+        let external_sender = self.external_sender.clone();
+        let cancellation_requested = self.cancellation_requested.clone();
+        mononoke::spawn_task(async move {
+            let _ = manager
+                .run(ctx, reponame, external_sender, cancellation_requested)
+                .await;
+        });
+    }
+}
+
 #[derive(Clone)]
 pub struct SendManager {
     content_sender: mpsc::Sender<ContentMessage>,
@@ -158,6 +184,13 @@ impl SendManager {
         mc: Arc<dyn MutableCounters + Send + Sync>,
         cancellation_requested: Arc<AtomicBool>,
     ) -> Self {
+        let managers = ManagerSpawner {
+            ctx,
+            reponame,
+            external_sender,
+            cancellation_requested: cancellation_requested.clone(),
+        };
+
         // Create channel for receiving content
         let (content_sender, content_recv) = mpsc::channel(
             config
@@ -166,18 +199,12 @@ impl SendManager {
                 .try_into()
                 .expect("channel size is too large"),
         );
-        ContentManager::new(
+        managers.spawn(ContentManager::new(
             config.max_blob_bytes as u64,
             config.content_channel_config.clone(),
             content_recv,
             repo_blobstore,
-        )
-        .start(
-            ctx.clone(),
-            reponame.clone(),
-            external_sender.clone(),
-            cancellation_requested.clone(),
-        );
+        ));
 
         // Create channel for receiving files
         let (files_sender, files_recv) = mpsc::channel(
@@ -187,12 +214,10 @@ impl SendManager {
                 .try_into()
                 .expect("channel size is too large"),
         );
-        FilenodeManager::new(config.filenodes_channel_config.clone(), files_recv).start(
-            ctx.clone(),
-            reponame.clone(),
-            external_sender.clone(),
-            cancellation_requested.clone(),
-        );
+        managers.spawn(FilenodeManager::new(
+            config.filenodes_channel_config.clone(),
+            files_recv,
+        ));
 
         // Create channel for receiving trees
         let (trees_sender, trees_recv) = mpsc::channel(
@@ -202,12 +227,10 @@ impl SendManager {
                 .try_into()
                 .expect("channel size is too large"),
         );
-        TreeManager::new(config.trees_channel_config.clone(), trees_recv).start(
-            ctx.clone(),
-            reponame.clone(),
-            external_sender.clone(),
-            cancellation_requested.clone(),
-        );
+        managers.spawn(TreeManager::new(
+            config.trees_channel_config.clone(),
+            trees_recv,
+        ));
 
         // Create channel for receiving changesets
         let (changeset_sender, changeset_recv) = mpsc::channel(
@@ -217,12 +240,11 @@ impl SendManager {
                 .try_into()
                 .expect("channel size is too large"),
         );
-        ChangesetManager::new(config.changesets_channel_config.clone(), changeset_recv, mc).start(
-            ctx.clone(),
-            reponame.clone(),
-            external_sender.clone(),
-            cancellation_requested.clone(),
-        );
+        managers.spawn(ChangesetManager::new(
+            config.changesets_channel_config.clone(),
+            changeset_recv,
+            mc,
+        ));
 
         mononoke::spawn_task(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(5));
@@ -302,13 +324,14 @@ impl SendManager {
 }
 
 trait Manager {
-    fn start(
-        self,
+    /// Runs the manager's loop until it stops.
+    fn run(
+        &mut self,
         ctx: CoreContext,
         reponame: String,
         external_sender: Arc<dyn EdenapiSender + Send + Sync>,
         cancellation_requested: Arc<AtomicBool>,
-    );
+    ) -> impl Future<Output = Result<()>> + Send;
 }
 
 /// What a manager loop should do after handling one select event.
