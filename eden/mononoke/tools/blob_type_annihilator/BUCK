@@ -6,6 +6,7 @@ rust_binary(
     name = "blob_type_annihilator",
     srcs = glob(["src/**/*.rs"]),
     test_deps = [
+        "fbsource//third-party/rust:async-trait",
         "fbsource//third-party/rust:bytes",
         "fbsource//third-party/rust:tempfile",
         "//common/rust/shed/fbinit:fbinit-tokio",
@@ -17,6 +18,7 @@ rust_binary(
         "fbsource//third-party/rust:clap",
         "fbsource//third-party/rust:derive_more",
         "fbsource//third-party/rust:futures",
+        "fbsource//third-party/rust:governor",
         "fbsource//third-party/rust:serde",
         "fbsource//third-party/rust:serde_json",
         "fbsource//third-party/rust:strum",

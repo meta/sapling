@@ -138,3 +138,45 @@ a single partition:
   $ ls "$TESTTMP/bta-one/inventory/$C1/0/historymf.file"
   all.jsonl
   all.summary.json
+
+Apply requires the reviewed plan's digest:
+  $ bta apply --state-dir "$TESTTMP/bta" --confirm-plan-digest wrong
+  Error: confirmed digest wrong is not the plan's digest DIGEST
+  [1]
+
+Applying to one component leaves the other alone.  This run also caps the
+unlink rate and the partitions in flight:
+  $ bta apply --state-dir "$TESTTMP/bta" --confirm-plan-digest "$DIGEST" --component "$C1" --max-unlinks-per-second 100 --partition-concurrency 2 --batch-size 3
+  component C1 repo 0 recipe historymf.file: 16/16 partitions done; unlinked 4, already absent 0, failed 0, blocked 0, packed 0
+  component C1 repo 0 recipe historymf.dir: 16/16 partitions done; unlinked 2, already absent 0, failed 0, blocked 0, packed 0
+  component C1 repo 0 recipe fastlogbatchv2.hmfile: 16/16 partitions done; unlinked 4, already absent 0, failed 0, blocked 0, packed 0
+  component C1 repo 0 recipe fastlogbatchv2.hmdir: 16/16 partitions done; unlinked 2, already absent 0, failed 0, blocked 0, packed 0
+  component C1 repo 0 recipe blame_v3.v2: 16/16 partitions done; unlinked 4, already absent 0, failed 0, blocked 0, packed 0
+  4 cells had nothing to delete
+  $ keys 1 | retired | wc -l
+  0
+  $ keys 0 | retired | wc -l
+  16
+
+The full run finishes the other component and repeats the recorded outcomes
+of the finished partitions:
+  $ bta apply --state-dir "$TESTTMP/bta" --confirm-plan-digest "$DIGEST"
+  component C0 repo 0 recipe historymf.file: 16/16 partitions done; unlinked 4, already absent 0, failed 0, blocked 0, packed 0
+  component C0 repo 0 recipe historymf.dir: 16/16 partitions done; unlinked 2, already absent 0, failed 0, blocked 0, packed 0
+  component C0 repo 0 recipe fastlogbatchv2.hmfile: 16/16 partitions done; unlinked 4, already absent 0, failed 0, blocked 0, packed 0
+  component C0 repo 0 recipe fastlogbatchv2.hmdir: 16/16 partitions done; unlinked 2, already absent 0, failed 0, blocked 0, packed 0
+  component C0 repo 0 recipe blame_v3.v2: 16/16 partitions done; unlinked 4, already absent 0, failed 0, blocked 0, packed 0
+  component C1 repo 0 recipe historymf.file: 16/16 partitions done; unlinked 4, already absent 0, failed 0, blocked 0, packed 0
+  component C1 repo 0 recipe historymf.dir: 16/16 partitions done; unlinked 2, already absent 0, failed 0, blocked 0, packed 0
+  component C1 repo 0 recipe fastlogbatchv2.hmfile: 16/16 partitions done; unlinked 4, already absent 0, failed 0, blocked 0, packed 0
+  component C1 repo 0 recipe fastlogbatchv2.hmdir: 16/16 partitions done; unlinked 2, already absent 0, failed 0, blocked 0, packed 0
+  component C1 repo 0 recipe blame_v3.v2: 16/16 partitions done; unlinked 4, already absent 0, failed 0, blocked 0, packed 0
+  8 cells had nothing to delete
+
+The retired keys are gone from both components, and unodes are untouched:
+  $ keys 0 | retired | wc -l
+  0
+  $ keys 1 | retired | wc -l
+  0
+  $ keys 0 | grep -c fileunode
+  4

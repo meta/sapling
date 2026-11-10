@@ -80,7 +80,14 @@ pub struct Cell<'a> {
     pub recipe: &'static KeyRecipe,
 }
 
+/// What identifies a cell within a plan.
+pub type CellKey<'a> = (&'a str, RepositoryId, &'static str);
+
 impl<'a> Cell<'a> {
+    pub fn key(&self) -> CellKey<'a> {
+        (&self.component.id, self.repo_id, self.recipe.id)
+    }
+
     fn dir(&self) -> PathBuf {
         PathBuf::from("inventory")
             .join(&self.component.id)

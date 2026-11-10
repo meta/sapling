@@ -9,12 +9,14 @@
 //! journals.
 //!
 //! Files that are complete records are written to a temporary name, synced
-//! and renamed into place, so they are either absent or whole.
+//! and renamed into place, so they are either absent or whole.  Journals are
+//! append-only, and every record is synced before the action it announces.
 //! New files and directories are synced into their parent directories, so a
 //! crash cannot lose them once they are relied on.
 
 use std::fs::File as StdFile;
 use std::io::ErrorKind;
+use std::io::SeekFrom;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -25,6 +27,9 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tokio::fs;
 use tokio::fs::File;
+use tokio::fs::OpenOptions;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncSeekExt;
 use tokio::io::AsyncWriteExt;
 use tokio::io::BufWriter;
 
@@ -96,6 +101,10 @@ impl StateDir {
         self.root.join(relative)
     }
 
+    pub async fn exists(&self, relative: &Path) -> Result<bool> {
+        Ok(fs::try_exists(self.path(relative)).await?)
+    }
+
     /// Writes `bytes` so that `relative` is either absent or complete.
     pub async fn write_atomic(&self, relative: &Path, bytes: &[u8]) -> Result<()> {
         let path = self.path(relative);
@@ -127,6 +136,39 @@ impl StateDir {
             }
             Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+        }
+    }
+
+    async fn read_text(&self, relative: &Path) -> Result<String> {
+        let path = self.path(relative);
+        match fs::read_to_string(&path).await {
+            Ok(text) => Ok(text),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(String::new()),
+            Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+        }
+    }
+
+    /// Reads a complete file of JSON lines; a missing file is empty.
+    pub async fn read_json_lines<T: DeserializeOwned>(&self, relative: &Path) -> Result<Vec<T>> {
+        let text = self.read_text(relative).await?;
+        parse_json_lines(&text)
+            .with_context(|| format!("corrupt state file {}", self.path(relative).display()))
+    }
+
+    /// Reads a journal; a missing journal is empty.  An unterminated last
+    /// line was never acknowledged, so it is ignored.
+    pub async fn read_journal<T: DeserializeOwned>(&self, relative: &Path) -> Result<Vec<T>> {
+        let text = self.read_text(relative).await?;
+        let acknowledged = text.rfind('\n').map_or("", |end| &text[..=end]);
+        parse_json_lines(acknowledged)
+            .with_context(|| format!("corrupt journal {}", self.path(relative).display()))
+    }
+
+    /// A journal at `relative`.  Nothing is created until its first record.
+    pub fn journal(&self, relative: &Path) -> Journal {
+        Journal {
+            path: self.path(relative),
+            file: None,
         }
     }
 
@@ -203,6 +245,88 @@ async fn create_dir_durably(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Opens `path` for reading and appending, creating it and its directories
+/// durably.  Returns whether it was created.
+async fn open_durably(path: &Path) -> Result<(File, bool)> {
+    if let Some(parent) = path.parent() {
+        create_dir_durably(parent).await?;
+    }
+    let created = !fs::try_exists(path).await?;
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .append(true)
+        .open(path)
+        .await
+        .with_context(|| format!("opening {}", path.display()))?;
+    if created {
+        sync_parent(path).await?;
+    }
+    Ok((file, created))
+}
+
+/// Drops an unterminated last line, so the next record starts on its own
+/// line.
+async fn truncate_torn_tail(file: &mut File, path: &Path) -> Result<()> {
+    let len = file.metadata().await?.len();
+    if len == 0 {
+        return Ok(());
+    }
+    file.seek(SeekFrom::Start(len - 1)).await?;
+    if file.read_u8().await? == b'\n' {
+        return Ok(());
+    }
+    file.seek(SeekFrom::Start(0)).await?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).await?;
+    let keep = bytes
+        .iter()
+        .rposition(|b| *b == b'\n')
+        .map_or(0, |end| end + 1);
+    file.set_len(u64::try_from(keep)?)
+        .await
+        .with_context(|| format!("truncating the torn last line of {}", path.display()))?;
+    file.sync_data().await?;
+    Ok(())
+}
+
+fn parse_json_lines<T: DeserializeOwned>(text: &str) -> Result<Vec<T>> {
+    text.lines()
+        .filter(|line| !line.is_empty())
+        .enumerate()
+        .map(|(n, line)| serde_json::from_str(line).with_context(|| format!("line {}", n + 1)))
+        .collect()
+}
+
+/// An append-only file of JSON records, created by its first record.
+pub struct Journal {
+    path: PathBuf,
+    file: Option<File>,
+}
+
+impl Journal {
+    /// Appends `record` and syncs it to disk before returning.
+    pub async fn append<T: Serialize>(&mut self, record: &T) -> Result<()> {
+        let mut line = serde_json::to_vec(record)?;
+        line.push(b'\n');
+        let file = match &mut self.file {
+            Some(file) => file,
+            None => {
+                let (mut file, created) = open_durably(&self.path).await?;
+                if !created {
+                    truncate_torn_tail(&mut file, &self.path).await?;
+                }
+                self.file.insert(file)
+            }
+        };
+        file.write_all(&line)
+            .await
+            .with_context(|| format!("appending to {}", self.path.display()))?;
+        file.sync_data().await?;
+        Ok(())
+    }
+}
+
 /// A JSON-lines file that appears under its final name only when committed.
 pub struct StagedLines {
     writer: BufWriter<File>,
@@ -256,6 +380,58 @@ pub(crate) mod tests {
             "{\"n\":7}\n"
         );
         assert!(locked(&root).is_err(), "a second holder must be refused");
+        Ok(())
+    }
+
+    #[mononoke::test]
+    fn json_lines_reject_corruption() {
+        let records: Vec<Record> =
+            parse_json_lines("{\"n\":1}\n\n{\"n\":2}\n").expect("valid lines parse");
+        assert_eq!(records, vec![Record { n: 1 }, Record { n: 2 }]);
+        assert!(parse_json_lines::<Record>("{\"n\":1}\n{\"n\":").is_err());
+    }
+
+    #[mononoke::fbinit_test]
+    async fn journal_records_are_read_back(_fb: FacebookInit) -> Result<()> {
+        let root = TempDir::new()?;
+        let state = locked(&root)?;
+        let relative = Path::new("j/j.jsonl");
+        let mut journal = state.journal(relative);
+        assert!(
+            !state.exists(Path::new("j")).await?,
+            "a journal is created by its first record"
+        );
+        assert!(state.read_journal::<Record>(relative).await?.is_empty());
+        journal.append(&Record { n: 1 }).await?;
+        journal.append(&Record { n: 2 }).await?;
+        assert_eq!(
+            state.read_journal::<Record>(relative).await?,
+            vec![Record { n: 1 }, Record { n: 2 }]
+        );
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn a_torn_last_journal_line_is_dropped(_fb: FacebookInit) -> Result<()> {
+        let root = TempDir::new()?;
+        let state = locked(&root)?;
+        let relative = Path::new("j.jsonl");
+        fs::write(state.path(relative), "{\"n\":1}\n{\"n\":").await?;
+        assert_eq!(
+            state.read_journal::<Record>(relative).await?,
+            vec![Record { n: 1 }],
+            "the unacknowledged fragment is ignored"
+        );
+        assert!(
+            state.read_json_lines::<Record>(relative).await.is_err(),
+            "complete files stay strict"
+        );
+        state.journal(relative).append(&Record { n: 2 }).await?;
+        assert_eq!(
+            fs::read_to_string(state.path(relative)).await?,
+            "{\"n\":1}\n{\"n\":2}\n",
+            "the fragment is truncated before the next record"
+        );
         Ok(())
     }
 }

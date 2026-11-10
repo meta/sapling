@@ -20,6 +20,7 @@ use anyhow::Result;
 use anyhow::bail;
 use blobstore::Blobstore;
 use blobstore::BlobstoreEnumerableWithUnlink;
+use blobstore::BlobstoreIsPresent;
 use blobstore::BlobstoreKeyParam;
 use blobstore::BlobstoreKeyRange;
 use blobstore_factory::ReadOnlyStorage;
@@ -61,6 +62,13 @@ enum Cursor {
 struct Page {
     keys: Vec<String>,
     next: Option<Cursor>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnlinkOutcome {
+    Unlinked,
+    /// The key was confirmed absent, so there was nothing to unlink.
+    AlreadyAbsent,
 }
 
 enum Backend {
@@ -267,6 +275,38 @@ impl ComponentStore {
             .with_context(|| format!("reading {key}"))?
             .map(|data| data.into_bytes()))
     }
+
+    /// Whether `key` exists; fails rather than guess when the store cannot
+    /// say.
+    pub async fn is_present(&self, ctx: &CoreContext, key: &str) -> Result<bool> {
+        match self
+            .blobstore
+            .is_present(ctx, key)
+            .await
+            .with_context(|| format!("checking {key}"))?
+        {
+            BlobstoreIsPresent::Present => Ok(true),
+            BlobstoreIsPresent::Absent => Ok(false),
+            BlobstoreIsPresent::ProbablyNotPresent(e) => {
+                Err(e.context(format!("existence of {key} is unknown")))
+            }
+        }
+    }
+
+    /// Unlinks exactly `key`.  A failed unlink of a key that is confirmed
+    /// absent is reported as already absent.
+    pub async fn unlink(&self, ctx: &CoreContext, key: &str) -> Result<UnlinkOutcome> {
+        match self.blobstore.unlink(ctx, key).await {
+            Ok(()) => Ok(UnlinkOutcome::Unlinked),
+            Err(unlink_error) => match self.is_present(ctx, key).await {
+                Ok(false) => Ok(UnlinkOutcome::AlreadyAbsent),
+                Ok(true) => Err(unlink_error.context(format!("unlinking {key}"))),
+                Err(check_error) => Err(unlink_error
+                    .context(format!("unlinking {key}"))
+                    .context(check_error)),
+            },
+        }
+    }
 }
 
 #[cfg(test)]
@@ -342,6 +382,18 @@ mod tests {
         let mut keys: Vec<String> = pages.into_iter().flatten().collect();
         keys.sort();
         assert_eq!(keys, wanted);
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn unlink_distinguishes_absent_keys(fb: FacebookInit) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let memblob = Arc::new(Memblob::default());
+        memblob.put(&ctx, "k".to_string(), value(b"v")).await?;
+        let store = ComponentStore::key_source(memblob);
+        assert_eq!(store.unlink(&ctx, "k").await?, UnlinkOutcome::Unlinked);
+        assert_eq!(store.unlink(&ctx, "k").await?, UnlinkOutcome::AlreadyAbsent);
+        assert!(!store.is_present(&ctx, "k").await?);
         Ok(())
     }
 

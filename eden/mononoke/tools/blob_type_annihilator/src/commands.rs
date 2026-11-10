@@ -6,6 +6,7 @@
  */
 
 mononoke_app::subcommands! {
+    mod apply;
     mod check_key;
     mod plan;
     mod recipes;

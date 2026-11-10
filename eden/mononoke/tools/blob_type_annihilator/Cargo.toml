@@ -16,6 +16,7 @@ context = { version = "0.1.0", path = "../../servers/slapi/slapi_server/context"
 derive_more = { version = "2.1.1", features = ["full"] }
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
+governor = "0.10.4"
 metaconfig_types = { version = "0.1.0", path = "../../metaconfig/types" }
 mononoke_app = { version = "0.1.0", path = "../../cmdlib/mononoke_app" }
 mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
@@ -30,6 +31,7 @@ tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [dev-dependencies]
+async-trait = "0.1.92"
 bytes = { version = "1.12.1", features = ["serde"] }
 fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 memblob = { version = "0.1.0", path = "../../blobstore/memblob" }

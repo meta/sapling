@@ -15,6 +15,7 @@ use mononoke_app::MononokeApp;
 use mononoke_app::MononokeAppBuilder;
 
 mod adapters;
+mod apply;
 mod commands;
 mod policy;
 mod run;
