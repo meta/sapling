@@ -17,6 +17,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 
+use auth::AuthGroup;
 use auth::AuthSection;
 use clientinfo::ClientInfo;
 use configmodel::ConfigExt;
@@ -72,6 +73,20 @@ pub fn http_client(client_id: impl ToString, config: http_client::Config) -> Htt
 pub fn http_config(
     config: &dyn configmodel::Config,
     url_for_auth: &Url,
+) -> Result<http_client::Config, auth::MissingCerts> {
+    let url = url_for_auth.clone();
+    http_config_with_auth(config, url_for_auth, move |auth| auth.best_match_for(&url))
+}
+
+/// Like `http_config`, with `select_auth` choosing the `[auth]` group for the TLS
+/// credentials to connect to `url`.
+pub fn http_config_with_auth(
+    config: &dyn configmodel::Config,
+    url: &Url,
+    select_auth: impl Fn(&AuthSection) -> Result<Option<AuthGroup>, auth::MissingCerts>
+    + Send
+    + Sync
+    + 'static,
 ) -> Result<http_client::Config, auth::MissingCerts> {
     let mut hc = http_client::Config {
         client_info: ClientInfo::new().and_then(|i| i.to_json()).ok(),
@@ -132,18 +147,16 @@ pub fn http_config(
     }
 
     let using_auth_proxy = hc.unix_socket_path.is_some()
-        && url_for_auth
+        && url
             .domain()
             .is_some_and(|d| hc.unix_socket_domains.contains(d));
 
     if !using_auth_proxy {
         // If we aren't using auth proxy, we need to configure client certs.
         let auth = AuthSection::from_config(config);
-        let url_for_auth = url_for_auth.clone();
         hc.auth_resolver = Some(AuthResolver::new(
             move || -> Result<_, auth::MissingCerts> {
-                Ok(auth
-                    .best_match_for(&url_for_auth)?
+                Ok(select_auth(&auth)?
                     .map(|auth| ResolvedAuth {
                         cert_path: auth.cert,
                         key_path: auth.key,

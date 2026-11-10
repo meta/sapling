@@ -143,7 +143,7 @@ py_class!(pub class client |py| {
 
         let mut builder = Builder::from_config(&config).map_pyerr(py)?;
         if let Some(repo_url) = &repo_url {
-            builder = builder.repo_url(repo_url).map_pyerr(py)?;
+            builder = builder.repo_url(repo_url);
         }
         let inner = builder.repo_name(reponame).build().map_pyerr(py)?;
 

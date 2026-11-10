@@ -50,7 +50,7 @@ pub(crate) fn force_construct_eden_api(
     let (caps, eden_api) = once_slapi.get_or_try_init(
         || -> Result<(LazyCapabilities, Arc<dyn SaplingRemoteApi>), SaplingRemoteApiError> {
             tracing::trace!(target: "repo::eden_api", "creating edenapi");
-            let eden_api = Builder::from_config(config)?.repo_url(repo_url)?.build()?;
+            let eden_api = Builder::from_config(config)?.repo_url(repo_url).build()?;
             tracing::info!(url = eden_api.url(), "SaplingRemoteApi built");
             Ok((LazyCapabilities::default(), eden_api))
         },
@@ -98,7 +98,7 @@ pub(crate) fn optional_eden_api_from_config(
                 }
             }
             if !Builder::from_config(config)?
-                .repo_url(&path)?
+                .repo_url(&path)
                 .has_server_url_and_repo_name()?
             {
                 tracing::trace!(target: "repo::eden_api", "disabled because neither config nor paths.default gives a server URL and repo name");

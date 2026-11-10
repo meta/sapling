@@ -6,6 +6,10 @@ sl_rust_library(
     name = "edenapi",
     srcs = glob(["src/**/*.rs"]),
     autocargo = {},
+    test_deps = [
+        "fbsource//third-party/rust:tempfile",
+        "//eden/scm/lib/auth:auth",
+    ],
     deps = [
         "fbsource//third-party/rust:anyhow",
         "fbsource//third-party/rust:async-trait",

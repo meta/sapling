@@ -33,6 +33,7 @@ sl_rust_library(
         "fbsource//third-party/rust:tracing",
         "fbsource//third-party/rust:url",
         "//eden/scm/lib/config/model:configmodel",
+        "//eden/scm/lib/repo/url:repourl",
         "//eden/scm/lib/util:util",
     ],
 )

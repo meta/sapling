@@ -11,6 +11,7 @@ use std::fmt::Display;
 use anyhow::Context;
 use anyhow::Result;
 use configmodel::Config;
+use configmodel::ConfigExt;
 use configmodel::convert::FromConfig;
 use fn_error_context::context;
 use percent_encoding::AsciiSet;
@@ -19,7 +20,7 @@ use percent_encoding::percent_decode_str;
 use percent_encoding::utf8_percent_encode;
 use url::Url;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct RepoUrl {
     // What should be saved as paths.default.
     clean_input: String,
@@ -29,6 +30,8 @@ pub struct RepoUrl {
     repo_name: Option<String>,
     // Fragment from the URL
     default_bookmark: Option<String>,
+    // SLAPI server base URL derived from URL.
+    slapi_server_url: Option<Url>,
 }
 
 impl RepoUrl {
@@ -86,6 +89,7 @@ impl RepoUrl {
         };
 
         let repo_name = repo_name_from_resolved_url(config, &url);
+        let slapi_server_url = slapi_server_url(&url)?;
         tracing::debug!(input_url, output_url=%url, ?repo_name, "parsed repo URL");
 
         Ok(Self {
@@ -93,6 +97,7 @@ impl RepoUrl {
             url,
             repo_name,
             default_bookmark: frag,
+            slapi_server_url,
         })
     }
 
@@ -131,30 +136,39 @@ impl RepoUrl {
         self.url.as_str()
     }
 
+    /// URL with schemes resolved and fragment trimmed.
+    pub fn url(&self) -> &Url {
+        &self.url
+    }
+
     pub fn supports_slapi(&self) -> bool {
         matches!(self.scheme(), "mononoke" | "eager" | "test")
     }
 
     /// SLAPI server base URL for a Mononoke repo URL: `https://host[:port]/slapi/` for
-    /// `mononoke://host[:port]/<repo>`.
-    ///
-    /// `None` for other schemes and for URLs without a host; an error if the host and
-    /// port do not form a valid `https` URL.
-    pub fn slapi_server_url(&self) -> Result<Option<Url>> {
-        if self.scheme() != "mononoke" {
-            return Ok(None);
-        }
-        let Some(host) = self.url.host_str().filter(|host| !host.is_empty()) else {
-            return Ok(None);
-        };
-        let authority = match self.url.port() {
-            Some(port) => format!("{host}:{port}"),
-            None => host.to_string(),
-        };
-        let url = Url::parse(&format!("https://{authority}/slapi/"))
-            .with_context(|| format!("deriving the SLAPI server URL from {}", self.url))?;
-        Ok(Some(url))
+    /// `mononoke://host[:port]/<repo>`. `None` for other schemes and for URLs without a
+    /// host.
+    pub fn slapi_server_url(&self) -> Option<&Url> {
+        self.slapi_server_url.as_ref()
     }
+}
+
+/// See `RepoUrl::slapi_server_url`. An error if the host and port do not form a valid
+/// `https` URL.
+fn slapi_server_url(url: &Url) -> Result<Option<Url>> {
+    if url.scheme() != "mononoke" {
+        return Ok(None);
+    }
+    let Some(host) = url.host_str().filter(|host| !host.is_empty()) else {
+        return Ok(None);
+    };
+    let authority = match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_string(),
+    };
+    let slapi_server_url = Url::parse(&format!("https://{authority}/slapi/"))
+        .with_context(|| format!("deriving the SLAPI server URL from {url}"))?;
+    Ok(Some(slapi_server_url))
 }
 
 fn looks_like_windows_path(s: &str) -> bool {
@@ -198,6 +212,46 @@ fn resolve_custom_scheme(config: &dyn Config, url: String) -> String {
     }
 
     url
+}
+
+/// A repo's SLAPI server.
+#[derive(Clone, Debug)]
+pub struct SlapiServer {
+    /// The server's base URL.
+    pub url: Url,
+    /// The repo URL `url` is derived from, if it is, for selecting credentials.
+    pub repo_url: Option<RepoUrl>,
+}
+
+/// The SLAPI server for a repo: `edenapi.url` if set, else the server named by
+/// `repo_url` (see `RepoUrl::slapi_server_url`) unless
+/// `experimental.slapi-url-from-path` is false.
+pub fn slapi_server(
+    config: &dyn Config,
+    repo_url: Option<&RepoUrl>,
+) -> configmodel::Result<Option<SlapiServer>> {
+    if let Some(url) = config.get_nonempty("edenapi", "url") {
+        let url = Url::parse(&url).map_err(|e| {
+            configmodel::Error::Invalid(
+                "edenapi".into(),
+                "url".into(),
+                Box::new(configmodel::Error::Convert(e.to_string())),
+            )
+        })?;
+        return Ok(Some(SlapiServer {
+            url,
+            repo_url: None,
+        }));
+    }
+    if !config.get_or("experimental", "slapi-url-from-path", || true)? {
+        return Ok(None);
+    }
+    Ok(repo_url.and_then(|repo_url| {
+        Some(SlapiServer {
+            url: repo_url.slapi_server_url()?.clone(),
+            repo_url: Some(repo_url.clone()),
+        })
+    }))
 }
 
 pub fn repo_name_from_url(config: &dyn Config, s: &str) -> Option<String> {
@@ -348,11 +402,7 @@ mod test {
         let check = |url, expected: Option<&str>| {
             let repo_url = RepoUrl::from_str(&config, url).unwrap();
             assert_eq!(
-                repo_url
-                    .slapi_server_url()
-                    .unwrap()
-                    .as_ref()
-                    .map(Url::as_str),
+                repo_url.slapi_server_url().map(Url::as_str),
                 expected,
                 "SLAPI server URL for {url}"
             );
@@ -387,6 +437,65 @@ mod test {
         check("https://example.com/edenapi/", None);
         check("ssh://user@host/repo", None);
         check("file:/path/to/repo", None);
+
+        assert!(
+            RepoUrl::from_str(&config, "mononoke://a%20b/repo").is_err(),
+            "a host that cannot be an https host fails to parse"
+        );
+    }
+
+    #[test]
+    fn test_slapi_server() {
+        let server = |entries: &[(&'static str, &'static str)], url: &str| {
+            let config = BTreeMap::<&str, &str>::from_iter(entries.iter().copied());
+            let repo_url = RepoUrl::from_str(&config, url).unwrap();
+            slapi_server(&config, Some(&repo_url))
+                .unwrap()
+                .map(|server| (server.url.to_string(), server.repo_url.is_some()))
+        };
+        let from_path = |url: &str| Some((url.to_string(), true));
+        let from_config = |url: &str| Some((url.to_string(), false));
+
+        assert_eq!(
+            server(
+                &[("schemes.mono", "mononoke://localhost:8443/{1}")],
+                "mono:repo"
+            ),
+            from_path("https://localhost:8443/slapi/"),
+            "an unconfigured mononoke path names the server"
+        );
+        assert_eq!(
+            server(
+                &[("edenapi.url", "https://configured.example.com/edenapi/")],
+                "mononoke://example.com/repo"
+            ),
+            from_config("https://configured.example.com/edenapi/"),
+            "an explicit edenapi.url wins over the path"
+        );
+        assert_eq!(
+            server(&[("edenapi.url", "")], "mononoke://example.com/repo"),
+            from_path("https://example.com/slapi/"),
+            "an empty edenapi.url counts as unset"
+        );
+        assert_eq!(
+            server(
+                &[("experimental.slapi-url-from-path", "false")],
+                "mononoke://example.com/repo"
+            ),
+            None,
+            "experimental.slapi-url-from-path=false ignores the path"
+        );
+        for url in [
+            "https://example.com/edenapi/",
+            "ssh://user@host/repo",
+            "eager:///path/to/repo",
+        ] {
+            assert_eq!(server(&[], url), None, "{url} names no server");
+        }
+
+        let config = BTreeMap::<&str, &str>::from([("edenapi.url", "not a url")]);
+        let err = slapi_server(&config, None).unwrap_err();
+        assert!(err.to_string().contains("edenapi.url"), "{err}");
     }
 
     #[test]

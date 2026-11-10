@@ -17,6 +17,7 @@ use configmodel::Config;
 use configmodel::ConfigExt;
 use configmodel::Text;
 use indexmap::IndexMap;
+use repourl::RepoUrl;
 use thiserror::Error;
 use url::Url;
 use util::path::expand_path;
@@ -163,6 +164,30 @@ impl AuthSection {
                 .unwrap_or_default()
                 .to_string(),
         }
+    }
+
+    /// The best usable auth group for `repo_url`'s SLAPI server URL or, failing
+    /// that, for `repo_url` itself. If neither has one, missing certificate files
+    /// are reported for the server URL ahead of the repo URL.
+    pub fn best_match_for_repo_url(
+        &self,
+        repo_url: &RepoUrl,
+    ) -> Result<Option<AuthGroup>, MissingCerts> {
+        let primary = match repo_url.slapi_server_url() {
+            Some(url) => self.best_match_for(url),
+            None => Ok(None),
+        };
+        if let Ok(Some(_)) = primary {
+            return primary;
+        }
+
+        let secondary = self.best_match_for(repo_url.url());
+        if let Ok(Some(_)) = secondary {
+            return secondary;
+        }
+
+        // Neither is usable: report the server URL's missing files ahead of the repo URL's.
+        primary.and(secondary)
     }
 
     /// Find the best matching auth group for the given URL.
@@ -434,6 +459,56 @@ j.cert = /does/not/exist"#
             .best_match_for(&"https://invalid.com".parse()?)?
             .unwrap();
         assert_eq!(group.name, "default");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_best_match_for_repo_url() -> Result<()> {
+        let config = static_config!(
+            r#"[auth]
+good.prefix = good.com
+good_path.prefix = mononoke://good.com
+other_path.prefix = mononoke://other.com
+half.prefix = half.com
+half.cert = /does/not/exist
+half_path.prefix = mononoke://half.com
+broken.prefix = broken.com
+broken.cert = /does/not/exist
+broken_path.prefix = mononoke://broken.com
+broken_path.cert = /does/not/exist
+nohttps_path.prefix = mononoke://nohttps.com
+nohttps_path.cert = /does/not/exist
+ssh.prefix = ssh://other.com"#
+        );
+        let auth = AuthSection::from_config(&config);
+        let best =
+            |url: &str| auth.best_match_for_repo_url(&RepoUrl::from_str(&config, url).unwrap());
+        let name = |found: Option<AuthGroup>| found.map(|group| group.name);
+
+        // A group for the SLAPI server URL wins over one for the repo URL.
+        let found = best("mononoke://good.com/repo")?;
+        assert_eq!(name(found).as_deref(), Some("good"));
+
+        // With no group for the server URL, the repo URL's is used.
+        let found = best("mononoke://other.com/repo")?;
+        assert_eq!(name(found).as_deref(), Some("other_path"));
+
+        // So it is when the server URL's group has missing files.
+        let found = best("mononoke://half.com/repo")?;
+        assert_eq!(name(found).as_deref(), Some("half_path"));
+
+        // A repo URL with no SLAPI server URL uses its own group.
+        let found = best("ssh://other.com/repo")?;
+        assert_eq!(name(found).as_deref(), Some("ssh"));
+
+        // If neither group is usable, the server URL's missing files are reported.
+        let err = best("mononoke://broken.com/repo").unwrap_err();
+        assert!(err.url.starts_with("https://broken.com"), "{err}");
+
+        // With no group for the server URL, the repo URL's missing files are reported.
+        let err = best("mononoke://nohttps.com/repo").unwrap_err();
+        assert!(err.url.starts_with("mononoke://nohttps.com"), "{err}");
 
         Ok(())
     }

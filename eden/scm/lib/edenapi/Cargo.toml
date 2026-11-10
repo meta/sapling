@@ -44,3 +44,7 @@ serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw
 tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 url = "2.5.8"
+
+[dev-dependencies]
+sapling-auth = { version = "0.1.0", path = "../auth" }
+tempfile = "3.27.0"

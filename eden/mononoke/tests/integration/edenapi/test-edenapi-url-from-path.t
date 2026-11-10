@@ -69,3 +69,20 @@ edenapi.url the repo then has no SLAPI client, which its lazy commit graph needs
   Caused by:
       The commit graph requires a remote peer but the repo does not have one.
   [255]
+
+With an [auth] group only for mononoke:// URLs, no group matches the derived
+https URL. The client then uses the path's group, so it still sends the client
+certificate.
+  $ cat >> "$HGRCPATH" << EOF
+  > [auth]
+  > mononoke.prefix=mononoke://*
+  > EOF
+  $ hg debugapi -e bookmarks -i '["master_bookmark"]'
+  {"master_bookmark": "80521a640a0c8f51dcc128c2658b224d595840ac"}
+  $ hg debugapi mono:repo -e bookmarks -i '["master_bookmark"]'
+  {"master_bookmark": "80521a640a0c8f51dcc128c2658b224d595840ac"}
+
+An explicit edenapi.url for the same server is not derived from the path, so
+it gets no certificate.
+  $ hg debugapi -e bookmarks -i '["master_bookmark"]' --config edenapi.url=https://localhost:$MONONOKE_SOCKET/slapi/ > /dev/null 2>&1
+  [255]

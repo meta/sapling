@@ -23,6 +23,7 @@ use http_client::HttpVersion;
 use http_client::MinTransferSpeed;
 use parking_lot::RwLock;
 use repourl::RepoUrl;
+use repourl::SlapiServer;
 use url::Url;
 
 use crate::SaplingRemoteApi;
@@ -57,7 +58,7 @@ pub struct Builder<'a> {
     config: &'a dyn configmodel::Config,
     repo_name: Option<String>,
     server_url: Option<Url>,
-    path_server_url: Option<Url>,
+    repo_url: Option<RepoUrl>,
 }
 
 impl<'a> Builder<'a> {
@@ -67,7 +68,7 @@ impl<'a> Builder<'a> {
             config,
             repo_name: None,
             server_url: None,
-            path_server_url: None,
+            repo_url: None,
         };
         Ok(builder)
     }
@@ -78,11 +79,15 @@ impl<'a> Builder<'a> {
     /// A `mononoke://host[:port]/<repo>` path names `https://host[:port]/slapi/`, unless
     /// `experimental.slapi-url-from-path` is false. Other paths name no server. The repo
     /// name comes from `remotefilelog.reponame`, which Sapling sets from `paths.default`.
-    pub fn repo_url(mut self, url: &RepoUrl) -> Result<Self, ConfigError> {
-        self.path_server_url = url
-            .slapi_server_url()
-            .map_err(|e| ConfigError::Invalid("paths.default".into(), e))?;
-        Ok(self)
+    /// The client then picks its `[auth]` group with `AuthSection::best_match_for_repo_url`.
+    pub fn repo_url(mut self, url: &RepoUrl) -> Self {
+        self.repo_url = Some(url.clone());
+        self
+    }
+
+    /// The SLAPI server named by the remote path.
+    fn path_server_url(&self) -> Option<&Url> {
+        self.repo_url.as_ref()?.slapi_server_url()
     }
 
     /// Configure repo name for client. This is only used by the Http Client.
@@ -99,7 +104,7 @@ impl<'a> Builder<'a> {
 
     /// Whether an HTTP client built now would have both a server URL and a repo name.
     pub fn has_server_url_and_repo_name(&self) -> Result<bool, ConfigError> {
-        Ok(self.resolved_server_url()?.is_some()
+        Ok(self.resolved_server()?.is_some()
             && (self.repo_name.is_some()
                 || self
                     .config
@@ -107,22 +112,22 @@ impl<'a> Builder<'a> {
                     .is_some()))
     }
 
-    /// The server URL the client uses: `server_url`, else `edenapi.url`, else the remote
-    /// path's (see `repo_url`).
-    fn resolved_server_url(&self) -> Result<Option<Url>, ConfigError> {
+    /// The server the client uses: `server_url`, else `repourl::slapi_server`'s. When
+    /// that comes from the remote path, the client authenticates with the `[auth]`
+    /// group for the path if no group for the server URL is usable.
+    fn resolved_server(&self) -> Result<Option<SlapiServer>, ConfigError> {
         if let Some(url) = &self.server_url {
-            return Ok(Some(url.clone()));
+            return Ok(Some(SlapiServer {
+                url: url.clone(),
+                repo_url: None,
+            }));
         }
-        if let Some(url) = self.config.get_nonempty("edenapi", "url") {
-            let url = url
-                .parse::<Url>()
-                .map_err(|e| ConfigError::Invalid("edenapi.url".into(), e.into()))?;
-            return Ok(Some(url));
-        }
-        if get_config::<bool>(self.config, "experimental", "slapi-url-from-path")?.unwrap_or(true) {
-            return Ok(self.path_server_url.clone());
-        }
-        Ok(None)
+        repourl::slapi_server(self.config, self.repo_url.as_ref()).map_err(|e| match e {
+            configmodel::Error::Invalid(section, name, source) => {
+                ConfigError::Invalid(format!("{section}.{name}"), (*source).into())
+            }
+            e => ConfigError::Invalid("SLAPI server".into(), e.into()),
+        })
     }
 
     /// `edenapi.url`, when it names a different host or port than `path_url`.
@@ -148,15 +153,31 @@ impl<'a> Builder<'a> {
                 }
             }
         }
-        if let Some(path_url) = &self.path_server_url
+        if let Some(path_url) = self.path_server_url()
             && let Some(config_url) = self.config_url_differing_from(path_url)
         {
             tracing::debug!(%path_url, edenapi_url = %config_url, "SLAPI server from the remote path differs from edenapi.url");
             hg_metrics::max_counter("slapi.url_host_mismatch", 1);
         }
 
-        let mut builder = match self.resolved_server_url()? {
-            Some(server_url) => HttpClientBuilder::from_config_with_url(self.config, server_url)?,
+        Ok(Arc::new(self.http_client_builder()?.build()?))
+    }
+
+    fn http_client_builder(&self) -> Result<HttpClientBuilder, SaplingRemoteApiError> {
+        let mut builder = match self.resolved_server()? {
+            Some(SlapiServer {
+                url,
+                repo_url: None,
+            }) => HttpClientBuilder::from_config_with_url(self.config, url)?,
+            Some(SlapiServer {
+                url,
+                repo_url: Some(repo_url),
+            }) => {
+                let http_config = hg_http::http_config_with_auth(self.config, &url, move |auth| {
+                    auth.best_match_for_repo_url(&repo_url)
+                })?;
+                HttpClientBuilder::from_config_with_http_config(self.config, url, http_config)?
+            }
             None => HttpClientBuilder::from_config(self.config)?,
         };
 
@@ -164,7 +185,7 @@ impl<'a> Builder<'a> {
             builder = builder.repo_name(repo_name);
         }
 
-        Ok(Arc::new(builder.build()?))
+        Ok(builder)
     }
 
     /// Register a customized builder that can produce a non-HTTP `SaplingRemoteApi` from config.
@@ -230,9 +251,20 @@ impl HttpClientBuilder {
         self.try_into().map(Client::with_config)
     }
 
+    /// Populate a `HttpClientBuilder` for `server_url` from config.
     pub fn from_config_with_url(
         config: &dyn configmodel::Config,
         server_url: Url,
+    ) -> Result<Self, SaplingRemoteApiError> {
+        let http_config = hg_http::http_config(config, &server_url)?;
+        Self::from_config_with_http_config(config, server_url, http_config)
+    }
+
+    /// Like `from_config_with_url`, on top of `http_config`'s HTTP client settings.
+    fn from_config_with_http_config(
+        config: &dyn configmodel::Config,
+        server_url: Url,
+        mut http_config: http_client::Config,
     ) -> Result<Self, SaplingRemoteApiError> {
         // XXX: Ideally, the repo name would be a required field, obtained from a `Repo` object from
         // the `clidispatch` crate. Unfortunately, not all callsites presently have access to a
@@ -401,7 +433,6 @@ impl HttpClientBuilder {
         let max_concurrent_streams =
             get_config::<usize>(config, "edenapi", "max-concurrent-streams")?;
 
-        let mut http_config = hg_http::http_config(config, &server_url)?;
         http_config.verbose_stats |= debug;
         http_config.max_concurrent_requests = max_requests;
         http_config.max_concurrent_requests_per_batch = max_requests_per_batch;
@@ -877,85 +908,19 @@ mod tests {
             .collect()
     }
 
-    fn resolved_server_url(config: &BTreeMap<String, String>, url: &str) -> Option<String> {
-        let repo_url = RepoUrl::from_str(config, url).unwrap();
-        Builder::from_config(config)
-            .unwrap()
-            .repo_url(&repo_url)
-            .unwrap()
-            .resolved_server_url()
-            .unwrap()
-            .map(String::from)
-    }
-
     #[test]
-    fn test_resolved_server_url_from_mononoke_path() {
-        let config = config_from(&[("schemes.mono", "mononoke://localhost:8443/{1}")]);
-        assert_eq!(
-            resolved_server_url(&config, "mono:repo").as_deref(),
-            Some("https://localhost:8443/slapi/"),
-            "an unconfigured mononoke path names the server"
-        );
-        assert_eq!(
-            resolved_server_url(&config, "mononoke://[::1]/path/to/repo").as_deref(),
-            Some("https://[::1]/slapi/"),
-            "the server URL does not include the repo name"
-        );
-    }
-
-    #[test]
-    fn test_resolved_server_url_prefers_config() {
+    fn test_resolved_server_prefers_server_url() {
         let config = config_from(&[("edenapi.url", "https://configured.example.com/edenapi/")]);
-        assert_eq!(
-            resolved_server_url(&config, "mononoke://example.com/repo").as_deref(),
-            Some("https://configured.example.com/edenapi/"),
-            "an explicit edenapi.url wins over the path"
-        );
-
         let repo_url = RepoUrl::from_str(&config, "mononoke://example.com/repo").unwrap();
         let explicit = Url::parse("https://explicit.example.com/edenapi/").unwrap();
         let builder = Builder::from_config(&config)
             .unwrap()
             .repo_url(&repo_url)
-            .unwrap()
             .server_url(Some(explicit.clone()));
         assert_eq!(
-            builder.resolved_server_url().unwrap(),
+            builder.resolved_server().unwrap().map(|server| server.url),
             Some(explicit),
-            "an explicit server URL wins over edenapi.url"
-        );
-
-        let config = config_from(&[("edenapi.url", "")]);
-        assert_eq!(
-            resolved_server_url(&config, "mononoke://example.com/repo").as_deref(),
-            Some("https://example.com/slapi/"),
-            "an empty edenapi.url counts as unset"
-        );
-    }
-
-    #[test]
-    fn test_resolved_server_url_ignores_other_paths() {
-        let config = config_from(&[]);
-        for url in [
-            "https://example.com/edenapi/",
-            "ssh://user@host/repo",
-            "eager:///path/to/repo",
-        ] {
-            assert_eq!(
-                resolved_server_url(&config, url),
-                None,
-                "{url} names no server"
-            );
-        }
-    }
-
-    #[test]
-    fn test_resolved_server_url_kill_switch() {
-        let config = config_from(&[("experimental.slapi-url-from-path", "false")]);
-        assert_eq!(
-            resolved_server_url(&config, "mononoke://example.com/repo"),
-            None,
-            "experimental.slapi-url-from-path=false ignores the path"
+            "an explicit server URL wins over edenapi.url and the path"
         );
     }
 
@@ -965,9 +930,7 @@ mod tests {
             let config = config_from(entries);
             let builder = Builder::from_config(&config).unwrap();
             let builder = match url {
-                Some(url) => builder
-                    .repo_url(&RepoUrl::from_str(&config, url).unwrap())
-                    .unwrap(),
+                Some(url) => builder.repo_url(&RepoUrl::from_str(&config, url).unwrap()),
                 None => builder,
             };
             builder.has_server_url_and_repo_name().unwrap()
@@ -1009,11 +972,8 @@ mod tests {
                 None => config_from(&[]),
             };
             let repo_url = RepoUrl::from_str(&config, path).unwrap();
-            let builder = Builder::from_config(&config)
-                .unwrap()
-                .repo_url(&repo_url)
-                .unwrap();
-            let path_url = builder.path_server_url.as_ref()?;
+            let builder = Builder::from_config(&config).unwrap().repo_url(&repo_url);
+            let path_url = builder.path_server_url()?;
             builder
                 .config_url_differing_from(path_url)
                 .map(String::from)
@@ -1073,12 +1033,100 @@ mod tests {
         let client = Builder::from_config(&config)
             .unwrap()
             .repo_url(&repo_url)
-            .unwrap()
             .build()
             .unwrap();
         assert_eq!(
             client.url().as_deref(),
             Some("https://example.com:8443/slapi/")
+        );
+    }
+
+    /// The client certificate that `Builder` would use for `path`, with `entries` as
+    /// config and empty files in `dir` for the `[auth]` certificates they name.
+    fn resolved_cert(
+        dir: &std::path::Path,
+        entries: &[(&str, &str)],
+        path: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let mut config = config_from(&[("remotefilelog.reponame", "repo")]);
+        for (key, value) in entries {
+            let value = if key.ends_with(".cert") {
+                let file = dir.join(value);
+                std::fs::write(&file, "")?;
+                file.to_string_lossy().into_owned()
+            } else {
+                value.to_string()
+            };
+            config.insert(key.to_string(), value);
+        }
+        let repo_url = RepoUrl::from_str(&config, path)?;
+        let builder = Builder::from_config(&config)?
+            .repo_url(&repo_url)
+            .http_client_builder()?;
+        let resolver = builder
+            .http_config
+            .auth_resolver
+            .expect("not using an auth proxy");
+        let cert = resolver.resolve()?.cert_path.clone();
+        Ok(cert.map(|cert| cert.file_name().unwrap().to_string_lossy().into_owned()))
+    }
+
+    #[test]
+    fn test_path_server_url_authenticates_like_the_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path_group = [
+            ("auth.path.prefix", "mononoke://*"),
+            ("auth.path.cert", "path.pem"),
+        ];
+        let https_group = [
+            ("auth.https.prefix", "example.com"),
+            ("auth.https.cert", "https.pem"),
+        ];
+
+        assert_eq!(
+            resolved_cert(dir.path(), &path_group, "mononoke://example.com/repo").unwrap(),
+            Some("path.pem".to_string()),
+            "with no group for the derived https URL, the path's group is used"
+        );
+        assert_eq!(
+            resolved_cert(
+                dir.path(),
+                &[path_group.as_slice(), https_group.as_slice()].concat(),
+                "mononoke://example.com/repo"
+            )
+            .unwrap(),
+            Some("https.pem".to_string()),
+            "a group for the https URL wins"
+        );
+        assert_eq!(
+            resolved_cert(
+                dir.path(),
+                &[
+                    path_group.as_slice(),
+                    &[("edenapi.url", "https://example.com/slapi/")]
+                ]
+                .concat(),
+                "mononoke://example.com/repo"
+            )
+            .unwrap(),
+            None,
+            "an explicit edenapi.url does not use the path's group"
+        );
+    }
+
+    #[test]
+    fn test_path_server_url_with_missing_path_certs() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.pem");
+        let entries = [
+            ("auth.path.prefix", "mononoke://*"),
+            ("auth.path.key", missing.to_str().unwrap()),
+        ];
+        let err = resolved_cert(dir.path(), &entries, "mononoke://example.com/repo")
+            .expect_err("the path's group has a missing key file");
+        assert!(
+            err.downcast_ref::<auth::MissingCerts>().is_some(),
+            "unexpected error: {err:?}"
         );
     }
 
