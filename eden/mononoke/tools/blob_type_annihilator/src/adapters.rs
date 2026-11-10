@@ -140,6 +140,19 @@ impl ComponentStore {
         }
     }
 
+    /// This store with the storage options applied, as `open` applies them.
+    #[cfg(test)]
+    pub fn with_storage_options(
+        self,
+        readonly: ReadOnlyStorage,
+        throttle: ThrottleOptions,
+    ) -> Self {
+        Self {
+            blobstore: guarded(self.blobstore, readonly, throttle),
+            ..self
+        }
+    }
+
     /// Opens the physical store `config`, which must be a leaf config.
     pub async fn open(
         app: &MononokeApp,
@@ -265,6 +278,10 @@ impl ComponentStore {
             (_, cursor) => bail!("cursor {cursor:?} does not belong to this store"),
         };
         Ok(page)
+    }
+
+    pub fn blobstore(&self) -> Arc<dyn Blobstore> {
+        self.blobstore.clone()
     }
 
     pub async fn get(&self, ctx: &CoreContext, key: &str) -> Result<Option<BlobstoreBytes>> {

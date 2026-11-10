@@ -11,6 +11,7 @@ dott_test(
     deps = [
         "//eden/mononoke/tools/admin:admin",
         "//eden/mononoke/tools/blob_type_annihilator:blob_type_annihilator",
+        "//eden/mononoke/tools/packer:packer",
         "//eden/mononoke/tools/testtool:testtool",
     ],
 )

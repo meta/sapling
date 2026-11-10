@@ -11,7 +11,7 @@
 //! number of keys at a time across batches.  A batch's outcome is journalled
 //! once all its keys are accounted for, so a restarted run redoes the batches
 //! without one and retries only the keys that failed.  Packed keys are never
-//! unlinked here: unlinking one would lose the other entries of its pack.
+//! unlinked here: they belong to the pack rewrite task of their pack.
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -40,6 +40,10 @@ use tracing::warn;
 
 use crate::adapters::ComponentStore;
 use crate::adapters::UnlinkOutcome;
+use crate::pack_rewrite::PackOptions;
+use crate::pack_rewrite::TaskTotals;
+use crate::pack_rewrite::execute_owned_tasks;
+use crate::policy::Selection;
 use crate::scan::Cell;
 use crate::scan::InventoryRecord;
 use crate::scan::Sampled;
@@ -106,8 +110,10 @@ pub struct ApplyContext<'a> {
     pub state: &'a StateDir,
     pub store: &'a ComponentStore,
     pub cell: Cell<'a>,
+    pub selection: &'a Selection,
     pub batch_size: NonZeroUsize,
     pub unlink: &'a UnlinkSettings,
+    pub pack: &'a PackOptions,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,8 +164,7 @@ struct BatchDone {
 pub struct PartitionOutcome {
     #[serde(flatten)]
     pub counts: UnlinkCounts,
-    /// Packed keys, which cannot be unlinked without losing the other values
-    /// of their packs.
+    /// Packed keys, left to their packs' rewrite tasks.
     pub packed_deferred: u64,
     /// Keys still present that cannot be deleted safely, such as unreadable
     /// envelopes.
@@ -221,6 +226,26 @@ async fn unlink_key(
 ) -> Result<UnlinkOutcome> {
     settings.until_ready().await;
     store.unlink(ctx, key).await
+}
+
+/// Unlinks `keys`, at most `settings.concurrency` at once.
+pub(crate) async fn unlink_keys(
+    ctx: &CoreContext,
+    store: &ComponentStore,
+    keys: Vec<String>,
+    settings: &UnlinkSettings,
+) -> UnlinkCounts {
+    stream::iter(keys)
+        .map(|key| async move {
+            let result = unlink_key(ctx, store, settings, &key).await;
+            (key, result)
+        })
+        .buffer_unordered(settings.concurrency.get())
+        .fold(UnlinkCounts::default(), |mut counts, (key, result)| {
+            counts.record(key, result);
+            future::ready(counts)
+        })
+        .await
 }
 
 /// Unlinks the keys of `batches`, at most `actx.unlink.concurrency` at once
@@ -364,27 +389,29 @@ pub async fn apply_unpacked(actx: &ApplyContext<'_>, hex: &str) -> Result<Partit
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartitionResult {
     pub outcome: PartitionOutcome,
+    /// Pack rewrite tasks owned by the partition.
+    pub tasks: TaskTotals,
 }
 
 impl PartitionResult {
-    /// Every key is accounted for.
+    /// Every unpacked key and owned task is accounted for.
     pub fn done(&self) -> bool {
         self.outcome.counts.failed.is_empty()
             && self.outcome.blocked.is_empty()
-            && self.outcome.packed_deferred == 0
+            && self.tasks.is_finished()
     }
 }
 
-/// Applies one partition.  A finished partition is recorded and not
-/// processed again.
+/// Applies one partition: its unpacked keys, then the pack tasks it owns.
+/// A finished partition is recorded and not processed again.
 pub async fn apply_partition(actx: &ApplyContext<'_>, hex: &str) -> Result<PartitionResult> {
     let done_path = done_path(&actx.cell, hex);
     if let Some(result) = actx.state.read_json(&done_path).await? {
         return Ok(result);
     }
-    let result = PartitionResult {
-        outcome: apply_unpacked(actx, hex).await?,
-    };
+    let outcome = apply_unpacked(actx, hex).await?;
+    let tasks = execute_owned_tasks(actx, hex).await?;
+    let result = PartitionResult { outcome, tasks };
     if result.done() {
         actx.state.write_json(&done_path, &result).await?;
     }
@@ -401,6 +428,7 @@ pub struct ApplyTotals {
     pub failed: Sampled<FailedKey>,
     pub blocked: Sampled<String>,
     pub packed_deferred: u64,
+    pub tasks: TaskTotals,
 }
 
 impl ApplyTotals {
@@ -424,6 +452,7 @@ impl ApplyTotals {
             .iter()
             .for_each(|blocked| self.blocked.note(blocked.clone()));
         self.packed_deferred += outcome.packed_deferred;
+        self.tasks.add(&result.tasks);
     }
 
     pub fn add(&mut self, other: &ApplyTotals) {
@@ -434,6 +463,7 @@ impl ApplyTotals {
         self.failed.merge(&other.failed);
         self.blocked.merge(&other.blocked);
         self.packed_deferred += other.packed_deferred;
+        self.tasks.add(&other.tasks);
     }
 }
 
@@ -459,6 +489,7 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::policy::RECIPES;
+    use crate::policy::RetiredBlobType;
     use crate::scan::InventoryContext;
     use crate::scan::inventory_partition;
     use crate::scan::tests::bytes;
@@ -470,16 +501,23 @@ pub(crate) mod tests {
 
     /// Settings shared by the tests' apply contexts.
     pub(crate) struct TestApply {
+        selection: Selection,
         unlink: UnlinkSettings,
+        pack: PackOptions,
     }
 
     impl TestApply {
         pub(crate) fn new(batch_size: usize) -> (Self, NonZeroUsize) {
             let this = Self {
+                selection: Selection::new(RetiredBlobType::all()).expect("valid selection"),
                 unlink: UnlinkSettings::new(
                     concurrency(2),
                     NonZeroU32::new(1_000_000).expect("non-zero"),
                 ),
+                pack: PackOptions {
+                    repack_zstd_level: 3,
+                    pack_concurrency: concurrency(2),
+                },
             };
             (this, concurrency(batch_size))
         }
@@ -497,8 +535,10 @@ pub(crate) mod tests {
                 state,
                 store,
                 cell,
+                selection: &self.selection,
                 batch_size,
                 unlink: &self.unlink,
+                pack: &self.pack,
             }
         }
     }

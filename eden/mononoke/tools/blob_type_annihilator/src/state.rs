@@ -164,6 +164,48 @@ impl StateDir {
             .with_context(|| format!("corrupt journal {}", self.path(relative).display()))
     }
 
+    /// Removes a directory tree, if present.
+    pub async fn remove_dir_all(&self, relative: &Path) -> Result<()> {
+        match fs::remove_dir_all(self.path(relative)).await {
+            Err(e) if e.kind() != ErrorKind::NotFound => {
+                Err(e).with_context(|| format!("removing {}", relative.display()))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Atomically renames a file or directory.
+    pub async fn rename(&self, from: &Path, to: &Path) -> Result<()> {
+        let to = self.path(to);
+        if let Some(parent) = to.parent() {
+            create_dir_durably(parent).await?;
+        }
+        fs::rename(self.path(from), &to)
+            .await
+            .with_context(|| format!("renaming {} to {}", from.display(), to.display()))?;
+        sync_parent(&to).await
+    }
+
+    /// Appends records to a JSON-lines file and syncs them.
+    pub async fn append_lines<T: Serialize>(&self, relative: &Path, records: &[T]) -> Result<()> {
+        let lines = records.iter().try_fold(Vec::new(), |mut lines, record| {
+            serde_json::to_writer(&mut lines, record)?;
+            lines.push(b'\n');
+            anyhow::Ok(lines)
+        })?;
+        let mut file = self.open_append(relative).await?;
+        file.write_all(&lines).await?;
+        file.sync_data().await?;
+        Ok(())
+    }
+
+    /// Opens a file for appending, creating it and its directories durably
+    /// if needed.  Writes are not synced.
+    pub async fn open_append(&self, relative: &Path) -> Result<File> {
+        let path = self.path(relative);
+        Ok(open_durably(&path).await?.0)
+    }
+
     /// A journal at `relative`.  Nothing is created until its first record.
     pub fn journal(&self, relative: &Path) -> Journal {
         Journal {

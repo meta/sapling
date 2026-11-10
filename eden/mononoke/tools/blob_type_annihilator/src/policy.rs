@@ -193,6 +193,14 @@ pub struct RetiredKey<'a> {
     pub hash: &'a str,
 }
 
+impl RetiredKey<'_> {
+    /// The partition of the key's recipe holding it: the first `digits` hex
+    /// digits of its hash.
+    pub fn partition(&self, digits: u8) -> &str {
+        &self.hash[..usize::from(digits)]
+    }
+}
+
 /// How a logical key is stored in a physical store.
 #[derive(
     Clone,
@@ -211,6 +219,15 @@ pub enum PhysicalEncoding {
     Plain,
     /// Stored under the logical key plus the packblob envelope suffix.
     PackEnvelope,
+}
+
+impl PhysicalEncoding {
+    pub fn physical_key(self, logical: &str) -> String {
+        match self {
+            PhysicalEncoding::Plain => logical.to_string(),
+            PhysicalEncoding::PackEnvelope => format!("{logical}{}", packblob::ENVELOPE_SUFFIX),
+        }
+    }
 }
 
 /// Splits a key into its repository and the rest, accepting only the
@@ -287,10 +304,21 @@ impl Selection {
         self.types.iter().copied()
     }
 
+    pub fn contains(&self, blob_type: RetiredBlobType) -> bool {
+        self.types.contains(&blob_type)
+    }
+
     pub fn recipes(&self) -> impl Iterator<Item = &'static KeyRecipe> + '_ {
         RECIPES
             .iter()
             .filter(|recipe| self.types.contains(&recipe.blob_type))
+    }
+
+    /// Whether `key` is a logical key of `repo_id` selected by this run.
+    pub fn selects(&self, repo_id: RepositoryId, key: &str) -> bool {
+        parse_logical_key(key).is_some_and(|parsed| {
+            parsed.repo_id == repo_id && self.contains(parsed.recipe.blob_type)
+        })
     }
 }
 
@@ -352,11 +380,14 @@ mod tests {
             assert_eq!(parsed.recipe, recipe);
             assert_eq!(parsed.repo_id, RepositoryId::new(7));
             assert_eq!(parsed.hash, H);
-            let physical = format!("{k}.pack");
+            let physical = PhysicalEncoding::PackEnvelope.physical_key(&k);
+            assert_eq!(physical, format!("{k}.pack"));
             assert_eq!(
                 parse_physical_key(&physical),
                 Some((parsed, PhysicalEncoding::PackEnvelope))
             );
+            assert_eq!(parsed.partition(0), "");
+            assert_eq!(parsed.partition(2), "01");
             assert_eq!(
                 parse_physical_key(&k),
                 Some((parsed, PhysicalEncoding::Plain))
@@ -497,10 +528,12 @@ mod tests {
         let all = Selection::new(RetiredBlobType::all()).expect("the full group is valid");
         assert_eq!(all.recipes().count(), RECIPES.len());
 
-        assert!(
-            Selection::new([RetiredBlobType::BlameV3]).is_ok(),
-            "a leaf type is valid"
-        );
+        let blame = Selection::new([RetiredBlobType::BlameV3]).expect("a leaf type is valid");
+        let blame_key = key("repo0001.", "blame_v3.v2.historymf.file.blake2.");
+        let hm_key = key("repo0001.", "historymf.file.blake2.");
+        assert!(blame.selects(RepositoryId::new(1), &blame_key));
+        assert!(!blame.selects(RepositoryId::new(2), &blame_key));
+        assert!(!blame.selects(RepositoryId::new(1), &hm_key));
     }
 
     #[mononoke::test]

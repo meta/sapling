@@ -11,7 +11,6 @@ rust_binary(
         "fbsource//third-party/rust:tempfile",
         "//common/rust/shed/fbinit:fbinit-tokio",
         "//eden/mononoke/blobstore:memblob",
-        "//eden/mononoke/common/mononoke_macros:mononoke_macros",
     ],
     deps = [
         "fbsource//third-party/rust:anyhow",
@@ -32,6 +31,7 @@ rust_binary(
         "//eden/mononoke/blobstore:sqlblob",
         "//eden/mononoke/blobstore:throttledblob",
         "//eden/mononoke/cmdlib/mononoke_app:mononoke_app",
+        "//eden/mononoke/common/mononoke_macros:mononoke_macros",
         "//eden/mononoke/metaconfig:metaconfig_types",
         "//eden/mononoke/mononoke_types:mononoke_types",
         "//eden/mononoke/servers/slapi/slapi_server/context:context",

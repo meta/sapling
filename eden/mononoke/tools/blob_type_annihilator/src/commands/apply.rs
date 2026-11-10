@@ -20,6 +20,9 @@ use crate::apply::ApplyContext;
 use crate::apply::ApplyOptions;
 use crate::apply::ApplyTotals;
 use crate::apply::apply_partition;
+use crate::pack_rewrite::PackOptions;
+use crate::pack_rewrite::freeze;
+use crate::pack_rewrite::missing_pack_note;
 use crate::run::Run;
 use crate::run::RunArgs;
 use crate::run::Stores;
@@ -48,6 +51,9 @@ pub struct CommandArgs {
 
     #[clap(flatten)]
     apply: ApplyOptions,
+
+    #[clap(flatten)]
+    pack: PackOptions,
 }
 
 /// One `apply` invocation.
@@ -83,6 +89,26 @@ impl<'a> Apply<'a> {
         Ok(())
     }
 
+    /// Freezes the pack tasks of every component and repo.
+    async fn freeze_all(&self) -> Result<()> {
+        // Cells are ordered by component, then repo.
+        let groups: Vec<&[Cell<'_>]> = self
+            .cells
+            .chunk_by(|a, b| a.component.id == b.component.id && a.repo_id == b.repo_id)
+            .collect();
+        for group in groups {
+            let summary =
+                freeze(&self.run.state, &self.plan().digest, self.digits(), group).await?;
+            if let Some(cell) = group.first() {
+                println!(
+                    "{} repo {}: {} pack tasks covering {} packed aliases",
+                    cell.component.id, cell.repo_id, summary.tasks, summary.packed_aliases
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Applies every partition, returning the totals of each cell.
     async fn apply_partitions(&self) -> Result<BTreeMap<CellKey<'a>, ApplyTotals>> {
         let unlink = self.args.apply.unlink_settings();
@@ -98,8 +124,10 @@ impl<'a> Apply<'a> {
                         state: &self.run.state,
                         store: self.stores.get(&cell.component.id)?,
                         cell,
+                        selection: &self.plan().request.selection,
                         batch_size: self.args.apply.batch_size,
                         unlink,
+                        pack: &self.args.pack,
                     };
                     apply_partition(&actx, &hex).await
                 }
@@ -136,11 +164,12 @@ fn print_summary(cells: &[Cell<'_>], totals: &BTreeMap<CellKey<'_>, ApplyTotals>
             && t.failed.is_empty()
             && t.blocked.is_empty()
             && t.packed_deferred == 0
+            && t.tasks == Default::default()
         {
             quiet_cells += 1;
             continue;
         }
-        println!(
+        let mut line = format!(
             "{cell}: {}/{} partitions done; unlinked {}, already absent {}, failed {}, blocked {}, packed {}",
             t.done,
             t.partitions,
@@ -150,6 +179,20 @@ fn print_summary(cells: &[Cell<'_>], totals: &BTreeMap<CellKey<'_>, ApplyTotals>
             t.blocked.count,
             t.packed_deferred,
         );
+        let p = &t.tasks;
+        if *p != Default::default() {
+            line.push_str(&format!(
+                "; pack tasks complete {} (rewritten {}), retired aliases unlinked {}, survivors relinked {}, source missing {}, conflicts {}, failed {}",
+                p.complete,
+                p.rewritten,
+                p.retired_unlinked + p.retired_already_absent,
+                p.survivors_relinked,
+                p.source_missing.count,
+                p.conflicts.count,
+                p.failed.count,
+            ));
+        }
+        println!("{line}");
     }
     println!("{quiet_cells} cells had nothing to delete");
 
@@ -172,6 +215,28 @@ fn print_summary(cells: &[Cell<'_>], totals: &BTreeMap<CellKey<'_>, ApplyTotals>
         all.blocked.examples.len(),
         all.blocked.count,
         "blocked keys",
+    );
+    let tasks = &all.tasks;
+    for issue in tasks
+        .conflicts
+        .examples
+        .iter()
+        .chain(&tasks.failed.examples)
+    {
+        println!("  pack task {issue}");
+    }
+    more(
+        tasks.conflicts.examples.len() + tasks.failed.examples.len(),
+        tasks.conflicts.count + tasks.failed.count,
+        "pack task issues",
+    );
+    for pack_key in &tasks.source_missing.examples {
+        println!("  warning: {}", missing_pack_note(pack_key));
+    }
+    more(
+        tasks.source_missing.examples.len(),
+        tasks.source_missing.count,
+        "missing packs",
     );
     all
 }
@@ -196,6 +261,7 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
         args: &args,
     };
     apply.ensure_inventoried().await?;
+    apply.freeze_all().await?;
     let totals = apply.apply_partitions().await?;
     let all = print_summary(&cells, &totals);
 

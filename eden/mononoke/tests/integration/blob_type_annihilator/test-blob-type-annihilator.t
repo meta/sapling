@@ -43,6 +43,20 @@ retired types derived:
   28|2|2
   30|1|2
 
+Pack the file contents together with the retired blame of each file, in the
+first component:
+  $ mkdir "$TESTTMP/pack_keys"
+  $ keys 0 | grep -E '^repo0000\.(content\.blake2|blame_v3\.v2\.historymf)\.' | sed 's/\.pack$//' > "$TESTTMP/pack_keys/reporepo.store0.part0.keys.txt"
+  $ wc -l < "$TESTTMP/pack_keys/reporepo.store0.part0.keys.txt"
+  8
+  $ packer --zstd-level 3 --keys-dir "$TESTTMP/pack_keys"
+  $ for k in $(cat "$TESTTMP/pack_keys/reporepo.store0.part0.keys.txt"); do
+  >   for s in 0 1; do sqlite3 "$TESTTMP/blobstore/0/blobs/shard_$s.sqlite" "SELECT chunk_id FROM data WHERE CAST(id AS TEXT) = '$k.pack'"; done
+  > done | sort -u | wc -l
+  1
+  $ CONTENT_KEYS=$(grep content "$TESTTMP/pack_keys/reporepo.store0.part0.keys.txt")
+  $ for k in $CONTENT_KEYS; do mononoke_admin blobstore -R repo fetch -q "${k#repo0000.}" -o "$TESTTMP/before.$k"; done
+
 Only the compiled families can be selected:
   $ AAAA=$(printf 'a%.0s' $(seq 64))
   $ blob_type_annihilator check-key "repo0000.historymf.file.blake2.$AAAA.pack" "repo0000.fsnode.blake2.$AAAA" "repo0000.blame_v3.v1.historymf.file.blake2.$AAAA"
@@ -113,7 +127,7 @@ replaced by names below:
   component C0 repo 0 recipe historymf.dir: 16/16 partitions, 2 keys (plain 0, single 2, packed 0, unreadable 0), vanished 0, unknown 0, duplicates 0
   component C0 repo 0 recipe fastlogbatchv2.hmfile: 16/16 partitions, 4 keys (plain 0, single 4, packed 0, unreadable 0), vanished 0, unknown 0, duplicates 0
   component C0 repo 0 recipe fastlogbatchv2.hmdir: 16/16 partitions, 2 keys (plain 0, single 2, packed 0, unreadable 0), vanished 0, unknown 0, duplicates 0
-  component C0 repo 0 recipe blame_v3.v2: 16/16 partitions, 4 keys (plain 0, single 4, packed 0, unreadable 0), vanished 0, unknown 0, duplicates 0
+  component C0 repo 0 recipe blame_v3.v2: 16/16 partitions, 4 keys (plain 0, single 0, packed 4, unreadable 0), vanished 0, unknown 0, duplicates 0
   component C1 repo 0 recipe historymf.file: 16/16 partitions, 4 keys (plain 4, single 0, packed 0, unreadable 0), vanished 0, unknown 0, duplicates 0
   component C1 repo 0 recipe historymf.dir: 16/16 partitions, 2 keys (plain 2, single 0, packed 0, unreadable 0), vanished 0, unknown 0, duplicates 0
   component C1 repo 0 recipe fastlogbatchv2.hmfile: 16/16 partitions, 4 keys (plain 4, single 0, packed 0, unreadable 0), vanished 0, unknown 0, duplicates 0
@@ -147,6 +161,7 @@ Apply requires the reviewed plan's digest:
 Applying to one component leaves the other alone.  This run also caps the
 unlink rate and the partitions in flight:
   $ bta apply --state-dir "$TESTTMP/bta" --confirm-plan-digest "$DIGEST" --component "$C1" --max-unlinks-per-second 100 --partition-concurrency 2 --batch-size 3
+  C1 repo 0: 0 pack tasks covering 0 packed aliases
   component C1 repo 0 recipe historymf.file: 16/16 partitions done; unlinked 4, already absent 0, failed 0, blocked 0, packed 0
   component C1 repo 0 recipe historymf.dir: 16/16 partitions done; unlinked 2, already absent 0, failed 0, blocked 0, packed 0
   component C1 repo 0 recipe fastlogbatchv2.hmfile: 16/16 partitions done; unlinked 4, already absent 0, failed 0, blocked 0, packed 0
@@ -161,11 +176,13 @@ unlink rate and the partitions in flight:
 The full run finishes the other component and repeats the recorded outcomes
 of the finished partitions:
   $ bta apply --state-dir "$TESTTMP/bta" --confirm-plan-digest "$DIGEST"
+  C0 repo 0: 1 pack tasks covering 4 packed aliases
+  C1 repo 0: 0 pack tasks covering 0 packed aliases
   component C0 repo 0 recipe historymf.file: 16/16 partitions done; unlinked 4, already absent 0, failed 0, blocked 0, packed 0
   component C0 repo 0 recipe historymf.dir: 16/16 partitions done; unlinked 2, already absent 0, failed 0, blocked 0, packed 0
   component C0 repo 0 recipe fastlogbatchv2.hmfile: 16/16 partitions done; unlinked 4, already absent 0, failed 0, blocked 0, packed 0
   component C0 repo 0 recipe fastlogbatchv2.hmdir: 16/16 partitions done; unlinked 2, already absent 0, failed 0, blocked 0, packed 0
-  component C0 repo 0 recipe blame_v3.v2: 16/16 partitions done; unlinked 4, already absent 0, failed 0, blocked 0, packed 0
+  component C0 repo 0 recipe blame_v3.v2: 16/16 partitions done; unlinked 0, already absent 0, failed 0, blocked 0, packed 4; pack tasks complete 1 (rewritten 1), retired aliases unlinked 4, survivors relinked 4, source missing 0, conflicts 0, failed 0
   component C1 repo 0 recipe historymf.file: 16/16 partitions done; unlinked 4, already absent 0, failed 0, blocked 0, packed 0
   component C1 repo 0 recipe historymf.dir: 16/16 partitions done; unlinked 2, already absent 0, failed 0, blocked 0, packed 0
   component C1 repo 0 recipe fastlogbatchv2.hmfile: 16/16 partitions done; unlinked 4, already absent 0, failed 0, blocked 0, packed 0
@@ -173,10 +190,23 @@ of the finished partitions:
   component C1 repo 0 recipe blame_v3.v2: 16/16 partitions done; unlinked 4, already absent 0, failed 0, blocked 0, packed 0
   8 cells had nothing to delete
 
-The retired keys are gone from both components, and unodes are untouched:
+The retired keys are gone from both components, unodes are untouched, and
+the packed contents read back unchanged from their new pack:
   $ keys 0 | retired | wc -l
   0
   $ keys 1 | retired | wc -l
   0
   $ keys 0 | grep -c fileunode
   4
+  $ for k in $CONTENT_KEYS; do
+  >   mononoke_admin blobstore -R repo fetch -q "${k#repo0000.}" -o "$TESTTMP/after.$k"
+  >   cmp "$TESTTMP/before.$k" "$TESTTMP/after.$k" && echo same
+  > done
+  same
+  same
+  same
+  same
+  $ for k in $CONTENT_KEYS; do
+  >   for s in 0 1; do sqlite3 "$TESTTMP/blobstore/0/blobs/shard_$s.sqlite" "SELECT chunk_id FROM data WHERE CAST(id AS TEXT) = '$k.pack'"; done
+  > done | sort -u | wc -l
+  1
