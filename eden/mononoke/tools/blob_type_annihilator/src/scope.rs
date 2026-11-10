@@ -176,6 +176,37 @@ pub struct ComponentReference {
     pub encoding: PhysicalEncoding,
 }
 
+/// The physical encodings a component stores one repository's keys under.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Encodings {
+    plain: bool,
+    pack_envelope: bool,
+}
+
+impl Encodings {
+    fn with(self, encoding: PhysicalEncoding) -> Self {
+        match encoding {
+            PhysicalEncoding::Plain => Self {
+                plain: true,
+                ..self
+            },
+            PhysicalEncoding::PackEnvelope => Self {
+                pack_envelope: true,
+                ..self
+            },
+        }
+    }
+
+    pub fn iter(self) -> impl Iterator<Item = PhysicalEncoding> {
+        [
+            (self.plain, PhysicalEncoding::Plain),
+            (self.pack_envelope, PhysicalEncoding::PackEnvelope),
+        ]
+        .into_iter()
+        .filter_map(|(used, encoding)| used.then_some(encoding))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlannedComponent {
     pub id: String,
@@ -185,13 +216,20 @@ pub struct PlannedComponent {
 }
 
 impl PlannedComponent {
-    /// Every repository referencing the component, in order.
-    pub fn repo_ids(&self) -> impl Iterator<Item = RepositoryId> {
+    /// Every repository referencing the component, in order, with the
+    /// encodings it stores their keys under.
+    pub fn repo_encodings(&self) -> BTreeMap<RepositoryId, Encodings> {
         self.references
             .iter()
-            .map(|reference| reference.repo_id)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
+            .fold(BTreeMap::new(), |mut repos, reference| {
+                let encodings = repos.entry(reference.repo_id).or_default();
+                *encodings = encodings.with(reference.encoding);
+                repos
+            })
+    }
+
+    pub fn repo_ids(&self) -> impl Iterator<Item = RepositoryId> {
+        self.repo_encodings().into_keys()
     }
 
     pub fn is_supported(&self) -> bool {
@@ -745,6 +783,39 @@ mod tests {
                 db_address: "xdb.single".to_string(),
             });
         assert_eq!(describe_remote(&unsharded), "xdb.single");
+    }
+
+    #[mononoke::test]
+    fn encodings_are_gathered_per_repo() {
+        let reference = |repo_id, encoding| ComponentReference {
+            repo_id: RepositoryId::new(repo_id),
+            storage: StorageRef::Main,
+            path: String::new(),
+            encoding,
+        };
+        let component = PlannedComponent {
+            id: "c".to_string(),
+            store: PhysicalStore::Disabled,
+            capability: Capability::Supported,
+            references: vec![
+                reference(2, PhysicalEncoding::PackEnvelope),
+                reference(1, PhysicalEncoding::Plain),
+                reference(2, PhysicalEncoding::Plain),
+            ],
+        };
+        let repos = component.repo_encodings();
+        assert_eq!(
+            repos.keys().copied().collect::<Vec<_>>(),
+            vec![RepositoryId::new(1), RepositoryId::new(2)]
+        );
+        assert_eq!(
+            repos[&RepositoryId::new(1)].iter().collect::<Vec<_>>(),
+            vec![PhysicalEncoding::Plain]
+        );
+        assert_eq!(
+            repos[&RepositoryId::new(2)].iter().collect::<Vec<_>>(),
+            vec![PhysicalEncoding::Plain, PhysicalEncoding::PackEnvelope]
+        );
     }
 
     #[mononoke::test]

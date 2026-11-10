@@ -86,6 +86,7 @@ pub enum UnlinkOutcome {
     AlreadyAbsent,
 }
 
+#[derive(Clone)]
 enum Backend {
     /// A store with a `BlobstoreKeySource` range enumeration (Manifold).
     KeySource(Arc<dyn BlobstoreEnumerableWithUnlink>),
@@ -96,6 +97,7 @@ enum Backend {
     },
 }
 
+#[derive(Clone)]
 pub struct ComponentStore {
     /// Lists keys.
     backend: Backend,

@@ -25,6 +25,7 @@ use futures::Stream;
 use futures::stream;
 use futures::stream::StreamExt;
 use futures::stream::TryStreamExt;
+use mononoke_macros::mononoke;
 use mononoke_types::RepositoryId;
 use packblob::StoredValue;
 use serde::Deserialize;
@@ -35,6 +36,7 @@ use crate::policy::KeyRecipe;
 use crate::policy::PhysicalEncoding;
 use crate::policy::parse_physical_key;
 use crate::progress::Phase;
+use crate::scope::Encodings;
 use crate::scope::Plan;
 use crate::scope::PlannedComponent;
 use crate::state::StagedLines;
@@ -79,6 +81,8 @@ pub struct Cell<'a> {
     pub component: &'a PlannedComponent,
     pub repo_id: RepositoryId,
     pub recipe: &'static KeyRecipe,
+    /// How the component stores the repository's keys.
+    pub encodings: Encodings,
 }
 
 /// What identifies a cell within a plan.
@@ -127,13 +131,17 @@ pub fn cells(plan: &Plan) -> impl Iterator<Item = Cell<'_>> {
         .iter()
         .filter(|component| component.is_supported())
         .flat_map(move |component| {
-            component.repo_ids().flat_map(move |repo_id| {
-                plan.request.selection.recipes().map(move |recipe| Cell {
-                    component,
-                    repo_id,
-                    recipe,
+            component
+                .repo_encodings()
+                .into_iter()
+                .flat_map(move |(repo_id, encodings)| {
+                    plan.request.selection.recipes().map(move |recipe| Cell {
+                        component,
+                        repo_id,
+                        recipe,
+                        encodings,
+                    })
                 })
-            })
         })
 }
 
@@ -206,6 +214,8 @@ pub struct PartitionSummary {
     pub unreadable: u64,
     /// Keys under the partition prefix that match no recipe.
     pub unknown: Sampled<String>,
+    /// Distinct keys taken from an import rather than enumeration.
+    pub seeded: u64,
 }
 
 impl PartitionSummary {
@@ -227,6 +237,7 @@ impl PartitionSummary {
         self.vanished += other.vanished;
         self.unreadable += other.unreadable;
         self.unknown.merge(&other.unknown);
+        self.seeded += other.seeded;
     }
 
     /// Keys of a retired recipe present in the partition.
@@ -291,6 +302,23 @@ async fn classify(
         },
     };
     Ok(InventoryRecord { key, form })
+}
+
+/// `classify`, with any read in its own task, so it progresses while the
+/// caller awaits other work.
+pub(crate) async fn classify_spawned(
+    ctx: &CoreContext,
+    store: &ComponentStore,
+    key: String,
+    encoding: PhysicalEncoding,
+) -> Result<InventoryRecord> {
+    match encoding {
+        PhysicalEncoding::Plain => classify(ctx, store, key, encoding).await,
+        PhysicalEncoding::PackEnvelope => {
+            let (ctx, store) = (ctx.clone(), store.clone());
+            mononoke::spawn_task(async move { classify(&ctx, &store, key, encoding).await }).await?
+        }
+    }
 }
 
 /// What recording a partition's inventory needs.
@@ -444,8 +472,13 @@ pub async fn print_inventory(state: &StateDir, cells: &[Cell<'_>], digits: u8) -
             empty_cells += 1;
             continue;
         }
+        let seeded = if s.seeded > 0 {
+            format!(", seeded {}", s.seeded)
+        } else {
+            String::new()
+        };
         println!(
-            "{cell}: {}/{} partitions, {} keys (plain {}, single {}, packed {}, unreadable {}), vanished {}, unknown {}, duplicates {}",
+            "{cell}: {}/{} partitions, {} keys (plain {}, single {}, packed {}, unreadable {}), vanished {}, unknown {}, duplicates {}{seeded}",
             totals.partitions_done,
             totals.partitions_total,
             s.retired_keys(),
@@ -474,7 +507,6 @@ pub(crate) mod tests {
     use bytes::Bytes;
     use fbinit::FacebookInit;
     use memblob::Memblob;
-    use mononoke_macros::mononoke;
     use mononoke_types::BlobstoreBytes;
     use packblob::EmptyPack;
     use packblob::PackBlob;

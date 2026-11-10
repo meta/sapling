@@ -153,6 +153,62 @@ a single partition:
   all.jsonl
   all.summary.json
 
+An inventory can be seeded from a list of keys instead, such as a Manifold
+key dump.  Keys from component C1's list are recorded for both components,
+with the packed component read to find how each key is stored there:
+  $ plan_all "$TESTTMP/bta-import" --all-repos > /dev/null
+  $ (keys 1 | retired | sed 's|^|flat/|'; echo "flat/repo0000.content.blake2.$AAAA"; echo "flat/repo0007.historymf.file.blake2.$AAAA") > "$TESTTMP/dump.keys"
+  $ bta import-keys --state-dir "$TESTTMP/bta-import" --keys-file "$TESTTMP/dump.keys"
+  staged 16 of 18 keys; 1 outside the plan, 1 rejected
+    rejected flat/repo0000.content.blake2.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  component C0 repo 0 recipe historymf.file: 16/16 partitions, 4 keys (plain 0, single 4, packed 0, unreadable 0), vanished 0, unknown 0, duplicates 0, seeded 4
+  component C0 repo 0 recipe historymf.dir: 16/16 partitions, 2 keys (plain 0, single 2, packed 0, unreadable 0), vanished 0, unknown 0, duplicates 0, seeded 2
+  component C0 repo 0 recipe fastlogbatchv2.hmfile: 16/16 partitions, 4 keys (plain 0, single 4, packed 0, unreadable 0), vanished 0, unknown 0, duplicates 0, seeded 4
+  component C0 repo 0 recipe fastlogbatchv2.hmdir: 16/16 partitions, 2 keys (plain 0, single 2, packed 0, unreadable 0), vanished 0, unknown 0, duplicates 0, seeded 2
+  component C0 repo 0 recipe blame_v3.v2: 16/16 partitions, 4 keys (plain 0, single 0, packed 4, unreadable 0), vanished 0, unknown 0, duplicates 0, seeded 4
+  component C1 repo 0 recipe historymf.file: 16/16 partitions, 4 keys (plain 4, single 0, packed 0, unreadable 0), vanished 0, unknown 0, duplicates 0, seeded 4
+  component C1 repo 0 recipe historymf.dir: 16/16 partitions, 2 keys (plain 2, single 0, packed 0, unreadable 0), vanished 0, unknown 0, duplicates 0, seeded 2
+  component C1 repo 0 recipe fastlogbatchv2.hmfile: 16/16 partitions, 4 keys (plain 4, single 0, packed 0, unreadable 0), vanished 0, unknown 0, duplicates 0, seeded 4
+  component C1 repo 0 recipe fastlogbatchv2.hmdir: 16/16 partitions, 2 keys (plain 2, single 0, packed 0, unreadable 0), vanished 0, unknown 0, duplicates 0, seeded 2
+  component C1 repo 0 recipe blame_v3.v2: 16/16 partitions, 4 keys (plain 4, single 0, packed 0, unreadable 0), vanished 0, unknown 0, duplicates 0, seeded 4
+  8 cells hold no retired keys
+
+A run takes keys from one source only:
+  $ bta import-keys --state-dir "$TESTTMP/bta-import" --from-component "$C1"
+  Error: this run already imported keys from Files { paths: ["$TESTTMP/dump.keys"] }; use a new state directory for another source
+  [1]
+
+A directory of key files, such as the export's output, can be imported too,
+here into the single-partition run for the other component:
+  $ mkdir "$TESTTMP/dump"
+  $ cp "$TESTTMP/dump.keys" "$TESTTMP/dump/part1.keys"
+  $ touch "$TESTTMP/dump/part2.keys.tmp"
+  $ bta import-keys --state-dir "$TESTTMP/bta-one" --keys-dir "$TESTTMP/dump" --component "$C0"
+  staged 16 of 18 keys; 1 outside the plan, 1 rejected
+    rejected flat/repo0000.content.blake2.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  component C0 repo 0 recipe historymf.file: 1/1 partitions, 4 keys (plain 0, single 4, packed 0, unreadable 0), vanished 0, unknown 0, duplicates 0, seeded 4
+  component C0 repo 0 recipe historymf.dir: 1/1 partitions, 2 keys (plain 0, single 2, packed 0, unreadable 0), vanished 0, unknown 0, duplicates 0, seeded 2
+  component C0 repo 0 recipe fastlogbatchv2.hmfile: 1/1 partitions, 4 keys (plain 0, single 4, packed 0, unreadable 0), vanished 0, unknown 0, duplicates 0, seeded 4
+  component C0 repo 0 recipe fastlogbatchv2.hmdir: 1/1 partitions, 2 keys (plain 0, single 2, packed 0, unreadable 0), vanished 0, unknown 0, duplicates 0, seeded 2
+  component C0 repo 0 recipe blame_v3.v2: 1/1 partitions, 4 keys (plain 0, single 0, packed 4, unreadable 0), vanished 0, unknown 0, duplicates 0, seeded 4
+  4 cells hold no retired keys
+
+Keys can also come from a component that lists quickly, such as a SQL
+component, scanned first in the same run:
+  $ plan_all "$TESTTMP/bta-seed" --all-repos > /dev/null
+  $ bta import-keys --state-dir "$TESTTMP/bta-seed" --from-component "$C1" --component "$C0"
+  Error: partition 0 of component C1 repo 0 recipe historymf.file has no inventory; scan component C1 first
+  [1]
+  $ bta scan --state-dir "$TESTTMP/bta-seed" --component "$C1" > /dev/null
+  $ bta import-keys --state-dir "$TESTTMP/bta-seed" --from-component "$C1" --component "$C0"
+  staged 16 of 16 keys; 0 outside the plan, 0 rejected
+  component C0 repo 0 recipe historymf.file: 16/16 partitions, 4 keys (plain 0, single 4, packed 0, unreadable 0), vanished 0, unknown 0, duplicates 0, seeded 4
+  component C0 repo 0 recipe historymf.dir: 16/16 partitions, 2 keys (plain 0, single 2, packed 0, unreadable 0), vanished 0, unknown 0, duplicates 0, seeded 2
+  component C0 repo 0 recipe fastlogbatchv2.hmfile: 16/16 partitions, 4 keys (plain 0, single 4, packed 0, unreadable 0), vanished 0, unknown 0, duplicates 0, seeded 4
+  component C0 repo 0 recipe fastlogbatchv2.hmdir: 16/16 partitions, 2 keys (plain 0, single 2, packed 0, unreadable 0), vanished 0, unknown 0, duplicates 0, seeded 2
+  component C0 repo 0 recipe blame_v3.v2: 16/16 partitions, 4 keys (plain 0, single 0, packed 4, unreadable 0), vanished 0, unknown 0, duplicates 0, seeded 4
+  4 cells hold no retired keys
+
 Apply requires the reviewed plan's digest:
   $ bta apply --state-dir "$TESTTMP/bta" --confirm-plan-digest wrong
   Error: confirmed digest wrong is not the plan's digest DIGEST

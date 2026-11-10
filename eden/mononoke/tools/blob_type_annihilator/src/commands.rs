@@ -8,6 +8,7 @@
 mononoke_app::subcommands! {
     mod apply;
     mod check_key;
+    mod import_keys;
     mod plan;
     mod recipes;
     mod scan;

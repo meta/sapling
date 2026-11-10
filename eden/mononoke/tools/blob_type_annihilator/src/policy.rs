@@ -194,6 +194,10 @@ pub struct RetiredKey<'a> {
 }
 
 impl RetiredKey<'_> {
+    pub fn logical(&self) -> String {
+        format!("{}{}{}", self.repo_id.prefix(), self.recipe.stem, self.hash)
+    }
+
     /// The partition of the key's recipe holding it: the first `digits` hex
     /// digits of its hash.
     pub fn partition(&self, digits: u8) -> &str {
@@ -386,6 +390,7 @@ mod tests {
                 parse_physical_key(&physical),
                 Some((parsed, PhysicalEncoding::PackEnvelope))
             );
+            assert_eq!(parsed.logical(), k);
             assert_eq!(parsed.partition(0), "");
             assert_eq!(parsed.partition(2), "01");
             assert_eq!(
