@@ -401,6 +401,11 @@ def _remember_daemon_error(daemon_error: Optional[str]) -> None:
     _last_daemon_error = daemon_error
 
 
+def last_daemon_error() -> Optional[str]:
+    """The error the daemon reported the last time a start failed, if any."""
+    return _last_daemon_error
+
+
 def takeover_was_refused() -> bool:
     """Whether the last daemon start failed because the running daemon refused
     the takeover."""

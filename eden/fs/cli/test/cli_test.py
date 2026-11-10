@@ -347,9 +347,7 @@ class RestartTest(unittest.TestCase):
             "Graceful restart failed, and old EdenFS process resumed",
             telemetry_sample.strings["error"],
         )
-        # FIXME: The sample should carry the old daemon's refusal, with
-        # strings["daemon_error"] equal to daemon_error.
-        self.assertNotIn("daemon_error", telemetry_sample.strings)
+        self.assertEqual(daemon_error, telemetry_sample.strings["error_reason"])
 
     def test_graceful_restart_falls_back_on_nfs_transport_mismatch(self) -> None:
         restart_cmd = self.make_restart_cmd()

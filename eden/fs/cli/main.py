@@ -3144,6 +3144,9 @@ class RestartCmd(Subcmd):
                 telemetry_sample,
                 "Graceful restart failed, and old EdenFS process resumed",
             )
+            daemon_error = daemon.last_daemon_error()
+            if daemon_error is not None:
+                telemetry_sample.add_string("error_reason", daemon_error)
             print(
                 "error: failed to perform graceful restart. The old "
                 "edenfs daemon has resumed processing and was not restarted.",
