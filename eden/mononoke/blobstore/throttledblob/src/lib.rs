@@ -174,6 +174,20 @@ impl<T: Blobstore> Blobstore for ThrottledBlob<T> {
         self.blobstore.is_present(ctx, key).await
     }
 
+    // No data passes through the wrapper, so only the write rate applies.  The
+    // trait's default get and put would not overwrite under `IfAbsent`.
+    async fn copy<'a>(
+        &'a self,
+        ctx: &'a CoreContext,
+        old_key: &'a str,
+        new_key: String,
+    ) -> Result<()> {
+        if let Some(limiter) = self.write_qps_limiter.as_ref() {
+            limiter.until_ready_with_jitter(jitter()).await;
+        }
+        self.blobstore.copy(ctx, old_key, new_key).await
+    }
+
     async fn unlink<'a>(&'a self, ctx: &'a CoreContext, key: &'a str) -> Result<()> {
         if let Some(limiter) = self.write_qps_limiter.as_ref() {
             limiter.until_ready_with_jitter(jitter()).await;
@@ -225,5 +239,62 @@ impl<T: fmt::Debug> fmt::Debug for ThrottledBlob<T> {
             .field("blobstore", &self.blobstore)
             .field("options", &self.options)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::Context;
+    use fbinit::FacebookInit;
+    use memblob::Memblob;
+    use mononoke_macros::mononoke;
+
+    use super::*;
+
+    #[mononoke::fbinit_test]
+    async fn copy_overwrites_through_the_wrapper(fb: FacebookInit) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let inner = Memblob::new(PutBehaviour::IfAbsent);
+        let options = ThrottleOptions {
+            write_qps: NonZeroU32::new(1_000_000),
+            ..Default::default()
+        };
+        let throttled = ThrottledBlob::new(inner.clone(), options);
+        throttled
+            .put(
+                &ctx,
+                "old".to_string(),
+                BlobstoreBytes::from_bytes("new value"),
+            )
+            .await?;
+        throttled
+            .put(
+                &ctx,
+                "new".to_string(),
+                BlobstoreBytes::from_bytes("stale value"),
+            )
+            .await?;
+        throttled
+            .put(
+                &ctx,
+                "new".to_string(),
+                BlobstoreBytes::from_bytes("other value"),
+            )
+            .await?;
+        let kept = inner.get(&ctx, "new").await?.context("new is present")?;
+        assert_eq!(
+            kept.into_bytes(),
+            BlobstoreBytes::from_bytes("stale value"),
+            "a put does not overwrite under IfAbsent"
+        );
+
+        throttled.copy(&ctx, "old", "new".to_string()).await?;
+        let copied = inner.get(&ctx, "new").await?.context("new is present")?;
+        assert_eq!(
+            copied.into_bytes(),
+            BlobstoreBytes::from_bytes("new value"),
+            "a copy replaces the existing value, as the inner store's copy does"
+        );
+        Ok(())
     }
 }

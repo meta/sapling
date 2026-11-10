@@ -484,6 +484,12 @@ rust_library(
     name = "throttledblob",
     srcs = glob(["throttledblob/src/*.rs"]),
     autocargo = {"cargo_toml_dir": "throttledblob"},
+    test_deps = [
+        ":memblob",
+        "//common/rust/shed/fbinit:fbinit",
+        "//common/rust/shed/fbinit:fbinit-tokio",
+        "//eden/mononoke/common/mononoke_macros:mononoke_macros",
+    ],
     deps = [
         "fbsource//third-party/rust:anyhow",
         "fbsource//third-party/rust:async-trait",
