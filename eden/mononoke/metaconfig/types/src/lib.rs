@@ -170,6 +170,9 @@ pub struct CommonConfig {
     /// Manifest repo name -> the manifest format it holds. A manifest repo
     /// absent here is [`ManifestFormatKind::Aosp`].
     pub multi_repo_land_manifest_formats: BTreeMap<String, ManifestFormatKind>,
+    /// Manifest repo name -> where its pinned manifest lives, relative to the
+    /// repo root. A manifest repo absent here uses its format's default.
+    pub multi_repo_land_pinned_manifest_paths: BTreeMap<String, String>,
 }
 
 /// The manifest format a Multi-Repo Land manifest repo holds.
@@ -189,6 +192,42 @@ impl ManifestFormatKind {
         manifest_repo: &str,
     ) -> Self {
         formats.get(manifest_repo).copied().unwrap_or_default()
+    }
+
+    /// The symbolic manifest every branch of a repo of this format is read from.
+    pub const fn root_manifest_path(self) -> &'static str {
+        match self {
+            ManifestFormatKind::Aosp => "default.xml",
+            ManifestFormatKind::West => "west.yml",
+        }
+    }
+
+    /// Where the pinned manifest goes unless the repo's config says otherwise.
+    pub const fn default_pinned_manifest_path(self) -> &'static str {
+        match self {
+            ManifestFormatKind::Aosp => "static/static.xml",
+            ManifestFormatKind::West => "west-release.yml",
+        }
+    }
+}
+
+impl CommonConfig {
+    /// The manifest format of `manifest_repo`.
+    pub fn manifest_format(&self, manifest_repo: &str) -> ManifestFormatKind {
+        ManifestFormatKind::for_manifest_repo(&self.multi_repo_land_manifest_formats, manifest_repo)
+    }
+
+    /// Where `manifest_repo`'s pinned manifest lives: its configured path, else
+    /// its format's default.
+    pub fn pinned_manifest_path(&self, manifest_repo: &str) -> String {
+        self.multi_repo_land_pinned_manifest_paths
+            .get(manifest_repo)
+            .cloned()
+            .unwrap_or_else(|| {
+                self.manifest_format(manifest_repo)
+                    .default_pinned_manifest_path()
+                    .to_string()
+            })
     }
 }
 

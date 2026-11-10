@@ -33,6 +33,7 @@ use metaconfig_types::RepoConfig;
 use metaconfig_types::RepoConfigSource;
 use metaconfig_types::RepoReadOnly;
 use metaconfig_types::StorageConfig;
+use mononoke_types::NonRootMPath;
 use mononoke_types::RepositoryId;
 use repos::RawCommonConfig;
 use repos::RawRepoConfig;
@@ -605,6 +606,19 @@ fn parse_common_config(
             Ok((repo, kind))
         })
         .collect::<Result<BTreeMap<_, _>>>()?;
+    let multi_repo_land_pinned_manifest_paths: BTreeMap<String, String> = common
+        .multi_repo_land_pinned_manifest_paths
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(repo, path)| {
+            let path = path.trim_matches('/').to_string();
+            // Every land writes this path; a bad one must fail here, not then.
+            NonRootMPath::new(&path).with_context(|| {
+                format!("multi_repo_land_pinned_manifest_paths[{repo}]: not a valid repo path")
+            })?;
+            Ok((repo, path))
+        })
+        .collect::<Result<_>>()?;
 
     Ok(CommonConfig {
         trusted_parties_hipster_tier,
@@ -621,6 +635,7 @@ fn parse_common_config(
         rl_land_service_repo_prefix,
         multi_repo_land_manifest_repos,
         multi_repo_land_manifest_formats,
+        multi_repo_land_pinned_manifest_paths,
     })
 }
 
@@ -1895,6 +1910,7 @@ mod test {
                 rl_land_service_repo_prefix: None,
                 multi_repo_land_manifest_repos: BTreeMap::new(),
                 multi_repo_land_manifest_formats: BTreeMap::new(),
+                multi_repo_land_pinned_manifest_paths: BTreeMap::new(),
             }
         );
 
