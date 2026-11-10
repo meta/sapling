@@ -4,7 +4,10 @@ oncall("scm_server_infra")
 
 fbpkg.builder(
     name = "scm.scsc",
-    architectures = ["x86_64"],
+    architectures = [
+        "x86_64",
+        "aarch64",
+    ],
     buck_opts = fbpkg.buck_opts(
         mode = "opt",
     ),
@@ -13,4 +16,5 @@ fbpkg.builder(
     path_actions = {
         "scsc": "fbcode//eden/mononoke/clients/scsc:scsc",
     },
+    variant_distribution = "combined",
 )
