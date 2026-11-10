@@ -148,7 +148,11 @@ def _diff(orig, ui, repo, *pats, **opts):
 
     if phabrev is None:
         mess = _("local changeset is not associated with a differential revision")
-        raise error.Abort(mess)
+        hint = (
+            _("it has no diff yet: '@prog@ diff -c %s' shows all its changes")
+            % targetrev
+        )
+        raise error.Abort(mess, hint=hint)
 
     rev = _differentialhash(ui, repo, phabrev)
 

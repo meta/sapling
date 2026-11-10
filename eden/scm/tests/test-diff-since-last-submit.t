@@ -24,6 +24,7 @@
   $ sl ci -qm 'No rev'
   $ sl diff --since-last-submit
   abort: local changeset is not associated with a differential revision
+  (it has no diff yet: 'sl diff -c .' shows all its changes)
   [255]
 
   $ sl log -r 'lastsubmitted(.)' -T '{node} {desc}\n'
