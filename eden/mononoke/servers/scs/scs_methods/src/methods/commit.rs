@@ -1006,6 +1006,8 @@ impl SourceControlServiceImpl {
             .and_then(|config| config.remote_diff_config.clone());
         let diff_router = self.diff_router(remote_diff_config.as_ref());
         if diff_router.should_use_remote_commit_compare(repo_name) {
+            // Authorize the caller here, as the local route does in `repo_changeset`.
+            self.repo(ctx.clone(), &commit.repo).await?;
             return diff_router
                 .remote_commit_compare(&ctx, repo_name, commit.id.clone(), params)
                 .await;
