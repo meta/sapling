@@ -843,8 +843,15 @@ impl crate::Subcommand for DiskUsageCmd {
             aggregated_usage_counts.materialized += usage_count;
             mount_failed_file_checks.extend(failed_file_checks);
 
-            // GET SUMMARY INFO for ignored counts
-            aggregated_usage_counts.ignored += ignored_usage_counts_for_mount(checkout).await?;
+            // GET SUMMARY INFO for ignored counts. A configured checkout that is
+            // not mounted fails status, so skip it rather than aborting cleanup.
+            match ignored_usage_counts_for_mount(checkout).await {
+                Ok(ignored) => aggregated_usage_counts.ignored += ignored,
+                Err(error) => eprintln!(
+                    "Warning: failed to measure ignored files for {}: {error}",
+                    checkout.path().display()
+                ),
+            }
         }
 
         for fsck_dir in fsck_dirs.iter() {
