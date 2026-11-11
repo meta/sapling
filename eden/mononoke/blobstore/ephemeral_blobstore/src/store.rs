@@ -28,6 +28,7 @@ use mononoke_types::Timestamp;
 use sql_ext::SqlConnections;
 use sql_ext::mononoke_queries;
 use sql_query_config::SqlQueryConfig;
+use stats::prelude::*;
 
 use crate::bubble::Bubble;
 use crate::bubble::BubbleId;
@@ -40,6 +41,11 @@ mod hg_mapping;
 
 pub(crate) use hg_mapping::SqlBubbleHgMapping;
 pub(crate) use hg_mapping::leftover_ids;
+
+define_stats! {
+    prefix = "mononoke.ephemeral_blobstore.hg_mapping";
+    hg_mapping_rows_deleted: timeseries(Sum),
+}
 
 /// Outcome of extending a bubble's TTL
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -235,6 +241,15 @@ mononoke_queries! {
         none,
         "DELETE
         FROM ephemeral_bubble_changeset_parents
+        WHERE bubble_id IN (SELECT id FROM ephemeral_bubbles WHERE id = {id} AND expired)"
+    }
+
+    write DeleteBubbleHgMapping(
+        id: BubbleId,
+    ) {
+        none,
+        "DELETE
+        FROM ephemeral_bubble_hg_mapping
         WHERE bubble_id IN (SELECT id FROM ephemeral_bubbles WHERE id = {id} AND expired)"
     }
 
@@ -533,6 +548,16 @@ impl RepoEphemeralStoreInner {
             &bubble_id,
         )
         .await?;
+        ctx.perf_counters()
+            .increment_counter(PerfCounterType::SqlWrites);
+        let hg_mapping_rows = DeleteBubbleHgMapping::query(
+            &self.connections.write_connection,
+            ctx.sql_query_telemetry(),
+            &bubble_id,
+        )
+        .await?
+        .affected_rows();
+        STATS::hg_mapping_rows_deleted.add_value(hg_mapping_rows as i64);
         // When invoked through processes, this will always be a no-op. This is useful for
         // manually deleting a bubble regardless of its expiry status.
         ctx.perf_counters()
@@ -967,13 +992,16 @@ mod test {
     use blobstore::KeyedBlobstore;
     use blobstore::OverwriteStatus;
     use blobstore::PutBehaviour;
+    use bonsai_hg_mapping::BonsaiHgMappingEntry;
     use context::CoreContext;
     use fbinit::FacebookInit;
     use maplit::hashset;
     use memblob::Memblob;
+    use mercurial_types_mocks::nodehash as hg;
     use metaconfig_types::BubbleDeletionMode;
     use metaconfig_types::PackFormat;
     use mononoke_macros::mononoke;
+    use mononoke_types_mocks::changesetid as bonsai;
     use mononoke_types_mocks::repo::REPO_ZERO;
     use packblob::PackBlob;
     use repo_blobstore::RepoBlobstore;
@@ -983,6 +1011,137 @@ mod test {
     use super::*;
     use crate::builder::RepoEphemeralStoreBuilder;
     use crate::unlink::UnlinkRetry;
+
+    mononoke_queries! {
+        read CountBubbleHgMappingRows(bubble_id: BubbleId) -> (u64) {
+            "SELECT COUNT(*) FROM ephemeral_bubble_hg_mapping WHERE bubble_id = {bubble_id}"
+        }
+    }
+
+    async fn seed_hg_mapping(
+        ctx: &CoreContext,
+        eph: &RepoEphemeralStore,
+    ) -> Result<(BubbleId, BubbleId)> {
+        let connections = &eph.inner()?.connections;
+        let mapping = SqlBubbleHgMapping::new(connections.clone(), REPO_ZERO);
+        let a = eph.create_bubble(ctx, None, vec![]).await?.bubble_id();
+        let b = eph.create_bubble(ctx, None, vec![]).await?.bubble_id();
+        mapping
+            .add(
+                ctx,
+                a,
+                &[
+                    BonsaiHgMappingEntry {
+                        hg_cs_id: hg::ONES_CSID,
+                        bcs_id: bonsai::ONES_CSID,
+                    },
+                    BonsaiHgMappingEntry {
+                        hg_cs_id: hg::TWOS_CSID,
+                        bcs_id: bonsai::TWOS_CSID,
+                    },
+                ],
+            )
+            .await?;
+        mapping
+            .add(
+                ctx,
+                b,
+                &[BonsaiHgMappingEntry {
+                    hg_cs_id: hg::THREES_CSID,
+                    bcs_id: bonsai::THREES_CSID,
+                }],
+            )
+            .await?;
+        Ok((a, b))
+    }
+
+    async fn count_hg_mapping_rows(
+        ctx: &CoreContext,
+        eph: &RepoEphemeralStore,
+        bubble_id: BubbleId,
+    ) -> Result<u64> {
+        let rows = CountBubbleHgMappingRows::query(
+            &eph.inner()?.connections.read_master_connection,
+            ctx.sql_query_telemetry(),
+            &bubble_id,
+        )
+        .await?;
+        Ok(rows.first().map_or(0, |row| row.0))
+    }
+
+    #[mononoke::fbinit_test]
+    async fn delete_bubble_clears_hg_mapping_test(fb: FacebookInit) -> Result<()> {
+        let (ctx, _, _, eph) = bootstrap(
+            fb,
+            Duration::from_hours(24),
+            Duration::from_hours(6),
+            BubbleDeletionMode::MarkAndDelete,
+        )?;
+        let (a, b) = seed_hg_mapping(&ctx, &eph).await?;
+        assert_eq!(count_hg_mapping_rows(&ctx, &eph, a).await?, 2);
+
+        eph.delete_bubble(&ctx, a).await?;
+
+        assert_eq!(
+            count_hg_mapping_rows(&ctx, &eph, a).await?,
+            0,
+            "both rows of the deleted bubble are gone"
+        );
+        assert_eq!(
+            count_hg_mapping_rows(&ctx, &eph, b).await?,
+            1,
+            "another bubble keeps its rows"
+        );
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn mark_only_keeps_hg_mapping_test(fb: FacebookInit) -> Result<()> {
+        let (ctx, _, _, eph) = bootstrap(
+            fb,
+            Duration::from_hours(24),
+            Duration::from_hours(6),
+            BubbleDeletionMode::MarkOnly,
+        )?;
+        let (a, _) = seed_hg_mapping(&ctx, &eph).await?;
+
+        eph.delete_bubble(&ctx, a).await?;
+
+        assert_eq!(
+            count_hg_mapping_rows(&ctx, &eph, a).await?,
+            2,
+            "MarkOnly keeps the rows"
+        );
+        assert!(
+            eph.open_bubble(&ctx, a).await.is_err(),
+            "the rows are unreachable because the bubble is marked expired"
+        );
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn delete_bubble_retry_is_safe_test(fb: FacebookInit) -> Result<()> {
+        let initial = Duration::from_hours(24);
+        let grace = Duration::from_hours(6);
+        let (ctx, blobstore, _, mark_only) =
+            bootstrap(fb, initial, grace, BubbleDeletionMode::MarkOnly)?;
+        let (a, b) = seed_hg_mapping(&ctx, &mark_only).await?;
+        let mark_and_delete = RepoEphemeralStore::new(
+            REPO_ZERO,
+            mark_only.inner()?.connections.clone(),
+            blobstore,
+            initial,
+            grace,
+            BubbleDeletionMode::MarkAndDelete,
+        );
+
+        mark_only.delete_bubble(&ctx, a).await?;
+        mark_and_delete.delete_bubble(&ctx, a).await?;
+
+        assert_eq!(count_hg_mapping_rows(&ctx, &mark_and_delete, a).await?, 0);
+        assert_eq!(count_hg_mapping_rows(&ctx, &mark_and_delete, b).await?, 1);
+        Ok(())
+    }
 
     fn bootstrap(
         fb: FacebookInit,
