@@ -623,7 +623,7 @@ cpp_library(
         "fbsource//xplat/folly/coro:task",
         "fbsource//xplat/folly/logging:log_level",
         "fbsource//xplat/folly/logging:logging",
-        ":thrift-cpp2-types",
+        ":thrift-cpp2-serialization",
         "//eden/common/utils:utils",
         "//eden/fs/config:config",
         "//eden/fs/model:model",

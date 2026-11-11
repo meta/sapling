@@ -16,7 +16,6 @@
 #include <memory>
 #include "eden/common/utils/UnboundedQueueExecutor.h"
 #include "eden/fs/config/EdenConfig.h"
-#include "eden/fs/config/ReloadableConfig.h"
 #include "eden/fs/inodes/EdenMount.h"
 #include "eden/fs/inodes/GlobNode.h"
 #include "eden/fs/inodes/ServerState.h"
