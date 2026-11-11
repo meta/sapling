@@ -29,6 +29,7 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
+use anyhow::ensure;
 use base64::Engine;
 use base64::alphabet::STANDARD;
 use base64::alphabet::URL_SAFE;
@@ -1249,11 +1250,9 @@ impl ProtocolReader for Json5ProtocolDeserializer {
                 };
                 match encoding.as_str() {
                     "utf-8" => value.into_bytes(),
-                    "base64url" => URL_SAFE_NO_PAD_INDIFFERENT
-                        .decode(value)
+                    "base64url" => decode_base64(&URL_SAFE_NO_PAD_INDIFFERENT, &value)
                         .context("invalid base64url binary value")?,
-                    "base64" => STANDARD_NO_PAD_INDIFFERENT
-                        .decode(value)
+                    "base64" => decode_base64(&STANDARD_NO_PAD_INDIFFERENT, &value)
                         .context("invalid base64 binary value")?,
                     _ => bail!("unknown JSON5 binary encoding `{encoding}`"),
                 }
@@ -1621,10 +1620,19 @@ fn validate_input_nesting(input: &str) -> std::result::Result<(), Json5ParseErro
 }
 
 fn decode_base64_compatible(value: &str) -> Result<Vec<u8>> {
-    URL_SAFE_NO_PAD_INDIFFERENT
-        .decode(value)
-        .or_else(|_| STANDARD_NO_PAD_INDIFFERENT.decode(value))
+    decode_base64(&URL_SAFE_NO_PAD_INDIFFERENT, value)
+        .or_else(|_| decode_base64(&STANDARD_NO_PAD_INDIFFERENT, value))
         .context("invalid base64 binary value")
+}
+
+/// Padding is optional, but must be complete when present.
+fn decode_base64(engine: &GeneralPurpose, value: &str) -> Result<Vec<u8>> {
+    let decoded = engine.decode(value)?;
+    ensure!(
+        !value.ends_with('=') || value.len().is_multiple_of(4),
+        "incomplete base64 padding"
+    );
+    Ok(decoded)
 }
 
 fn parse_map_entry(value: Value) -> Result<(Value, Value)> {

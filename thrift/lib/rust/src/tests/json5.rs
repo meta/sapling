@@ -123,6 +123,10 @@ fn serializes_binary_using_utf8_or_base64url_wrapper() {
         .expect("valid padded base64url binary wrapper");
     assert_eq!(utf8, Bytes::from_static(b"hello"));
     assert_eq!(base64url, Bytes::from_static(&[0xff, 0x00]));
+    assert!(
+        json5_protocol::deserialize::<Bytes, _, _>(r#""QQ=""#).is_err(),
+        "base64 padding must be complete when present"
+    );
 }
 
 #[test]
