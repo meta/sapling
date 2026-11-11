@@ -20,6 +20,7 @@ use futures::Stream;
 use futures::StreamExt;
 use futures::stream;
 use futures_lazy_shared::LazyShared;
+use mercurial_types::HgChangesetId;
 use metaconfig_types::BubbleDeletionMode;
 use mononoke_types::ChangesetId;
 use mononoke_types::DateTime;
@@ -411,6 +412,18 @@ impl RepoEphemeralStoreInner {
         )
         .await?;
         Ok(rows.into_iter().next().map(|b| b.0))
+    }
+
+    async fn bubble_from_hg_changeset(
+        &self,
+        ctx: &CoreContext,
+        repo_id: RepositoryId,
+        hg_cs_id: HgChangesetId,
+    ) -> Result<Option<BubbleId>> {
+        let expires_after = Timestamp::from(DateTime::now() - self.bubble_expiration_grace);
+        SqlBubbleHgMapping::new(self.connections.clone(), repo_id)
+            .live_bubble_for_hg(ctx, hg_cs_id, expires_after)
+            .await
     }
 
     /// Given a Bubble ID, fetch labels corresponding to that bubble.
@@ -910,6 +923,16 @@ impl RepoEphemeralStore {
             .await
     }
 
+    pub async fn bubble_from_hg_changeset(
+        &self,
+        ctx: &CoreContext,
+        hg_cs_id: HgChangesetId,
+    ) -> Result<Option<BubbleId>> {
+        self.inner()?
+            .bubble_from_hg_changeset(ctx, self.repo_id, hg_cs_id)
+            .await
+    }
+
     /// Given a bubble ID, fetch the corresponding changeset ID within the
     /// repository associated with the bubble.
     pub async fn changesets_from_bubble(
@@ -1002,6 +1025,7 @@ mod test {
     use metaconfig_types::PackFormat;
     use mononoke_macros::mononoke;
     use mononoke_types_mocks::changesetid as bonsai;
+    use mononoke_types_mocks::repo::REPO_ONE;
     use mononoke_types_mocks::repo::REPO_ZERO;
     use packblob::PackBlob;
     use repo_blobstore::RepoBlobstore;
@@ -1053,6 +1077,150 @@ mod test {
             )
             .await?;
         Ok((a, b))
+    }
+
+    async fn bubble_with_hg(
+        ctx: &CoreContext,
+        eph: &RepoEphemeralStore,
+        hg_cs_id: HgChangesetId,
+        bcs_id: ChangesetId,
+    ) -> Result<BubbleId> {
+        let bubble_id = eph.create_bubble(ctx, None, vec![]).await?.bubble_id();
+        SqlBubbleHgMapping::new(eph.inner()?.connections.clone(), REPO_ZERO)
+            .add(ctx, bubble_id, &[BonsaiHgMappingEntry { hg_cs_id, bcs_id }])
+            .await?;
+        Ok(bubble_id)
+    }
+
+    #[mononoke::fbinit_test]
+    async fn bubble_from_hg_changeset_test(fb: FacebookInit) -> Result<()> {
+        let (ctx, _, _, eph) = bootstrap(
+            fb,
+            Duration::from_hours(24),
+            Duration::from_hours(6),
+            BubbleDeletionMode::MarkAndDelete,
+        )?;
+        let (a, b) = seed_hg_mapping(&ctx, &eph).await?;
+
+        assert_eq!(
+            eph.bubble_from_hg_changeset(&ctx, hg::TWOS_CSID).await?,
+            Some(a),
+            "an hg changeset is found in the bubble that holds it"
+        );
+        assert_eq!(
+            eph.bubble_from_hg_changeset(&ctx, hg::THREES_CSID).await?,
+            Some(b),
+            "each hg changeset is found in its own bubble"
+        );
+        assert_eq!(
+            eph.bubble_from_hg_changeset(&ctx, hg::FOURS_CSID).await?,
+            None,
+            "an hg changeset that is in no bubble is not found"
+        );
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn bubble_from_hg_changeset_is_scoped_by_repo_test(fb: FacebookInit) -> Result<()> {
+        let (ctx, _, _, eph) = bootstrap(
+            fb,
+            Duration::from_hours(24),
+            Duration::from_hours(6),
+            BubbleDeletionMode::MarkAndDelete,
+        )?;
+        let bubble_id = eph.create_bubble(&ctx, None, vec![]).await?.bubble_id();
+        SqlBubbleHgMapping::new(eph.inner()?.connections.clone(), REPO_ONE)
+            .add(
+                &ctx,
+                bubble_id,
+                &[BonsaiHgMappingEntry {
+                    hg_cs_id: hg::ONES_CSID,
+                    bcs_id: bonsai::ONES_CSID,
+                }],
+            )
+            .await?;
+
+        assert_eq!(
+            eph.bubble_from_hg_changeset(&ctx, hg::ONES_CSID).await?,
+            None,
+            "a row of another repo is not visible"
+        );
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn bubble_from_hg_changeset_skips_expired_test(fb: FacebookInit) -> Result<()> {
+        let grace = Duration::from_hours(6);
+        let (ctx, _, _, eph) = bootstrap(
+            fb,
+            Duration::from_hours(24),
+            grace,
+            BubbleDeletionMode::MarkAndDelete,
+        )?;
+        let marked = bubble_with_hg(&ctx, &eph, hg::ONES_CSID, bonsai::ONES_CSID).await?;
+        let timed_out = bubble_with_hg(&ctx, &eph, hg::TWOS_CSID, bonsai::TWOS_CSID).await?;
+        let in_grace = bubble_with_hg(&ctx, &eph, hg::THREES_CSID, bonsai::THREES_CSID).await?;
+        let labeled = bubble_with_hg(&ctx, &eph, hg::FOURS_CSID, bonsai::FOURS_CSID).await?;
+        let labeled_marked = bubble_with_hg(&ctx, &eph, hg::FIVES_CSID, bonsai::FIVES_CSID).await?;
+        for bubble_id in [labeled, labeled_marked] {
+            eph.add_bubble_labels(&ctx, bubble_id, vec!["workspace".to_string()])
+                .await?;
+        }
+        let connections = &eph.inner()?.connections;
+        for bubble_id in [marked, labeled_marked] {
+            UpdateExpired::query(
+                &connections.write_connection,
+                ctx.sql_query_telemetry(),
+                &ExpiryStatus::Expired,
+                &bubble_id,
+            )
+            .await?;
+        }
+        let past_grace =
+            Timestamp::from(DateTime::now() - to_chrono(grace) - ChronoDuration::minutes(1));
+        for bubble_id in [timed_out, labeled, labeled_marked] {
+            UpdateBubbleExpiration::query(
+                &connections.write_connection,
+                ctx.sql_query_telemetry(),
+                &past_grace,
+                &bubble_id,
+            )
+            .await?;
+        }
+        UpdateBubbleExpiration::query(
+            &connections.write_connection,
+            ctx.sql_query_telemetry(),
+            &Timestamp::from(DateTime::now() - ChronoDuration::minutes(1)),
+            &in_grace,
+        )
+        .await?;
+
+        assert_eq!(
+            eph.bubble_from_hg_changeset(&ctx, hg::ONES_CSID).await?,
+            None,
+            "a bubble marked expired is skipped"
+        );
+        assert_eq!(
+            eph.bubble_from_hg_changeset(&ctx, hg::TWOS_CSID).await?,
+            None,
+            "a bubble past its grace period is skipped"
+        );
+        assert_eq!(
+            eph.bubble_from_hg_changeset(&ctx, hg::THREES_CSID).await?,
+            Some(in_grace),
+            "a bubble within its grace period is still found"
+        );
+        assert_eq!(
+            eph.bubble_from_hg_changeset(&ctx, hg::FOURS_CSID).await?,
+            Some(labeled),
+            "a labeled bubble past its expiry is still alive"
+        );
+        assert_eq!(
+            eph.bubble_from_hg_changeset(&ctx, hg::FIVES_CSID).await?,
+            None,
+            "a labeled bubble that is marked expired is skipped"
+        );
+        Ok(())
     }
 
     async fn count_hg_mapping_rows(

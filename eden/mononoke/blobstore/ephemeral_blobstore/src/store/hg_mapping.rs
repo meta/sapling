@@ -18,6 +18,7 @@ use futures::future;
 use mercurial_types::HgChangesetId;
 use mononoke_types::ChangesetId;
 use mononoke_types::RepositoryId;
+use mononoke_types::Timestamp;
 use sql_ext::Connection;
 use sql_ext::SqlConnections;
 use sql_ext::mononoke_queries;
@@ -102,6 +103,23 @@ mononoke_queries! {
          FROM ephemeral_bubble_hg_mapping
          WHERE repo_id = {repo_id}
            AND bcs_id IN {bcs_id}"
+    }
+
+    read SelectLiveBubbleByHg(
+        repo_id: RepositoryId,
+        hg_cs_id: HgChangesetId,
+        expires_after: Timestamp,
+    ) -> (BubbleId,) {
+        "SELECT M.bubble_id
+         FROM ephemeral_bubble_hg_mapping M
+         JOIN ephemeral_bubbles B ON B.id = M.bubble_id
+         WHERE M.repo_id = {repo_id}
+           AND M.hg_cs_id = {hg_cs_id}
+           AND B.expired = 0
+           AND (
+               B.expires_at > {expires_after}
+               OR EXISTS (SELECT 1 FROM ephemeral_bubble_labels L WHERE L.bubble_id = B.id)
+           )"
     }
 }
 
@@ -358,6 +376,56 @@ impl SqlBubbleHgMapping {
         )
         .await?;
         Ok(rows.into_iter().map(|row| row.0).collect())
+    }
+
+    pub(crate) async fn live_bubble_for_hg(
+        &self,
+        ctx: &CoreContext,
+        hg_cs_id: HgChangesetId,
+        expires_after: Timestamp,
+    ) -> Result<Option<BubbleId>> {
+        ctx.perf_counters()
+            .increment_counter(PerfCounterType::SqlReadsReplica);
+        let found = self
+            .select_live_bubble(
+                ctx,
+                &self.connections.read_connection,
+                hg_cs_id,
+                expires_after,
+            )
+            .await?;
+        if found.is_some() {
+            return Ok(found);
+        }
+
+        STATS::get_master_fallbacks.add_value(1);
+        ctx.perf_counters()
+            .increment_counter(PerfCounterType::SqlReadsMaster);
+        self.select_live_bubble(
+            ctx,
+            &self.connections.read_master_connection,
+            hg_cs_id,
+            expires_after,
+        )
+        .await
+    }
+
+    async fn select_live_bubble(
+        &self,
+        ctx: &CoreContext,
+        connection: &Connection,
+        hg_cs_id: HgChangesetId,
+        expires_after: Timestamp,
+    ) -> Result<Option<BubbleId>> {
+        let rows = SelectLiveBubbleByHg::query(
+            connection,
+            ctx.sql_query_telemetry(),
+            &self.repo_id,
+            &hg_cs_id,
+            &expires_after,
+        )
+        .await?;
+        Ok(rows.into_iter().next().map(|(bubble_id,)| bubble_id))
     }
 }
 
