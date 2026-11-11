@@ -543,6 +543,7 @@ mod tests {
         )
     }
 
+    #[expect(dead_code, reason = "helper reserved for opaque-alias tests")]
     fn make_opaque_alias(uri: &str) -> Arc<OpaqueAliasNode> {
         Arc::new(OpaqueAliasNode::new_shell(
             uri.to_owned(),
