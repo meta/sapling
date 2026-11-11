@@ -29,13 +29,17 @@ rust_library(
             },
         },
     },
-    named_deps = {}
-    | (
+    named_deps = (
         {
             "real_hostname": "fbsource//third-party/rust:hostname",
         }
         if rust_oss.is_oss_build()
-        else {}
+        else select({
+            "DEFAULT": {},
+            "ovr_config//os:macos": {
+                "real_hostname": "fbsource//third-party/rust:hostname",
+            },
+        })
     ),
     deps = [
         "fbsource//third-party/rust:anyhow",
@@ -43,8 +47,9 @@ rust_library(
     + (
         []
         if rust_oss.is_oss_build()
-        else [
-            "//common/rust/fbwhoami:fbwhoami",
-        ]
+        else select({
+            "DEFAULT": ["//common/rust/fbwhoami:fbwhoami"],
+            "ovr_config//os:macos": [],
+        })
     ),
 )

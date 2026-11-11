@@ -27,16 +27,37 @@ pub fn get_hostname() -> Result<String> {
         }
     }
 
-    #[cfg(not(any(conda_build, fbcode_build)))]
+    #[cfg(any(target_os = "macos", not(any(conda_build, fbcode_build))))]
     {
         Ok(::real_hostname::get()?.to_string_lossy().into_owned())
     }
 
-    #[cfg(any(conda_build, fbcode_build))]
+    #[cfg(all(not(target_os = "macos"), any(conda_build, fbcode_build)))]
     {
         fbwhoami::FbWhoAmI::get()?
             .name
             .clone()
             .ok_or_else(|| ::anyhow::Error::msg("No hostname in fbwhoami"))
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use std::process::Command;
+
+    use super::get_hostname;
+
+    #[test]
+    fn macos_hostname_matches_system_hostname() {
+        let output = Command::new("/bin/hostname")
+            .output()
+            .expect("read macOS hostname");
+        assert!(output.status.success());
+        let expected = String::from_utf8(output.stdout).expect("hostname is UTF-8");
+        assert_ne!(expected.trim(), "");
+        assert_eq!(
+            get_hostname().expect("resolve hostname on macOS"),
+            expected.trim(),
+        );
     }
 }
