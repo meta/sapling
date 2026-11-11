@@ -101,19 +101,17 @@ pub fn create_public_phase_warmer(_ctx: &CoreContext, phases: ArcPhases) -> Warm
             tracing::info!(
                 changeset = %cs_id,
                 client_correlator = ?client_correlator,
-                "phases is_warm: calling get_public (may trigger mark_reachable_as_public)"
+                "phases is_warm: calling get_cached_public"
             );
             let start = std::time::Instant::now();
-            let maybe_public = phases
-                .get_public(ctx, vec![cs_id], false /* ephemeral derive */)
-                .await?;
+            let maybe_public = phases.get_cached_public(ctx, vec![cs_id]).await?;
             let elapsed_ms = start.elapsed().as_millis();
             tracing::info!(
                 changeset = %cs_id,
                 elapsed_ms = elapsed_ms as u64,
                 is_public = maybe_public.contains(&cs_id),
                 client_correlator = ?client_correlator,
-                "phases is_warm: get_public completed"
+                "phases is_warm: get_cached_public completed"
             );
 
             Ok(maybe_public.contains(&cs_id))

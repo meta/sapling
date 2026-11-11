@@ -2387,6 +2387,9 @@ mod tests {
     use memblob::Memblob;
     use mononoke_macros::mononoke;
     use mononoke_types::RepositoryId;
+    use phases::Phases;
+    use phases::PhasesArc;
+    use phases::PhasesRef;
     use repo_blobstore::RepoBlobstore;
     use repo_derivation_queues::DerivationPriority;
     use repo_derived_data::RepoDerivedData;
@@ -2418,7 +2421,54 @@ mod tests {
         dyn Bookmarks,
         dyn RepoEventPublisher,
         FilestoreConfig,
+        dyn Phases,
     );
+
+    #[mononoke::fbinit_test]
+    async fn test_public_phase_readiness_does_not_derive(fb: FacebookInit) -> Result<(), Error> {
+        let repo: Repo = TestRepoFactory::new(fb)?.build().await?;
+        let ctx = CoreContext::test_mock(fb);
+        let parent = CreateCommitContext::new_root(&ctx, &repo)
+            .set_message("parent")
+            .commit()
+            .await?;
+        let head = CreateCommitContext::new(&ctx, &repo, vec![parent])
+            .set_message("head")
+            .commit()
+            .await?;
+        let other = CreateCommitContext::new(&ctx, &repo, vec![parent])
+            .set_message("other")
+            .commit()
+            .await?;
+        bookmark(&ctx, &repo, "master").set_to(head).await?;
+        bookmark(&ctx, &repo, "other").set_to(other).await?;
+        let warmers = vec![create_public_phase_warmer(&ctx, repo.phases_arc())];
+
+        assert!(
+            warm_changesets(&ctx, [parent, head, other], &warmers)
+                .await
+                .is_empty(),
+            "readiness checks must not derive missing public phases"
+        );
+        assert!(repo.phases().list_all_public(&ctx).await?.is_empty());
+
+        warm_all(&ctx, head, &warmers).await?;
+
+        assert_eq!(
+            warm_changesets(&ctx, [parent, head, other], &warmers).await,
+            HashSet::from([parent, head]),
+            "explicit warming must mark only the requested ancestry"
+        );
+        assert_eq!(
+            repo.phases()
+                .list_all_public(&ctx)
+                .await?
+                .into_iter()
+                .collect::<HashSet<_>>(),
+            HashSet::from([parent, head])
+        );
+        Ok(())
+    }
 
     #[cfg(fbcode_build)]
     async fn bookmark_log_id(
