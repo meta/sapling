@@ -27,7 +27,11 @@ use crate::HgParents;
 use crate::NULL_HASH;
 use crate::NonRootMPath;
 use crate::blobs::ChangesetMetadata;
+use crate::blobs::HgBlobChangeset;
 use crate::blobs::HgChangesetContent;
+use crate::blobs::SNAPSHOT_METADATA_KEY;
+use crate::blobs::snapshot_state;
+use crate::snapshot::SnapshotHgState;
 
 const CHANGESET: &[u8] = include_bytes!("cset.bin");
 const CHANGESET_NOEXTRA: &[u8] = include_bytes!("cset_noextra.bin");
@@ -211,4 +215,144 @@ fn generate_writes_non_utf8_path_bytes_verbatim() {
 
     let content = changeset_content_with_files(vec![path]);
     assert_eq!(content.compute_hash().unwrap().into_nodehash(), hg_id);
+}
+
+fn empty_metadata() -> ChangesetMetadata {
+    ChangesetMetadata {
+        user: "user".to_string(),
+        time: DateTime::from_timestamp(0, 0).unwrap(),
+        extra: BTreeMap::new(),
+        message: "msg".to_string(),
+    }
+}
+
+fn paths(paths: &[&str]) -> Vec<NonRootMPath> {
+    paths
+        .iter()
+        .map(|path| NonRootMPath::new(path).unwrap())
+        .collect()
+}
+
+#[mononoke::test]
+fn record_snapshot_state_roundtrip() {
+    let mut metadata = empty_metadata();
+    metadata
+        .record_snapshot_state(paths(&["dir/untracked.txt"]), paths(&["missing.txt"]))
+        .unwrap();
+
+    let state = snapshot_state(&metadata.extra).unwrap();
+    assert_eq!(
+        state,
+        Some(SnapshotHgState {
+            untracked: paths(&["dir/untracked.txt"]),
+            missing: paths(&["missing.txt"]),
+        })
+    );
+}
+
+#[mononoke::test]
+fn record_snapshot_state_sorted() {
+    let mut metadata = empty_metadata();
+    metadata
+        .record_snapshot_state(
+            paths(&["b.txt", "a/z.txt", "a.b", "b.txt", "a/b.txt"]),
+            paths(&["z", "y", "z"]),
+        )
+        .unwrap();
+
+    assert_eq!(
+        metadata.extra.get(SNAPSHOT_METADATA_KEY).unwrap().as_ref(),
+        br#"{"v":1,"untracked":["a.b","a/b.txt","a/z.txt","b.txt"],"missing":["y","z"]}"#,
+        "paths must be sorted by their bytes and deduplicated"
+    );
+}
+
+#[mononoke::test]
+fn record_snapshot_state_empty_marks_snapshot() {
+    let mut metadata = empty_metadata();
+    metadata
+        .record_snapshot_state(Vec::new(), Vec::new())
+        .unwrap();
+
+    assert_eq!(
+        metadata.extra.get(SNAPSHOT_METADATA_KEY).unwrap().as_ref(),
+        br#"{"v":1,"untracked":[],"missing":[]}"#,
+    );
+    assert_eq!(
+        snapshot_state(&metadata.extra).unwrap(),
+        Some(SnapshotHgState::default())
+    );
+    assert_eq!(
+        snapshot_state(&empty_metadata().extra).unwrap(),
+        None,
+        "changesets without the extra are not snapshots"
+    );
+}
+
+#[mononoke::test]
+fn record_snapshot_state_twice_bails() {
+    let mut metadata = empty_metadata();
+    metadata
+        .record_snapshot_state(paths(&["a"]), Vec::new())
+        .unwrap();
+
+    assert!(
+        metadata
+            .record_snapshot_state(paths(&["b"]), Vec::new())
+            .is_err()
+    );
+    assert_eq!(
+        snapshot_state(&metadata.extra).unwrap().unwrap().untracked,
+        paths(&["a"]),
+        "the first state must be kept"
+    );
+}
+
+#[mononoke::test]
+fn snapshot_extra_survives_changeset_text() {
+    let untracked = paths(&["dir/back\\slash", "quote\"d", "caf\u{e9}"]);
+    let missing = paths(&["gone/file.txt"]);
+    let mut metadata = empty_metadata();
+    metadata
+        .record_snapshot_state(untracked.clone(), missing.clone())
+        .unwrap();
+    let extra = metadata.extra.clone();
+    let files = paths(&["dir/back\\slash", "gone/file.txt"]);
+
+    let blob_cs = HgBlobChangeset::new(HgChangesetContent::new_from_parts(
+        HgParents::None,
+        HgManifestId::new(NULL_HASH),
+        metadata,
+        files.clone(),
+    ))
+    .unwrap();
+
+    let revlog_cs = RevlogChangeset::new_from_parts(
+        HgParents::None,
+        HgManifestId::new(NULL_HASH),
+        Bytes::from_static(b"user"),
+        DateTime::from_timestamp(0, 0).unwrap(),
+        extra,
+        files,
+        Bytes::from_static(b"msg"),
+    );
+    let mut text = Vec::new();
+    revlog_cs.generate(&mut text).unwrap();
+    assert_eq!(
+        HgBlobNode::new(Bytes::from(text.clone()), None, None).nodeid(),
+        blob_cs.get_changeset_id().into_nodehash(),
+        "the text must be the one the changeset hash covers"
+    );
+
+    let parsed = RevlogChangeset::parse(HgBlob::new(Bytes::from(text)), None, None).unwrap();
+    assert_eq!(parsed.extra(), blob_cs.extra());
+    let mut expected_untracked = untracked;
+    expected_untracked.sort_by(NonRootMPath::compare_bytes);
+    assert_eq!(
+        snapshot_state(parsed.extra()).unwrap(),
+        Some(SnapshotHgState {
+            untracked: expected_untracked,
+            missing,
+        })
+    );
 }

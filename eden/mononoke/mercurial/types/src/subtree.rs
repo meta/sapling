@@ -260,7 +260,7 @@ mod version {
     }
 }
 
-mod mpath {
+pub(crate) mod mpath {
     use mononoke_types::MPath;
     use serde::Deserialize;
     use serde::de::Error;

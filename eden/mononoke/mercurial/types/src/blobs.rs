@@ -31,8 +31,10 @@ pub use changeset::Extra;
 pub use changeset::HgBlobChangeset;
 pub use changeset::HgChangesetContent;
 pub use changeset::RevlogChangeset;
+pub use changeset::SNAPSHOT_METADATA_KEY;
 pub use changeset::serialize_cs;
 pub use changeset::serialize_extras;
+pub use changeset::snapshot_state;
 
 pub mod filenode_lookup;
 

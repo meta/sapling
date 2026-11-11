@@ -15,6 +15,8 @@ mod blob;
 pub use blob::ChangesetMetadata;
 pub use blob::HgBlobChangeset;
 pub use blob::HgChangesetContent;
+pub use blob::SNAPSHOT_METADATA_KEY;
+pub use blob::snapshot_state;
 
 #[cfg(test)]
 mod test;

@@ -32,11 +32,20 @@ use crate::HgParents;
 use crate::NonRootMPath;
 use crate::nodehash::HgChangesetId;
 use crate::nodehash::HgManifestId;
+use crate::snapshot::SnapshotHgState;
 use crate::subtree::HgSubtreeChanges;
 
 const STEP_PARENTS_METADATA_KEY: &[u8] = b"stepparents";
 const COMMITTER_METADATA_KEY: &[u8] = b"committer";
 const SUBTREE_METADATA_KEY: &[u8] = b"subtree";
+pub const SNAPSHOT_METADATA_KEY: &[u8] = b"snapshot";
+
+pub fn snapshot_state(extra: &BTreeMap<Bytes, Bytes>) -> Result<Option<SnapshotHgState>> {
+    extra
+        .get(SNAPSHOT_METADATA_KEY)
+        .map(|json| SnapshotHgState::from_json(json))
+        .transpose()
+}
 
 pub struct ChangesetMetadata {
     pub user: String,
@@ -94,6 +103,21 @@ impl ChangesetMetadata {
         let json = subtree_changes.to_json()?;
         self.extra
             .insert(SUBTREE_METADATA_KEY.into(), Bytes::from(json));
+        Ok(())
+    }
+
+    pub fn record_snapshot_state(
+        &mut self,
+        untracked: impl IntoIterator<Item = NonRootMPath>,
+        missing: impl IntoIterator<Item = NonRootMPath>,
+    ) -> Result<(), Error> {
+        if self.extra.contains_key(SNAPSHOT_METADATA_KEY) {
+            bail!("snapshot extra is already set, can't insert another one!");
+        }
+
+        let json = SnapshotHgState::new(untracked, missing).to_json()?;
+        self.extra
+            .insert(SNAPSHOT_METADATA_KEY.into(), Bytes::from(json));
         Ok(())
     }
 }

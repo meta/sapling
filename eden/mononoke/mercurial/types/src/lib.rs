@@ -60,6 +60,7 @@ pub mod nodehash;
 pub mod preloaded_augmented_manifest;
 pub mod remotefilelog;
 pub mod sharded_augmented_manifest;
+pub mod snapshot;
 pub mod sql_types;
 pub mod subtree;
 pub mod utils;
