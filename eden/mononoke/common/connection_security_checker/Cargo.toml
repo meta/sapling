@@ -9,8 +9,13 @@ license = "GPLv2+"
 
 [dependencies]
 anyhow = "1.0.104"
+justknobs_ext = { version = "0.1.0", path = "../rust/justknobs_ext" }
 metaconfig_types = { version = "0.1.0", path = "../../metaconfig/types" }
 permission_checker = { version = "0.1.0", path = "../permission_checker" }
+
+[dev-dependencies]
+maplit = "1.0"
+mononoke_macros = { version = "0.1.0", path = "../mononoke_macros" }
 
 [lints]
 workspace = true

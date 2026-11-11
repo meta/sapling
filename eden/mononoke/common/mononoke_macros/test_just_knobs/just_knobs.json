@@ -65,6 +65,7 @@
     "scm/mononoke:enable_scs_restricted_paths_changes_comparison": true,
     "scm/mononoke:restricted_paths_use_schematized_logger": false,
     "scm/mononoke:scs_log_unverified_forwarded_identities": false,
+    "scm/mononoke:identity_forwarding_disable_forwarder_cat_filter": false,
     "scm/mononoke:enable_merge_identity_set_attributes": true,
     "scm/mononoke:enforce_acl_file_protection_on_create": true,
     "scm/mononoke:path_acls_reconcile_both_mode_sources": true,

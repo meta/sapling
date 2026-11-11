@@ -59,3 +59,105 @@ impl ConnectionSecurityChecker {
             .await
     }
 }
+
+/// The identities to check a request forwarded by a trusted party as: the
+/// forwarded identities plus the request's CAT identities, except CATs that
+/// restate the trusted party's own TLS identities. Counting those would give
+/// every forwarded request the forwarder's permissions. `server` is the
+/// killswitch's switch value.
+pub fn forwarded_request_identities(
+    forwarded: MononokeIdentitySet,
+    cats: &MononokeIdentitySet,
+    forwarder: &MononokeIdentitySet,
+    server: &str,
+) -> MononokeIdentitySet {
+    let keep_forwarder_cats = justknobs::eval(
+        "scm/mononoke:identity_forwarding_disable_forwarder_cat_filter",
+        None,
+        Some(server),
+    );
+    let mut identities = forwarded;
+    identities.extend(
+        cats.iter()
+            .filter(|identity| keep_forwarder_cats || !forwarder.contains(identity))
+            .cloned(),
+    );
+    identities
+}
+
+#[cfg(test)]
+mod tests {
+    use justknobs::test_helpers::JustKnobsInMemory;
+    use justknobs::test_helpers::KnobVal;
+    use justknobs::test_helpers::with_just_knobs;
+    use maplit::hashmap;
+    use mononoke_macros::mononoke;
+
+    use super::*;
+
+    const KILLSWITCH: &str = "scm/mononoke:identity_forwarding_disable_forwarder_cat_filter";
+
+    fn identities(ids: &[(&str, &str)]) -> MononokeIdentitySet {
+        ids.iter()
+            .map(|&(id_type, id_data)| MononokeIdentity::from_legacy_type_data(id_type, id_data))
+            .collect()
+    }
+
+    fn forwarded_with_killswitch(killed: bool) -> MononokeIdentitySet {
+        let forwarder = identities(&[("SERVICE_IDENTITY", "proxy"), ("MACHINE", "proxy-host")]);
+        let cats = identities(&[
+            ("SERVICE_IDENTITY", "proxy"),
+            ("MACHINE", "proxy-host"),
+            ("USER", "alice"),
+        ]);
+        with_just_knobs(
+            JustKnobsInMemory::new(hashmap![KILLSWITCH.to_string() => KnobVal::Bool(killed)]),
+            || {
+                forwarded_request_identities(
+                    identities(&[("DATA_PROJECT", "caller")]),
+                    &cats,
+                    &forwarder,
+                    "scs",
+                )
+            },
+        )
+    }
+
+    #[mononoke::test]
+    fn test_drops_cats_restating_the_forwarder() {
+        assert_eq!(
+            forwarded_with_killswitch(false),
+            identities(&[("DATA_PROJECT", "caller"), ("USER", "alice")]),
+        );
+    }
+
+    #[mononoke::test]
+    fn test_killswitch_keeps_forwarder_cats() {
+        assert_eq!(
+            forwarded_with_killswitch(true),
+            identities(&[
+                ("DATA_PROJECT", "caller"),
+                ("MACHINE", "proxy-host"),
+                ("SERVICE_IDENTITY", "proxy"),
+                ("USER", "alice"),
+            ]),
+        );
+    }
+
+    #[mononoke::test]
+    fn test_keeps_forwarded_identity_shared_with_forwarder() {
+        let forwarder = identities(&[("SERVICE_IDENTITY", "proxy")]);
+        let result = with_just_knobs(
+            JustKnobsInMemory::new(hashmap![KILLSWITCH.to_string() => KnobVal::Bool(false)]),
+            || {
+                forwarded_request_identities(
+                    identities(&[("SERVICE_IDENTITY", "proxy")]),
+                    &forwarder,
+                    &forwarder,
+                    "scs",
+                )
+            },
+        );
+        assert_eq!(result, forwarder);
+    }
+}

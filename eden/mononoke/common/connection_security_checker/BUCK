@@ -5,9 +5,14 @@ oncall("scm_server_infra")
 rust_library(
     name = "connection_security_checker",
     srcs = glob(["src/**/*.rs"]),
+    test_deps = [
+        "fbsource//third-party/rust:maplit",
+        "//eden/mononoke/common/mononoke_macros:mononoke_macros",
+    ],
     deps = [
         "fbsource//third-party/rust:anyhow",
         "//eden/mononoke/common/permission_checker:permission_checker",
+        "//eden/mononoke/common/rust/justknobs_ext:justknobs",
         "//eden/mononoke/metaconfig:metaconfig_types",
     ],
 )
