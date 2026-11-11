@@ -317,6 +317,10 @@ fn rejects_malformed_or_excessively_nested_input() {
 #[test]
 fn rejects_lossy_integer_to_float_conversions() {
     assert!(
+        json5_protocol::deserialize::<f64, _, _>("'9223372036854775808'").is_err(),
+        "a quoted integer outside the i64 range must be rejected for double"
+    );
+    assert!(
         json5_protocol::deserialize::<f32, _, _>("123456789").is_err(),
         "integer precision loss must be rejected for float"
     );

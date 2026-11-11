@@ -918,13 +918,13 @@ impl Json5ProtocolDeserializer {
                 value,
                 token: Some(token),
             }),
-            Value::String(value) => match parse_integer(&value) {
-                Ok(value) => Ok(Number::Integer(value)),
-                Err(_) => Ok(Number::Float {
-                    value: parse_f64(&value)?,
-                    token: Some(value),
-                }),
-            },
+            Value::String(value) if is_float_token(&value) => Ok(Number::Float {
+                value: parse_f64(&value)?,
+                token: Some(value),
+            }),
+            Value::String(value) => Ok(Number::Integer(
+                parse_integer(&value).context("invalid JSON5 double value")?,
+            )),
             _ => bail!("expected a JSON5 floating-point value"),
         }
     }
