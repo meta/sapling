@@ -20,6 +20,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import time
 import traceback
 import typing
 from dataclasses import dataclass
@@ -174,6 +175,7 @@ from . import (
     rage as rage_mod,
     redirect as redirect_mod,
     stats as stats_mod,
+    stats_print,
     subcmd as subcmd_mod,
     top as top_mod,
     trace as trace_mod,
@@ -2011,6 +2013,93 @@ def _remove_leftover_mount_point(path: Path, preserve_mount_point: bool) -> None
         path.rmdir()
 
 
+# How long `eden rm` may spend measuring the redirection backing it leaves behind.
+# Build output can hold hundreds of GB, which takes minutes to walk.
+REDIRECTION_BACKING_SIZE_BUDGET_SECONDS = 5.0
+
+
+def _redirection_backing_dirs(checkout: EdenCheckout) -> List[Path]:
+    """The scratch directories that hold the data of `checkout`'s bind and
+    symlink redirections, such as the repository's build output. `eden rm`
+    unmounts the redirections but leaves these directories in place."""
+    backing = []
+    for redir in redirect_mod.get_configured_redirections(checkout).values():
+        if redir.type not in (
+            redirect_mod.RedirectionType.BIND,
+            redirect_mod.RedirectionType.SYMLINK,
+        ):
+            continue
+        try:
+            target = redir.expand_target_abspath(checkout)
+        except (OSError, subprocess.CalledProcessError) as ex:
+            print_stderr(
+                f"warning: cannot find where the {redir.repo_path} redirection of "
+                f"{checkout.path} stores its data: {ex}"
+            )
+            continue
+        if target is not None and not target.is_relative_to(checkout.path):
+            backing.append(target)
+    return backing
+
+
+def _measure_dir(path: Path, deadline: float) -> Tuple[int, bool]:
+    """Return the bytes stored under `path` and whether every entry was counted
+    before `deadline`, a `time.monotonic()` value."""
+    total = 0
+    complete = True
+    pending = [path]
+    while pending:
+        try:
+            with os.scandir(pending.pop()) as entries:
+                for entry in entries:
+                    if time.monotonic() > deadline:
+                        return total, False
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append(Path(entry.path))
+                        continue
+                    st = entry.stat(follow_symlinks=False)
+                    total += (
+                        st.st_size if sys.platform == "win32" else st.st_blocks * 512
+                    )
+        except OSError:
+            complete = False
+    return total, complete
+
+
+def _describe_size(size: int, complete: bool) -> str:
+    if complete:
+        return stats_print.format_size(size)
+    if size == 0:
+        return "size not measured"
+    return f"at least {stats_print.format_size(size)}"
+
+
+def _print_redirection_backing_left_behind(backing: Sequence[Path]) -> None:
+    left = [path for path in backing if path.is_dir()]
+    if not left:
+        return
+    # Each directory gets an equal share of the budget, so a huge first
+    # directory doesn't leave the others unmeasured.
+    budget = REDIRECTION_BACKING_SIZE_BUDGET_SECONDS / len(left)
+    lines = []
+    for path in left:
+        size, complete = _measure_dir(path, time.monotonic() + budget)
+        lines.append(f"  {path} ({_describe_size(size, complete)})")
+    delete_cmd = (
+        "Remove-Item -Recurse -Force <path>"
+        if sys.platform == "win32"
+        else "rm -rf <path>"
+    )
+    print(
+        "EdenFS did not delete the data of this checkout's redirections, such as "
+        "build output:\n"
+        + "\n".join(lines)
+        + f"\nTo free the space, delete these directories with `{delete_cmd}`, or "
+        "run `eden du --clean-orphaned` to delete the redirection data of every "
+        "removed checkout."
+    )
+
+
 # Types of removal
 #
 # * ACTIVE_MOUNT: removing a mounted repository, we need to talk with EdenFS
@@ -2087,8 +2176,9 @@ class RemoveCmd(Subcmd):
 
     def _prepare_checkout_for_removal(
         self, args: argparse.Namespace, mount: str, default_instance: EdenInstance
-    ) -> EdenInstance:
-        """Return the instance that serves `mount`.
+    ) -> Tuple[EdenInstance, List[Path]]:
+        """Return the instance that serves `mount` and the directories that hold
+        the data of its redirections, which the removal leaves behind.
 
         Rewrites the checkout config without its redirection targets so the
         redirected paths can be deleted. A checkout whose state cannot be
@@ -2099,13 +2189,21 @@ class RemoveCmd(Subcmd):
         try:
             instance, checkout, _rel_path = require_checkout(args, mount)
         except subcmd_mod.CmdError:
-            return default_instance
+            return default_instance, []
         except Exception as ex:
             print_stderr(
                 f"warning: cannot find the checkout state of {mount}, removing it "
                 f"anyway: {ex}"
             )
-            return default_instance
+            return default_instance, []
+        try:
+            backing = _redirection_backing_dirs(checkout)
+        except (config_mod.CheckoutConfigCorruptedError, OSError) as ex:
+            print_stderr(
+                f"warning: cannot read the redirections of {mount}, removing it "
+                f"anyway: {ex}"
+            )
+            backing = []
         try:
             config = checkout.get_config()._replace(redirection_targets={})
             checkout.save_config(config)
@@ -2114,7 +2212,7 @@ class RemoveCmd(Subcmd):
                 f"warning: cannot update the config of {mount} before removing "
                 f"it, removing it anyway: {ex}"
             )
-        return instance
+        return instance, backing
 
     def _register_before_removal(
         self, instance: EdenInstance, mount: str
@@ -2321,7 +2419,7 @@ Do you still want to delete {path}?"""
             )
             for mount, remove_type in mounts:
                 print(f"Removing {mount}...")
-                mount_instance = self._prepare_checkout_for_removal(
+                mount_instance, backing = self._prepare_checkout_for_removal(
                     args, mount, instance
                 )
                 if remove_type == RemoveType.ACTIVE_UNREGISTERED:
@@ -2419,6 +2517,11 @@ Do you still want to delete {path}?"""
                         )
                         # pyre-fixme[6]: Pyre doesn't narrow Optional type after if guard
                         self.optional_traceback(result.cleanup_error, args.debug)
+                    else:
+                        # Only a removed checkout leaves its redirection data behind:
+                        # a cleanup error keeps the checkout registered, so the data
+                        # is still in use and `eden du --clean-orphaned` skips it.
+                        _print_redirection_backing_left_behind(backing)
 
                     # Continue around the loop removing any other mount points
 

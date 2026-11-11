@@ -7,7 +7,9 @@
 # pyre-strict
 
 import argparse
+import contextlib
 import errno
+import io
 import json
 import os
 import unittest
@@ -15,7 +17,13 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import toml
-from eden.fs.cli import config as config_mod, main as main_mod, telemetry, util
+from eden.fs.cli import (
+    config as config_mod,
+    main as main_mod,
+    redirect as redirect_mod,
+    telemetry,
+    util,
+)
 from eden.fs.cli.config import (
     CheckoutConfig,
     DEFAULT_REVISION,
@@ -942,6 +950,99 @@ class PathIsMissingTest(unittest.TestCase, TemporaryDirectoryMixin):
             "eden.fs.cli.main.os.stat", side_effect=OSError(errno.ENOTCONN, "stale")
         ):
             self.assertFalse(main_mod._path_is_missing(str(tmp / "stale-mount")))
+
+
+class RedirectionBackingLeftBehindTest(unittest.TestCase, TemporaryDirectoryMixin):
+    def test_lists_backing_outside_the_checkout(self) -> None:
+        tmp = Path(self.make_temporary_directory())
+        checkout = MagicMock(path=tmp / "checkout")
+        Redir = redirect_mod.Redirection
+        RedirType = redirect_mod.RedirectionType
+        redirs = {
+            "out": Redir(Path("out"), RedirType.BIND, None, "repo"),
+            "link": Redir(Path("link"), RedirType.SYMLINK, None, "user"),
+            "apfs": Redir(Path("apfs"), RedirType.BIND, None, "user"),
+            "odd": Redir(Path("odd"), RedirType.UNKNOWN, None, "user"),
+        }
+        targets = {
+            Path("out"): tmp / "scratch" / "out",
+            Path("link"): tmp / "scratch" / "link",
+            # macOS APFS redirections store their data in the checkout itself.
+            Path("apfs"): tmp / "checkout" / "apfs",
+        }
+
+        def expand(redir: redirect_mod.Redirection, _checkout: object) -> Path:
+            return targets[redir.repo_path]
+
+        with (
+            patch.object(
+                redirect_mod, "get_configured_redirections", return_value=redirs
+            ),
+            patch.object(Redir, "expand_target_abspath", autospec=True) as target,
+        ):
+            target.side_effect = expand
+            self.assertEqual(
+                [tmp / "scratch" / "out", tmp / "scratch" / "link"],
+                main_mod._redirection_backing_dirs(checkout),
+            )
+
+    def test_measure_dir_counts_nested_files(self) -> None:
+        tmp = Path(self.make_temporary_directory())
+        (tmp / "sub").mkdir()
+        (tmp / "sub" / "file").write_bytes(b"x" * 100_000)
+        size, complete = main_mod._measure_dir(tmp, float("inf"))
+        self.assertTrue(complete)
+        self.assertGreaterEqual(size, 100_000)
+
+    def test_measure_dir_stops_at_the_deadline(self) -> None:
+        tmp = Path(self.make_temporary_directory())
+        (tmp / "file").write_bytes(b"x")
+        self.assertEqual((0, False), main_mod._measure_dir(tmp, 0.0))
+
+    def test_describe_size_says_when_counting_stopped(self) -> None:
+        self.assertEqual("2.0 MB", main_mod._describe_size(2_000_000, True))
+        self.assertEqual("at least 2.0 MB", main_mod._describe_size(2_000_000, False))
+        self.assertEqual("size not measured", main_mod._describe_size(0, False))
+
+    def test_each_directory_gets_its_share_of_the_budget(self) -> None:
+        tmp = Path(self.make_temporary_directory())
+        dirs = [tmp / "a", tmp / "b"]
+        for d in dirs:
+            d.mkdir()
+        budgets = []
+
+        def measure(path: Path, deadline: float) -> tuple[int, bool]:
+            budgets.append(deadline - main_mod.time.monotonic())
+            return 1, True
+
+        with (
+            patch.object(main_mod, "_measure_dir", side_effect=measure),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            main_mod._print_redirection_backing_left_behind(dirs)
+        share = main_mod.REDIRECTION_BACKING_SIZE_BUDGET_SECONDS / 2
+        self.assertEqual(2, len(budgets))
+        for budget in budgets:
+            self.assertAlmostEqual(share, budget, delta=0.5)
+
+    def test_prints_existing_backing_and_how_to_delete_it(self) -> None:
+        tmp = Path(self.make_temporary_directory())
+        backing = tmp / "edenfsZredirectionsZout"
+        backing.mkdir()
+        (backing / "file").write_bytes(b"x" * 100_000)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            main_mod._print_redirection_backing_left_behind([backing, tmp / "missing"])
+        self.assertIn(f"  {backing} (", out.getvalue())
+        self.assertNotIn("missing", out.getvalue())
+        self.assertIn("eden du --clean-orphaned", out.getvalue())
+
+    def test_prints_nothing_when_no_backing_is_left(self) -> None:
+        tmp = Path(self.make_temporary_directory())
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            main_mod._print_redirection_backing_left_behind([tmp / "missing"])
+        self.assertEqual("", out.getvalue())
 
 
 class RemoveCallerErrorTest(unittest.TestCase, TemporaryDirectoryMixin):
