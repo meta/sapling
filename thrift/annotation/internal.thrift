@@ -52,9 +52,6 @@ struct InjectMetadataFields {
 }
 
 // Makes a C++ struct or union allocator-aware, using allocator type `name`.
-// Unions aren't supported yet: on a union it also needs
-// `@cpp.InternalExperimentalAllowAllocatorOnUnion`, which is only for Thrift's
-// own tests.
 @scope.Struct
 @scope.Union
 struct CppAllocator {
