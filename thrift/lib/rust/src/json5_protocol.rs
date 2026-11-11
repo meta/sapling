@@ -918,7 +918,7 @@ impl Json5ProtocolDeserializer {
                 value,
                 token: Some(token),
             }),
-            Value::String(value) => match value.parse::<i64>() {
+            Value::String(value) => match parse_integer(&value) {
                 Ok(value) => Ok(Number::Integer(value)),
                 Err(_) => Ok(Number::Float {
                     value: parse_f64(&value)?,
@@ -1470,12 +1470,14 @@ fn is_identifier_continue(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$')
 }
 
-fn is_float_token(token: &str) -> bool {
+fn is_hex_token(token: &str) -> bool {
     let unsigned = token.strip_prefix(['+', '-']).unwrap_or(token);
-    if unsigned.starts_with("0x") || unsigned.starts_with("0X") {
-        return false;
-    }
-    token.contains(['.', 'e', 'E']) || token.contains("Infinity") || token.contains("NaN")
+    unsigned.starts_with("0x") || unsigned.starts_with("0X")
+}
+
+fn is_float_token(token: &str) -> bool {
+    !is_hex_token(token)
+        && (token.contains(['.', 'e', 'E']) || token.contains("Infinity") || token.contains("NaN"))
 }
 
 fn normalize_number_token(token: &str) -> std::result::Result<String, Json5ParseError> {
@@ -1483,29 +1485,12 @@ fn normalize_number_token(token: &str) -> std::result::Result<String, Json5Parse
         return Ok(token[1..].to_owned());
     }
 
-    let (negative, unsigned) = match token.as_bytes().first() {
-        Some(b'-') => (true, &token[1..]),
-        Some(b'+') => (false, &token[1..]),
-        _ => (false, token),
-    };
-    let Some(hex) = unsigned
-        .strip_prefix("0x")
-        .or_else(|| unsigned.strip_prefix("0X"))
-    else {
+    if !is_hex_token(token) {
         return Ok(token.to_owned());
-    };
-    let magnitude = u64::from_str_radix(hex, 16).map_err(|_| {
-        Json5ParseError("hex integer is outside the JSON5 integer range".to_owned())
-    })?;
-    if !negative {
-        return Ok(magnitude.to_string());
     }
-    if magnitude == (i64::MAX as u64) + 1 {
-        return Ok(i64::MIN.to_string());
-    }
-    let magnitude = i64::try_from(magnitude)
-        .map_err(|_| Json5ParseError("hex integer is outside the Thrift i64 range".to_owned()))?;
-    Ok((-magnitude).to_string())
+    parse_integer(token)
+        .map(|value| value.to_string())
+        .map_err(|error| Json5ParseError(format!("invalid JSON5 hex integer: {error:#}")))
 }
 
 fn next_significant_byte(input: &str, mut index: usize) -> Option<u8> {
@@ -1686,7 +1671,19 @@ fn parse_integer(text: &str) -> Result<i64> {
     if has_leading_zero(text) {
         bail!("leading zeros are not permitted");
     }
-    Ok(text.parse()?)
+    let unsigned = text.strip_prefix(['+', '-']).unwrap_or(text);
+    let Some(hex) = unsigned
+        .strip_prefix("0x")
+        .or_else(|| unsigned.strip_prefix("0X"))
+    else {
+        return Ok(text.parse()?);
+    };
+    // `from_str_radix` takes the sign, which must not follow `0x`.
+    if hex.starts_with(['+', '-']) {
+        bail!("invalid digit found in string");
+    }
+    let sign = &text[..text.len() - unsigned.len()];
+    Ok(i64::from_str_radix(&format!("{sign}{hex}"), 16)?)
 }
 
 fn has_leading_zero(number: &str) -> bool {

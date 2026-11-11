@@ -48,20 +48,24 @@ fn accepts_json5_syntax_and_compatibility_scalars() {
     let input = br#"
         {
           // JSON5 comments and identifiers are accepted.
-          numbers: [+1, 0x2a, '3',],
+          numbers: [+1, 0x2a, '3', '-0x2a',],
         }
     "#;
 
     let value: BTreeMap<String, Vec<i64>> =
         json5_protocol::deserialize(&input[..]).expect("valid JSON5");
 
-    assert_eq!(value["numbers"], [1, 42, 3]);
+    assert_eq!(value["numbers"], [1, 42, 3, -42]);
 
     let hex: Vec<i64> = json5_protocol::deserialize(
         "[+0x1, -0x1, 0xdeadbeef, 0x7fffffffffffffff, -0x8000000000000000]",
     )
     .expect("signed and i64-width JSON5 hex integers");
     assert_eq!(hex, [1, -1, 0xdeadbeef, i64::MAX, i64::MIN]);
+    assert!(
+        json5_protocol::deserialize::<i64, _, _>("'0x+1'").is_err(),
+        "hex digits do not permit a sign"
+    );
 
     let infinity: f64 = json5_protocol::deserialize("+Infinity").expect("positive infinity");
     let nan: f64 = json5_protocol::deserialize("+NaN").expect("positive NaN");
