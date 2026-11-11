@@ -1024,13 +1024,20 @@ def join(context, mapping, args):
     # abuses generator as a keyword that returns a list of dicts.
     joinset = evalrawexp(context, mapping, args[0])
     joinset = templatekw.unwrapvalue(joinset)
+    try:
+        joiniter = iter(joinset)
+    except TypeError:
+        sym = findsymbolicname(args[0])
+        if sym:
+            raise error.ParseError(_("keyword '%s' is not iterable") % sym)
+        raise error.ParseError(_("%r is not iterable") % (joinset,))
     joinfmt = getattr(joinset, "joinfmt", util.identity)
     joiner = " "
     if len(args) > 1:
         joiner = evalstring(context, mapping, args[1])
 
     first = True
-    for x in joinset:
+    for x in joiniter:
         if first:
             first = False
         else:
