@@ -78,7 +78,6 @@ re_redap_browser-0-40 = { package = "re_redap_browser", git = "https://github.co
 re_viewer = { git = "https://github.com/a7or/rerun.git", rev = "679573aa62eafedf9eace32cd0af6fb858d96bcb" }
 re_viewer-0-40 = { package = "re_viewer", git = "https://github.com/a7or/rerun.git", rev = "84d2dc3c159fb832c48aa90d3305f36da3b58312" }
 rerun-cli-0-40 = { package = "rerun-cli", git = "https://github.com/a7or/rerun.git", rev = "84d2dc3c159fb832c48aa90d3305f36da3b58312" }
-rinja = { git = "https://github.com/fbsource/askama", rev = "2fc6173c98034c148f46330fc39a006cf0b09efe" }
 riscv = { git = "https://github.com/rust-embedded/riscv", rev = "c2c9c7b77091a43b64bf0fd6a876c81a29438cf5" }
 riscv-types = { git = "https://github.com/rust-embedded/riscv", rev = "c2c9c7b77091a43b64bf0fd6a876c81a29438cf5" }
 rootcause = { git = "https://github.com/rootcause-rs/rootcause.git", rev = "5010b020a57786de6f18bad027560d54b73875b0" }
