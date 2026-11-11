@@ -235,7 +235,7 @@ pub(crate) fn read_mount_table() -> Result<Vec<MountTableInfo>> {
         // Specifying the path is important, as sudo may have munged the path
         // such that /sbin is not part of it any longer
         let output = Exec::cmd("/sbin/mount")
-            .env_extend(&trace_env("mount"))
+            .env_extend(trace_env("mount"))
             .stdout(Redirection::Pipe)
             .stderr(Redirection::Pipe)
             .capture()

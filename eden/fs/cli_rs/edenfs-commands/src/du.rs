@@ -49,6 +49,7 @@ use edenfs_utils::trace_env;
 use hg_util::no_follow::NoFollowRoot;
 use serde::Serialize;
 use subprocess::Exec;
+use subprocess::Job;
 use subprocess::Redirection as SubprocessRedirection;
 
 use crate::ExitCode;
@@ -375,8 +376,8 @@ fn get_hg_cache_path() -> Result<PathBuf> {
         .stdout(SubprocessRedirection::Pipe)
         .stderr(SubprocessRedirection::Pipe)
         .env_clear()
-        .env_extend(&get_environment_suitable_for_subprocess())
-        .env_extend(&trace_env("hg"))
+        .env_extend(get_environment_suitable_for_subprocess())
+        .env_extend(trace_env("hg"))
         .capture()?;
 
     if output.success() {
@@ -639,9 +640,10 @@ fn clean_buck_redirections(buck_redirections: HashSet<PathBuf>) -> Result<()> {
                 .stderr(SubprocessRedirection::Pipe)
                 .cwd(basename)
                 .env_clear()
-                .env_extend(&get_env_with_buck_version(basename)?)
-                .env_extend(&trace_env("buck"))
-                .capture()
+                .env_extend(get_env_with_buck_version(basename)?)
+                .env_extend(trace_env("buck"))
+                .start()
+                .and_then(Job::capture)
                 .with_context(|| format!("Failed to run buck {}", get_buck_command()))?;
 
             if output.success() {
@@ -1024,7 +1026,7 @@ impl crate::Subcommand for DiskUsageCmd {
                         "Cleaning shared space used by the storage engine...".blue()
                     );
                     let output = Exec::cmd("eden")
-                        .env_extend(&trace_env("eden"))
+                        .env_extend(trace_env("eden"))
                         .arg("gc")
                         .stdout(SubprocessRedirection::Pipe)
                         .stderr(SubprocessRedirection::Pipe)
