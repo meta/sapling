@@ -75,6 +75,7 @@ sapling-clientinfo = { version = "0.1.0", path = "../../../../scm/lib/clientinfo
 scribe_ext = { version = "0.1.0", path = "../../../common/scribe_ext" }
 scs_errors = { version = "0.1.0", path = "../scs_errors" }
 scuba_ext = { version = "0.1.0", path = "../../../common/scuba_ext" }
+serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 sorted_vector_map = { version = "0.2.1", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 source_control = { version = "0.1.0", path = "../../../scs/if" }

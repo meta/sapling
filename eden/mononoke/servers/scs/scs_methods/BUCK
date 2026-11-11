@@ -101,6 +101,7 @@ rust_library(
         else [
             "//eden/mononoke/tools/repo_spec_writer:repo_spec_writer",
             "fbsource//third-party/rust:regex",
+            "fbsource//third-party/rust:serde",
             "fbsource//third-party/rust:serde_json",
             "//common/rust/configo:configo",
             "//common/rust/everstore:everstore_client",
