@@ -761,6 +761,11 @@ impl RepoWithBubble for Repo {
         let commit_graph = Arc::new(bubble.repo_commit_graph(self));
         let commit_graph_writer = bubble.repo_commit_graph_writer(self);
         let repo_derived_data = Arc::new(self.repo_derived_data().for_bubble(bubble.clone()));
+        let bonsai_hg_mapping = bubble.bonsai_hg_mapping(
+            self.repo_identity().id(),
+            self.repo_identity().name(),
+            self.bonsai_hg_mapping.clone(),
+        );
         // RestrictedPaths holds its own ArcRepoDerivedData snapshot — rewrap it
         // so AclManifest derivation for bubble changesets routes through the
         // bubble-aware derived-data manager (and not DDS, which doesn't know
@@ -773,6 +778,7 @@ impl RepoWithBubble for Repo {
             commit_graph_writer,
             repo_derived_data,
             restricted_paths,
+            bonsai_hg_mapping,
             ..self.clone()
         }
     }

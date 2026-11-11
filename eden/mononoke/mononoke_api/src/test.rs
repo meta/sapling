@@ -6,6 +6,7 @@
  */
 
 mod test_blame;
+mod test_bubble_hg_mapping;
 mod test_changeset_diff;
 mod test_changeset_find_files;
 mod test_changeset_fingerprint;
