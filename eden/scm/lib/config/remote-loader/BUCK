@@ -40,6 +40,7 @@ sl_rust_library(
         "fbsource//third-party/rust:tracing",
         "fbsource//third-party/rust:url",
         "fbsource//third-party/rust:zstd",
+        "//common/rust/interngraph:interngraph_user_agent",
         "//eden/scm/lib/http-client:http-client",
         "//eden/scm/lib/io:io",
         "//eden/scm/lib/types:types",
