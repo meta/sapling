@@ -13,6 +13,7 @@
 //! expires.
 
 mod bubble;
+mod bubble_hg_mapping;
 mod builder;
 mod commit_graph;
 mod error;
@@ -25,6 +26,7 @@ mod view;
 pub use crate::bubble::Bubble;
 pub use crate::bubble::BubbleId;
 pub use crate::bubble::StorageLocation;
+pub use crate::bubble_hg_mapping::BubbleBonsaiHgMapping;
 pub use crate::builder::RepoEphemeralStoreBuilder;
 pub use crate::commit_graph::EphemeralOnlyChangesetStorage;
 pub use crate::error::EphemeralBlobstoreError;

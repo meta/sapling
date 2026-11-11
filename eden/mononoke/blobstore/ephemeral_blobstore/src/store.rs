@@ -36,11 +36,10 @@ use crate::error::EphemeralBlobstoreError;
 use crate::unlink::UnlinkPolicy;
 use crate::unlink::Unlinker;
 
-#[expect(
-    dead_code,
-    reason = "BubbleBonsaiHgMapping starts using it in the next commit"
-)]
 mod hg_mapping;
+
+pub(crate) use hg_mapping::SqlBubbleHgMapping;
+pub(crate) use hg_mapping::leftover_ids;
 
 /// Outcome of extending a bubble's TTL
 #[derive(Debug, Clone, PartialEq, Eq)]

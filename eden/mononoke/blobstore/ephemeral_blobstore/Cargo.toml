@@ -14,6 +14,7 @@ async-trait = "0.1.92"
 bincode = { version = "2", features = ["serde"] }
 blobstore = { version = "0.1.0", path = ".." }
 bonsai_globalrev_mapping = { version = "0.1.0", path = "../../repo_attributes/bonsai_globalrev_mapping" }
+bonsai_hg_mapping = { version = "0.1.0", path = "../../repo_attributes/bonsai_hg_mapping" }
 chrono = { version = "0.4.45", features = ["clock", "serde", "std"], default-features = false }
 commit_graph = { version = "0.1.0", path = "../../repo_attributes/commit_graph/commit_graph" }
 commit_graph_types = { version = "0.1.0", path = "../../repo_attributes/commit_graph/commit_graph_types" }
@@ -25,7 +26,9 @@ futures = { version = "0.3.34", features = ["async-await", "compat"] }
 futures_lazy_shared = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 futures_retry = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 governor = "0.10.4"
+justknobs_ext = { version = "0.1.0", path = "../../common/rust/justknobs_ext" }
 memwrites_commit_graph_storage = { version = "0.1.0", path = "../../repo_attributes/commit_graph/memwrites_commit_graph_storage" }
+mercurial_types = { version = "0.1.0", path = "../../mercurial/types" }
 metaconfig_types = { version = "0.1.0", path = "../../metaconfig/types" }
 mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
 prefixblob = { version = "0.1.0", path = "../prefixblob" }
@@ -38,6 +41,7 @@ sql = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-s
 sql_construct = { version = "0.1.0", path = "../../common/sql_construct" }
 sql_ext = { version = "0.1.0", path = "../../common/rust/sql_ext" }
 sql_query_config = { version = "0.1.0", path = "../../repo_attributes/sql_query_config" }
+stats = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
@@ -48,9 +52,11 @@ fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rus
 fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 maplit = "1.0"
 memblob = { version = "0.1.0", path = "../memblob" }
+mercurial_types-mocks = { version = "0.1.0", path = "../../mercurial/types/mocks" }
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
 mononoke_types-mocks = { version = "0.1.0", path = "../../mononoke_types/mocks" }
 packblob = { version = "0.1.0", path = "../packblob" }
+rendezvous = { version = "0.1.0", path = "../../common/rendezvous" }
 scuba_ext = { version = "0.1.0", path = "../../common/scuba_ext" }
 
 [lints]

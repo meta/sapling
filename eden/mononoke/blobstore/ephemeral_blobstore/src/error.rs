@@ -5,6 +5,7 @@
  * GNU General Public License version 2.
  */
 
+use mercurial_types::HgChangesetId;
 use mononoke_types::RepositoryId;
 use thiserror::Error;
 
@@ -39,6 +40,12 @@ pub enum EphemeralBlobstoreError {
     /// Failed to fetch labels associated with the bubble
     #[error("failed to fetch labels for bubble {0}")]
     FetchBubbleLabelsFailed(BubbleId),
+
+    #[error("hg changeset {0} is already in bubble {1}")]
+    HgChangesetInAnotherBubble(HgChangesetId, BubbleId),
+
+    #[error("bubble hg mapping is disabled")]
+    BubbleHgMappingDisabled,
 }
 
 impl EphemeralBlobstoreError {

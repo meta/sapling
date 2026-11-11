@@ -16,6 +16,7 @@
     "scm/mononoke:derivation_worker_nack_backoff_enabled": false,
     "scm/mononoke:derived_data_disable_remote_derivation": false,
     "scm/mononoke:derived_data_use_store_mapping_batch": false,
+    "scm/mononoke:enable_bubble_hg_mapping": false,
     "scm/mononoke:derived_data_pipeline_terminal_stage_prod_mapping": false,
     "scm/mononoke:derived_data_tailer_skip_pipeline_types": true,
     "scm/mononoke:derivation_queue_evict_sync_after_dep_delete": false,

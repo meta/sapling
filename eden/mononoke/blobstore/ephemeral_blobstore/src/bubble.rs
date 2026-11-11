@@ -23,6 +23,7 @@ use blobstore::BlobstoreIsPresent;
 use blobstore::BlobstoreKeyParam;
 use blobstore::BlobstoreKeySource;
 use bonsai_globalrev_mapping::BonsaiGlobalrevMappingArc;
+use bonsai_hg_mapping::BonsaiHgMapping;
 use commit_graph::ArcCommitGraphWriter;
 use commit_graph::BaseCommitGraphWriter;
 use commit_graph::CommitGraph;
@@ -58,11 +59,13 @@ use sql::sql_common::mysql::opt_try_from_rowfield;
 use sql_ext::SqlConnections;
 use tracing::warn;
 
+use crate::bubble_hg_mapping::BubbleBonsaiHgMapping;
 use crate::commit_graph::EphemeralCommitGraphStorage;
 use crate::commit_graph::EphemeralOnlyChangesetStorage;
 use crate::error::EphemeralBlobstoreError;
 use crate::handle::EphemeralHandle;
 use crate::store::DeleteBubbleOutcome;
+use crate::store::SqlBubbleHgMapping;
 use crate::unlink::Unlinker;
 use crate::view::EphemeralRepoView;
 
@@ -280,7 +283,7 @@ pub struct Bubble {
 
     /// SQL connection
     #[derivative(Debug = "ignore")]
-    connections: SqlConnections,
+    pub(crate) connections: SqlConnections,
 
     /// The labels associated with the bubble. Currently used for lifetime extension.
     #[derivative(Debug = "ignore")]
@@ -451,6 +454,20 @@ impl Bubble {
 
     pub fn bubble_id(&self) -> BubbleId {
         self.bubble_id
+    }
+
+    pub fn bonsai_hg_mapping(
+        &self,
+        repo_id: RepositoryId,
+        repo_name: &str,
+        persistent: Arc<dyn BonsaiHgMapping>,
+    ) -> Arc<dyn BonsaiHgMapping> {
+        Arc::new(BubbleBonsaiHgMapping::new(
+            persistent,
+            SqlBubbleHgMapping::new(self.connections.clone(), repo_id),
+            self.bubble_id,
+            repo_name.to_string(),
+        ))
     }
 
     pub fn expired(&self) -> ExpiryStatus {
