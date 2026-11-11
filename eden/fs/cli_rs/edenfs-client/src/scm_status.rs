@@ -96,6 +96,6 @@ impl EdenFsClient {
         })
         .await
         .map(|scm_status| scm_status.into())
-        .map_err(|_| EdenFsError::Other(anyhow!("failed to get scm status v2 result")))
+        .map_err(|e| EdenFsError::Other(anyhow!("failed to get scm status v2 result: {e}")))
     }
 }
