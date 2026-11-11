@@ -901,7 +901,7 @@ impl Json5ProtocolDeserializer {
     fn take_integer(&mut self) -> Result<i64> {
         match self.take_value()? {
             Value::Integer(value) => Ok(value),
-            Value::String(value) => value.parse().context("invalid JSON5 integer"),
+            Value::String(value) => parse_integer(&value).context("invalid JSON5 integer"),
             _ => bail!("expected a JSON5 integer"),
         }
     }
@@ -1679,11 +1679,21 @@ fn parse_identifier(identifier: &str) -> Result<(Option<&str>, Option<i32>)> {
 }
 
 fn parse_identifier_number(value: &str) -> Option<i32> {
-    let digits = value.strip_prefix('-').unwrap_or(value);
-    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
+    parse_integer(value).ok()?.try_into().ok()
+}
+
+fn parse_integer(text: &str) -> Result<i64> {
+    if has_leading_zero(text) {
+        bail!("leading zeros are not permitted");
     }
-    value.parse().ok()
+    Ok(text.parse()?)
+}
+
+fn has_leading_zero(number: &str) -> bool {
+    let unsigned = number.strip_prefix(['+', '-']).unwrap_or(number);
+    unsigned
+        .strip_prefix('0')
+        .is_some_and(|rest| rest.starts_with(|ch: char| ch.is_ascii_digit()))
 }
 
 fn is_thrift_identifier(value: &str) -> bool {

@@ -210,11 +210,15 @@ fn accepts_and_validates_field_and_enum_identifiers() {
         "null values do not bypass the field ID range check"
     );
     assert!(
-        json5_protocol::deserialize::<Basic, _, _>("{'+1': true}").is_err(),
-        "quoted field IDs do not permit a leading plus sign"
+        json5_protocol::deserialize::<Basic, _, _>("{'+1': true}").is_ok(),
+        "quoted field IDs permit a leading plus sign"
     );
     assert!(
-        json5_protocol::deserialize::<En, _, _>("'ONE (+1)'").is_err(),
-        "quoted enum values do not permit a leading plus sign"
+        json5_protocol::deserialize::<En, _, _>("'ONE (01)'").is_err(),
+        "quoted enum values do not permit leading zeros"
+    );
+    assert!(
+        json5_protocol::deserialize::<En, _, _>("'ONE (+1)'").is_ok(),
+        "quoted enum values permit a leading plus sign"
     );
 }
