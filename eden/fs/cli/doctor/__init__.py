@@ -14,12 +14,13 @@ import sys
 from datetime import timedelta
 from pathlib import Path
 from textwrap import dedent
-from typing import Dict, Iterable, List, Optional, Set
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from eden.fs.cli import (
     config as config_mod,
     daemon,
     filesystem,
+    hg_util,
     mtab,
     prjfs,
     proc_utils as proc_utils_mod,
@@ -835,16 +836,31 @@ class EdenCheckoutConfigCorruption(FixableProblem):
     def start_msg(self) -> str:
         return "Reinitialize checkout config...."
 
-    def get_repo_type(self, state_dir: Path) -> str:
-        hgpath = state_dir / ".hg"
-        if not hgpath.exists():
-            return "other"
-        if (hgpath / "requires").exists():
-            with open(hgpath / "requires", "r") as f:
-                for line in f:
-                    if line.startswith("edensparse"):
-                        return "filteredhg"
-        return "hg"
+    def get_repo_type(self, state_dir: Path) -> Tuple[str, bool]:
+        """Recover the checkout's scm_type and repo dir layout from its repo dir.
+
+        Both normally come from the config this fixer is rebuilding, so they
+        have to be read back from the repo dir: `hg_util.get_requires_data`
+        records the filteredhg decision in `requires`, and the off-mount
+        layout makes the repo dir a symlink into the state dir. The backing
+        repo cannot answer the first question -- its own `requires` never
+        carries `edensparse`.
+
+        Returns the scm_type, "other" if it could not be determined, and
+        whether the checkout keeps its repo dir off mount.
+        """
+        mount_path = self._checkout_info.path
+        repo_dir = mount_path / hg_util.sniff_dot_dir(mount_path)
+        try:
+            requires = (repo_dir / "requires").read_text()
+        except OSError:
+            return "other", False
+        off_mount = (
+            repo_dir.resolve() == hg_util.off_mount_repo_dir(state_dir).resolve()
+        )
+        if any(line.startswith("edensparse") for line in requires.splitlines()):
+            return "filteredhg", off_mount
+        return "hg", off_mount
 
     def get_backup_path(self, config_path: Path) -> Path:
         for i in range(1, 9):
@@ -871,10 +887,8 @@ class EdenCheckoutConfigCorruption(FixableProblem):
         else:
             raise Exception("checkout info missing state dir")
 
-        # Determine the repo type from the running mount.
-        # We can regenerate the config for hg and
-        # filteredhg repos.
-        repotype = self.get_repo_type(self._checkout_info.path)
+        # We can regenerate the config for hg and filteredhg repos.
+        repotype, off_mount_repo_dir = self.get_repo_type(state_dir)
         if repotype not in config_mod.HG_REPO_TYPES:
             raise Exception("Cannot fix config for non-hg repo")
 
@@ -899,9 +913,7 @@ class EdenCheckoutConfigCorruption(FixableProblem):
             nfs=self.is_nfs_default(),
             case_sensitive=sys.platform == "linux",
             overlay_type=None,
-            off_mount_repo_dir=self._checkout_info.instance.get_config_bool(
-                "clone.off-mount-repo-dir", False
-            ),
+            off_mount_repo_dir=off_mount_repo_dir,
         )
         checkout = config_mod.EdenCheckout(
             self._checkout_info.instance, self._checkout_info.path, state_dir

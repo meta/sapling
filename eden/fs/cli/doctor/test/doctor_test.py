@@ -114,6 +114,70 @@ class SnapshotFormatTest(DoctorTestBase):
         self.assertEqual("11223344556677889900" * 2, self.checkout.get_snapshot()[0])
 
 
+class CheckoutConfigCorruptionRepoTypeTest(DoctorTestBase):
+    """
+    EdenCheckoutConfigCorruption rebuilds config.toml, so it cannot read the
+    scm_type or the repo dir layout from it. Validate that it recovers both
+    from the checkout's own repo dir.
+    """
+
+    def _problem(self, tmp_dir: str) -> doctor.EdenCheckoutConfigCorruption:
+        instance = FakeEdenInstance(tmp_dir)
+        checkout_info = CheckoutInfo(
+            typing.cast(EdenInstance, instance),
+            Path(tmp_dir) / "mount",
+        )
+        return doctor.EdenCheckoutConfigCorruption(checkout_info, Exception("corrupt"))
+
+    def test_in_mount_layout(self) -> None:
+        tmp_dir = self.make_temporary_directory()
+        state_dir = Path(tmp_dir) / "state"
+        state_dir.mkdir()
+        hg_dir = Path(tmp_dir) / "mount" / ".hg"
+        hg_dir.mkdir(parents=True)
+        (hg_dir / "requires").write_text("eden\nstore\n")
+
+        self.assertEqual(("hg", False), self._problem(tmp_dir).get_repo_type(state_dir))
+
+    def test_sl_dot_dir(self) -> None:
+        tmp_dir = self.make_temporary_directory()
+        state_dir = Path(tmp_dir) / "state"
+        state_dir.mkdir()
+        sl_dir = Path(tmp_dir) / "mount" / ".sl"
+        sl_dir.mkdir(parents=True)
+        (sl_dir / "requires").write_text("eden\nedensparse\nstore\n")
+
+        self.assertEqual(
+            ("filteredhg", False), self._problem(tmp_dir).get_repo_type(state_dir)
+        )
+
+    @unittest.skipIf(sys.platform == "win32", "requires symlink creation")
+    def test_off_mount_layout(self) -> None:
+        # The repo dir lives in the state dir, and the mount only holds a
+        # symlink to it. The regenerated config has to say so.
+        tmp_dir = self.make_temporary_directory()
+        state_dir = Path(tmp_dir) / "state"
+        repo_dir = state_dir / "sl-repo-dir"
+        repo_dir.mkdir(parents=True)
+        (repo_dir / "requires").write_text("eden\nedensparse\nstore\n")
+        mount_path = Path(tmp_dir) / "mount"
+        mount_path.mkdir()
+        os.symlink(repo_dir, mount_path / ".hg", target_is_directory=True)
+
+        self.assertEqual(
+            ("filteredhg", True), self._problem(tmp_dir).get_repo_type(state_dir)
+        )
+
+    def test_no_requires_found(self) -> None:
+        tmp_dir = self.make_temporary_directory()
+        state_dir = Path(tmp_dir) / "state"
+        state_dir.mkdir()
+
+        self.assertEqual(
+            ("other", False), self._problem(tmp_dir).get_repo_type(state_dir)
+        )
+
+
 class DoctorTest(DoctorTestBase):
     # The diffs for what is written to stdout can be large.
     # pyre-fixme[4]: Attribute must be annotated.
