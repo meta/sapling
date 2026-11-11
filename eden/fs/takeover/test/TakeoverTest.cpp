@@ -1056,6 +1056,7 @@ TEST(Takeover, passedSocketsRemainReadable) {
   SocketPair conn;
   EventBase evb;
   FutureUnixSocket receiver{&evb, folly::File{channel.read.release(), true}};
+  InFlightSocketPin pin{receiver.getRawFd()};
   {
     FutureUnixSocket sender{&evb, folly::File{channel.write.release(), true}};
     std::vector<folly::File> files;
@@ -1095,11 +1096,6 @@ TEST(Takeover, passedSocketsRemainReadable) {
   ASSERT_EQ(1, msg.files.size());
   ASSERT_EQ(5, write(conn.write.fd(), "hello", 5));
   char buf[5];
-  if (folly::kIsApple) {
-    // FIXME: This should read "hello" once the receiving socket is pinned.
-    ASSERT_EQ(0, read(msg.files[0].fd(), buf, sizeof(buf)));
-    return;
-  }
   ASSERT_EQ(5, read(msg.files[0].fd(), buf, sizeof(buf)));
   EXPECT_EQ("hello", std::string_view(buf, sizeof(buf)));
 }

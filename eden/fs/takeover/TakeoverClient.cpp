@@ -9,6 +9,11 @@
 
 #include "eden/fs/takeover/TakeoverClient.h"
 
+#include <sys/socket.h>
+#include <cstring>
+
+#include <folly/Exception.h>
+#include <folly/Portability.h>
 #include <folly/io/Cursor.h>
 #include <folly/io/async/EventBase.h>
 #include <folly/logging/xlog.h>
@@ -22,6 +27,30 @@ using apache::thrift::CompactSerializer;
 using std::string;
 
 namespace facebook::eden {
+
+InFlightSocketPin::InFlightSocketPin(int fd) {
+  try {
+    SocketPair pair;
+    char byte = 0;
+    struct iovec iov{&byte, sizeof(byte)};
+    alignas(struct cmsghdr) char control[CMSG_SPACE(sizeof(int))] = {};
+    struct msghdr msg{};
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control;
+    msg.msg_controllen = sizeof(control);
+    struct cmsghdr* hdr = CMSG_FIRSTHDR(&msg);
+    hdr->cmsg_len = CMSG_LEN(sizeof(int));
+    hdr->cmsg_level = SOL_SOCKET;
+    hdr->cmsg_type = SCM_RIGHTS;
+    std::memcpy(CMSG_DATA(hdr), &fd, sizeof(int));
+    folly::checkUnixError(
+        sendmsg(pair.write.fd(), &msg, 0), "sendmsg() failed");
+    pair_ = std::move(pair);
+  } catch (const std::exception& ex) {
+    XLOGF(WARN, "unable to pin the takeover socket: {}", ex.what());
+  }
+}
 
 folly::Future<UnixSocket::Message> receiveTakeoverDataMessage(
     FutureUnixSocket& socket,
@@ -68,12 +97,19 @@ TakeoverData takeoverMounts(
 
   auto connectTimeout = std::chrono::seconds(1);
   FutureUnixSocket socket;
+  // Declared after socket so it is released before socket is closed.
+  std::optional<InFlightSocketPin> pin;
   socket.connect(&evb, socketPath.view(), connectTimeout)
       .thenValue([&socket,
+                  &pin,
                   force,
                   onlyIfIdle,
                   supportedVersions,
                   supportedTakeoverCapabilities](auto&&) {
+        if (folly::kIsApple) {
+          pin.emplace(socket.getRawFd());
+        }
+
         // Send our protocol version so that the server knows
         // whether we're capable of handshaking successfully
 
