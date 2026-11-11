@@ -3162,6 +3162,58 @@ Mount failed. Running `sl doctor` in the backing repo and then will retry the mo
             out.getvalue(),
         )
 
+    def test_is_transient_mount_error(self) -> None:
+        # Both wrappers observed in production.
+        for msg in (
+            "SaplingBackingStoreError: Network Error: The request was dropped "
+            "before it could complete",
+            "EdenError: sapling::SaplingBackingStoreError: Network Error: The "
+            "request was dropped before it could complete",
+        ):
+            self.assertTrue(doctor.is_transient_mount_error(Exception(msg)))
+
+        # A backing store error that is not a network failure stays on the
+        # `sl doctor` path.
+        self.assertFalse(
+            doctor.is_transient_mount_error(
+                Exception("SaplingBackingStoreError: key fetch failed ae8c078a")
+            )
+        )
+        self.assertFalse(
+            doctor.is_transient_mount_error(Exception("is too short for header"))
+        )
+
+    @patch("eden.fs.cli.doctor.test.lib.fake_eden_instance.FakeEdenInstance.mount")
+    def test_missing_mount_transient_error_retried(
+        self,
+        mock_mount: MagicMock,
+    ) -> None:
+        mock_mount.side_effect = [
+            Exception(
+                "SaplingBackingStoreError: Network Error: The request was "
+                "dropped before it could complete"
+            ),
+            0,
+            1,
+        ]
+        fixer, out, checkout = self.setUpEdenMountTest()
+
+        self.assertEqual(mock_mount.call_count, 3)
+        self.assertEqual(fixer.num_fixed_problems, 1)
+        # `sl doctor` must not run: it cannot repair a backing store fetch, and
+        # on failure it reports the repo may be corrupted beyond repair.
+        self.assertEqual(
+            f"""\
+<yellow>- Found problem:<reset>
+{checkout.path} is not currently mounted
+Remounting {checkout.path}...
+Mount failed with a transient backing store error. Retrying (1/3)...
+<green>fixed<reset>
+
+""",
+            out.getvalue(),
+        )
+
     @patch("eden.fs.cli.doctor.test.lib.fake_eden_instance.FakeEdenInstance.mount")
     def test_missing_mount_too_short(
         self,

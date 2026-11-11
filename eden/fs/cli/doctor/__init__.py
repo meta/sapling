@@ -11,6 +11,7 @@ import logging
 import os
 import shlex
 import sys
+import time
 from datetime import timedelta
 from pathlib import Path
 from textwrap import dedent
@@ -1387,6 +1388,21 @@ class RunningMountNotVisible(FixableProblem):
         return False
 
 
+# A mount can fail because the backing store could not serve a fetch while the
+# checkout itself is intact. `sl doctor` cannot repair that, and the message it
+# produces tells the user their repo may be corrupted beyond repair, so these
+# are retried rather than treated as corruption.
+_TRANSIENT_MOUNT_ERROR_MARKERS: tuple[str, ...] = (
+    "SaplingBackingStoreError",
+    "Network Error",
+)
+
+
+def is_transient_mount_error(ex: Exception) -> bool:
+    msg = str(ex)
+    return all(marker in msg for marker in _TRANSIENT_MOUNT_ERROR_MARKERS)
+
+
 class CheckoutNotMounted(FixableProblem):
     _out: ui.Output
     _instance: EdenInstance
@@ -1418,6 +1434,34 @@ class CheckoutNotMounted(FixableProblem):
     def start_msg(self) -> str:
         return f"Remounting {self._mount_path}"
 
+    def _retry_mount(self) -> bool:
+        """Retry a mount that failed with a transient backing store error.
+
+        Returns whether a retry succeeded. Setting the retry count to 0
+        disables this and restores the previous `sl doctor` behavior.
+        """
+        retries = self._instance.get_config_int(
+            "doctor.transient-mount-error-retries", 3
+        )
+        delay_ms = self._instance.get_config_int(
+            "doctor.transient-mount-error-retry-delay-ms", 500
+        )
+        for attempt in range(1, retries + 1):
+            time.sleep(delay_ms * attempt / 1000)
+            self._out.write(
+                f"\nMount failed with a transient backing store error. "
+                f"Retrying ({attempt}/{retries})...\n",
+                flush=True,
+            )
+            try:
+                self._instance.mount(str(self._mount_path), False)
+                return True
+            except Exception as ex:
+                if not is_transient_mount_error(ex):
+                    log.info("retried mount failed with a new error: %s", ex)
+                    return False
+        return False
+
     def perform_fix(self) -> None:
         try:
             self._instance.mount(str(self._mount_path), False)
@@ -1433,6 +1477,9 @@ class CheckoutNotMounted(FixableProblem):
 This can happen if your machine was hard-rebooted.
 {get_reclone_msg(str(self._mount_path))}"""
                 )
+
+            if is_transient_mount_error(ex) and self._retry_mount():
+                return
 
             # if it is not this ^ eden corruption then it could be hg
             # corruption that hg doctor could fix. Let's try hg doctor and then
