@@ -36,6 +36,7 @@ use ephemeral_blobstore::Bubble;
 use ephemeral_blobstore::BubbleId;
 use ephemeral_blobstore::RepoEphemeralStore;
 use ephemeral_blobstore::StorageLocation;
+use ephemeral_blobstore::bubble_hg_mapping_enabled;
 use filestore::FetchKey;
 use filestore::FilestoreConfigRef;
 use filestore::StoreRequest;
@@ -661,19 +662,19 @@ impl<R: MononokeRepo> HgRepoContext<R> {
             .repo_derived_data()
             .config()
             .is_enabled(RootHgAugmentedManifestId::VARIANT);
-        // Bubbles are skipped: nothing is derived there.
+        let in_bubble = self
+            .repo()
+            .repo_derived_data()
+            .manager()
+            .bubble_id()
+            .is_some();
         let check_roots = (map_roots
             || justknobs::eval(
                 CHECK_UPLOADED_ROOT_HG_AUGMENTED_MANIFEST,
                 None,
                 Some(repo_name),
             ))
-            && self
-                .repo()
-                .repo_derived_data()
-                .manager()
-                .bubble_id()
-                .is_none();
+            && (!in_bubble || bubble_hg_mapping_enabled(repo_name));
         // A commit mapped to its stored root is not derived.
         let stored: Vec<&BonsaiChangeset> = if check_roots {
             let checks: Vec<_> = uploaded
@@ -739,7 +740,8 @@ impl<R: MononokeRepo> HgRepoContext<R> {
                         .repo()
                         .repo_derived_data()
                         .manager()
-                        .derivation_context(None);
+                        .changeset_derivation_context(self.ctx(), bcs.get_changeset_id(), None)
+                        .await?;
                     // The augmented manifest depends on the ACL manifest, so
                     // that is mapped first.
                     RootAclManifestId::from_augmented_root_pointer(
@@ -1267,10 +1269,13 @@ impl<R: MononokeRepo> HgRepoContext<R> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::sync::Arc;
 
     use blobstore::BlobstoreGetData;
     use blobstore::BlobstoreIsPresent;
+    use bonsai_hg_mapping::BonsaiHgMappingEntry;
+    use ephemeral_blobstore::RepoEphemeralStoreRef;
     use fbinit::FacebookInit;
     use futures::FutureExt;
     use justknobs::test_helpers::JustKnobsInMemory;
@@ -1279,9 +1284,13 @@ mod tests {
     use maplit::hashmap;
     use memblob::Memblob;
     use mercurial_types::HgParents;
+    use mercurial_types::blobs::ChangesetMetadata;
+    use mercurial_types::blobs::HgChangesetContent;
     use mercurial_types::calculate_hg_node_id;
+    use mononoke_api::ChangesetSpecifier;
     use mononoke_api::repo::Repo;
     use mononoke_api::repo::RepoContext;
+    use mononoke_api::repo::RepoWithBubble;
     use mononoke_macros::mononoke;
     use samplingblob::SamplingBlobstore;
     use samplingblob::SamplingHandler;
@@ -1636,6 +1645,198 @@ mod tests {
                 STORE_AUGMENTED_MANIFESTS_AT_TREE_UPLOAD.to_string() => KnobVal::Bool(true),
             }),
             assert_augmented_manifests_build_without_hg_manifests(fb).boxed(),
+        )
+        .await
+    }
+
+    struct UploadedCommit {
+        hg_cs: HgBlobChangeset,
+        bcs: BonsaiChangeset,
+        root: HgAugmentedManifestId,
+    }
+
+    async fn upload_commit_with_augmented_root(
+        hg: &HgRepoContext<Repo>,
+    ) -> anyhow::Result<UploadedCommit> {
+        let ctx = hg.ctx();
+        let repo = hg.repo();
+        let tree = verify_directory(hg, String::new()).await?;
+        hg.build_and_store_augmented_manifests_for_uploaded_trees(vec![tree.clone()])
+            .await?;
+        let cs_id = CreateCommitContext::new_root(ctx, repo).commit().await?;
+        let bcs = cs_id.load(ctx, repo.repo_blobstore()).await?;
+        let hg_cs = HgBlobChangeset::new(HgChangesetContent::new_from_parts(
+            HgParents::new(None, None),
+            HgManifestId::new(tree.node_id()),
+            ChangesetMetadata {
+                user: "test".to_string(),
+                time: DateTime::from_timestamp(0, 0)?,
+                extra: BTreeMap::new(),
+                message: "uploaded".to_string(),
+            },
+            vec![],
+        ))?;
+        hg_cs.save(ctx, repo.repo_blobstore()).await?;
+        Ok(UploadedCommit {
+            hg_cs,
+            bcs,
+            root: HgAugmentedManifestId::new(tree.node_id()),
+        })
+    }
+
+    async fn bubble_hg_context(
+        ctx: &CoreContext,
+        repo: &Repo,
+    ) -> anyhow::Result<HgRepoContext<Repo>> {
+        let bubble = repo
+            .repo_ephemeral_store()
+            .create_bubble(ctx, None, vec![])
+            .await?;
+        Ok(
+            RepoContext::new_test(ctx.clone(), Arc::new(repo.with_bubble(bubble)))
+                .await?
+                .hg(),
+        )
+    }
+
+    async fn mapped_root(
+        ctx: &CoreContext,
+        repo: &Repo,
+        cs_id: ChangesetId,
+    ) -> anyhow::Result<Option<HgAugmentedManifestId>> {
+        Ok(repo
+            .repo_derived_data()
+            .fetch_derived::<RootHgAugmentedManifestId>(ctx, cs_id)
+            .await?
+            .map(|root| root.hg_augmented_manifest_id()))
+    }
+
+    async fn assert_uploaded_root_mapped_in_bubble(fb: FacebookInit) -> anyhow::Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let repo: Repo = TestRepoFactory::new(fb)?
+            .with_ephemeral_store()
+            .build()
+            .await?;
+        let hg = bubble_hg_context(&ctx, &repo).await?;
+        let uploaded = upload_commit_with_augmented_root(&hg).await?;
+        let cs_id = uploaded.bcs.get_changeset_id();
+        let hg_cs_id = uploaded.hg_cs.get_changeset_id();
+        hg.repo()
+            .bonsai_hg_mapping()
+            .add(
+                &ctx,
+                BonsaiHgMappingEntry {
+                    hg_cs_id,
+                    bcs_id: cs_id,
+                },
+            )
+            .await?;
+
+        hg.ensure_uploaded_augmented_manifests_derived(&[Ok((uploaded.hg_cs, uploaded.bcs))])
+            .await;
+
+        assert_eq!(
+            mapped_root(&ctx, hg.repo(), cs_id).await?,
+            Some(uploaded.root),
+            "the bubble maps the commit to its uploaded root"
+        );
+        assert_eq!(
+            mapped_root(&ctx, &repo, cs_id).await?,
+            None,
+            "nothing is mapped in the permanent store"
+        );
+        let changeset = hg
+            .repo_ctx()
+            .changeset(ChangesetSpecifier::Bonsai(cs_id))
+            .await?
+            .expect("the uploaded commit is in the bubble");
+        assert_eq!(
+            changeset.hg_id().await?,
+            Some(hg_cs_id),
+            "the commit keeps the uploaded hg id"
+        );
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn test_uploaded_root_mapped_in_bubble(fb: FacebookInit) -> anyhow::Result<()> {
+        with_just_knobs_async(
+            JustKnobsInMemory::new(hashmap! {
+                STORE_AUGMENTED_MANIFESTS_AT_TREE_UPLOAD.to_string() => KnobVal::Bool(true),
+                MAP_UPLOADED_ROOT_HG_AUGMENTED_MANIFEST.to_string() => KnobVal::Bool(true),
+                "scm/mononoke:enable_bubble_hg_mapping".to_string() => KnobVal::Bool(true),
+            }),
+            assert_uploaded_root_mapped_in_bubble(fb).boxed(),
+        )
+        .await
+    }
+
+    async fn assert_uploaded_root_not_mapped_in_bubble_when_disabled(
+        fb: FacebookInit,
+    ) -> anyhow::Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let repo: Repo = TestRepoFactory::new(fb)?
+            .with_ephemeral_store()
+            .build()
+            .await?;
+        let hg = bubble_hg_context(&ctx, &repo).await?;
+        let uploaded = upload_commit_with_augmented_root(&hg).await?;
+        let cs_id = uploaded.bcs.get_changeset_id();
+
+        hg.ensure_uploaded_augmented_manifests_derived(&[Ok((uploaded.hg_cs, uploaded.bcs))])
+            .await;
+
+        assert_eq!(
+            mapped_root(&ctx, hg.repo(), cs_id).await?,
+            None,
+            "with the bubble hg mapping off, bubbles are left alone as before"
+        );
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn test_uploaded_root_not_mapped_in_bubble_when_disabled(
+        fb: FacebookInit,
+    ) -> anyhow::Result<()> {
+        with_just_knobs_async(
+            JustKnobsInMemory::new(hashmap! {
+                STORE_AUGMENTED_MANIFESTS_AT_TREE_UPLOAD.to_string() => KnobVal::Bool(true),
+                MAP_UPLOADED_ROOT_HG_AUGMENTED_MANIFEST.to_string() => KnobVal::Bool(true),
+                "scm/mononoke:enable_bubble_hg_mapping".to_string() => KnobVal::Bool(false),
+            }),
+            assert_uploaded_root_not_mapped_in_bubble_when_disabled(fb).boxed(),
+        )
+        .await
+    }
+
+    async fn assert_uploaded_root_mapped_in_permanent_repo(fb: FacebookInit) -> anyhow::Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let repo: Repo = test_repo_factory::build_empty(fb).await?;
+        let hg = RepoContext::new_test(ctx.clone(), Arc::new(repo.clone()))
+            .await?
+            .hg();
+        let uploaded = upload_commit_with_augmented_root(&hg).await?;
+        let cs_id = uploaded.bcs.get_changeset_id();
+
+        hg.ensure_uploaded_augmented_manifests_derived(&[Ok((uploaded.hg_cs, uploaded.bcs))])
+            .await;
+
+        assert_eq!(
+            mapped_root(&ctx, &repo, cs_id).await?,
+            Some(uploaded.root),
+            "a permanent commit is still mapped in the permanent store"
+        );
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn test_uploaded_root_mapped_in_permanent_repo(fb: FacebookInit) -> anyhow::Result<()> {
+        with_just_knobs_async(
+            JustKnobsInMemory::new(hashmap! {
+                STORE_AUGMENTED_MANIFESTS_AT_TREE_UPLOAD.to_string() => KnobVal::Bool(true),
+                MAP_UPLOADED_ROOT_HG_AUGMENTED_MANIFEST.to_string() => KnobVal::Bool(true),
+            }),
+            assert_uploaded_root_mapped_in_permanent_repo(fb).boxed(),
         )
         .await
     }

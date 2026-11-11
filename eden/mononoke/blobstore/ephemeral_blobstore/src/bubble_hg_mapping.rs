@@ -39,6 +39,10 @@ pub struct BubbleBonsaiHgMapping {
     repo_name: String,
 }
 
+pub fn bubble_hg_mapping_enabled(repo_name: &str) -> bool {
+    justknobs::eval(ENABLE_BUBBLE_HG_MAPPING, None, Some(repo_name))
+}
+
 impl BubbleBonsaiHgMapping {
     pub(crate) fn new(
         persistent: Arc<dyn BonsaiHgMapping>,
@@ -55,7 +59,7 @@ impl BubbleBonsaiHgMapping {
     }
 
     fn enabled(&self) -> bool {
-        justknobs::eval(ENABLE_BUBBLE_HG_MAPPING, None, Some(&self.repo_name))
+        bubble_hg_mapping_enabled(&self.repo_name)
     }
 
     async fn get_bubble_first(

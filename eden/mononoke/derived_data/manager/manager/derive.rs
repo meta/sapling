@@ -134,6 +134,18 @@ impl DerivedDataManager {
             .with_replaced_rederivation(rederivation)
     }
 
+    pub async fn changeset_derivation_context(
+        &self,
+        ctx: &CoreContext,
+        cs_id: ChangesetId,
+        rederivation: Option<Arc<dyn Rederivation>>,
+    ) -> anyhow::Result<DerivationContext> {
+        Ok(self
+            .get_manager(ctx, cs_id)
+            .await?
+            .derivation_context(rederivation))
+    }
+
     pub async fn check_derived<Derivable>(
         &self,
         ctx: &CoreContext,

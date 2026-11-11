@@ -27,6 +27,7 @@ pub use crate::bubble::Bubble;
 pub use crate::bubble::BubbleId;
 pub use crate::bubble::StorageLocation;
 pub use crate::bubble_hg_mapping::BubbleBonsaiHgMapping;
+pub use crate::bubble_hg_mapping::bubble_hg_mapping_enabled;
 pub use crate::builder::RepoEphemeralStoreBuilder;
 pub use crate::commit_graph::EphemeralOnlyChangesetStorage;
 pub use crate::error::EphemeralBlobstoreError;
