@@ -29,6 +29,9 @@ tracing = { version = "0.1.41", features = ["attributes", "valuable"], optional 
 url = { version = "2.5.8", optional = true }
 zstd = { version = "0.14.3", features = ["experimental", "zstdmt"], optional = true }
 
+[dev-dependencies]
+tempfile = "3.27.0"
+
 [features]
 default = []
 fb = ["base64", "filetime", "sapling-io", "sapling-types", "serde_urlencoded", "sha2", "tracing", "url", "zstd"]

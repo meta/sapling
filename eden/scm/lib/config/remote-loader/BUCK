@@ -29,6 +29,9 @@ sl_rust_library(
     },
     crate_root = "src/lib.rs",
     features = ["fb"],
+    test_deps = [
+        "fbsource//third-party/rust:tempfile",
+    ],
     deps = [
         "fbsource//third-party/rust:anyhow",
         "fbsource//third-party/rust:base64",
@@ -40,6 +43,7 @@ sl_rust_library(
         "fbsource//third-party/rust:tracing",
         "fbsource//third-party/rust:url",
         "fbsource//third-party/rust:zstd",
+        "//common/rust/cert_path_picker:cert_path_picker",
         "//common/rust/interngraph:interngraph_user_agent",
         "//eden/scm/lib/http-client:http-client",
         "//eden/scm/lib/io:io",
