@@ -110,7 +110,19 @@ class Client:
             self._oauth,
             self._cats,
             self._host,
+            coding_agent_metadata=self._coding_agent_metadata(),
         )
+
+    def _coding_agent_metadata(self) -> Optional[str]:
+        if not self._ui.configbool(
+            "phabricator", "send-coding-agent-metadata", default=True
+        ):
+            return None
+        metadata = encoding.environ.get("CODING_AGENT_METADATA")
+        # http.client fails on header values with control or non-latin-1 characters.
+        if metadata and metadata.isascii() and metadata.isprintable():
+            return metadata
+        return None
 
     def _is_token_expired(self, response):
         if not self._auth_token_regex:

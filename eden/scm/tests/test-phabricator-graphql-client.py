@@ -1,0 +1,56 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This software may be used and distributed according to the terms of the
+# GNU General Public License version 2.
+
+import unittest
+from unittest.mock import patch
+
+import silenttestrunner
+from sapling import encoding, ui as uimod
+from sapling.ext.extlib.phabricator import graphql, phabricator_graphql_client_urllib
+
+METADATA = "id=agentcloud,session_id=0b8f2c1e-5d2a-4f7b-9c3e-1a2b3c4d5e6f"
+
+
+class CodingAgentMetadataHeaderTest(unittest.TestCase):
+    def setUp(self):
+        self.ui = uimod.ui()
+        self.ui.setconfig("auth_proxy", "unix_socket_path", "/nonexistent/socket")
+        self.ui.setconfig("phabricator", "graphql_app_id", "1")
+        self.ui.setconfig("phabricator", "graphql_host", "https://phabricator.test")
+
+    def sent_headers(self, metadata):
+        requests = phabricator_graphql_client_urllib.PhabricatorGraphQLClientRequests
+        with (
+            patch.dict(encoding.environ),
+            patch.object(requests, "sendpost", return_value={"data": {}}) as sendpost,
+        ):
+            encoding.environ.pop("CODING_AGENT_METADATA", None)
+            if metadata is not None:
+                encoding.environ["CODING_AGENT_METADATA"] = metadata
+            graphql.Client(repodir="/", ui=self.ui).graphqlquery("query { x }", {})
+        return sendpost.call_args.kwargs["headers"]
+
+    def test_a_query_forwards_the_coding_agent_metadata(self):
+        headers = self.sent_headers(METADATA)
+        self.assertEqual(headers.get("X-Coding-Agent-Metadata"), METADATA)
+
+    def test_a_query_sends_no_metadata_when_the_variable_is_unset(self):
+        self.assertNotIn("X-Coding-Agent-Metadata", self.sent_headers(None))
+
+    def test_a_query_sends_no_metadata_when_the_config_is_off(self):
+        self.ui.setconfig("phabricator", "send-coding-agent-metadata", False)
+        self.assertNotIn("X-Coding-Agent-Metadata", self.sent_headers(METADATA))
+
+    def test_a_query_drops_metadata_with_a_control_character(self):
+        headers = self.sent_headers("id=agentcloud\r\nX-Injected: 1")
+        self.assertNotIn("X-Coding-Agent-Metadata", headers)
+
+    def test_a_query_drops_metadata_that_is_not_ascii(self):
+        headers = self.sent_headers("id=agentcloud,session_id=\u4e2d")
+        self.assertNotIn("X-Coding-Agent-Metadata", headers)
+
+
+if __name__ == "__main__":
+    silenttestrunner.main(__name__)

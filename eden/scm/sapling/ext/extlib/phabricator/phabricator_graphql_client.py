@@ -12,12 +12,15 @@ from . import arcconfig
 
 
 class PhabricatorGraphQLClient:
-    def __init__(self, urllib, x2p_app_id, ph_oauth, ph_cats, host):
+    def __init__(
+        self, urllib, x2p_app_id, ph_oauth, ph_cats, host, coding_agent_metadata=None
+    ):
         self.urllib = urllib
         self.phabricator_oauth = ph_oauth
         self.phabricator_cats = ph_cats
         self.graphql_url = host + "/graphql"
         self.x2p_app_id = x2p_app_id
+        self.coding_agent_metadata = coding_agent_metadata
 
     def query(self, timeout, request, params=None):
         """
@@ -62,6 +65,9 @@ class PhabricatorGraphQLClient:
                 "to get a Phabricator OAuth token. "
                 "For bots, see http://fburl.com/botdiffs for more info."
             )
+
+        if self.coding_agent_metadata:
+            headers["X-Coding-Agent-Metadata"] = self.coding_agent_metadata
 
         return self.urllib.sendpost(
             self.graphql_url,
