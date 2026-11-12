@@ -332,9 +332,20 @@ fn rejects_lossy_integer_to_float_conversions() {
         json5_protocol::deserialize::<f64, _, _>("9007199254740993").is_err(),
         "integer precision loss must be rejected for double"
     );
-    assert!(
-        json5_protocol::deserialize::<f32, _, _>("1e100").is_err(),
-        "finite values must not overflow to infinity"
+    assert_eq!(
+        json5_protocol::deserialize::<f32, _, _>("1e100").expect("valid float"),
+        f32::INFINITY,
+        "values beyond the float range round to infinity"
+    );
+    assert_eq!(
+        json5_protocol::deserialize::<f64, _, _>("-1e400").expect("valid double"),
+        f64::NEG_INFINITY,
+        "values beyond the double range round to infinity"
+    );
+    assert_eq!(
+        json5_protocol::deserialize::<f32, _, _>("'1e400'").expect("valid float"),
+        f32::INFINITY,
+        "quoted values beyond the double range round to infinity"
     );
     assert_eq!(
         json5_protocol::deserialize::<f32, _, _>("1.0000000596046448").expect("valid float"),

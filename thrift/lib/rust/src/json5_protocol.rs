@@ -1212,17 +1212,10 @@ impl ProtocolReader for Json5ProtocolDeserializer {
 
     fn read_float(&mut self) -> Result<f32> {
         match self.take_number()? {
-            Number::Float { value, token } => {
-                let converted = match token {
-                    Some(token) => parse_f32(&token)?,
-                    None => value as f32,
-                };
-                ensure_err!(
-                    !value.is_finite() || converted.is_finite(),
-                    ProtocolError::InvalidValue
-                );
-                Ok(converted)
-            }
+            Number::Float { value, token } => match token {
+                Some(token) => parse_f32(&token),
+                None => Ok(value as f32),
+            },
             Number::Integer(value) => {
                 let converted = value as f32;
                 ensure_err!(
@@ -1277,11 +1270,9 @@ fn parse_f32(token: &str) -> Result<f32> {
         Some(value) => return Ok(value as f32),
         None => normalize_float_token(token)?,
     };
-    let value = normalized
+    normalized
         .parse::<f32>()
-        .context("invalid JSON5 float value")?;
-    ensure_err!(value.is_finite(), ProtocolError::InvalidValue);
-    Ok(value)
+        .context("invalid JSON5 float value")
 }
 
 fn parse_f64(token: &str) -> Result<f64> {
@@ -1289,11 +1280,9 @@ fn parse_f64(token: &str) -> Result<f64> {
         Some(value) => return Ok(value),
         None => normalize_float_token(token)?,
     };
-    let value = normalized
+    normalized
         .parse::<f64>()
-        .context("invalid JSON5 double value")?;
-    ensure_err!(value.is_finite(), ProtocolError::InvalidValue);
-    Ok(value)
+        .context("invalid JSON5 double value")
 }
 
 fn parse_special_float(token: &str) -> Option<f64> {
@@ -1486,6 +1475,11 @@ fn is_float_token(token: &str) -> bool {
 fn normalize_number_token(token: &str) -> std::result::Result<String, Json5ParseError> {
     if token == "+Infinity" || token == "+NaN" {
         return Ok(token[1..].to_owned());
+    }
+    // `json5` rejects f64 overflow; the reader reparses the saved token.
+    if is_float_token(token) && parse_f64(token).is_ok_and(f64::is_infinite) {
+        let sign = if token.starts_with('-') { "-" } else { "" };
+        return Ok(format!("{sign}Infinity"));
     }
 
     if !is_hex_token(token) {
