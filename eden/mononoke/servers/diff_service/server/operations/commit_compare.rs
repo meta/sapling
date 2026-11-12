@@ -154,7 +154,7 @@ impl DiffServiceImpl {
                 max_paths: operations::unordered_max_paths()?,
             },
         };
-        let internal_page_size = select_internal_page_size(&params, &mode);
+        let internal_page_size = select_internal_page_size(repo_name, &params, &mode);
 
         // Create separate repo contexts for each changeset to support cross-bubble diffs.
         // Each ephemeral changeset may live in a different bubble, so we need
@@ -422,6 +422,7 @@ async fn paged_commit_compare(
 }
 
 fn select_internal_page_size(
+    repo_name: &str,
     params: &source_control_thrift::CommitCompareParams,
     mode: &CommitCompareMode,
 ) -> Option<usize> {
@@ -430,7 +431,7 @@ fn select_internal_page_size(
     }
 
     let configured_page_size =
-        justknobs::get_as::<usize>(COMMIT_COMPARE_INTERNAL_PAGE_SIZE_JK, None);
+        justknobs::get_as::<usize>(COMMIT_COMPARE_INTERNAL_PAGE_SIZE_JK, Some(repo_name));
     let ordered_page_max = source_control_thrift::consts::COMMIT_COMPARE_ORDERED_MAX_LIMIT as usize;
     match mode {
         CommitCompareMode::Ordered { ordered_params } => {
@@ -480,7 +481,12 @@ impl AddScubaParams for thrift::CommitCompareRequest {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use fbinit::FacebookInit;
+    use justknobs::test_helpers::JustKnobsInMemory;
+    use justknobs::test_helpers::KnobVal;
+    use justknobs::test_helpers::with_just_knobs;
     use mononoke_macros::mononoke;
 
     use super::*;
@@ -499,6 +505,113 @@ mod tests {
         params.compare_items.clear();
         params.follow_mutable_file_history = Some(true);
         assert!(!has_stable_paging_cursor(&params));
+    }
+
+    fn select_with_page_size(
+        page_size: i64,
+        params: &source_control_thrift::CommitCompareParams,
+        mode: &CommitCompareMode,
+    ) -> Option<usize> {
+        let knobs = JustKnobsInMemory::new(HashMap::from([(
+            COMMIT_COMPARE_INTERNAL_PAGE_SIZE_JK.to_string(),
+            KnobVal::Int(page_size),
+        )]));
+        with_just_knobs(knobs, || select_internal_page_size("repo", params, mode))
+    }
+
+    fn ordered(limit: i64) -> CommitCompareMode {
+        CommitCompareMode::Ordered {
+            ordered_params: source_control_thrift::CommitCompareOrderedParams {
+                limit,
+                ..Default::default()
+            },
+        }
+    }
+
+    fn unordered(max_paths: usize) -> CommitCompareMode {
+        CommitCompareMode::Unordered { max_paths }
+    }
+
+    #[mononoke::test]
+    fn ordered_requests_page_only_below_their_limit() {
+        let params = source_control_thrift::CommitCompareParams::default();
+        let max_limit = source_control_thrift::consts::COMMIT_COMPARE_ORDERED_MAX_LIMIT;
+
+        assert_eq!(
+            select_with_page_size(128, &params, &ordered(1_000)),
+            Some(128),
+            "a page smaller than the limit should be used"
+        );
+        assert_eq!(
+            select_with_page_size(128, &params, &ordered(128)),
+            None,
+            "a page that covers the whole limit should stay one-shot"
+        );
+        assert_eq!(
+            select_with_page_size(0, &params, &ordered(1_000)),
+            None,
+            "a zero page size should disable paging"
+        );
+        assert_eq!(
+            select_with_page_size(128, &params, &ordered(max_limit + 1)),
+            None,
+            "a limit above the ordered maximum should stay one-shot"
+        );
+        assert_eq!(
+            select_with_page_size(128, &params, &ordered(-1)),
+            None,
+            "a negative limit should stay one-shot"
+        );
+    }
+
+    #[mononoke::test]
+    fn unordered_requests_cap_the_page() {
+        let params = source_control_thrift::CommitCompareParams::default();
+
+        assert_eq!(
+            select_with_page_size(128, &params, &unordered(10_000)),
+            Some(128),
+            "a page smaller than max_paths should be used as is"
+        );
+        assert_eq!(
+            select_with_page_size(1_000, &params, &unordered(100)),
+            Some(100),
+            "the page should be capped at max_paths"
+        );
+        assert_eq!(
+            select_with_page_size(20_000, &params, &unordered(50_000)),
+            Some(10_000),
+            "the page should be capped at the ordered maximum limit of 10,000"
+        );
+        assert_eq!(
+            select_with_page_size(128, &params, &unordered(0)),
+            Some(1),
+            "a zero max_paths should still page one entry at a time"
+        );
+        assert_eq!(
+            select_with_page_size(0, &params, &unordered(10_000)),
+            None,
+            "a zero page size should disable paging"
+        );
+    }
+
+    #[mononoke::test]
+    fn unstable_cursors_are_never_paged() {
+        let mut params = source_control_thrift::CommitCompareParams::default();
+        params
+            .compare_items
+            .insert(source_control_thrift::CommitCompareItem::TREES);
+
+        assert_eq!(
+            select_with_page_size(1, &params, &ordered(1_000)),
+            None,
+            "an ordered tree comparison should stay one-shot"
+        );
+        assert_eq!(
+            select_with_page_size(1, &params, &unordered(1_000)),
+            None,
+            "an unordered tree comparison should stay one-shot"
+        );
     }
 
     #[mononoke::fbinit_test]
