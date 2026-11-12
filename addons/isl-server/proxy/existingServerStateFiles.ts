@@ -5,6 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+import type {StartServerArgs} from './server';
+
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -105,4 +107,25 @@ export async function readExistingServerFile(port: number): Promise<ExistingServ
     {encoding: 'utf-8', flag: 'r'},
   );
   return JSON.parse(data) as ExistingServerInfo;
+}
+
+/**
+ * Record a running server so a later launch on the same port can reuse it.
+ * The server process calls this itself once it is listening, so the record
+ * exists even if the process that launched it has already exited.
+ */
+export async function saveExistingServerInfo(args: StartServerArgs): Promise<void> {
+  await ensureExistingServerFolder();
+  await deleteExistingServerFile(args.port);
+  await writeExistingServerFile(args.port, {
+    sensitiveToken: args.sensitiveToken,
+    challengeToken: args.challengeToken,
+    logFileLocation: args.logFileLocation,
+    command: args.command,
+    slVersion: args.slVersion,
+    bind: args.bind,
+    tlsCert: args.tlsCert,
+    tlsKey: args.tlsKey,
+    persist: args.persist,
+  });
 }

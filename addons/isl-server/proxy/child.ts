@@ -18,6 +18,7 @@
 import type {MessageOptions} from 'node:child_process';
 import type {StartServerArgs, StartServerResult} from './server';
 
+import {saveExistingServerInfo} from './existingServerStateFiles';
 import {registerUncaughtExceptionHandler} from './uncaughtException';
 
 /**
@@ -54,7 +55,16 @@ const args: StartServerArgs = JSON.parse(process.env.ISL_SERVER_ARGS as string);
 args.logInfo = info;
 import('./server')
   .then(({startServer}) => startServer(args))
-  .then((result: StartServerResult) => {
+  .then(async (result: StartServerResult) => {
+    if (result.type === 'success') {
+      await saveExistingServerInfo(args).catch(error =>
+        info(
+          'failed to save server information for reuse. ' +
+            'This server will remain, but future invocations on this port will not be able to reuse this instance.',
+          String(error),
+        ),
+      );
+    }
     sendMessageToParentProcess({type: 'result', result});
   })
   .catch(error =>

@@ -15,11 +15,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {
-  deleteExistingServerFile,
-  ensureExistingServerFolder,
-  writeExistingServerFile,
-} from './existingServerStateFiles';
+import {saveExistingServerInfo} from './existingServerStateFiles';
 import * as lifecycle from './serverLifecycle';
 
 const DEFAULT_PORT = '3001';
@@ -526,7 +522,7 @@ export async function runProxyMain(args: Args) {
 
   /////////////////////////////
 
-  const result = await callStartServer({
+  const startArgs: StartServerArgs = {
     foreground,
     port,
     sensitiveToken,
@@ -539,7 +535,8 @@ export async function runProxyMain(args: Args) {
     tlsCert,
     tlsKey,
     persist,
-  });
+  };
+  const result = await callStartServer(startArgs);
 
   if (result.type === 'addressInUse' && !force) {
     // This port is already in use. Determine if it's a pre-existing ISL server,
@@ -647,29 +644,19 @@ export async function runProxyMain(args: Args) {
     }
     process.exit(0);
   } else if (result.type === 'success') {
-    // The server successfully started on this port
-    // Save the server information for reuse and print the URL for use
-
-    try {
-      await ensureExistingServerFolder();
-      await deleteExistingServerFile(port);
-      await writeExistingServerFile(port, {
-        sensitiveToken,
-        challengeToken,
-        logFileLocation,
-        command,
-        slVersion,
-        bind: bind ?? 'localhost',
-        tlsCert,
-        tlsKey,
-        persist,
-      });
-    } catch (error) {
-      info(
-        'failed to save server information reuse. ' +
-          'This server will remain, but future invocations on this port will not be able to reuse this instance.',
-        error,
-      );
+    // The server successfully started on this port. A background server saves
+    // its own information for reuse (child.ts), so it stays reusable even if
+    // this process is killed before it gets here.
+    if (foreground) {
+      try {
+        await saveExistingServerInfo(startArgs);
+      } catch (error) {
+        info(
+          'failed to save server information reuse. ' +
+            'This server will remain, but future invocations on this port will not be able to reuse this instance.',
+          error,
+        );
+      }
     }
 
     const {port: portInUse} = result;
