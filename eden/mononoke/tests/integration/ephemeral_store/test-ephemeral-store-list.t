@@ -22,7 +22,7 @@ setup configuration
   $ echo "f file content" > f
   $ hg add f
   $ hg snapshot create
-  snapshot: Snapshot created with id 2a4cebaabddd194bda1812da6b762215dfbbe7f9ed1cfe03d3b1e02ea6e9c320
+  snapshot: Snapshot created with id 91dba37ed314260bd1d66c76a3cd5623d8edb553401cb5e69db644447efede07
   0 files modified, 2 files added, 0 files removed, 0 files missing, 4 files untracked
 
 List the blob contents of a bubble without passing any argument:
@@ -55,7 +55,7 @@ List the blob contents of a bubble using the bubble ID:
   eph1.repo0000.alias.sha256.cb3061efdc399df099de7deadc56ce10e3512a9e937e27912b2afbf4af3c4f1e
   eph1.repo0000.alias.sha256.d1fcf04a9fcbae8bc5941649b4c9b5214116619075db4cdc7922e0687b155007
   eph1.repo0000.alias.sha256.da566161af52cc24d05681472324f280da04e51be8b6b9466ae2032a27c52f96
-  eph1.repo0000.changeset.blake2.2a4cebaabddd194bda1812da6b762215dfbbe7f9ed1cfe03d3b1e02ea6e9c320
+  eph1.repo0000.changeset.blake2.91dba37ed314260bd1d66c76a3cd5623d8edb553401cb5e69db644447efede07
   eph1.repo0000.content.blake2.4f3fc85925a86f48ba4052a20c4d70ac9c8024f4e2d984870f5a292ffb701f4d
   eph1.repo0000.content.blake2.6b0f000404b62473b82f51e1faa119c2ed7652e03188bf2770b0f701cae5c699
   eph1.repo0000.content.blake2.74561488c4d96fb423fa43522623d710eb4cad120d5d63565ecdab5e9c2d5dc2
@@ -74,7 +74,7 @@ List the blob contents of a bubble using invalid bubble ID:
   Error: bubble 100001 does not exist, or has expired
   [1]
 List the blob contents of a bubble using the changeset ID:
-  $ mononoke_admin ephemeral-store -R repo list -i 2a4cebaabddd194bda1812da6b762215dfbbe7f9ed1cfe03d3b1e02ea6e9c320 --ordered
+  $ mononoke_admin ephemeral-store -R repo list -i 91dba37ed314260bd1d66c76a3cd5623d8edb553401cb5e69db644447efede07 --ordered
   eph1.repo0000.alias.gitsha1.6b9963d7b81521bc09655857e272bf0f130e6bc3
   eph1.repo0000.alias.gitsha1.6fd97149d33202f1315d756e358078299c30bd7c
   eph1.repo0000.alias.gitsha1.904cb6675fad760f9fa1c27385e0c0c3d102820e
@@ -99,7 +99,7 @@ List the blob contents of a bubble using the changeset ID:
   eph1.repo0000.alias.sha256.cb3061efdc399df099de7deadc56ce10e3512a9e937e27912b2afbf4af3c4f1e
   eph1.repo0000.alias.sha256.d1fcf04a9fcbae8bc5941649b4c9b5214116619075db4cdc7922e0687b155007
   eph1.repo0000.alias.sha256.da566161af52cc24d05681472324f280da04e51be8b6b9466ae2032a27c52f96
-  eph1.repo0000.changeset.blake2.2a4cebaabddd194bda1812da6b762215dfbbe7f9ed1cfe03d3b1e02ea6e9c320
+  eph1.repo0000.changeset.blake2.91dba37ed314260bd1d66c76a3cd5623d8edb553401cb5e69db644447efede07
   eph1.repo0000.content.blake2.4f3fc85925a86f48ba4052a20c4d70ac9c8024f4e2d984870f5a292ffb701f4d
   eph1.repo0000.content.blake2.6b0f000404b62473b82f51e1faa119c2ed7652e03188bf2770b0f701cae5c699
   eph1.repo0000.content.blake2.74561488c4d96fb423fa43522623d710eb4cad120d5d63565ecdab5e9c2d5dc2

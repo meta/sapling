@@ -96,6 +96,7 @@ pub use crate::repo::create_changeset::CreateChangesetCheckMode;
 pub use crate::repo::create_changeset::CreateChangesetChecks;
 pub use crate::repo::create_changeset::CreateCopyInfo;
 pub use crate::repo::create_changeset::CreateInfo;
+pub use crate::repo::create_changeset::SNAPSHOT_BUBBLE_ID_EXTRA;
 pub use crate::repo::land_stack::PushrebaseOutcome;
 pub use crate::repo::update_submodule_expansion::SubmoduleExpansionUpdate;
 pub use crate::repo::update_submodule_expansion::SubmoduleExpansionUpdateCommitInfo;

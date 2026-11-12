@@ -608,6 +608,14 @@ pub struct CreateInfo {
     pub git_extra_headers: Option<BTreeMap<SmallVec<[u8; 24]>, Bytes>>,
 }
 
+/// Extra key that records which bubble a snapshot was created in.
+///
+/// Snapshot IDs are content hashes. Without this key, two identical snapshots
+/// created in different bubbles get the same ID, so one ID maps to several
+/// bubbles. Including the bubble ID in the hashed content gives each bubble
+/// its own snapshot ID.
+pub const SNAPSHOT_BUBBLE_ID_EXTRA: &str = "snapshot_bubble_id";
+
 /// Verify that all deleted files existed in at least one of the parents.
 pub(crate) async fn verify_deleted_files_existed_in_a_parent<R: MononokeRepo>(
     parent_ctxs: &[ChangesetContext<R>],
@@ -1552,7 +1560,17 @@ impl<R: MononokeRepo> RepoContext<R> {
 
             let author_date = MononokeDateTime::new(info.author_date);
             let committer_date = info.committer_date.map(MononokeDateTime::new);
-            let hg_extra = SortedVectorMap::<_, _>::from(info.extra);
+            let extra: BTreeMap<_, _> = info
+                .extra
+                .into_iter()
+                .chain(bubble.map(|bubble| {
+                    (
+                        SNAPSHOT_BUBBLE_ID_EXTRA.to_string(),
+                        bubble.bubble_id().to_string().into_bytes(),
+                    )
+                }))
+                .collect();
+            let hg_extra = SortedVectorMap::<_, _>::from(extra);
             let git_extra_headers = info.git_extra_headers.map(SortedVectorMap::from);
             let file_changes = file_changes
                 .into_iter()

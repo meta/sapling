@@ -16,16 +16,16 @@ setup configuration
   $ cd test_tmp
   $ echo "a file content" > a
   $ hg snapshot create
-  snapshot: Snapshot created with id 60ba9e25af931d7b1669e121cb4f42ad0eeca14462e8e8126140ca63a25bee8e
+  snapshot: Snapshot created with id 1339d6c4160270f23c93227c8d3616fe78baec889f913de1408160869c18368a
   0 files modified, 0 files added, 0 files removed, 0 files missing, 1 files untracked
   $ echo "b file content" > b
   $ hg add b
   $ hg snapshot create
-  snapshot: Snapshot created with id 41b1e99e2b81202d04b4817e3fa7ebdb936184626f74af23b865a80fa71b5561
+  snapshot: Snapshot created with id e1595c0f98b99ea1b9643675c3b2962bc7b7a2c48906c8e16539a86a2fb5dcf2
   0 files modified, 1 files added, 0 files removed, 0 files missing, 1 files untracked
   $ echo "c file content" > c
   $ hg snapshot create
-  snapshot: Snapshot created with id 2a2db020a9a64a3541d655f0b8a14c4df3f26ce584d5e1945da2b5ef4aefe43c
+  snapshot: Snapshot created with id 5451c3af64963d96b4b83546f8cb5989ff07a3e1edfec0c722bef810f62190ef
   0 files modified, 1 files added, 0 files removed, 0 files missing, 2 files untracked
   $ echo "d file content" > d
   $ echo "e file content" > e
@@ -33,7 +33,7 @@ setup configuration
   $ echo "g file content" > g
   $ hg add g
   $ hg snapshot create
-  snapshot: Snapshot created with id 059a7eb7b90ca07b7a13ab036cc3c58c3914c89ff7a4dab05dc33bfe5c3f2348
+  snapshot: Snapshot created with id 613439997b9649b148bc9338357430252b6de0bd4b248cb28eb7fe7c08ab8d20
   0 files modified, 2 files added, 0 files removed, 0 files missing, 5 files untracked
 # Ensure bubbles are expired before moving forward
   $ sleep 10
@@ -60,7 +60,7 @@ Cleanup expired bubbles in dry-run mode with non-zero as the limit
 
 Before doing actual clean-up, verify that the blob indeed exists
   $ cd ../../
-  $ [ -f "blobstore/blobs/blob-eph1.repo0000.changeset.blake2.60ba9e25af931d7b1669e121cb4f42ad0eeca14462e8e8126140ca63a25bee8e" ] && echo "Blob still present"
+  $ [ -f "blobstore/blobs/blob-eph1.repo0000.changeset.blake2.1339d6c4160270f23c93227c8d3616fe78baec889f913de1408160869c18368a" ] && echo "Blob still present"
   Blob still present
 
 Cleanup expired bubbles with no cut-off
@@ -75,6 +75,6 @@ Cleanup expired bubbles with no cut-off
 # Since deletion_mode=MARK_AND_DELETE, the blob keys within the bubbles
 # need to be actually deleted.
 Verify the blob keys are indeed deleted (using a key from Bubble 1). Below query should NOT return the matching blob.
-  $ [ -f "blobstore/blobs/blob-eph1.repo0000.changeset.blake2.60ba9e25af931d7b1669e121cb4f42ad0eeca14462e8e8126140ca63a25bee8e" ] && echo "Blob still present"
+  $ [ -f "blobstore/blobs/blob-eph1.repo0000.changeset.blake2.1339d6c4160270f23c93227c8d3616fe78baec889f913de1408160869c18368a" ] && echo "Blob still present"
   [1]
 # No output indicating the blob file is not present

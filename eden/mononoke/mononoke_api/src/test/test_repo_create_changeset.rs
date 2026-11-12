@@ -14,6 +14,7 @@ use bulk_derivation::BulkDerivation;
 use bytes::Bytes;
 use chrono::FixedOffset;
 use chrono::TimeZone;
+use ephemeral_blobstore::RepoEphemeralStoreRef;
 use fbinit::FacebookInit;
 use fixtures::Linear;
 use fixtures::ManyFilesDirs;
@@ -26,6 +27,7 @@ use mononoke_types::path::MPath;
 use repo_derived_data::RepoDerivedDataArc;
 use repo_derived_data::RepoDerivedDataRef;
 use smallvec::SmallVec;
+use test_repo_factory::TestRepoFactory;
 
 use crate::ChangesetContext;
 use crate::ChangesetId;
@@ -39,7 +41,9 @@ use crate::Mononoke;
 use crate::MononokeError;
 use crate::MononokeRepo;
 use crate::RepoContext;
+use crate::SNAPSHOT_BUBBLE_ID_EXTRA;
 use crate::StoreRequest;
+use crate::repo::Repo;
 use crate::repo::create_changeset::CreateChangeFileContents;
 
 #[mononoke::fbinit_test]
@@ -604,5 +608,102 @@ async fn test_merge_commit_parent_tree_file_conflict(fb: FacebookInit) -> Result
             .is_err()
     );
 
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_create_same_snapshot_in_two_bubbles(fb: FacebookInit) -> Result<(), Error> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: Repo = TestRepoFactory::new(fb)?
+        .with_name("test".to_string())
+        .with_ephemeral_store()
+        .build()
+        .await?;
+    let (commits, _) = Linear::init_repo(fb, &repo).await?;
+    let first_bubble = repo
+        .repo_ephemeral_store()
+        .create_bubble(&ctx, None, vec![])
+        .await?;
+    let second_bubble = repo
+        .repo_ephemeral_store()
+        .create_bubble(&ctx, None, vec![])
+        .await?;
+    let mononoke = Mononoke::new_test(vec![("test".to_string(), repo)]).await?;
+    let repo = mononoke
+        .repo(ctx.clone(), "test")
+        .await?
+        .expect("repo exists")
+        .build()
+        .await?;
+
+    let info = || CreateInfo {
+        author: String::from("Test Author <test@example.com>"),
+        author_date: FixedOffset::east_opt(0)
+            .unwrap()
+            .with_ymd_and_hms(2000, 2, 1, 12, 0, 0)
+            .unwrap(),
+        committer: None,
+        committer_date: None,
+        message: String::new(),
+        extra: BTreeMap::new(),
+        git_extra_headers: None,
+    };
+    let mut changes: BTreeMap<MPath, CreateChange> = BTreeMap::new();
+    changes.insert(
+        MPath::try_from("SNAPSHOT_FILE")?,
+        CreateChange::Untracked(CreateChangeFile::new_regular("SNAPSHOT\n")),
+    );
+
+    let first = repo
+        .create_changeset(
+            vec![commits["K"]],
+            info(),
+            changes.clone(),
+            Some(&first_bubble),
+            CreateChangesetChecks::check(),
+        )
+        .await?;
+    let second = repo
+        .create_changeset(
+            vec![commits["K"]],
+            info(),
+            changes.clone(),
+            Some(&second_bubble),
+            CreateChangesetChecks::check(),
+        )
+        .await?;
+    let first_again = repo
+        .create_changeset(
+            vec![commits["K"]],
+            info(),
+            changes,
+            Some(&first_bubble),
+            CreateChangesetChecks::check(),
+        )
+        .await?;
+
+    assert_ne!(
+        first.changeset_ctx.id(),
+        second.changeset_ctx.id(),
+        "the same snapshot in two bubbles should get two IDs"
+    );
+    assert_eq!(
+        first.changeset_ctx.id(),
+        first_again.changeset_ctx.id(),
+        "the same snapshot in the same bubble should keep one ID"
+    );
+    assert_eq!(
+        first.hg_extras.get(SNAPSHOT_BUBBLE_ID_EXTRA),
+        Some(&first_bubble.bubble_id().to_string().into_bytes()),
+        "the snapshot should record the bubble it was created in"
+    );
+    assert_eq!(
+        repo.repo()
+            .repo_ephemeral_store()
+            .bubble_from_changeset(&ctx, &second.changeset_ctx.id())
+            .await?,
+        Some(second_bubble.bubble_id()),
+        "the second snapshot should map only to the second bubble"
+    );
     Ok(())
 }
