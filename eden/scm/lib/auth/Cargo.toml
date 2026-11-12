@@ -17,7 +17,7 @@ name = "auth"
 anyhow = "1.0.104"
 chrono = { version = "0.4.45", features = ["clock", "serde", "std"], default-features = false }
 indexmap = "2.14.2"
-pem = "3.0.3"
+pem = "4.0.0"
 sapling-configmodel = { version = "0.2.0", path = "../config/model", features = ["convert-path"] }
 sapling-repourl = { version = "0.1.0", path = "../repo/url" }
 sapling-util = { version = "0.2.0", path = "../util" }
