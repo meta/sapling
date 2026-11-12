@@ -15,8 +15,9 @@
 #include <fb303/ServiceData.h>
 #include <folly/Range.h>
 
-namespace facebook {
-namespace stats {
+#include <utility>
+
+namespace facebook::stats {
 
 class MonotonicCounter {
  public:
@@ -45,7 +46,14 @@ class MonotonicCounter {
     prevValue_ = value;
     stat_.addValueLocked(guard, fb303::ExportedStat::TimePoint(now), delta_);
   }
-  void swap(MonotonicCounter& counter) {}
+  void swap(MonotonicCounter& counter) noexcept {
+    using std::swap;
+    swap(init_, counter.init_);
+    swap(prevValue_, counter.prevValue_);
+    swap(delta_, counter.delta_);
+    swap(name_, counter.name_);
+    stat_.swap(counter.stat_);
+  }
   int64_t get() const {
     return delta_;
   }
@@ -60,5 +68,4 @@ class MonotonicCounter {
   std::string name_;
   facebook::fb303::ExportedStatMapImpl::LockableStat stat_;
 };
-} // namespace stats
-} // namespace facebook
+} // namespace facebook::stats
