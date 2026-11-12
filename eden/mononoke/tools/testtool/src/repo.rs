@@ -10,6 +10,7 @@ use bookmarks::Bookmarks;
 use commit_graph::CommitGraph;
 use commit_graph::CommitGraphWriter;
 use filestore::FilestoreConfig;
+use phases::Phases;
 use repo_blobstore::RepoBlobstore;
 use repo_derived_data::RepoDerivedData;
 use repo_identity::RepoIdentity;
@@ -40,4 +41,7 @@ pub(crate) struct Repo {
 
     #[facet]
     bookmarks: dyn Bookmarks,
+
+    #[facet]
+    phases: dyn Phases,
 }

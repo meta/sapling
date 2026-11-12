@@ -36,6 +36,7 @@ use mononoke_app::MononokeApp;
 use mononoke_app::args::RepoArgs;
 use mononoke_types::ChangesetId;
 use mononoke_types::DerivableType;
+use phases::PhasesRef;
 use repo_derived_data::RepoDerivedDataRef;
 use repo_identity::RepoIdentityRef;
 use tests_utils::drawdag::extend_from_dag_with_actions;
@@ -54,7 +55,7 @@ pub struct CommandArgs {
     #[clap(long)]
     no_default_files: bool,
 
-    /// Derive all derived data types for all commits
+    /// Derive all configured data types and persist phases from publishing bookmarks
     #[clap(long)]
     derive_all: bool,
 
@@ -189,5 +190,9 @@ async fn derive_all(ctx: &CoreContext, repo: &Repo, csids: &[ChangesetId]) -> Re
         .manager()
         .derive_bulk_locally(ctx, csids, None, derived_data_types.as_slice(), None, None)
         .await?;
+    repo.phases()
+        .get_public(ctx, csids.to_vec(), false)
+        .await
+        .context("Failed to derive public phases")?;
     Ok(())
 }
