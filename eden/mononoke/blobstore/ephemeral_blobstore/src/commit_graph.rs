@@ -544,6 +544,13 @@ mod test {
     use crate::builder::RepoEphemeralStoreBuilder;
 
     fn bootstrap(fb: FacebookInit) -> Result<(CoreContext, RepoBlobstore, RepoEphemeralStore)> {
+        bootstrap_with_mode(fb, BubbleDeletionMode::MarkAndDelete)
+    }
+
+    fn bootstrap_with_mode(
+        fb: FacebookInit,
+        deletion_mode: BubbleDeletionMode,
+    ) -> Result<(CoreContext, RepoBlobstore, RepoEphemeralStore)> {
         let ctx = CoreContext::test_mock(fb);
         let blobstore = Arc::new(Memblob::default()) as Arc<dyn BlobstoreEnumerableWithUnlink>;
         let repo_blobstore = RepoBlobstore::new(
@@ -557,7 +564,7 @@ mod test {
             blobstore,
             Duration::from_secs(30 * 24 * 3600),
             Duration::from_secs(6 * 3600),
-            BubbleDeletionMode::MarkAndDelete,
+            deletion_mode,
         );
         Ok((ctx, repo_blobstore, eph))
     }
@@ -704,6 +711,132 @@ mod test {
         assert!(
             rows.is_empty(),
             "parents rows for the deleted bubble should be gone"
+        );
+        Ok(())
+    }
+
+    async fn add_to_bubbles(
+        ctx: &CoreContext,
+        repo_blobstore: &RepoBlobstore,
+        bubbles: &[&Bubble],
+        cs_id: ChangesetId,
+    ) -> Result<()> {
+        let edges = edges_with_parents(cs_id, 1, vec![FIVES_CSID]);
+        for bubble in bubbles {
+            ephemeral_only_storage(bubble, repo_blobstore.clone())
+                .add(ctx, &edges)
+                .await?;
+        }
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn bubble_from_changeset_prefers_latest_expiry(fb: FacebookInit) -> Result<()> {
+        let (ctx, repo_blobstore, eph) = bootstrap(fb)?;
+        let long_lived = eph
+            .create_bubble(&ctx, Some(Duration::from_secs(2 * 24 * 3600)), vec![])
+            .await?;
+        let short_lived = eph
+            .create_bubble(&ctx, Some(Duration::from_secs(3600)), vec![])
+            .await?;
+        add_to_bubbles(
+            &ctx,
+            &repo_blobstore,
+            &[&long_lived, &short_lived],
+            ONES_CSID,
+        )
+        .await?;
+
+        assert_eq!(
+            eph.bubble_from_changeset(&ctx, &ONES_CSID).await?,
+            Some(long_lived.bubble_id()),
+            "the older bubble expires later, so it should win over the newer bubble"
+        );
+        assert_eq!(
+            eph.bubble_from_changeset(&ctx, &TWOS_CSID).await?,
+            None,
+            "a changeset in no bubble should resolve to no bubble"
+        );
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn bubble_from_changeset_prefers_labelled_bubble(fb: FacebookInit) -> Result<()> {
+        let (ctx, repo_blobstore, eph) = bootstrap(fb)?;
+        let labelled = eph
+            .create_bubble(
+                &ctx,
+                Some(Duration::from_secs(3600)),
+                vec!["keep".to_string()],
+            )
+            .await?;
+        let unlabelled = eph
+            .create_bubble(&ctx, Some(Duration::from_secs(30 * 24 * 3600)), vec![])
+            .await?;
+        add_to_bubbles(&ctx, &repo_blobstore, &[&labelled, &unlabelled], ONES_CSID).await?;
+
+        assert_eq!(
+            eph.bubble_from_changeset(&ctx, &ONES_CSID).await?,
+            Some(labelled.bubble_id()),
+            "a labelled bubble does not expire by time, so it should win over a later expiry"
+        );
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn bubble_from_changeset_skips_expired_bubble(fb: FacebookInit) -> Result<()> {
+        let (ctx, repo_blobstore, eph) = bootstrap_with_mode(fb, BubbleDeletionMode::MarkOnly)?;
+        let alive = eph
+            .create_bubble(&ctx, Some(Duration::from_secs(3600)), vec![])
+            .await?;
+        let marked_expired = eph
+            .create_bubble(&ctx, Some(Duration::from_secs(30 * 24 * 3600)), vec![])
+            .await?;
+        add_to_bubbles(&ctx, &repo_blobstore, &[&alive, &marked_expired], ONES_CSID).await?;
+        // In MarkOnly mode this only marks the bubble as expired.
+        eph.delete_bubble(&ctx, marked_expired.bubble_id()).await?;
+
+        assert_eq!(
+            eph.bubble_from_changeset(&ctx, &ONES_CSID).await?,
+            Some(alive.bubble_id()),
+            "a bubble marked as expired should lose to a bubble that is still alive"
+        );
+
+        eph.delete_bubble(&ctx, alive.bubble_id()).await?;
+        assert_eq!(
+            eph.bubble_from_changeset(&ctx, &ONES_CSID).await?,
+            Some(marked_expired.bubble_id()),
+            "when every bubble is marked as expired, the lookup should still return one so the caller can report it as expired"
+        );
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn delete_bubble_keeps_changeset_in_other_bubble(fb: FacebookInit) -> Result<()> {
+        let (ctx, repo_blobstore, eph) = bootstrap(fb)?;
+        let older = eph.create_bubble(&ctx, None, vec![]).await?;
+        let newer = eph.create_bubble(&ctx, None, vec![]).await?;
+
+        let snapshot = ONES_CSID;
+        let edges = edges_with_parents(snapshot, 1, vec![FIVES_CSID]);
+        ephemeral_only_storage(&older, repo_blobstore.clone())
+            .add(&ctx, &edges)
+            .await?;
+        ephemeral_only_storage(&newer, repo_blobstore)
+            .add(&ctx, &edges)
+            .await?;
+
+        eph.delete_bubble(&ctx, newer.bubble_id()).await?;
+
+        assert_eq!(
+            eph.bubble_from_changeset(&ctx, &snapshot).await?,
+            Some(older.bubble_id()),
+            "after the newer bubble is deleted, the changeset should resolve to the older bubble"
+        );
+        assert_eq!(
+            eph.changesets_from_bubble(&ctx, &older.bubble_id()).await?,
+            vec![snapshot],
+            "deleting one bubble should not remove the changeset from another bubble"
         );
         Ok(())
     }

@@ -155,9 +155,16 @@ mononoke_queries! {
         repo_id: RepositoryId,
         cs_id: ChangesetId,
     ) -> (BubbleId,) {
-        "SELECT bubble_id
-        FROM ephemeral_bubble_changeset_mapping
-        WHERE repo_id = {repo_id} AND cs_id = {cs_id}"
+        "SELECT M.bubble_id
+        FROM ephemeral_bubble_changeset_mapping M
+        JOIN ephemeral_bubbles B ON B.id = M.bubble_id
+        WHERE M.repo_id = {repo_id} AND M.cs_id = {cs_id}
+        ORDER BY
+            B.expired ASC,
+            EXISTS (SELECT 1 FROM ephemeral_bubble_labels L WHERE L.bubble_id = B.id) DESC,
+            B.expires_at DESC,
+            B.id DESC
+        LIMIT 1"
     }
 
     cacheable read SelectBubbleByIdMaybeStale(
@@ -395,7 +402,11 @@ impl RepoEphemeralStoreInner {
         Ok(())
     }
 
-    /// Given a changeset ID, fetch the corresponding Bubble ID.
+    /// Given a changeset ID, fetch the corresponding Bubble ID. If the
+    /// changeset is in more than one bubble, the bubble that stays alive the
+    /// longest is returned: bubbles not marked as expired first, then bubbles
+    /// with labels (which do not expire by time), then the latest expiry
+    /// time, then the highest bubble ID.
     async fn bubble_from_changeset(
         &self,
         ctx: &CoreContext,
@@ -2419,6 +2430,8 @@ mod test {
         // Create a bubble
         let bubble = eph.create_bubble(&ctx, None, vec![]).await?;
         let bubble_id = bubble.bubble_id();
+        // `Bubble::expires_at` includes the grace period; the stored expiry does not.
+        let original_expiry = Timestamp::from(bubble.expires_at() - to_chrono(grace));
 
         // Try to extend TTL with a shorter duration (30 seconds)
         let result = eph
@@ -2428,22 +2441,9 @@ mod test {
         // Should return NotChanged since the requested duration is shorter than remaining time
         match result {
             ExtendBubbleTtlOutcome::NotChanged(timestamp) => {
-                // The timestamp should be approximately the original expiration time
-                let now = DateTime::now();
-                let expected_expiry = now + to_chrono(Duration::from_mins(2));
-                let actual_expiry: DateTime = timestamp.into();
-
-                // Allow for some time difference due to test execution time
-                let actual_chrono = actual_expiry.into_chrono();
-                let expected_chrono = expected_expiry.into_chrono();
-                let diff = if actual_chrono > expected_chrono {
-                    actual_chrono - expected_chrono
-                } else {
-                    expected_chrono - actual_chrono
-                };
-                assert!(
-                    diff < to_chrono(Duration::from_secs(5)),
-                    "Expiry time should be close to original"
+                assert_eq!(
+                    timestamp, original_expiry,
+                    "Expiry time should be the original expiry time"
                 );
             }
             ExtendBubbleTtlOutcome::Extended(_) => {
