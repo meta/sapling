@@ -14,6 +14,8 @@ use maplit::hashmap;
 use metaconfig_types::P4SourceConfig;
 use metaconfig_types::RepoConfig;
 use mononoke_macros::mononoke;
+use p4_source::P4Auth;
+use p4_source::P4Trust;
 
 use super::*;
 use crate::sharded::BatchSize;
@@ -23,28 +25,133 @@ use crate::sharded::import_enabled;
 use crate::sharded::retry_delay;
 
 #[mononoke::test]
-fn test_only_a_repo_on_this_server_has_a_depot_to_import() {
-    let config = RepoConfig {
+fn test_a_repo_gets_the_entry_of_the_server_its_config_names() {
+    let config = |alias: &str| RepoConfig {
         p4_source: Some(P4SourceConfig {
-            server_alias: "test1".to_owned(),
+            server_alias: alias.to_owned(),
             depot: "//project_test_stream/".to_owned(),
         }),
         ..Default::default()
     };
+    let servers = hashmap! {
+        "test1".to_owned() => "test1-port",
+        "p4htl".to_owned() => "p4htl-port",
+    };
     assert_eq!(
-        configured_depot(&config, Some("test1")),
-        ConfiguredDepot::Depot("//project_test_stream/".to_owned())
-    );
-    assert_eq!(
-        configured_depot(&config, Some("test2")),
-        ConfiguredDepot::OtherServer {
-            configured: "test1".to_owned()
+        configured_depot(&config("test1"), &servers),
+        ConfiguredDepot::Depot {
+            alias: "test1",
+            depot: "//project_test_stream/".to_owned(),
+            p4: &"test1-port",
         }
     );
-    assert_eq!(configured_depot(&config, None), ConfiguredDepot::NoOwnAlias);
     assert_eq!(
-        configured_depot(&RepoConfig::default(), Some("test1")),
+        configured_depot(&config("p4htl"), &servers),
+        ConfiguredDepot::Depot {
+            alias: "p4htl",
+            depot: "//project_test_stream/".to_owned(),
+            p4: &"p4htl-port",
+        }
+    );
+
+    let unknown = ConfiguredDepot::UnknownServer {
+        configured: "test1".to_owned(),
+    };
+    let other_server = hashmap! { "p4htl".to_owned() => "p4htl-port" };
+    assert_eq!(configured_depot(&config("test1"), &other_server), unknown);
+    assert_eq!(
+        configured_depot(&config("test1"), &HashMap::<String, &str>::new()),
+        unknown
+    );
+    assert_eq!(
+        configured_depot(&RepoConfig::default(), &servers),
         ConfiguredDepot::NotAMirror
+    );
+}
+
+fn server(alias: &str) -> P4Server {
+    P4Server {
+        alias: alias.to_owned(),
+        port: "ssl6:[2001:db8::1]:1818".to_owned(),
+        fingerprint: "AB:CD".to_owned(),
+        ticket_file: PathBuf::from(format!("/run/secrets/p4ticket-{alias}")),
+    }
+}
+
+#[mononoke::test]
+fn test_p4_server_flag_is_alias_port_fingerprint_and_ticket_file() {
+    assert_eq!(
+        parse_server("test1=ssl6:[2001:db8::1]:1818,AB:CD,/run/secrets/p4ticket-test1").unwrap(),
+        server("test1")
+    );
+    for malformed in [
+        "test1",
+        "test1=ssl6:host:1818",
+        "test1=ssl6:host:1818,AB:CD",
+        "=ssl6:host:1818,AB:CD,/ticket",
+        "test1=,AB:CD,/ticket",
+        "test1=ssl6:host:1818,,/ticket",
+        "test1=ssl6:host:1818,AB:CD,",
+    ] {
+        assert!(
+            parse_server(malformed).is_err(),
+            "{malformed:?} should be rejected"
+        );
+    }
+}
+
+#[mononoke::test]
+fn test_each_server_is_given_once() {
+    let servers = by_alias(vec![server("test1"), server("p4htl")]).unwrap();
+    assert_eq!(servers.len(), 2);
+    assert_eq!(servers["p4htl"], server("p4htl"));
+
+    let error = by_alias(vec![server("test1"), server("p4htl"), server("test1")]).unwrap_err();
+    assert!(error.to_string().contains("test1"), "{error}");
+}
+
+#[mononoke::test]
+fn test_every_ticket_file_must_exist_at_startup() {
+    let secrets = tempfile::tempdir().unwrap();
+    let with_ticket = |alias: &str| P4Server {
+        ticket_file: secrets.path().join(format!("p4ticket-{alias}")),
+        ..server(alias)
+    };
+    std::fs::write(with_ticket("test1").ticket_file, "ticket").unwrap();
+    let scuba = MononokeScubaSampleBuilder::with_discard();
+    let binary = Path::new("/mononoke/p4");
+
+    let clients = p4_clients(vec![with_ticket("test1")], binary, "user", &scuba).unwrap();
+    assert_eq!(clients.len(), 1);
+    assert!(clients.contains_key("test1"));
+
+    let error = p4_clients(
+        vec![with_ticket("test1"), with_ticket("p4htl")],
+        binary,
+        "user",
+        &scuba,
+    )
+    .unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("--p4-server p4htl"), "{message}");
+    assert!(message.contains("p4ticket-p4htl"), "{message}");
+    assert!(message.contains("does not exist"), "{message}");
+}
+
+#[mononoke::test]
+fn test_a_server_gets_p4imports_flags_with_its_own_port_fingerprint_and_ticket() {
+    let config = server("p4htl")
+        .p4_args(Path::new("/mononoke/p4"), "svc-scm-p4mirror")
+        .config()
+        .unwrap();
+    assert_eq!(config.binary, PathBuf::from("/mononoke/p4"));
+    assert_eq!(config.port, "ssl6:[2001:db8::1]:1818");
+    assert_eq!(config.user, "svc-scm-p4mirror");
+    assert_eq!(config.trust, P4Trust::Fingerprint("AB:CD".to_owned()));
+    assert!(
+        matches!(config.auth, P4Auth::Ticket(_)),
+        "expected a ticket, got {:?}",
+        config.auth
     );
 }
 

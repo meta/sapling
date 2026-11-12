@@ -11,6 +11,7 @@ rust_binary(
     autocargo = {"ignore_rule": True},
     test_deps = [
         "fbsource//third-party/rust:maplit",
+        "fbsource//third-party/rust:tempfile",
         "//eden/mononoke/common/mononoke_macros:mononoke_macros",
     ],
     deps = [
@@ -26,6 +27,7 @@ rust_binary(
         "//eden/mononoke/cmdlib/sharding:executor_lib",
         "//eden/mononoke/cmdlib/sharding_ext:sharding_ext",
         "//eden/mononoke/common/rust/justknobs_ext:justknobs",
+        "//eden/mononoke/common/scuba_ext:scuba_ext",
         "//eden/mononoke/metaconfig:metaconfig_types",
         "//eden/mononoke/p4/facebook/p4_source:p4_source",
         "//eden/mononoke/p4/p4_import:p4_import",

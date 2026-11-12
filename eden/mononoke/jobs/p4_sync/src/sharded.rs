@@ -5,6 +5,7 @@
  * GNU General Public License version 2.
  */
 
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
@@ -56,7 +57,8 @@ define_stats! {
 
 pub(crate) struct Settings {
     pub(crate) exit_file: PathBuf,
-    pub(crate) p4_server_alias: Option<String>,
+    /// The Perforce servers this job imports from, by `p4_source.server_alias`.
+    pub(crate) servers: HashMap<String, P4Cli>,
     pub(crate) batch_size: NonZeroUsize,
     pub(crate) idle_interval: Duration,
 }
@@ -136,28 +138,38 @@ fn log_state(current: &mut Option<State>, new: State, message: impl FnOnce() -> 
     }
 }
 
-/// Only `Depot` imports; the others hold the shard.
+/// Only `Depot` imports; the others hold the shard. `P` is the server entry, a `P4Cli` in
+/// the job.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum ConfiguredDepot {
+pub(crate) enum ConfiguredDepot<'a, P> {
     NotAMirror,
-    /// Without `--p4-server-alias`, no repo's server can be checked.
-    NoOwnAlias,
-    OtherServer {
+    /// `p4_source.server_alias` names a server this job has no `--p4-server` for.
+    UnknownServer {
         configured: String,
     },
-    Depot(String),
+    Depot {
+        alias: &'a str,
+        depot: String,
+        p4: &'a P,
+    },
 }
 
-pub(crate) fn configured_depot(config: &RepoConfig, own_alias: Option<&str>) -> ConfiguredDepot {
+pub(crate) fn configured_depot<'a, P>(
+    config: &RepoConfig,
+    servers: &'a HashMap<String, P>,
+) -> ConfiguredDepot<'a, P> {
     let Some(p4_source) = &config.p4_source else {
         return ConfiguredDepot::NotAMirror;
     };
-    match own_alias {
-        None => ConfiguredDepot::NoOwnAlias,
-        Some(own) if own != p4_source.server_alias => ConfiguredDepot::OtherServer {
+    match servers.get_key_value(&p4_source.server_alias) {
+        None => ConfiguredDepot::UnknownServer {
             configured: p4_source.server_alias.clone(),
         },
-        Some(_) => ConfiguredDepot::Depot(p4_source.depot.clone()),
+        Some((alias, p4)) => ConfiguredDepot::Depot {
+            alias,
+            depot: p4_source.depot.clone(),
+            p4,
+        },
     }
 }
 
@@ -171,8 +183,14 @@ fn exit_file_present(exit_file: &Path) -> bool {
 
 pub(crate) struct P4SyncProcess {
     app: Arc<MononokeApp>,
-    p4: P4Cli,
     settings: Arc<Settings>,
+}
+
+/// What a shard imports: its repo's depot, on the server the client reaches.
+pub(crate) struct Source {
+    alias: String,
+    depot: String,
+    p4: P4Cli,
 }
 
 #[async_trait]
@@ -184,19 +202,18 @@ impl RepoShardedProcess for P4SyncProcess {
         }
         let repo_args = RepoArgs::from_repo_name(shard.repo_name.clone());
         let repo: Repo = self.app.open_repo(&repo_args).await?;
-        let own_alias = self.settings.p4_server_alias.as_deref();
-        let depot = match configured_depot(repo.repo_config(), own_alias) {
-            ConfiguredDepot::Depot(depot) => Ok(depot),
+        let source = match configured_depot(repo.repo_config(), &self.settings.servers) {
+            ConfiguredDepot::Depot { alias, depot, p4 } => Ok(Source {
+                alias: alias.to_owned(),
+                depot,
+                p4: p4.clone(),
+            }),
             ConfiguredDepot::NotAMirror => Err("no p4_source in its repo config".to_owned()),
-            ConfiguredDepot::NoOwnAlias => {
-                Err("no --p4-server-alias to check its p4_source.server_alias against".to_owned())
-            }
-            ConfiguredDepot::OtherServer { configured } => Err(format!(
-                "its p4_source.server_alias is {configured}, not this job's {}",
-                own_alias.unwrap_or_default()
+            ConfiguredDepot::UnknownServer { configured } => Err(format!(
+                "its p4_source.server_alias is {configured}, which this job has no --p4-server for"
             )),
         };
-        if let Err(reason) = &depot {
+        if let Err(reason) = &source {
             tracing::warn!(
                 "{}: {reason}: holding its shard, importing nothing",
                 shard.repo_name
@@ -206,8 +223,7 @@ impl RepoShardedProcess for P4SyncProcess {
         Ok(Arc::new(P4SyncProcessExecutor {
             app: self.app.clone(),
             repo,
-            depot,
-            p4: self.p4.clone(),
+            source,
             settings: self.settings.clone(),
             cancellation_requested: AtomicBool::new(false),
             wake: Notify::new(),
@@ -219,8 +235,7 @@ pub(crate) struct P4SyncProcessExecutor {
     app: Arc<MononokeApp>,
     repo: Repo,
     /// Err: why the shard is held, importing nothing.
-    depot: Result<String, String>,
-    p4: P4Cli,
+    source: Result<Source, String>,
     settings: Arc<Settings>,
     cancellation_requested: AtomicBool,
     /// Ends a wait or a running batch when the shard is stopped.
@@ -229,13 +244,14 @@ pub(crate) struct P4SyncProcessExecutor {
 
 impl P4SyncProcessExecutor {
     /// A context per batch: its own `session_uuid` on the importer's rows and on each p4
-    /// command's, plus the repo.
-    fn batch_context(&self) -> CoreContext {
+    /// command's, plus the repo and its server.
+    fn batch_context(&self, p4_server: &str) -> CoreContext {
         let ctx = self.app.new_basic_context();
         ctx.with_mutated_scuba(|mut scuba| {
             scuba
                 .add_metadata(ctx.metadata())
-                .add("repo", self.repo.repo_identity().name());
+                .add("repo", self.repo.repo_identity().name())
+                .add("p4_server", p4_server);
             scuba
         })
     }
@@ -268,8 +284,8 @@ impl RepoShardedProcessExecutor for P4SyncProcessExecutor {
             repo_name: repo_name.to_owned(),
         };
         while !self.should_stop() {
-            let depot = match &self.depot {
-                Ok(depot) => depot,
+            let Source { alias, depot, p4 } = match &self.source {
+                Ok(source) => source,
                 Err(reason) => {
                     log_state(&mut state, State::Held, || {
                         format!("{repo_name}: {reason}, importing nothing")
@@ -286,8 +302,8 @@ impl RepoShardedProcessExecutor for P4SyncProcessExecutor {
                 continue;
             }
 
-            let ctx = self.batch_context();
-            let source = P4CliSource::new(self.p4.with_scuba(ctx.scuba().clone()));
+            let ctx = self.batch_context(alias);
+            let source = P4CliSource::new(p4.with_scuba(ctx.scuba().clone()));
             let batch = p4_import::import_next(
                 &ctx,
                 &self.repo,
@@ -324,7 +340,7 @@ impl RepoShardedProcessExecutor for P4SyncProcessExecutor {
                     failures = 0;
                     log_state(&mut state, State::CaughtUp, || {
                         format!(
-                            "{repo_name} is caught up with {depot}; looking again every {:?}",
+                            "{repo_name} is caught up with {depot} on {alias}; looking again every {:?}",
                             self.settings.idle_interval,
                         )
                     });
@@ -333,7 +349,7 @@ impl RepoShardedProcessExecutor for P4SyncProcessExecutor {
                 Ok(_) => {
                     failures = 0;
                     log_state(&mut state, State::Importing, || {
-                        format!("{repo_name}: importing {depot}")
+                        format!("{repo_name}: importing {depot} from {alias}")
                     });
                 }
                 // import_next has logged the failure, with its stage and changelist.
@@ -370,12 +386,10 @@ impl RepoShardedProcessExecutor for P4SyncProcessExecutor {
 pub(crate) async fn run(
     app: MononokeApp,
     sharded_executor_args: ShardedExecutorArgs,
-    p4: P4Cli,
     settings: Settings,
 ) -> Result<()> {
     let process = Arc::new(P4SyncProcess {
         app: Arc::new(app),
-        p4,
         settings: Arc::new(settings),
     });
 
