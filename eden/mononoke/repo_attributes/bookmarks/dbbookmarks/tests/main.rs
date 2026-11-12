@@ -7,8 +7,10 @@
 
 //! Tests for the Bookmarks store.
 
+mod log_allocation;
 mod log_lock;
 mod migration_controls;
+mod migration_primitives;
 
 use std::collections::HashMap;
 

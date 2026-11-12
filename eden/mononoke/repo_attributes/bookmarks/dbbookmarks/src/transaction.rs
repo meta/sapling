@@ -5,6 +5,7 @@
  * GNU General Public License version 2.
  */
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -107,6 +108,15 @@ mononoke_queries! {
         "SELECT MAX(id) FROM bookmarks_update_log WHERE repo_id = {repo_id}"
     }
 
+    pub read FindMaxBookmarkLogIdsByName(
+        repo_id: RepositoryId,
+        >list names: BookmarkName
+    ) -> (BookmarkName, u64) {
+        "SELECT name, MAX(id) FROM bookmarks_update_log
+         WHERE repo_id = {repo_id} AND name IN {names}
+         GROUP BY name"
+    }
+
     pub read FindMaxBookmarkLogLockId(repo_id: RepositoryId) -> (Option<u64>) {
         "SELECT MAX(id) FROM bookmarks_update_log_lock WHERE repo_id = {repo_id}"
     }
@@ -130,9 +140,12 @@ mononoke_queries! {
         ),
     ) {
         none,
-        "INSERT INTO bookmarks_update_log
+        mysql("INSERT INTO bookmarks_update_log
          (id, repo_id, name, category, from_changeset_id, to_changeset_id, reason, timestamp)
-         VALUES {values}"
+         VALUES {values}")
+        sqlite("INSERT OR ROLLBACK INTO bookmarks_update_log
+         (id, repo_id, name, category, from_changeset_id, to_changeset_id, reason, timestamp)
+         VALUES {values}")
     }
 
     pub read SelectBookmarksForUpdate(
@@ -206,6 +219,98 @@ pub async fn find_next_bookmark_log_lock_id(
     Ok((txn, next_id))
 }
 
+/// Next IDs for either the legacy repository stream or independent name streams.
+pub enum NextBookmarkLogId {
+    Repo(u64),
+    ByName(HashMap<BookmarkName, u64>),
+}
+
+impl NextBookmarkLogId {
+    /// Take the next ID for a bookmark name; categories share the name stream.
+    pub fn next(&mut self, name: &BookmarkName) -> Result<u64> {
+        let next = match self {
+            Self::Repo(next) => next,
+            Self::ByName(ids) => ids
+                .get_mut(name)
+                .ok_or_else(|| anyhow!("missing next log ID for bookmark {name}"))?,
+        };
+        let id = *next;
+        *next = next
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("bookmark log ID overflow for {name}"))?;
+        Ok(id)
+    }
+}
+
+/// Select this producer's allocation mode using the decimal repository ID.
+pub fn bookmark_log_ids_by_name(repo_id: RepositoryId, writer: BookmarkLogWriter) -> bool {
+    let knob = match writer {
+        BookmarkLogWriter::SingleRepo => {
+            "scm/mononoke_bookmark_log_migration:bookmark_log_ids_by_name"
+        }
+        BookmarkLogWriter::MultiRepo => {
+            "scm/mononoke_bookmark_log_migration:mrls_bookmark_log_ids_by_name"
+        }
+    };
+    let repo_key = repo_id.to_string();
+    justknobs::eval(knob, Some(&repo_key), Some(&repo_key))
+}
+
+/// Reject name allocation without activation, using the caller's latched flags.
+pub fn bookmark_log_guard_enabled_for_allocation(
+    repo_id: RepositoryId,
+    by_name: bool,
+    enabled: bool,
+) -> Result<bool> {
+    if by_name && !enabled {
+        return Err(anyhow!(
+            "bookmark-name log allocation requires migration guard activation for repo {repo_id}"
+        ));
+    }
+    Ok(enabled)
+}
+
+/// Read allocation state after capturing any required migration guard ticket.
+pub async fn find_next_bookmark_log_ids(
+    txn: SqlTransaction,
+    repo_id: RepositoryId,
+    names: &HashSet<BookmarkName>,
+    by_name: bool,
+) -> Result<(SqlTransaction, NextBookmarkLogId)> {
+    if !by_name {
+        let (txn, rows) = FindMaxBookmarkLogId::query_with_transaction(txn, &repo_id).await?;
+        let next = match rows.as_slice() {
+            [(None,)] => 1,
+            [(Some(id),)] => id
+                .checked_add(1)
+                .ok_or_else(|| anyhow!("bookmark log ID overflow for repo {repo_id}"))?,
+            _ => {
+                return Err(anyhow!(
+                    "unexpected max log ID rows for repo {repo_id}: {rows:?}"
+                ));
+            }
+        };
+        return Ok((txn, NextBookmarkLogId::Repo(next)));
+    }
+
+    let mut ids: HashMap<BookmarkName, u64> = names.iter().cloned().map(|name| (name, 1)).collect();
+    if names.is_empty() {
+        return Ok((txn, NextBookmarkLogId::ByName(ids)));
+    }
+    let names: Vec<_> = names.iter().cloned().collect();
+    let (txn, rows) =
+        FindMaxBookmarkLogIdsByName::query_with_transaction(txn, &repo_id, &names).await?;
+    for (name, max_id) in rows {
+        let next = ids.get_mut(&name).ok_or_else(|| {
+            anyhow!("max log query returned unexpected bookmark {name} in repo {repo_id}")
+        })?;
+        *next = max_id
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("bookmark log ID overflow for {name} in repo {repo_id}"))?;
+    }
+    Ok((txn, NextBookmarkLogId::ByName(ids)))
+}
+
 struct NewUpdateLogEntry {
     /// The old bookmarked changeset (if known)
     old: Option<ChangesetId>,
@@ -270,23 +375,26 @@ struct SqlBookmarksTransactionPayload {
 /// Structure representing the log entries to insert when executing a
 /// SqlBookmarksTransactionPayload.
 struct TransactionLogUpdates<'a> {
-    next_log_id: u64,
+    next_log_id: NextBookmarkLogId,
     log_entries: Vec<(u64, &'a BookmarkKey, &'a NewUpdateLogEntry)>,
 }
 
 impl<'a> TransactionLogUpdates<'a> {
-    fn new(next_log_id: u64) -> Self {
+    fn new(next_log_id: NextBookmarkLogId) -> Self {
         Self {
             next_log_id,
             log_entries: Vec::new(),
         }
     }
 
-    fn push_log_entry(&mut self, bookmark: &'a BookmarkKey, entry: &'a NewUpdateLogEntry) -> u64 {
-        let id = self.next_log_id;
+    fn push_log_entry(
+        &mut self,
+        bookmark: &'a BookmarkKey,
+        entry: &'a NewUpdateLogEntry,
+    ) -> Result<u64> {
+        let id = self.next_log_id.next(bookmark.name())?;
         self.log_entries.push((id, bookmark, entry));
-        self.next_log_id += 1;
-        id
+        Ok(id)
     }
 }
 
@@ -343,26 +451,6 @@ impl SqlBookmarksTransactionPayload {
         }
     }
 
-    async fn find_next_update_log_id(
-        _ctx: &CoreContext,
-        txn: SqlTransaction,
-        repo_id: RepositoryId,
-    ) -> Result<(SqlTransaction, u64)> {
-        let (txn, max_id_entries) =
-            FindMaxBookmarkLogId::query_with_transaction(txn, &repo_id).await?;
-
-        let next_id = match &max_id_entries[..] {
-            [(None,)] => 1,
-            [(Some(max_existing),)] => *max_existing + 1,
-            _ => {
-                return Err(anyhow!(
-                    "FindMaxBookmarkLogId returned multiple entries: {max_id_entries:?}"
-                ));
-            }
-        };
-        Ok((txn, next_id))
-    }
-
     async fn store_log<'a>(
         &'a self,
         _ctx: &CoreContext,
@@ -406,7 +494,7 @@ impl SqlBookmarksTransactionPayload {
     ) -> Result<SqlTransaction, BookmarkTransactionError> {
         let mut data = Vec::new();
         for (bookmark, cs_id, log_entry) in self.force_sets.iter() {
-            let log_id = log.push_log_entry(bookmark, log_entry);
+            let log_id = log.push_log_entry(bookmark, log_entry)?;
             data.push((self.repo_id, Some(log_id), bookmark, cs_id));
         }
         let data = data
@@ -435,7 +523,8 @@ impl SqlBookmarksTransactionPayload {
         for (bookmark, cs_id, kind, maybe_log_entry) in self.creates.iter() {
             let log_id = maybe_log_entry
                 .as_ref()
-                .map(|log_entry| log.push_log_entry(bookmark, log_entry));
+                .map(|log_entry| log.push_log_entry(bookmark, log_entry))
+                .transpose()?;
             data.push((self.repo_id, log_id, bookmark, cs_id, kind))
         }
         let data = data
@@ -652,7 +741,8 @@ impl SqlBookmarksTransactionPayload {
         for (bookmark, old_cs_id, new_cs_id, kinds, maybe_log_entry) in self.updates.iter() {
             let log_id = maybe_log_entry
                 .as_ref()
-                .map(|log_entry| log.push_log_entry(bookmark, log_entry));
+                .map(|log_entry| log.push_log_entry(bookmark, log_entry))
+                .transpose()?;
 
             if new_cs_id == old_cs_id && log_id.is_none() {
                 // This is a no-op update.  Check if the bookmark already points to the correct
@@ -697,7 +787,7 @@ impl SqlBookmarksTransactionPayload {
         log: &'op mut TransactionLogUpdates<'log>,
     ) -> Result<SqlTransaction, BookmarkTransactionError> {
         for (bookmark, log_entry) in self.force_deletes.iter() {
-            log.push_log_entry(bookmark, log_entry);
+            log.push_log_entry(bookmark, log_entry)?;
             let (txn_, _) = DeleteBookmark::query_with_transaction(
                 txn,
                 &self.repo_id,
@@ -719,7 +809,8 @@ impl SqlBookmarksTransactionPayload {
         for (bookmark, old_cs_id, maybe_log_entry) in self.deletes.iter() {
             maybe_log_entry
                 .as_ref()
-                .map(|log_entry| log.push_log_entry(bookmark, log_entry));
+                .map(|log_entry| log.push_log_entry(bookmark, log_entry))
+                .transpose()?;
             let (txn_, result) = DeleteBookmarkIf::query_with_transaction(
                 txn,
                 &self.repo_id,
@@ -736,6 +827,30 @@ impl SqlBookmarksTransactionPayload {
         Ok(txn)
     }
 
+    // Scratch operations have no log entry; mirror batches reuse source IDs.
+    fn logged_bookmark_names(&self) -> HashSet<BookmarkName> {
+        self.force_sets
+            .iter()
+            .map(|(key, ..)| key.name().clone())
+            .chain(
+                self.creates
+                    .iter()
+                    .filter_map(|(key, _, _, entry)| entry.as_ref().map(|_| key.name().clone())),
+            )
+            .chain(
+                self.updates
+                    .iter()
+                    .filter_map(|(key, _, _, _, entry)| entry.as_ref().map(|_| key.name().clone())),
+            )
+            .chain(self.force_deletes.iter().map(|(key, _)| key.name().clone()))
+            .chain(
+                self.deletes
+                    .iter()
+                    .filter_map(|(key, _, entry)| entry.as_ref().map(|_| key.name().clone())),
+            )
+            .collect()
+    }
+
     /// Attempt to write a bookmark update log entry
     /// Returns the db transaction and the id of this entry in the bookmark update log.
     async fn attempt_write(
@@ -743,14 +858,18 @@ impl SqlBookmarksTransactionPayload {
         ctx: &CoreContext,
         txn: SqlTransaction,
     ) -> Result<(SqlTransaction, u64), BookmarkTransactionError> {
+        let by_name = bookmark_log_ids_by_name(self.repo_id, BookmarkLogWriter::SingleRepo);
         let enabled = bookmark_log_guard_enabled(self.repo_id, BookmarkLogWriter::SingleRepo);
-        let (txn, next_lock_id) = if enabled {
-            let (txn, id) = find_next_bookmark_log_lock_id(txn, self.repo_id).await?;
-            (txn, Some(id))
-        } else {
-            (txn, None)
-        };
-        let (mut txn, next_id) = Self::find_next_update_log_id(ctx, txn, self.repo_id).await?;
+        let names = self.logged_bookmark_names();
+        let (txn, next_lock_id) =
+            if bookmark_log_guard_enabled_for_allocation(self.repo_id, by_name, enabled)? {
+                let (txn, id) = find_next_bookmark_log_lock_id(txn, self.repo_id).await?;
+                (txn, Some(id))
+            } else {
+                (txn, None)
+            };
+        let (mut txn, next_id) =
+            find_next_bookmark_log_ids(txn, self.repo_id, &names, by_name).await?;
         let mut log = TransactionLogUpdates::new(next_id);
 
         txn = self.store_force_sets(ctx, txn, &mut log).await?;
