@@ -69,7 +69,7 @@ describe('CommitTreeList', () => {
     await act(() =>
       simulateCommits({
         value: [
-          COMMIT('0', 'repository root', 'unused', {parents: []}),
+          {...COMMIT('0', 'repository root', 'unused'), parents: []},
           COMMIT('a', 'My Commit', '0'),
           COMMIT('b', 'Another Commit', 'a', {isDot: true}),
         ],

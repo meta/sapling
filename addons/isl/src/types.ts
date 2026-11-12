@@ -620,6 +620,8 @@ export type BeganFetchingUncommittedChangesEvent = {
 export type SmartlogCommits = Array<CommitInfo>;
 export type FetchedCommits = {
   commits: Result<SmartlogCommits>;
+  /** The requested graph was limited, including when only the current stack is returned. */
+  tooManyCommits?: {numCommits: number};
   fetchStartTimestamp: number;
   fetchCompletedTimestamp: number;
 };

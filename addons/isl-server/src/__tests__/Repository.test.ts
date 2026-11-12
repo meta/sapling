@@ -36,6 +36,8 @@ import {
 import {ErrorShortMessages} from '../constants';
 import {type ServerPlatform} from '../serverPlatform';
 import {type RepositoryContext} from '../serverTypes';
+import * as templates from '../templates';
+import {COMMIT_END_MARK, mainFetchTemplateFields} from '../templates';
 
 /* eslint-disable require-await */
 
@@ -715,6 +717,116 @@ www/flib/intern/entity/diff/EntPhabricatorDiffSchema.php                        
       );
     });
 
+    const commitFields: Record<string, string> = {
+      hash: 'abcdef',
+      title: 'Current commit',
+      author: 'Test author',
+      date: '2026-11-11 12:00:00 -0800',
+      phase: 'draft',
+      isDot: '@',
+      totalFileCount: '0',
+      isFollower: 'false',
+      description: 'Current commit',
+    };
+    const commitOutput = [
+      ...Object.keys(mainFetchTemplateFields(repoInfo.codeReviewSystem)).map(
+        field => commitFields[field] ?? '',
+      ),
+      COMMIT_END_MARK,
+    ].join('\n');
+
+    it('returns truncated smartlog commits instead of discarding them', async () => {
+      const repo = new Repository(repoInfo, ctx);
+      const onChange = jest.fn();
+      repo.subscribeToSmartlogCommitsChanges(onChange);
+      mockEjeca([
+        [
+          /^sl log/,
+          {
+            stdout: commitOutput,
+            stderr: 'smartlog: too many (2000) commits, not rendering all of them\n',
+          },
+        ],
+      ]);
+
+      await repo.fetchSmartlogCommits();
+
+      expect(onChange).toHaveBeenCalledWith(
+        expect.objectContaining({
+          commits: {value: [expect.objectContaining({hash: 'abcdef', isDot: true})]},
+          tooManyCommits: {numCommits: 2000},
+        }),
+      );
+      expect(repo.getSmartlogCommits()).toEqual(onChange.mock.calls[0][0]);
+    });
+
+    const manyHeadsOutput = [
+      ...Array.from({length: 1501}, (_, i) =>
+        commitOutput.replace('abcdef', `head${i}`).replace('\n@\n', '\n\n'),
+      ),
+      commitOutput,
+    ].join('\n');
+
+    it.each(['', 'smartlog: too many (6000) commits, not rendering all of them\n'])(
+      'refetches the current stack when many heads exceed the rendering budget (stderr: %p)',
+      async stderr => {
+        const repo = new Repository(repoInfo, ctx);
+        const onChange = jest.fn();
+        repo.subscribeToSmartlogCommitsChanges(onChange);
+        const ejecaSpy = mockEjeca([
+          [/--rev smartlog\(\.\)/, {stdout: commitOutput}],
+          [/^sl log/, {stdout: manyHeadsOutput, stderr}],
+        ]);
+
+        await repo.fetchSmartlogCommits();
+
+        expectCalledWithRevset(ejecaSpy, 'smartlog(.)');
+        expect(onChange).toHaveBeenCalledWith(
+          expect.objectContaining({
+            commits: {value: [expect.objectContaining({hash: 'abcdef', isDot: true})]},
+            tooManyCommits: {numCommits: stderr ? 6000 : 1502},
+          }),
+        );
+      },
+    );
+
+    it('does not enrich or send an oversized focused graph to the renderer', async () => {
+      const repo = new Repository(repoInfo, ctx);
+      const onChange = jest.fn();
+      const attachSpy = jest.spyOn(templates, 'attachStableLocations').mockClear();
+      repo.subscribeToSmartlogCommitsChanges(onChange);
+      mockEjeca([[/^sl log/, {stdout: manyHeadsOutput}]]);
+
+      await repo.fetchSmartlogCommits();
+
+      expect(attachSpy).not.toHaveBeenCalled();
+      expect(onChange).toHaveBeenCalledWith(
+        expect.objectContaining({
+          commits: {error: expect.objectContaining({message: ErrorShortMessages.TooManyCommits})},
+        }),
+      );
+      expect(repo.getSmartlogCommits()).toBeNull();
+      attachSpy.mockRestore();
+    });
+
+    it('preserves command failures during a focused refetch', async () => {
+      const repo = new Repository(repoInfo, ctx);
+      const onChange = jest.fn();
+      repo.subscribeToSmartlogCommitsChanges(onChange);
+      mockEjeca([
+        [/--rev smartlog\(\.\)/, new Error('focused fetch failed')],
+        [/^sl log/, {stdout: manyHeadsOutput}],
+      ]);
+
+      await repo.fetchSmartlogCommits();
+
+      expect(onChange).toHaveBeenCalledWith(
+        expect.objectContaining({
+          commits: {error: expect.objectContaining({message: 'focused fetch failed'})},
+        }),
+      );
+    });
+
     it('reports when smartlog finds too many commits to render', async () => {
       const repo = new Repository(repoInfo, ctx);
       const onChange = jest.fn();
@@ -749,7 +861,10 @@ www/flib/intern/entity/diff/EntPhabricatorDiffSchema.php                        
       const trackSpy = jest.spyOn(ctx.tracker, 'track').mockClear();
       const tooManyCommits: [RegExp, {stdout: string; stderr: string}] = [
         /^sl log/,
-        {stdout: '', stderr: 'smartlog: too many (2000) commits, not rendering all of them\n'},
+        {
+          stdout: commitOutput,
+          stderr: 'smartlog: too many (2000) commits, not rendering all of them\n',
+        },
       ];
       const countTracked = () =>
         trackSpy.mock.calls.filter(([name]) => name === 'SmartlogTooManyCommits').length;
@@ -759,8 +874,9 @@ www/flib/intern/entity/diff/EntPhabricatorDiffSchema.php                        
       await repo.fetchSmartlogCommits();
       expect(countTracked()).toEqual(1);
 
-      mockEjeca([[/^sl log/, {stdout: ''}]]);
+      mockEjeca([[/^sl log/, {stdout: commitOutput}]]);
       await repo.fetchSmartlogCommits();
+      expect(repo.getSmartlogCommits()?.tooManyCommits).toBeUndefined();
 
       mockEjeca([tooManyCommits]);
       await repo.fetchSmartlogCommits();

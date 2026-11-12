@@ -68,6 +68,65 @@ describe('CommitTreeList', () => {
     expect(screen.queryByTestId('loading-spinner')).not.toBeInTheDocument();
   });
 
+  it('renders a limited graph with a warning and clears it after a complete fetch', () => {
+    render(<App />);
+    const commits = [
+      COMMIT('1', 'some public base', '0', {phase: 'public'}),
+      COMMIT('a', 'Current commit', '1', {isDot: true}),
+    ];
+    act(() => {
+      simulateRepoConnected();
+      closeCommitInfoSidebar();
+      simulateCommits({value: commits}, {numCommits: 2000});
+    });
+
+    expect(screen.getByTestId('commit-a')).toBeInTheDocument();
+    expect(screen.getByTestId('commit-1')).toBeInTheDocument();
+    expect(screen.getByText('Showing a limited commit graph')).toBeInTheDocument();
+    expect(screen.queryByText('Too many commits to render')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('loading-spinner')).not.toBeInTheDocument();
+
+    act(() => {
+      simulateCommits({value: commits});
+    });
+
+    expect(screen.getByTestId('commit-a')).toBeInTheDocument();
+    expect(screen.queryByText('Showing a limited commit graph')).not.toBeInTheDocument();
+  });
+
+  it('renders a truncated stack whose parent is absent instead of showing a spinner', () => {
+    render(<App />);
+    act(() => {
+      simulateRepoConnected();
+      closeCommitInfoSidebar();
+      simulateCommits(
+        {value: [COMMIT('a', 'Current commit', 'missing-parent', {isDot: true})]},
+        {numCommits: 2000},
+      );
+    });
+
+    expect(screen.getByTestId('commit-a')).toBeInTheDocument();
+    expect(screen.getByText('Showing a limited commit graph')).toBeInTheDocument();
+    expect(screen.queryByTestId('loading-spinner')).not.toBeInTheDocument();
+  });
+
+  it('keeps the warning when a failed refetch retains the limited graph', () => {
+    render(<App />);
+    act(() => {
+      simulateRepoConnected();
+      closeCommitInfoSidebar();
+      simulateCommits(
+        {value: [COMMIT('a', 'Current commit', '0', {isDot: true})]},
+        {numCommits: 2000},
+      );
+      simulateCommits({error: new Error('invalid certificate')});
+    });
+
+    expect(screen.getByTestId('commit-a')).toBeInTheDocument();
+    expect(screen.getByText('Showing a limited commit graph')).toBeInTheDocument();
+    expect(screen.getByText('invalid certificate')).toBeInTheDocument();
+  });
+
   it('auto-scrolls to the current commit when enabled', async () => {
     render(<App />);
     act(() => {

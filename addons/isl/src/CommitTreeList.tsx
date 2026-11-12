@@ -38,7 +38,7 @@ import {T, t} from './i18n';
 import {localStorageBackedAtom, useAtomHas, useAtomSelect} from './jotaiUtils';
 import {CreateEmptyInitialCommitOperation} from './operations/CreateEmptyInitialCommitOperation';
 import {useInlineProgress, useRunOperation} from './operationsState';
-import {dagWithPreviews, treeWithPreviews, useMarkOperationsCompleted} from './previews';
+import {dagWithPreviews, useMarkOperationsCompleted} from './previews';
 import {hideIrrelevantCwdStacks, isIrrelevantToCwd, repoRelativeCwd} from './repositoryData';
 import {commitTreeWidth} from './responsive';
 import {
@@ -48,7 +48,7 @@ import {
   useCommitCallbacks,
   useShortcutToRebaseSelected,
 } from './selection';
-import {commitFetchError, latestUncommittedChangesData} from './serverAPIState';
+import {commitFetchError, commitLimitWarning, latestUncommittedChangesData} from './serverAPIState';
 import {MaybeEditStackModal} from './stackEdit/ui/EditStackModal';
 
 import './CommitTreeList.css';
@@ -470,25 +470,37 @@ export function CommitTreeList() {
 
   const treeWidth = useAtomValue(commitTreeWidth);
 
-  const {trees} = useAtomValue(treeWithPreviews);
+  const dag = useAtomValue(dagWithPreviews);
   const fetchError = useAtomValue(commitFetchError);
+  const limitWarning = useAtomValue(commitLimitWarning);
   const shouldScrollToYouAreHereOnOpen = useAtomValue(scrollToYouAreHereOnOpen);
 
   const hasAutoScrolled = useRef(false);
   useEffect(() => {
-    if (!shouldScrollToYouAreHereOnOpen || hasAutoScrolled.current || trees.length === 0) {
+    if (!shouldScrollToYouAreHereOnOpen || hasAutoScrolled.current || dag.all().size === 0) {
       return;
     }
     hasAutoScrolled.current = scrollToYouAreHere('auto');
-  }, [trees, shouldScrollToYouAreHereOnOpen]);
+  }, [dag, shouldScrollToYouAreHereOnOpen]);
 
-  return fetchError == null && trees.length === 0 ? (
+  return fetchError == null && dag.all().size === 0 ? (
     <Center>
       <LargeSpinner />
     </Center>
   ) : (
     <>
       {fetchError ? <CommitFetchError error={fetchError} /> : null}
+      {limitWarning ? (
+        <ErrorNotice
+          title={t('Showing a limited commit graph')}
+          description={t(
+            'Some commits are omitted from this view because the graph exceeded the display limit. No commits have been hidden or deleted.',
+          )}
+          details={t(
+            'Check your public branch configuration, or run `sl doctor` to hide unrelated commits.',
+          )}
+        />
+      ) : null}
       <ScrollToCurrentCommitButton slot="above" />
       <DagCommitList width={treeWidth} />
       <ScrollToCurrentCommitButton slot="below" />

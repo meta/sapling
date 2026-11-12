@@ -94,7 +94,10 @@ export function simulateWorktreeInfo(
   });
 }
 
-export function simulateCommits(commits: Result<SmartlogCommits>) {
+export function simulateCommits(
+  commits: Result<SmartlogCommits>,
+  tooManyCommits?: {numCommits: number},
+) {
   simulateMessageFromServer({
     type: 'subscriptionResult',
     kind: 'smartlogCommits',
@@ -103,6 +106,7 @@ export function simulateCommits(commits: Result<SmartlogCommits>) {
       fetchStartTimestamp: 1,
       fetchCompletedTimestamp: 2,
       commits,
+      tooManyCommits,
     },
   });
 }

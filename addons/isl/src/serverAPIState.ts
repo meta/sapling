@@ -11,6 +11,7 @@ import type {
   ApplicationInfo,
   ChangedFile,
   CommitInfo,
+  FetchedCommits,
   MergeConflicts,
   RepoInfo,
   SmartlogCommits,
@@ -292,6 +293,7 @@ export const latestCommitsData = atom<{
   fetchCompletedTimestamp: number;
   commits: SmartlogCommits;
   error?: Error;
+  tooManyCommits?: FetchedCommits['tooManyCommits'];
 }>({fetchStartTimestamp: 0, fetchCompletedTimestamp: 0, commits: []});
 
 registerCleanup(
@@ -312,6 +314,8 @@ registerCleanup(
         ...data,
         commits,
         error: data.commits.error,
+        // A failed refetch keeps the previous graph, including its truncation warning.
+        tooManyCommits: newCommits == null ? last.tooManyCommits : data.tooManyCommits,
       };
     });
     if (data.commits.value) {
@@ -426,6 +430,8 @@ function filterOrReuse<T>(items: ReadonlyArray<T>, keep: (item: T) => boolean): 
 export const commitFetchError = atom(get => {
   return get(latestCommitsData).error;
 });
+
+export const commitLimitWarning = atom(get => get(latestCommitsData).tooManyCommits);
 
 export const authorString = configBackedAtom<string | null>(
   'ui.username',
