@@ -1275,7 +1275,7 @@ enum Number {
 fn parse_f32(token: &str) -> Result<f32> {
     let normalized = match parse_special_float(token) {
         Some(value) => return Ok(value as f32),
-        None => normalize_float_token(token),
+        None => normalize_float_token(token)?,
     };
     let value = normalized
         .parse::<f32>()
@@ -1287,7 +1287,7 @@ fn parse_f32(token: &str) -> Result<f32> {
 fn parse_f64(token: &str) -> Result<f64> {
     let normalized = match parse_special_float(token) {
         Some(value) => return Ok(value),
-        None => normalize_float_token(token),
+        None => normalize_float_token(token)?,
     };
     let value = normalized
         .parse::<f64>()
@@ -1306,14 +1306,17 @@ fn parse_special_float(token: &str) -> Option<f64> {
     }
 }
 
-fn normalize_float_token(token: &str) -> String {
-    match token {
+fn normalize_float_token(token: &str) -> Result<String> {
+    if has_leading_zero(token) {
+        bail!("JSON5 numbers do not permit leading zeros");
+    }
+    Ok(match token {
         token if token.starts_with("+.") => format!("+0{}", &token[1..]),
         token if token.starts_with("-.") => format!("-0{}", &token[1..]),
         token if token.starts_with('.') => format!("0{token}"),
         token if token.ends_with('.') => format!("{token}0"),
         token => token.to_owned(),
-    }
+    })
 }
 
 fn attach_float_tokens(

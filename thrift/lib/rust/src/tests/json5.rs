@@ -288,6 +288,10 @@ fn deserializes_empty_collections() {
 fn rejects_malformed_or_excessively_nested_input() {
     let malformed = json5_protocol::deserialize::<Vec<i32>, _, _>("[1,,2]");
     assert!(malformed.is_err(), "malformed JSON5 must be rejected");
+    assert!(
+        json5_protocol::deserialize::<f64, _, _>("'01.5'").is_err(),
+        "quoted floating-point values do not permit leading zeros"
+    );
 
     let nested = format!("{}0{}", "[".repeat(65), "]".repeat(65));
     let too_deep = json5_protocol::deserialize::<i32, _, _>(nested);
