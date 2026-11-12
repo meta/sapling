@@ -197,6 +197,8 @@ const SubStruct CUSTOM_SUBSTRUCT = {
   "bin": "0123456789",
 };
 
+const SubStruct BINARY_SUBSTRUCT = SubStruct{bin = "\x7f\x80"};
+
 const set<double> DOUBLE_SET = [1.5];
 
 const map<float, i32> FLOAT_KEY_MAP = {1.5: 1};

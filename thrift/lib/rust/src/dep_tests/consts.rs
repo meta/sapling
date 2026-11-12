@@ -49,6 +49,11 @@ fn test_consts() {
 }
 
 #[test]
+fn test_binary_const() {
+    assert_eq!(fbthrift_test_if::BINARY_SUBSTRUCT.bin, b"\x7f\x80");
+}
+
+#[test]
 fn test_floating_point_key_consts() {
     assert!(fbthrift_test_if::DOUBLE_SET.contains(&OrderedFloat(1.5)));
     assert_eq!(fbthrift_test_if::FLOAT_KEY_MAP[&OrderedFloat(1.5)], 1);
