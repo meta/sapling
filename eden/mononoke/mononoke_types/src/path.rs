@@ -1371,6 +1371,9 @@ impl FromIterator<Option<NonRootMPath>> for PrefixTrie {
 pub struct CaseConflictTrie<'a> {
     children: HashMap<MPathElement, CaseConflictTrie<'a>>,
     lowercase_to_original: HashMap<String, MPathElement>,
+    /// The tree this trie stands for has entries under this node that are
+    /// not in `children`, so removing every child does not empty it.
+    has_unlisted_children: bool,
     exclusions: &'a PrefixTrie,
 }
 
@@ -1379,8 +1382,52 @@ impl<'a> CaseConflictTrie<'a> {
         Self {
             children: Default::default(),
             lowercase_to_original: Default::default(),
+            has_unlisted_children: false,
             exclusions,
         }
+    }
+
+    /// Records a path that exists in the tree before any update is applied,
+    /// so that later additions are checked against it and later removals
+    /// can take it away. `has_unlisted_children` says the path is a
+    /// directory with entries this trie is not told about: it then stays
+    /// after every listed child is removed. A path that conflicts with an
+    /// earlier existing entry is left out: the conflict predates the
+    /// updates.
+    pub fn add_existing(&mut self, path: &NonRootMPath, has_unlisted_children: bool) {
+        if self.exclusions.contains_prefix(path) {
+            return;
+        }
+        if self.add_internal(path).is_ok()
+            && let Some(node) = self.node_mut(path)
+        {
+            node.has_unlisted_children |= has_unlisted_children;
+        }
+    }
+
+    /// Records a changeset that is already part of the tree the trie stands
+    /// for: what it removes is taken away, what it adds or changes becomes
+    /// an existing entry. Unlike applying it as an update, nothing it adds
+    /// is a conflict.
+    pub fn apply_existing(&mut self, bcs: &BonsaiChangeset) {
+        for (path, change) in bcs.file_changes() {
+            if change.is_removed() {
+                self.remove(path);
+            }
+        }
+        for (path, change) in bcs.file_changes() {
+            if change.is_changed() {
+                self.add_existing(path, false);
+            }
+        }
+    }
+
+    fn node_mut<'p, P>(&mut self, path: P) -> Option<&mut Self>
+    where
+        P: IntoIterator<Item = &'p MPathElement>,
+    {
+        path.into_iter()
+            .try_fold(self, |node, element| node.children.get_mut(element))
     }
 
     pub fn check_conflicts<P, I>(&mut self, iter: I) -> Option<(NonRootMPath, NonRootMPath)>
@@ -1398,7 +1445,7 @@ impl<'a> CaseConflictTrie<'a> {
     }
 
     fn is_empty(&self) -> bool {
-        self.children.is_empty()
+        self.children.is_empty() && !self.has_unlisted_children
     }
 
     /// Returns Ok(()) if element was added successfully, or Err
@@ -1884,6 +1931,48 @@ mod test {
             check_case_conflicts(paths.into_iter(), &Default::default()), // works from NonRootMPath
             Some((m("a/b"), m("a/B/d"))),
         );
+    }
+
+    #[mononoke::test]
+    fn case_conflicts_with_existing_entries() {
+        fn m(mpath: &str) -> NonRootMPath {
+            NonRootMPath::new(mpath).unwrap()
+        }
+
+        let exclusions = Default::default();
+        let mut trie = CaseConflictTrie::new(&exclusions);
+        // `Dir/a` is listed; `Dir` has other entries the trie is not told about.
+        trie.add_existing(&m("Dir"), true);
+        trie.add_existing(&m("Dir/a"), false);
+        trie.add_existing(&m("File"), false);
+
+        // Existing names are checked against.
+        assert!(trie.add(&m("dir/x")).is_err());
+        assert!(trie.add(&m("file")).is_err());
+        // Removing the only listed child does not empty a directory with
+        // unlisted children.
+        assert!(trie.remove(&m("Dir/a")));
+        assert!(trie.add(&m("dir/x")).is_err());
+        // A removed existing file is gone.
+        assert!(trie.remove(&m("File")));
+        assert!(trie.add(&m("file")).is_ok());
+
+        // A directory whose children are all listed empties when they go.
+        let mut trie = CaseConflictTrie::new(&exclusions);
+        trie.add_existing(&m("Dir"), false);
+        trie.add_existing(&m("Dir/a"), false);
+        trie.add_existing(&m("Dir/b"), false);
+        assert!(trie.remove(&m("Dir/a")));
+        assert!(trie.add(&m("dir/x")).is_err());
+        assert!(trie.remove(&m("Dir/b")));
+        assert!(trie.add(&m("dir/x")).is_ok());
+
+        // An existing entry that conflicts with an earlier one is left out.
+        let mut trie = CaseConflictTrie::new(&exclusions);
+        trie.add_existing(&m("Foo"), false);
+        trie.add_existing(&m("foo"), false);
+        assert!(trie.add(&m("Foo")).is_ok());
+        assert!(trie.add(&m("FOO")).is_err());
     }
 
     fn check_pcf_paths<I, T>(paths: I) -> Result<()>

@@ -78,6 +78,7 @@
     "scm/mononoke:xrepo_sync_disable_all_syncs": false,
     "scm/mononoke:enable_bonsai_tag_mapping_caching": false,
     "scm/mononoke:pushrebase_enable_merge_resolution": false,
+    "scm/mononoke:pushrebase_far_root_manifest_conflicts": false,
     "scm/mononoke:pushrebase_range_diff_use_content_manifests": false,
     "scm/mononoke:pushrebase_reject_noop_merge_commits": false,
     "scm/mononoke:wireproto_force_local_pushrebase": false,

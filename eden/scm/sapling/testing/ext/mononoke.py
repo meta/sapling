@@ -1030,6 +1030,10 @@ forbid_p2_root_rebases={forbid_p2_root_rebases}
     else:
         append_config("rewritedates=false")
 
+    if env.getenv("PUSHREBASE_RECURSION_LIMIT"):
+        recursion_limit = env.getenv("PUSHREBASE_RECURSION_LIMIT")
+        append_config(f"recursion_limit={recursion_limit}")
+
     if env.getenv("EMIT_OBSMARKERS"):
         append_config("emit_obsmarkers=true")
 
