@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use acl_manifest::AclChildNode;
 use acl_manifest::DirectoryAclInputs;
@@ -20,6 +21,7 @@ use anyhow::Result;
 use anyhow::anyhow;
 use blobstore::KeyedBlobstore;
 use blobstore::Loadable;
+use blobstore::LoadableError;
 use blobstore::Storable;
 use bounded_traversal::bounded_traversal_dag;
 use context::CoreContext;
@@ -30,6 +32,7 @@ use futures::StreamExt;
 use futures::TryStreamExt;
 use futures::future;
 use futures::stream;
+use futures_retry::retry;
 use manifest::Entry;
 use mercurial_types::HgAugmentedManifestEntry;
 use mercurial_types::HgAugmentedManifestEnvelope;
@@ -122,6 +125,7 @@ struct TreeChildren {
     external: Vec<(MPathElement, HgNodeHash)>,
 }
 
+#[derive(Clone, Copy)]
 struct ChildSources<'a> {
     children: &'a TreeChildren,
     /// Trees built earlier in the same batch.
@@ -301,6 +305,38 @@ pub async fn store_uploaded_tree_envelopes(
 }
 
 async fn build_uploaded_tree(
+    ctx: &CoreContext,
+    blobstore: &Arc<dyn KeyedBlobstore>,
+    restricted_paths: &RestrictedPathsConfigBased,
+    manifest: &HgBlobManifest,
+    sources: ChildSources<'_>,
+) -> Result<(HgAugmentedManifestEnvelope, DirectoryAcl)> {
+    let (built, _attempts) = retry(
+        |_| build_uploaded_tree_once(ctx, blobstore, restricted_paths, manifest, sources),
+        Duration::from_millis(100),
+    )
+    .binary_exponential_backoff()
+    .max_attempts(3)
+    .retry_if(|_, err: &anyhow::Error| is_missing_dependency(err, sources))
+    .await?;
+    Ok(built)
+}
+
+fn is_missing_dependency(err: &anyhow::Error, sources: ChildSources<'_>) -> bool {
+    err.chain().any(|cause| {
+        if let Some(UploadTreeBuildError::MissingChild { child, .. }) =
+            cause.downcast_ref::<UploadTreeBuildError>()
+        {
+            return sources.children.external.iter().any(|(_, id)| id == child);
+        }
+        matches!(
+            cause.downcast_ref::<LoadableError>(),
+            Some(LoadableError::Missing(key)) if key.starts_with("hgaugmentedmanifest.map2node.")
+        )
+    })
+}
+
+async fn build_uploaded_tree_once(
     ctx: &CoreContext,
     blobstore: &Arc<dyn KeyedBlobstore>,
     restricted_paths: &RestrictedPathsConfigBased,

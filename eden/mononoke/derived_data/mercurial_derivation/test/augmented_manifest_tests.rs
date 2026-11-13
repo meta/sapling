@@ -5908,8 +5908,7 @@ async fn assert_upload_dependency_visibility(
         let reads = denied.denied_gets.clone();
         let overlay: Arc<dyn KeyedBlobstore> = Arc::new(MemWritesKeyedBlobstore::new(denied));
         let result = build_one_uploaded_tree(ctx, repo, &overlay, tree).await;
-        // FIXME: a transient dependency miss should recover without aborting the tree build.
-        if misses == 0 {
+        if misses <= 2 {
             result?;
             let actual = overlay
                 .get(ctx, &tree_key)
@@ -5918,7 +5917,7 @@ async fn assert_upload_dependency_visibility(
                 .into_raw_bytes();
             assert_eq!(actual, expected);
         } else {
-            let err = result.expect_err("missing dependencies currently abort the build");
+            let err = result.expect_err("permanently missing dependencies must still fail");
             assert!(err.chain().any(|cause| {
                 cause.downcast_ref::<UploadTreeBuildError>().is_some()
                     || matches!(
@@ -5928,7 +5927,7 @@ async fn assert_upload_dependency_visibility(
             }));
             assert!(overlay.get(ctx, &tree_key).await?.is_none());
         }
-        assert_eq!(reads.load(Ordering::Relaxed), 1);
+        assert_eq!(reads.load(Ordering::Relaxed), misses.min(2) + 1);
     }
 
     let denied = DenyGetKeyedBlobstore::new(
