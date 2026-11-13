@@ -1,0 +1,26 @@
+load("//eden/scm:targets.bzl", "sl_rust_binary")
+
+oncall("sapling")
+
+sl_rust_binary(
+    name = "renderdag-graph-coloring",
+    srcs = glob(["src/**/*.rs"]),
+    autocargo = {
+        "cargo_toml_config": {
+            "dependencies_override": {
+                "dependencies": {
+                    "sapling-renderdag": {"default-features": False, "features": ["coloring"]},
+                },
+            },
+            "package": {
+                "description": "Compare graph line identity rules as SVG or ANSI.",
+                "name": "sapling-renderdag-graph-coloring",
+            },
+        },
+    },
+    crate_root = "src/main.rs",
+    deps = [
+        "//eden/scm/lib/drawdag:drawdag",
+        "//eden/scm/lib/renderdag:renderdag",
+    ],
+)

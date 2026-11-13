@@ -173,6 +173,7 @@ members = [
   "lib/radixbuf",
   "lib/refencode",
   "lib/renderdag",
+  "lib/renderdag/examples/graph-coloring",
   "lib/repo",
   "lib/repo/repo-minimal-info",
   "lib/repo/url",
