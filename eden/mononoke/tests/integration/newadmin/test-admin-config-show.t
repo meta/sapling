@@ -56,9 +56,27 @@ the storage config, and the command fails:
   Error: invalid config options: Storage "missing" not defined
   $ mononoke_admin config show --repo repo --json 2> /dev/null | jq -c '{storage_config: .repo_config.storage_config, storage}'
   {"storage_config":"missing","storage":null}
+  $ mononoke_admin config show --repo repo --provenance 2> /dev/null | grep -E "^(repo_config\.storage_config|# storage)"
+  repo_config.storage_config = "missing"  # spec
+  # storage: invalid config options: Storage "missing" not defined
   $ cp "$TESTTMP/server.toml.good" "$CONFIG"
 
 A repo that is not in the tier:
   $ mononoke_admin config show --repo unknown
   Error: repo unknown is not in the test tier manifest
   [1]
+
+Where each value comes from:
+  $ mononoke_admin config show --repo repo --provenance 2>/dev/null | grep -E "^(repo_name|readonly|repo_config.storage_config|repo_config.derived_data_config.enabled_config_name) "
+  readonly = false  # spec
+  repo_name = "repo"  # spec
+  repo_config.derived_data_config.enabled_config_name = "default"  # spec
+  repo_config.storage_config = "blobstore"  # spec
+  $ mononoke_admin config show --repo repo --provenance 2>/dev/null | grep "^repo_config.metadata_cache_config"
+  repo_config.metadata_cache_config.wbc_update_mode = polling  # spec
+  $ mononoke_admin config show --repo repo --provenance 2>/dev/null | grep "^storage.metadata = "
+  storage.metadata = local  # storage config blobstore
+  $ mononoke_admin config show --repo repo --provenance 2>/dev/null | grep "^# top-level fields not set" | grep -o "phabricator_callsign"
+  phabricator_callsign
+  $ mononoke_admin config show --repo repo --json --provenance 2>&1 | grep -o "cannot be used with"
+  cannot be used with
