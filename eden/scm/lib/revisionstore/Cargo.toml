@@ -18,7 +18,7 @@ anyhow = "1.0.104"
 async-trait = "0.1.92"
 blob = { version = "0.1.0", path = "../blob" }
 byteorder = "1.5"
-flume = "0.11.1"
+flume = "0.12.0"
 fn-error-context = "0.2"
 fs-err = "3.3.2"
 futures = { version = "0.3.34", features = ["async-await", "std"], default-features = false }

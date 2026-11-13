@@ -29,5 +29,5 @@ smallvec = { version = "1.16.5", default-features = false }
 tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 
 [dev-dependencies]
-flume = "0.11.1"
+flume = "0.12.0"
 sapling-minibench = { version = "0.1.0", path = "../minibench" }

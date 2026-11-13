@@ -20,7 +20,7 @@ bitflags = { version = "2.13.2", features = ["serde", "std"], default-features =
 blob = { version = "0.1.0", path = "../blob" }
 caseless = "0.2"
 dashmap = { version = "6.2.1", features = ["rayon", "serde"] }
-flume = "0.11.1"
+flume = "0.12.0"
 sapling-fsinfo = { version = "0.1.0", path = "../fsinfo" }
 sapling-identity = { version = "0.1.0", path = "../identity" }
 sapling-minibytes = { version = "0.2.0", path = "../minibytes" }

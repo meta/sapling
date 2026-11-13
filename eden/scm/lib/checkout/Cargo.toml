@@ -17,7 +17,7 @@ name = "checkout"
 anyhow = "1.0.104"
 edenfs-asserted-states-client = { version = "0.1.0", path = "../../../fs/rust/edenfs-asserted-states-client" }
 fail = { version = "0.5.1", features = ["failpoints"] }
-flume = "0.11.1"
+flume = "0.12.0"
 parking_lot = { version = "0.13.0", features = ["arc_lock", "send_guard", "serde"] }
 redacted = { version = "0.1.0", path = "../util/redacted" }
 sapling-async-runtime = { version = "0.1.0", path = "../async-runtime" }

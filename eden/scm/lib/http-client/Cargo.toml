@@ -20,7 +20,7 @@ auto_impl = "1.4.0"
 crossfire = "3.1.22"
 curl = { version = "0.4.51", features = ["http2", "static-ssl"] }
 curl-sys = "0.4.87"
-flume = "0.11.1"
+flume = "0.12.0"
 futures = { version = "0.3.34", features = ["async-await", "std"], default-features = false }
 http = "1.5.0"
 lru-cache = "0.1.2"
