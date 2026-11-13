@@ -89,6 +89,7 @@ rust_binary(
         "//common/rust/shed/sorted_vector_map:sorted_vector_map",
         "//configerator/configo/if:configo-rust-srclients",
         "//configerator/structs/scm/mononoke/redaction:redaction_set-rust",
+        "//configerator/structs/scm/mononoke/repos:repos-rust",
         "//eden/mononoke/blobrepo:blobrepo_hg",
         "//eden/mononoke/blobrepo_utils:blobrepo_utils",
         "//eden/mononoke/blobstore:blobstore",
@@ -152,6 +153,7 @@ rust_binary(
         "//eden/mononoke/megarepo_api:pushredirect",
         "//eden/mononoke/mercurial:mercurial_mutation",
         "//eden/mononoke/mercurial:mercurial_types",
+        "//eden/mononoke/metaconfig:metaconfig_parser",
         "//eden/mononoke/metaconfig:metaconfig_types",
         "//eden/mononoke/mononoke_api:mononoke_api",
         "//eden/mononoke/mononoke_types:mononoke_types",
@@ -208,11 +210,9 @@ rust_binary(
             # out of the OSS deps avoids the unused-dependency check failure.
             "fbsource//third-party/rust:derive_more",
             "//common/rust/configo:configo",
-            "//configerator/structs/scm/mononoke/repos:repos-rust",
             "//eden/mononoke/blobstore:blobstore_factory",
             "//eden/mononoke/blobstore:fileblob",
             "//eden/mononoke/common/sql_construct:sql_construct",
-            "//eden/mononoke/metaconfig:metaconfig_parser",
             "//eden/mononoke/repo_attributes/deletion_log:deletion_log",
             "//eden/mononoke/tools/repo_spec_writer:repo_spec_writer",
             # Tupperware log reader (for `backfill-status --detailed` worker logs).
