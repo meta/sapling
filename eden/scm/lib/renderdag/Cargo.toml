@@ -2,7 +2,7 @@
 
 [package]
 name = "sapling-renderdag"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Meta Source Control Team <sourcecontrol-dev@meta.com>"]
 edition = "2024"
 description = "Render a DAG into ASCII or Unicode text."

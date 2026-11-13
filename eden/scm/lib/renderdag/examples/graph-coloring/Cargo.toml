@@ -17,4 +17,4 @@ path = "src/main.rs"
 
 [dependencies]
 sapling-drawdag = { version = "0.2.0", path = "../../../drawdag" }
-sapling-renderdag = { version = "0.2.0", path = "../..", features = ["coloring"], default-features = false }
+sapling-renderdag = { version = "0.3.0", path = "../..", features = ["coloring"], default-features = false }

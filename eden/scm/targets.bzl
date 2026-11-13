@@ -58,7 +58,6 @@ _RUST_PACKAGE_VERSIONS = {
         "sapling-mincode",
         "sapling-minibytes",
         "sapling-nonblocking",
-        "sapling-renderdag",
         "sapling-rewrite-macros",
         "sapling-tree-pattern-match",
         "sapling-util",
@@ -72,8 +71,15 @@ _RUST_PACKAGE_VERSIONS.update({
         "sapling-metrics",
         "sapling-pathmatcher",
         "sapling-pathmatcher-types",
+        "sapling-small-set",
         "sapling-try-once-lock",
         "sapling-types",
+    ]
+})
+_RUST_PACKAGE_VERSIONS.update({
+    crate: "0.3.0"
+    for crate in [
+        "sapling-renderdag",
     ]
 })
 

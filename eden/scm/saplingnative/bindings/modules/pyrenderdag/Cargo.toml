@@ -10,4 +10,4 @@ cpython = { version = "0.7.2", features = ["python3-sys"], default-features = fa
 parking_lot = { version = "0.13.0", features = ["arc_lock", "send_guard", "serde"] }
 sapling-cpython-ext = { version = "0.1.0", path = "../../../../lib/cpython-ext" }
 sapling-minibytes = { version = "0.2.0", path = "../../../../lib/minibytes" }
-sapling-renderdag = { version = "0.2.0", path = "../../../../lib/renderdag" }
+sapling-renderdag = { version = "0.3.0", path = "../../../../lib/renderdag" }

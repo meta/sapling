@@ -30,7 +30,7 @@ sapling-indexedlog = { version = "0.2.0", path = "../indexedlog", optional = tru
 sapling-mincode = { version = "0.2.0", path = "../mincode", optional = true }
 sapling-minibytes = { version = "0.2.0", path = "../minibytes", default-features = false }
 sapling-nonblocking = { version = "0.2.0", path = "../nonblocking" }
-sapling-renderdag = { version = "0.2.0", path = "../renderdag", optional = true }
+sapling-renderdag = { version = "0.3.0", path = "../renderdag", optional = true }
 sapling-vlqencoding = { version = "0.2.0", path = "../vlqencoding" }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 tempfile = { version = "3.27.0", optional = true }
@@ -43,7 +43,7 @@ quickcheck = "1.1"
 sapling-dev-logger = { version = "0.1.0", path = "../dev-logger" }
 sapling-indexedlog = { version = "0.2.0", path = "../indexedlog" }
 sapling-mincode = { version = "0.2.0", path = "../mincode" }
-sapling-renderdag = { version = "0.2.0", path = "../renderdag" }
+sapling-renderdag = { version = "0.3.0", path = "../renderdag" }
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 

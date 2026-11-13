@@ -138,7 +138,7 @@ restricted_paths = { version = "0.1.0", path = "../../repo_attributes/restricted
 restricted_paths_common = { version = "0.1.0", path = "../../repo_attributes/restricted_paths_common" }
 sapling-dag = { version = "0.2.0", path = "../../../scm/lib/dag" }
 sapling-dag-types = { version = "0.2.0", path = "../../../scm/lib/dag/dag-types", features = ["for-tests"] }
-sapling-renderdag = { version = "0.2.0", path = "../../../scm/lib/renderdag" }
+sapling-renderdag = { version = "0.3.0", path = "../../../scm/lib/renderdag" }
 scuba_ext = { version = "0.1.0", path = "../../common/scuba_ext" }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
