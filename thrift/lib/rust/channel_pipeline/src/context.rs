@@ -367,14 +367,14 @@ impl Drop for DeferredRead {
 /// 2. **Active** — `on_pipeline_active` called in same order. Data path
 ///    (`fire_read` / `fire_write`) is valid.
 /// 3. **Inactive** — `on_pipeline_inactive` called in reverse order
-///    (tail→head). The C++ shim cancels both readiness hooks before invoking
+///    (tail→head). The C++ shim cancels both readiness waits before invoking
 ///    Rust; no readiness callback can enter Rust after the inactive transition.
 /// 4. **Closing** — any `close()` call is idempotent and terminal: it disarms
 ///    every handler's ready wait and queues `handler_removed` in LIFO
 ///    order. Within the same callback that called `close()`,
 ///    `fire_read`/`fire_write` still forward to the tail/head endpoints.
 /// 5. **Removed** — `handler_removed` called in LIFO order, once. No
-///    callback may enter Rust after removal; the C++ shim cancels hooks in
+///    callback may enter Rust after removal; the C++ shim cancels waits in
 ///    `on_pipeline_inactive` and `handler_removed`.
 ///
 /// # One-shot forwarding
@@ -661,46 +661,47 @@ impl<'callback> CallbackContext<'callback> {
         HandlerResult::from_ffi(self.inner.as_mut().forward_write())
     }
 
-    /// Arm the native one-shot inbound readiness hook.
+    /// Arm the native one-shot inbound readiness wait.
     ///
     /// When the transport signals that it is readable again, the C++ shim
-    /// cancels the hook and then calls [`RustHandler::on_read_ready`]. The hook
-    /// is one-shot per arm: it fires once and must be re-armed inside
+    /// cancels the wait and then calls [`RustHandler::on_read_ready`].
+    ///
+    /// The wait is one-shot per arm: it fires once and must be re-armed inside
     /// `on_read_ready` if further notifications are needed. Idempotent: calling
     /// while already armed is a no-op.
     pub fn await_read_ready(&mut self) {
         self.inner.as_mut().await_read_ready();
     }
 
-    /// Idempotently cancel the native inbound readiness hook.
+    /// Idempotently cancel the native inbound readiness wait.
     ///
-    /// Safe to call regardless of whether the hook is currently armed.
+    /// Safe to call regardless of whether the wait is currently armed.
     pub fn cancel_read_ready(&mut self) {
         self.inner.as_mut().cancel_read_ready();
     }
 
-    /// Return whether the native inbound readiness hook is armed.
+    /// Return whether the native inbound readiness wait is armed.
     pub fn is_awaiting_read_ready(&self) -> bool {
         self.inner.as_ref().get_ref().is_awaiting_read_ready()
     }
 
-    /// Arm the native one-shot outbound readiness hook.
+    /// Arm the native one-shot outbound readiness wait.
     ///
     /// When the transport signals write readiness, the C++ shim cancels the
-    /// hook and calls [`RustHandler::on_write_ready`]. Semantics mirror
+    /// wait and calls [`RustHandler::on_write_ready`]. Semantics mirror
     /// `await_read_ready`.
     pub fn await_write_ready(&mut self) {
         self.inner.as_mut().await_write_ready();
     }
 
-    /// Idempotently cancel the native outbound readiness hook.
+    /// Idempotently cancel the native outbound readiness wait.
     ///
-    /// Safe to call regardless of whether the hook is currently armed.
+    /// Safe to call regardless of whether the wait is currently armed.
     pub fn cancel_write_ready(&mut self) {
         self.inner.as_mut().cancel_write_ready();
     }
 
-    /// Return whether the native outbound readiness hook is armed.
+    /// Return whether the native outbound readiness wait is armed.
     pub fn is_awaiting_write_ready(&self) -> bool {
         self.inner.as_ref().get_ref().is_awaiting_write_ready()
     }

@@ -249,7 +249,7 @@ the exception downstream regardless. No Rust unwind ever crosses into C++.
 
 Available: `on_read`, `on_write`, the lifecycle callbacks (`handler_added`,
 `on_pipeline_active`, `on_pipeline_inactive`, `handler_removed`), one-shot
-readiness hooks (`await_read_ready` / `await_write_ready` and their
+readiness waits (`await_read_ready` / `await_write_ready` and their
 `cancel_*` / `is_awaiting_*` companions), buffer allocation helpers
 (`allocate`, `copy_from_slice`, `clone_chain`, `clone_one`, `coalesced_copy`),
 `close` / `is_closed`, `handler_id`, plus the `ContextHandle`, `DeferredRead`,

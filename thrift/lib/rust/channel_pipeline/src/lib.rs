@@ -35,7 +35,7 @@
 //! # Scope
 //!
 //! The synchronous subset is `on_read`, `on_write`, lifecycle callbacks
-//! (`handler_added`, `on_pipeline_active`, …), one-shot readiness hooks
+//! (`handler_added`, `on_pipeline_active`, …), one-shot readiness waits
 //! (`await_read_ready`, `await_write_ready`), and `close`. A synchronous
 //! callback returns a [`HandlerResult`] before control passes back to C++.
 //!

@@ -49,7 +49,7 @@ use crate::erased::RustTypeErasedBox;
 ///
 /// `Backpressure` signals that the current message was accepted but the
 /// upstream should slow down. The C++ shim arms the corresponding readiness
-/// hook when Rust returns `Backpressure`. `Error` signals that the operation
+/// wait when Rust returns `Backpressure`. `Error` signals that the operation
 /// failed; the pipeline may close the connection.
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,10 +108,11 @@ impl HandlerResult {
 /// # Backpressure
 ///
 /// Return [`HandlerResult::Backpressure`] to signal that the current message
-/// was accepted but the upstream should slow down. The C++ shim automatically
-/// arms the corresponding readiness hook when Rust returns `Backpressure`.
-/// When the transport clears, the shim cancels the hook and invokes
-/// `on_read_ready`/`on_write_ready` before the Rust call.
+/// was accepted but the upstream should slow down.
+///
+/// The C++ shim automatically arms the corresponding readiness wait when Rust
+/// returns `Backpressure`. When the transport clears, the shim cancels the wait
+/// and invokes `on_read_ready`/`on_write_ready` before the Rust call.
 ///
 /// # Typed events — not exposed
 ///

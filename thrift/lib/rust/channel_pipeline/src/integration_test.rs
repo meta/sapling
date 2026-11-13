@@ -526,7 +526,7 @@ fn safe_readiness_api_is_idempotent_and_independent() {
 }
 
 #[test]
-fn close_while_armed_clears_hooks_and_blocks_callbacks() {
+fn close_while_armed_disarms_and_blocks_callbacks() {
     let result = ffi::run_close_while_armed_test();
     assert!(result.read_armed_before && result.write_armed_before);
     assert!(!result.read_armed_after && !result.write_armed_after);
@@ -536,7 +536,7 @@ fn close_while_armed_clears_hooks_and_blocks_callbacks() {
 }
 
 #[test]
-fn inactive_while_armed_cancels_hooks() {
+fn inactive_while_armed_cancels_waits() {
     let result = ffi::run_inactive_while_armed_test();
     assert!(result.read_armed_before && result.write_armed_before);
     assert!(!result.read_armed_after && !result.write_armed_after);
@@ -547,7 +547,7 @@ fn inactive_while_armed_cancels_hooks() {
 }
 
 #[test]
-fn destroy_while_armed_unlinks_hooks_and_removes() {
+fn destroy_while_armed_removes_the_handler() {
     let result = ffi::run_destroy_while_armed_test();
     assert!(result.read_armed_before && result.write_armed_before);
     assert_eq!(result.removed, 1);
@@ -604,7 +604,7 @@ fn state_machine_lifecycle_order_and_closed_edges() {
         "state machine must observe added→active→data→close→removed reverse, got: {}",
         result.sequence
     );
-    assert!(result.closed, "close() must clear hooks / terminal");
+    assert!(result.closed, "close() must disarm and be terminal");
     assert_eq!(result.removed, 2, "handlerRemoved twice across close");
     assert!(
         result.top_level_read_is_error && result.top_level_write_is_error,
