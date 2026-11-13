@@ -5,6 +5,7 @@
  * GNU General Public License version 2.
  */
 
+use std::future::Future;
 use std::time::Duration;
 
 use justknobs::test_helpers::JustKnobsInMemory;
@@ -16,12 +17,17 @@ use metaconfig_types::RepoConfig;
 use mononoke_macros::mononoke;
 use p4_source::P4Auth;
 use p4_source::P4Trust;
+use stats_facebook::service_data::ServiceData;
+use stats_facebook::service_data::get_service_data_singleton;
+use tokio::time::Instant;
 
 use super::*;
 use crate::sharded::BatchSize;
 use crate::sharded::ConfiguredDepot;
+use crate::sharded::LastSuccess;
 use crate::sharded::configured_depot;
 use crate::sharded::import_enabled;
+use crate::sharded::report_freshness;
 use crate::sharded::retry_delay;
 
 #[mononoke::test]
@@ -229,4 +235,110 @@ fn test_stuck_after_failing_alone_three_times_in_a_row() {
     size.failed();
     size.failed();
     assert!(!size.stuck());
+}
+
+fn reported(fb: FacebookInit, repo: &str) -> Option<i64> {
+    get_service_data_singleton(fb)
+        .get_counter(&format!("mononoke.p4_sync.secs_since_success.{repo}"))
+}
+
+/// Runs `work` beside the reporter and reads the counter `after` in, while both still run.
+async fn reported_after(
+    fb: FacebookInit,
+    repo: &str,
+    last_success: &LastSuccess,
+    work: impl Future<Output = ()>,
+    after: Duration,
+) -> Option<i64> {
+    let read = async {
+        tokio::time::sleep(after).await;
+        reported(fb, repo)
+    };
+    tokio::select! {
+        _ = report_freshness(fb, repo, last_success, work) => panic!("work ended early"),
+        value = read => value,
+    }
+}
+
+#[mononoke::fbinit_test]
+async fn test_a_wedged_batch_shows_as_a_growing_value_until_the_shard_stops(fb: FacebookInit) {
+    tokio::time::pause();
+    let last_success = LastSuccess::new(Instant::now());
+    let wedged = std::future::pending::<()>();
+    assert_eq!(
+        reported_after(
+            fb,
+            "wedged",
+            &last_success,
+            wedged,
+            Duration::from_secs(1801)
+        )
+        .await,
+        Some(1800)
+    );
+    assert_eq!(
+        reported(fb, "wedged"),
+        None,
+        "a stopped shard must not leave a value behind"
+    );
+}
+
+#[mononoke::fbinit_test]
+async fn test_a_held_shard_grows_from_its_start(fb: FacebookInit) {
+    tokio::time::pause();
+    let last_success = LastSuccess::new(Instant::now());
+    // A pass every 30 s, none of them a success.
+    let held = async {
+        loop {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        }
+    };
+    assert_eq!(
+        reported_after(fb, "held", &last_success, held, Duration::from_secs(3601)).await,
+        Some(3600)
+    );
+}
+
+#[mononoke::fbinit_test]
+async fn test_a_success_or_a_switched_off_pass_resets_it(fb: FacebookInit) {
+    tokio::time::pause();
+    let last_success = LastSuccess::new(Instant::now());
+    // Failing for 30 min, then one success.
+    let recovers = async {
+        tokio::time::sleep(Duration::from_secs(1800)).await;
+        last_success.record(Instant::now());
+        std::future::pending::<()>().await
+    };
+    assert_eq!(
+        reported_after(
+            fb,
+            "recovers",
+            &last_success,
+            recovers,
+            Duration::from_secs(1831)
+        )
+        .await,
+        Some(30)
+    );
+
+    let last_success = LastSuccess::new(Instant::now());
+    // Switched off by JK: each idle pass counts as a success.
+    let switched_off = async {
+        loop {
+            last_success.record(Instant::now());
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        }
+    };
+    let value = reported_after(
+        fb,
+        "switched_off",
+        &last_success,
+        switched_off,
+        Duration::from_secs(3601),
+    )
+    .await;
+    assert!(
+        matches!(value, Some(0..=30)),
+        "never more than one idle pass old, got {value:?}"
+    );
 }

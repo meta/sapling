@@ -12,6 +12,7 @@ rust_binary(
     test_deps = [
         "fbsource//third-party/rust:maplit",
         "fbsource//third-party/rust:tempfile",
+        "//common/rust/shed/fbinit:fbinit-tokio",
         "//eden/mononoke/common/mononoke_macros:mononoke_macros",
     ],
     deps = [
@@ -23,6 +24,7 @@ rust_binary(
         "//common/rust/shed/facet:facet",
         "//common/rust/shed/fbinit:fbinit",
         "//common/rust/shed/stats:stats",
+        "//common/rust/shed/stats/facebook:stats_facebook",
         "//eden/mononoke/cmdlib/mononoke_app:mononoke_app",
         "//eden/mononoke/cmdlib/sharding:executor_lib",
         "//eden/mononoke/cmdlib/sharding_ext:sharding_ext",

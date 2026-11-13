@@ -6,10 +6,12 @@
  */
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -35,7 +37,10 @@ use repo_identity::RepoIdentityRef;
 use sharding_ext::RepoShard;
 use stats::define_stats;
 use stats::prelude::DynamicSingletonCounter;
+use stats_facebook::service_data::ServiceData;
+use stats_facebook::service_data::get_service_data_singleton;
 use tokio::sync::Notify;
+use tokio::time::Instant;
 
 use crate::Repo;
 
@@ -48,11 +53,14 @@ const ENABLED_JUST_KNOB: &str = "scm/mononoke:p4_sync_enabled";
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
 /// Failed batches of a single changelist in a row before the repo counts as stuck.
 const STUCK_AFTER: u32 = 3;
+const FRESHNESS_INTERVAL: Duration = Duration::from_secs(30);
 
 define_stats! {
     prefix = "mononoke.p4_sync";
     // 1 while the repo is stuck on a changelist it can't import, for alerts.
     stuck: dynamic_singleton_counter("stuck.{}", (repo: String)),
+    // Set every `FRESHNESS_INTERVAL` while the shard runs, removed when it stops.
+    secs_since_success: dynamic_singleton_counter("secs_since_success.{}", (repo: String)),
 }
 
 pub(crate) struct Settings {
@@ -107,6 +115,67 @@ impl BatchSize {
     /// The next changelist has failed `STUCK_AFTER` times in a row on its own.
     pub(crate) fn stuck(&self) -> bool {
         self.failed_alone >= STUCK_AFTER
+    }
+}
+
+/// When the shard last had a successful pass: imported a batch, found nothing new, or was
+/// switched off by JK on purpose. Starts at the shard's start, so a shard that never
+/// succeeds, held ones included, reports a growing value.
+pub(crate) struct LastSuccess(Mutex<Instant>);
+
+impl LastSuccess {
+    pub(crate) fn new(now: Instant) -> Self {
+        Self(Mutex::new(now))
+    }
+
+    pub(crate) fn record(&self, now: Instant) {
+        *self.0.lock().expect("poisoned") = now;
+    }
+
+    pub(crate) fn secs_since(&self, now: Instant) -> u64 {
+        now.saturating_duration_since(*self.0.lock().expect("poisoned"))
+            .as_secs()
+    }
+}
+
+/// Runs `work`, setting `secs_since_success` every `FRESHNESS_INTERVAL` beside it, so a
+/// batch that never returns shows as a growing value. Removes the counter when `work` ends
+/// or is dropped: a stale value would read as fresh on a task that no longer has the shard.
+pub(crate) async fn report_freshness<T>(
+    fb: FacebookInit,
+    repo_name: &str,
+    last_success: &LastSuccess,
+    work: impl Future<Output = T>,
+) -> T {
+    let _remove = RemoveFreshnessOnDrop {
+        fb,
+        repo_name: repo_name.to_owned(),
+    };
+    let mut ticker = tokio::time::interval(FRESHNESS_INTERVAL);
+    tokio::pin!(work);
+    loop {
+        tokio::select! {
+            output = &mut work => return output,
+            _ = ticker.tick() => STATS::secs_since_success.set_value(
+                fb,
+                last_success.secs_since(Instant::now()) as i64,
+                (repo_name.to_owned(),),
+            ),
+        }
+    }
+}
+
+struct RemoveFreshnessOnDrop {
+    fb: FacebookInit,
+    repo_name: String,
+}
+
+impl Drop for RemoveFreshnessOnDrop {
+    fn drop(&mut self) {
+        get_service_data_singleton(self.fb).clear_counter(&format!(
+            "mononoke.p4_sync.secs_since_success.{}",
+            self.repo_name
+        ));
     }
 }
 
@@ -273,6 +342,25 @@ impl P4SyncProcessExecutor {
 impl RepoShardedProcessExecutor for P4SyncProcessExecutor {
     async fn execute(&self) -> Result<()> {
         let repo_name = self.repo.repo_identity().name();
+        let last_success = LastSuccess::new(Instant::now());
+        report_freshness(
+            self.app.fb,
+            repo_name,
+            &last_success,
+            self.import_loop(repo_name, &last_success),
+        )
+        .await
+    }
+
+    async fn stop(&self) -> Result<()> {
+        self.cancellation_requested.store(true, Ordering::Relaxed);
+        self.wake.notify_one();
+        Ok(())
+    }
+}
+
+impl P4SyncProcessExecutor {
+    async fn import_loop(&self, repo_name: &str, last_success: &LastSuccess) -> Result<()> {
         let bookmark = BookmarkKey::new(BOOKMARK)?;
         let options = ImportOptions::default();
 
@@ -295,6 +383,7 @@ impl RepoShardedProcessExecutor for P4SyncProcessExecutor {
                 }
             };
             if !import_enabled(repo_name) {
+                last_success.record(Instant::now());
                 log_state(&mut state, State::Disabled, || {
                     format!("{repo_name}: {ENABLED_JUST_KNOB} is off, importing nothing")
                 });
@@ -324,7 +413,10 @@ impl RepoShardedProcessExecutor for P4SyncProcessExecutor {
                 }
             };
             match &result {
-                Ok(_) => batch_size.succeeded(),
+                Ok(_) => {
+                    last_success.record(Instant::now());
+                    batch_size.succeeded()
+                }
                 Err(error) if p4_import::failed_stage(error) != Some(p4_import::Stage::Prepare) => {
                     batch_size.failed()
                 }
@@ -373,12 +465,6 @@ impl RepoShardedProcessExecutor for P4SyncProcessExecutor {
         }
 
         tracing::info!("p4_sync released shard for repo {repo_name}");
-        Ok(())
-    }
-
-    async fn stop(&self) -> Result<()> {
-        self.cancellation_requested.store(true, Ordering::Relaxed);
-        self.wake.notify_one();
         Ok(())
     }
 }
