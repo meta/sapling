@@ -5,6 +5,7 @@
  * GNU General Public License version 2.
  */
 
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,7 +34,9 @@ pub struct ConfigArgs {
     #[clap(long)]
     pub git_config: bool,
 
-    /// Local path to fetch configerator configs from
+    /// Local path to fetch configerator configs from: JSON files laid out by
+    /// config path, or a configerator checkout, whose materialized configs are
+    /// read
     #[clap(long)]
     pub local_configerator_path: Option<PathBuf>,
 }
@@ -73,12 +76,7 @@ impl ConfigArgs {
         const CONFIGERATOR_REFRESH_TIMEOUT: Duration = Duration::from_secs(1);
 
         if let Some(path) = &self.local_configerator_path {
-            Ok(ConfigStore::file(
-                true,
-                path.clone(),
-                String::new(),
-                CONFIGERATOR_POLL_INTERVAL,
-            ))
+            Ok(local_config_store(path, CONFIGERATOR_POLL_INTERVAL))
         } else {
             ConfigStore::configerator(fb, true, true, CONFIGERATOR_REFRESH_TIMEOUT)
         }
@@ -101,4 +99,20 @@ impl ConfigArgs {
 pub enum ConfigMode {
     Production,
     Development,
+}
+
+/// A config store that reads configs from `path`: JSON files laid out by config
+/// path, or, if `path` is a configerator checkout, its materialized configs.
+pub fn local_config_store(path: &Path, poll_interval: Duration) -> ConfigStore {
+    let materialized = path.join("materialized_configs");
+    if materialized.is_dir() {
+        ConfigStore::file(
+            true,
+            materialized,
+            ".materialized_JSON".to_owned(),
+            poll_interval,
+        )
+    } else {
+        ConfigStore::file(true, path.to_path_buf(), String::new(), poll_interval)
+    }
 }
