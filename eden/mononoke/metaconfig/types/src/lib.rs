@@ -2495,7 +2495,7 @@ pub enum ZelosConfig {
 
 /// Configuration for git's bundle-uri feature
 #[derive(Debug, Default, Clone, Eq, PartialEq)]
-pub struct GitBundleURIConfig {
+pub struct GitBundleUriConfig {
     /// Specifies what flavor of uri generator should be used.
     pub uri_generator_type: UriGeneratorType,
     /// Whether to support bundle-uri for untrusted clients
@@ -2521,7 +2521,7 @@ pub enum UriGeneratorType {
     },
     /// Use local FS as the URI generator
     #[default]
-    LocalFS,
+    LocalFs,
 }
 
 /// The concurrency setting to be used during git protocol
@@ -2555,7 +2555,7 @@ pub struct GitConfigs {
     /// if the repo enables this feature through a JK.
     pub fetch_message: Option<String>,
     /// Config for the git's bundle-uri feature
-    pub git_bundle_uri: Option<GitBundleURIConfig>,
+    pub git_bundle_uri: Option<GitBundleUriConfig>,
     /// Blobstore key for the preloaded CGDM blob
     pub preloaded_cgdm_blobstore_key: Option<String>,
 }

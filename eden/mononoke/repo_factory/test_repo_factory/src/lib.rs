@@ -38,7 +38,7 @@ use bookmarks_cache::ArcBookmarksCache;
 use bookmarks_cache::WarmerRequirement;
 use bundle_uri::ArcGitBundleUri;
 use bundle_uri::BundleUri;
-use bundle_uri::LocalFSBUndleUriGenerator;
+use bundle_uri::LocalFsBundleUrlGenerator;
 use bundle_uri::SqlGitBundleMetadataStorageBuilder;
 use cacheblob::InProcessLease;
 use commit_cloud::ArcCommitCloud;
@@ -644,7 +644,7 @@ impl TestRepoFactory {
             SqlGitBundleMetadataStorageBuilder::from_sql_connections(self.metadata_db.clone())
                 .build(repo_identity.id());
 
-        let generator = LocalFSBUndleUriGenerator {};
+        let generator = LocalFsBundleUrlGenerator {};
         let bundle_uri = BundleUri::new(storage, generator, repo_identity.id()).await?;
         Ok(Arc::new(bundle_uri))
     }

@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use context::CoreContext;
 use fbinit::FacebookInit;
 use git_env::GitHost;
-use metaconfig_types::GitBundleURIConfig;
+use metaconfig_types::GitBundleUriConfig;
 #[cfg(fbcode_build)]
 use metaconfig_types::UriGeneratorType;
 use mononoke_types::RepositoryId;
@@ -64,7 +64,7 @@ pub trait GitBundleUrlGenerator {
 }
 
 #[async_trait]
-impl GitBundleUrlGenerator for LocalFSBUndleUriGenerator {
+impl GitBundleUrlGenerator for LocalFsBundleUrlGenerator {
     async fn get_url_for_bundle_handle(
         &self,
         _ctx: &CoreContext,
@@ -77,7 +77,7 @@ impl GitBundleUrlGenerator for LocalFSBUndleUriGenerator {
 }
 
 #[derive(Clone)]
-pub struct LocalFSBUndleUriGenerator {}
+pub struct LocalFsBundleUrlGenerator {}
 
 /// The URL generator of a repo with no bundle-uri config: its bundles have no
 /// URLs, so none are offered to clients.
@@ -181,7 +181,7 @@ pub fn bundle_uri_arc(
     fb: FacebookInit,
     storage: SqlGitBundleMetadataStorage,
     repo_id: RepositoryId,
-    config: Option<&GitBundleURIConfig>,
+    config: Option<&GitBundleUriConfig>,
 ) -> Arc<dyn GitBundleUri + Send + Sync + 'static> {
     let Some(config) = config else {
         return Arc::new(BundleUri {
@@ -209,9 +209,9 @@ pub fn bundle_uri_arc(
             ),
             repo_id,
         }),
-        UriGeneratorType::LocalFS => Arc::new(BundleUri {
+        UriGeneratorType::LocalFs => Arc::new(BundleUri {
             bundle_metadata_storage: storage,
-            bundle_url_generator: LocalFSBUndleUriGenerator {},
+            bundle_url_generator: LocalFsBundleUrlGenerator {},
             repo_id,
         }),
     }
@@ -224,12 +224,12 @@ pub fn bundle_uri_arc(
     _fb: FacebookInit,
     storage: SqlGitBundleMetadataStorage,
     repo_id: RepositoryId,
-    config: Option<&GitBundleURIConfig>,
+    config: Option<&GitBundleUriConfig>,
 ) -> Arc<dyn GitBundleUri + Send + Sync + 'static> {
     match config {
         Some(_) => Arc::new(BundleUri {
             bundle_metadata_storage: storage,
-            bundle_url_generator: LocalFSBUndleUriGenerator {},
+            bundle_url_generator: LocalFsBundleUrlGenerator {},
             repo_id,
         }),
         None => Arc::new(BundleUri {

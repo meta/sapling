@@ -43,7 +43,7 @@ use metaconfig_types::DirectoryBranchClusterFixedCluster;
 use metaconfig_types::DirectoryBranchClusterFixedConfig;
 use metaconfig_types::EnforcementConditionSet;
 use metaconfig_types::EnforcementExemptionSet;
-use metaconfig_types::GitBundleURIConfig;
+use metaconfig_types::GitBundleUriConfig;
 use metaconfig_types::GitConcurrencyParams;
 use metaconfig_types::GitConfigs;
 use metaconfig_types::GitDeltaManifestV2Config;
@@ -1303,26 +1303,26 @@ impl Convert for RawZelosConfig {
 }
 
 impl Convert for RawGitBundleURIConfig {
-    type Output = GitBundleURIConfig;
+    type Output = GitBundleUriConfig;
 
     fn convert(self) -> Result<Self::Output> {
         match self.uri_generator_type {
-            RawUriGeneratorType::cdn(cdn) => Ok(GitBundleURIConfig {
+            RawUriGeneratorType::cdn(cdn) => Ok(GitBundleUriConfig {
                 uri_generator_type: UriGeneratorType::Cdn {
                     bucket: cdn.bucket,
                     api_key: cdn.api_key,
                 },
                 trusted_only: self.trusted_only,
             }),
-            RawUriGeneratorType::manifold(manifold) => Ok(GitBundleURIConfig {
+            RawUriGeneratorType::manifold(manifold) => Ok(GitBundleUriConfig {
                 uri_generator_type: UriGeneratorType::Manifold {
                     bucket: manifold.bucket,
                     api_key: manifold.api_key,
                 },
                 trusted_only: self.trusted_only,
             }),
-            RawUriGeneratorType::local_fs(_) => Ok(GitBundleURIConfig {
-                uri_generator_type: UriGeneratorType::LocalFS,
+            RawUriGeneratorType::local_fs(_) => Ok(GitBundleUriConfig {
+                uri_generator_type: UriGeneratorType::LocalFs,
                 trusted_only: self.trusted_only,
             }),
             RawUriGeneratorType::UnknownField(f) => {
