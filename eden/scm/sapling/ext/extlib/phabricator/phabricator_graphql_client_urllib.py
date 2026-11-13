@@ -4,6 +4,8 @@
 # GNU General Public License version 2.
 
 
+import http.client as httplib
+
 from sapling import httpclient, json, util
 
 urlreq = util.urlreq
@@ -59,6 +61,31 @@ class PhabricatorGraphQLClientRequests:
             else:
                 raise PhabricatorClientError("Unknown host scheme: %s", urlparts.scheme)
         return urlparts
+
+    def mintcats(self, timeout):
+        """CATs from the auth proxy for `phabricator.x2p-cat-verifiers`, if any."""
+        ui = self._ui
+        verifiers = ui and ui.configlist("phabricator", "x2p-cat-verifiers")
+        if not verifiers:
+            return None
+        conn = httpclient.HTTPConnection(
+            "cats.x2pagentd.local",
+            unix_socket_path=self._unix_socket_proxy,
+            timeout=timeout,
+        )
+        query = urlreq.urlencode({"verifiers": ",".join(verifiers)})
+        try:
+            conn.request("GET", b"/create?" + query)
+            res = conn.getresponse()
+            body = res.read().decode("ascii").strip()
+            if res.status == 200:
+                return body
+            ui.debug("auth proxy cannot mint CATs: HTTP %s %s\n" % (res.status, body))
+        except (OSError, ValueError, httplib.HTTPException) as ex:
+            ui.debug("auth proxy cannot mint CATs: %r\n" % ex)
+        finally:
+            conn.close()
+        return None
 
     def sendpost(self, request_url, data, timeout, headers=None):
         urlparts = self.__verify_connection(request_url, timeout)

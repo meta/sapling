@@ -40,6 +40,11 @@ class PhabricatorGraphQLClient:
                     ).encode()
                 )
             }
+            # The injected CAT is only good for the GraphQL endpoint. A service
+            # the endpoint calls for us needs its own to know who is asking.
+            cats = self.urllib.mintcats(timeout)
+            if cats:
+                headers["crypto_auth_tokens"] = cats
             data = {
                 "doc": request,
                 "variables": params,

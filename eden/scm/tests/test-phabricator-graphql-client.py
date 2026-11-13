@@ -13,7 +13,7 @@ from sapling.ext.extlib.phabricator import graphql, phabricator_graphql_client_u
 METADATA = "id=agentcloud,session_id=0b8f2c1e-5d2a-4f7b-9c3e-1a2b3c4d5e6f"
 
 
-class CodingAgentMetadataHeaderTest(unittest.TestCase):
+class QueryHeadersTest(unittest.TestCase):
     def setUp(self):
         self.ui = uimod.ui()
         self.ui.setconfig("auth_proxy", "unix_socket_path", "/nonexistent/socket")
@@ -50,6 +50,32 @@ class CodingAgentMetadataHeaderTest(unittest.TestCase):
     def test_a_query_drops_metadata_that_is_not_ascii(self):
         headers = self.sent_headers("id=agentcloud,session_id=\u4e2d")
         self.assertNotIn("X-Coding-Agent-Metadata", headers)
+
+    def cats_header(self, status, body=b"TOKENS\n"):
+        self.ui.setconfig("phabricator", "x2p-cat-verifiers", "USER:a, SERVICE:b")
+        httpclient = phabricator_graphql_client_urllib.httpclient
+        with patch.object(httpclient, "HTTPConnection") as connect:
+            response = connect.return_value.getresponse.return_value
+            response.status, response.read.return_value = status, body
+            headers = self.sent_headers(None)
+        self.assertEqual(connect.call_args.args, ("cats.x2pagentd.local",))
+        connect.return_value.request.assert_called_once_with(
+            "GET", b"/create?verifiers=USER%3Aa%2CSERVICE%3Ab"
+        )
+        return headers.get("crypto_auth_tokens")
+
+    def test_a_query_carries_the_cats_the_auth_proxy_mints(self):
+        self.assertEqual(self.cats_header(200), "TOKENS")
+
+    def test_a_query_is_sent_without_cats_when_the_auth_proxy_refuses(self):
+        self.assertIsNone(self.cats_header(500))
+
+    def test_a_query_is_sent_without_cats_when_the_auth_proxy_answers_garbage(self):
+        self.assertIsNone(self.cats_header(200, b"\xff"))
+
+    def test_a_query_is_sent_without_cats_when_the_auth_proxy_is_unreachable(self):
+        self.ui.setconfig("phabricator", "x2p-cat-verifiers", "USER:a")
+        self.assertNotIn("crypto_auth_tokens", self.sent_headers(None))
 
 
 if __name__ == "__main__":
