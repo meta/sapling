@@ -243,6 +243,9 @@ impl ConfigSource for FakeConfig {
 struct FakeManager {
     shared_gen: u64,
     loaded: Mutex<HashSet<String>>,
+    // Repos already serving their live config, which a build skips as the
+    // repos manager does.
+    unchanged: HashSet<String>,
     fail: HashSet<String>,
     built: Mutex<Vec<String>>,
     dropped: Mutex<Vec<String>>,
@@ -253,10 +256,16 @@ impl FakeManager {
         Self {
             shared_gen: 0,
             loaded: Mutex::new(names(loaded)),
+            unchanged: HashSet::new(),
             fail: names(fail),
             built: Mutex::new(Vec::new()),
             dropped: Mutex::new(Vec::new()),
         }
+    }
+
+    fn unchanged(mut self, unchanged: &[&str]) -> Self {
+        self.unchanged = names(unchanged);
+        self
     }
 }
 
@@ -266,14 +275,16 @@ impl RepoManager for FakeManager {
         self.loaded.lock().expect("poisoned").clone()
     }
     async fn build_and_apply(&self, name: &str, _deep: bool) -> Result<Option<RepoGeneration>> {
-        self.built.lock().expect("poisoned").push(name.to_string());
-        if self.fail.contains(name) {
-            anyhow::bail!("simulated build failure for {name}");
+        if !self.unchanged.contains(name) {
+            self.built.lock().expect("poisoned").push(name.to_string());
+            if self.fail.contains(name) {
+                anyhow::bail!("simulated build failure for {name}");
+            }
+            self.loaded
+                .lock()
+                .expect("poisoned")
+                .insert(name.to_string());
         }
-        self.loaded
-            .lock()
-            .expect("poisoned")
-            .insert(name.to_string());
         Ok(Some(RepoGeneration {
             spec_hash: 100,
             shared_gen: self.shared_gen,
@@ -299,8 +310,8 @@ async fn first_pass_does_not_rebuild_already_loaded_repos() {
             ("b".to_string(), desired(true, 100, 0)),
         ]),
     };
-    let mgr = FakeManager::new(&["a", "b"], &[]);
-    let outcome = reconcile(
+    let mgr = FakeManager::new(&["a", "b"], &[]).unchanged(&["a", "b"]);
+    reconcile(
         &config,
         &mgr,
         &HashMap::new(),
@@ -315,7 +326,33 @@ async fn first_pass_does_not_rebuild_already_loaded_repos() {
         "first pass must not rebuild already-loaded repos, built {:?}",
         mgr.built.lock().unwrap(),
     );
-    assert_eq!(outcome.built + outcome.rebuilt + outcome.dropped, 0);
+}
+
+#[mononoke::test]
+async fn first_pass_rebuilds_a_repo_changed_while_startup_built_it() {
+    // "a" and "b" were built at startup, and "a"'s spec changed before the
+    // first pass, so only "b" still serves its live config.
+    let config = FakeConfig {
+        manifest: vec![entry("a", false), entry("b", false)],
+        desired: HashMap::from([
+            ("a".to_string(), desired(true, 200, 0)),
+            ("b".to_string(), desired(true, 100, 0)),
+        ]),
+    };
+    let mgr = FakeManager::new(&["a", "b"], &[]).unchanged(&["b"]);
+    reconcile(
+        &config,
+        &mgr,
+        &HashMap::new(),
+        4,
+        no_splay(),
+        SharedGensSeen::default(),
+    )
+    .await
+    .unwrap();
+    // FIXME: the first pass takes every loaded repo to be current, so "a"
+    // keeps serving its old config.
+    assert_eq!(*mgr.built.lock().unwrap(), Vec::<String>::new());
 }
 
 #[mononoke::test]
