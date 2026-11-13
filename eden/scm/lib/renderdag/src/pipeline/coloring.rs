@@ -1165,7 +1165,7 @@ mod tests {
         out
     }
 
-    fn render_fixture_ids(
+    fn render_fixture_ids<P: PrefixLineRenderer<String> + Default + Send + Sync + 'static>(
         fixture: &crate::test_fixtures::TestFixture,
         allocator: Option<Arc<LineIdAllocator<String>>>,
     ) -> String {
@@ -1176,7 +1176,7 @@ mod tests {
         for head in fixture.heads {
             dag.assign_rev(head);
         }
-        let mut renderer = GraphTextRenderer::<String>::default()
+        let mut renderer = GraphTextRenderer::<String>::new::<P>()
             .with_line_id_allocator(allocator)
             .configure(|options| options.min_row_height = 0);
         for node in fixture.reserve {
@@ -1242,7 +1242,8 @@ mod tests {
         ]
         .into_iter()
         .map(|(name, allocator)| {
-            let text = render_fixture_ids(fixture, allocator);
+            let text =
+                render_fixture_ids::<BoxDrawingPrefixLineRenderer<Curved>>(fixture, allocator);
             let lines: Vec<_> = text.lines().map(|line| format!("  {line}")).collect();
             (name, lines)
         })
@@ -1395,8 +1396,10 @@ mod tests {
         let cell = &row.line_ids.as_ref().unwrap().link_line.as_ref().unwrap()[1];
         assert_eq!(cell.vertical, ids([1]));
         assert_eq!(cell.horizontal, ids([2]));
-        let renderers: Vec<Box<dyn PrefixLineRenderer<&str>>> =
-            vec![Box::new(BoxDrawingPrefixLineRenderer::<Curved>::new())];
+        let renderers: Vec<Box<dyn PrefixLineRenderer<&str>>> = vec![
+            Box::new(BoxDrawingPrefixLineRenderer::<Curved>::new()),
+            Box::new(crate::pipeline::Ascii::new()),
+        ];
         for mut renderer in renderers {
             let prefixes = renderer.next_prefix_lines(&row);
             let link = prefixes
@@ -1540,6 +1543,138 @@ mod tests {
     }
 
     #[test]
+    fn test_ascii_junction_ids() {
+        use crate::pipeline::Ascii;
+        use crate::pipeline::AsciiLarge;
+        use crate::test_fixtures;
+
+        let small = render_fixture_ids::<Ascii>(
+            &test_fixtures::SPLIT_PARENTS,
+            build_line_id_allocator_from_rules(COLOR_RULE_PRESETS[0], 6),
+        );
+        assert_eq!(
+            indent(&small),
+            r#"
+                  o  E
+            1131210
+            1 3 2 0
+            1 o 2 0  D
+            11 22 0
+            1   2 0
+            1   o 0  C
+            1   00
+            o   0  B
+            00000
+            o  A"#
+        );
+        let large = render_fixture_ids::<AsciiLarge>(
+            &test_fixtures::SPLIT_PARENTS,
+            build_line_id_allocator_from_rules(COLOR_RULE_PRESETS[0], 6),
+        );
+        assert_eq!(
+            indent(&large),
+            r#"
+                     o  E
+              11111110
+             1  3  2 0
+            1  3  2  0
+            1  o  2  0  D
+            1 1 2 2  0
+            11   22  0
+            1     2  0
+            1     o  0  C
+            1     0 0
+            1     00
+            o     0  B
+            0 0000
+            00
+            o  A"#
+        );
+    }
+
+    #[test]
+    fn test_ascii_ansi_coloring() {
+        use crate::pipeline::Ascii;
+        use crate::pipeline::AsciiLarge;
+        use crate::pipeline::GraphTextRenderer;
+
+        let render = |large, palette| {
+            let prefix: Box<dyn PrefixLineRenderer<&str> + Send + Sync> = if large {
+                Box::new(AsciiLarge::new())
+            } else {
+                Box::new(Ascii::new())
+            };
+            let mut renderer = GraphTextRenderer::with_prefix_lines(prefix).with_line_id_allocator(
+                build_line_id_allocator_from_rules(COLOR_RULE_PRESETS[0], 6),
+            );
+            let mut out = renderer.next_lines(
+                "H",
+                vec![Ancestor::Parent("N"), Ancestor::Parent("P")],
+                "o",
+                "H\nfirst\nsecond",
+            );
+            out.extend(renderer.next_lines(
+                "N",
+                vec![Ancestor::Parent("P")],
+                "o",
+                "N\nmerge\nlast",
+            ));
+            out.extend(renderer.next_lines("P", vec![], "o", "P"));
+            render_text_lines(&out, palette)
+        };
+        let plain = render(false, None);
+        assert_eq!(
+            indent(&plain),
+            r#"
+            o    H
+            |\   first
+            | |  second
+            o |  N
+            |/   merge
+            |    last
+            o  P"#
+        );
+        let colored = render(false, Some(&COLORS));
+        assert_eq!(strip_sgr(&colored), plain);
+        assert_eq!(
+            indent(&colored),
+            r#"
+            o    H
+            [31m|[39m[32m\[39m   first
+            [31m|[39m [32m|[39m  second
+            o [32m|[39m  N
+            [32m|/[39m   merge
+            [32m|[39m    last
+            o  P"#
+        );
+        let plain = render(true, None);
+        assert_eq!(
+            indent(&plain),
+            r#"
+            o     H
+            |\    first
+            | \   second
+            o  |  N
+            | /   merge
+            |/    last
+            o  P"#
+        );
+        let colored = render(true, Some(&COLORS));
+        assert_eq!(strip_sgr(&colored), plain);
+        assert_eq!(
+            indent(&colored),
+            r#"
+            o     H
+            [31m|[39m[32m\[39m    first
+            [31m|[39m [32m\[39m   second
+            o  [32m|[39m  N
+            [32m|[39m [32m/[39m   merge
+            [32m|/[39m    last
+            o  P"#
+        );
+    }
+
+    #[test]
     fn test_prefix_coloring_layout() {
         use crate::pipeline::PrefixLinesToText;
         use crate::pipeline::row_shape_to_prefix_lines::box_drawing::DecGraphics;
@@ -1570,6 +1705,8 @@ mod tests {
                             BoxDrawingPrefixLineRenderer::<Curved>::new().with_square_glyphs(),
                         ),
                         Box::new(BoxDrawingPrefixLineRenderer::<DecGraphics>::new()),
+                        Box::new(crate::pipeline::Ascii::new()),
+                        Box::new(crate::pipeline::AsciiLarge::new()),
                     ];
                     let mut renderers: Vec<_> = prefixes
                         .into_iter()

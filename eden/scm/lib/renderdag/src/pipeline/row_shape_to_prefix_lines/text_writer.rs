@@ -94,6 +94,51 @@ impl<'a> TextWriter<'a> {
         self.write_links(&[(index, segments)], false, text, out);
     }
 
+    pub(super) fn write_junction_char(
+        &self,
+        index: usize,
+        segments: LinkLine,
+        glyph: char,
+        out: &mut PrefixLine,
+    ) {
+        self.write_char(&[(index, segments)], true, glyph, out);
+    }
+
+    pub(super) fn write_link_char(
+        &self,
+        index: usize,
+        segments: LinkLine,
+        glyph: char,
+        out: &mut PrefixLine,
+    ) {
+        self.write_links_char(&[(index, segments)], glyph, out);
+    }
+
+    pub(super) fn write_links_char(
+        &self,
+        parts: &[(usize, LinkLine)],
+        glyph: char,
+        out: &mut PrefixLine,
+    ) {
+        self.write_char(parts, false, glyph, out);
+    }
+
+    fn write_char(
+        &self,
+        parts: &[(usize, LinkLine)],
+        junction: bool,
+        glyph: char,
+        out: &mut PrefixLine,
+    ) {
+        let mut buf = [0; 4];
+        let text = glyph.encode_utf8(&mut buf);
+        if self.is_plain() || glyph == ' ' {
+            self.write_plain(text, out);
+            return;
+        }
+        self.write_links(parts, junction, text, out);
+    }
+
     fn write_links(
         &self,
         _parts: &[(usize, LinkLine)],
