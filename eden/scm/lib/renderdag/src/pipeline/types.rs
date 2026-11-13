@@ -8,7 +8,6 @@
 #[cfg(feature = "serialize")]
 use serde::Serialize;
 
-#[cfg(feature = "coloring")]
 use super::coloring;
 pub use crate::render::Ancestor;
 pub use crate::render::LinkLine;
@@ -240,11 +239,30 @@ fn node_to_pad_line(line: NodeLine, use_blank_for_node: bool) -> PadLine {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PrefixLine {
     /// The ordered pieces that make up the graph prefix.
-    pub parts: Vec<PrefixLinePart>,
+    /// Text pieces can have an optional line ID. Built-in renderers leave node
+    /// glyph slots untracked so callers can style them independently.
+    /// With coloring enabled, `None` is used for untracked text and padding.
+    /// Without coloring, the metadata type is `()` and takes no space.
+    pub parts: Vec<(PrefixLinePart, coloring::PrefixLineColor)>,
 
     /// The semantic role of this line within the rendered row.
     pub kind: PrefixLineKind,
 }
+
+impl PrefixLine {
+    /// Create an empty prefix line of the given kind.
+    pub fn new(kind: PrefixLineKind) -> Self {
+        Self {
+            parts: Vec::with_capacity(if kind == PrefixLineKind::Node { 4 } else { 1 }),
+            kind,
+        }
+    }
+}
+
+/// A complete text line with an optional line ID for each fragment.
+/// Glyph slots have been filled; message and gap fragments have no line IDs.
+/// Newlines are represented by line boundaries, not embedded in the fragments.
+pub type TextLine = Vec<(String, coloring::PrefixLineColor)>;
 
 /// A piece of a graph prefix line.
 #[derive(Clone, Debug, PartialEq, Eq)]

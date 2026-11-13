@@ -17,6 +17,11 @@ use serde::Serialize;
 /// A set of line identifiers for graph coloring.
 pub use small_set::SmallSet as LineIds;
 
+/// Optional line ID attached to one prefix fragment.
+/// A terminal character has one foreground, so a fragment shared by multiple
+/// lines carries one of their IDs. `GraphRowLineIds` keeps all of them.
+pub type PrefixLineColor = Option<usize>;
+
 use crate::column::Column;
 use crate::pipeline::types::Ancestor;
 use crate::pipeline::types::LinkLine;
@@ -383,9 +388,11 @@ mod tests {
     use crate::pipeline::types::GraphRowShape;
     use crate::pipeline::types::NodeLine;
     use crate::pipeline::types::PadLine;
+    use crate::pipeline::types::PrefixLine;
     use crate::pipeline::types::PrefixLineKind;
     use crate::pipeline::types::PrefixLinePart;
     use crate::pipeline::types::PrefixLineRenderer;
+    use crate::pipeline::types::TextLine;
     use crate::test_utils::indent;
 
     fn ids(values: impl IntoIterator<Item = usize>) -> LineIds {
@@ -463,7 +470,7 @@ mod tests {
                 let text: String = line
                     .parts
                     .into_iter()
-                    .map(|part| match part {
+                    .map(|(part, _)| match part {
                         PrefixLinePart::Text(text) => text,
                         PrefixLinePart::NodeGlyph => "o".to_owned(),
                     })
@@ -999,11 +1006,24 @@ mod tests {
             }
         })));
         shaper.next_row_shape("H", vec![Ancestor::Parent("A"), Ancestor::Parent("B")]);
-        let colors = shaper
-            .next_row_shape("A", vec![Ancestor::Parent("B")])
-            .line_ids
+        let row = shaper.next_row_shape("A", vec![Ancestor::Parent("B")]);
+        assert_eq!(
+            row.line_ids.as_ref().unwrap().after_link,
+            vec![ids([1, 2]), ids([])]
+        );
+        let prefixes = BoxDrawingPrefixLineRenderer::<Curved>::new().next_prefix_lines(&row);
+        let continuation = prefixes
+            .iter()
+            .find(|line| line.kind == PrefixLineKind::PostAncestry)
             .unwrap();
-        assert_eq!(colors.after_link, vec![ids([1, 2]), ids([])]);
+        assert_eq!(continuation.parts[0].1, Some(1));
+        let row = shaper.next_row_shape("B", vec![]);
+        let prefixes = BoxDrawingPrefixLineRenderer::<Curved>::new().next_prefix_lines(&row);
+        let node = prefixes
+            .iter()
+            .find(|line| line.kind == PrefixLineKind::Node)
+            .unwrap();
+        assert_eq!(node.parts[0], (PrefixLinePart::NodeGlyph, None));
     }
 
     #[test]
@@ -1096,6 +1116,518 @@ mod tests {
                         ] {
                             assert_eq!(cell.intersects(flag), !ids.is_empty(), "{node}: {cell:?}");
                             assert!(ids.iter().all(|id| id < 8));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    fn strip_sgr(text: &str) -> String {
+        let mut out = String::new();
+        let mut rest = text;
+        while let Some(start) = rest.find("\x1b[") {
+            out.push_str(&rest[..start]);
+            rest = &rest[start + 2..];
+            let end = rest.find('m').unwrap();
+            rest = &rest[end + 1..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    const COLORS: [&str; 6] = [
+        "\x1b[31m", "\x1b[32m", "\x1b[33m", "\x1b[34m", "\x1b[35m", "\x1b[36m",
+    ];
+
+    // Example consumer of the structured output. Glyph styling is supplied separately.
+    fn render_text_lines(lines: &[TextLine], palette: Option<&[&str]>) -> String {
+        let mut out = String::new();
+        for line in lines {
+            for (text, ids) in line {
+                if let Some(palette) = palette
+                    && let Some(id) = *ids
+                {
+                    let leading = text.len() - text.trim_start_matches(' ').len();
+                    let body = text[leading..].trim_end_matches(' ');
+                    out.push_str(&text[..leading]);
+                    if !body.is_empty() {
+                        out.push_str(palette[id % palette.len()]);
+                        out.push_str(body);
+                        out.push_str("\x1b[39m");
+                    }
+                    out.push_str(&text[leading + body.len()..]);
+                } else {
+                    out.push_str(text);
+                }
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    fn render_fixture_ids(
+        fixture: &crate::test_fixtures::TestFixture,
+        allocator: Option<Arc<LineIdAllocator<String>>>,
+    ) -> String {
+        use crate::pipeline::GraphTextRenderer;
+        use crate::test_utils::MiniDag;
+
+        let mut dag = MiniDag::from_drawdag(fixture.dag);
+        for head in fixture.heads {
+            dag.assign_rev(head);
+        }
+        let mut renderer = GraphTextRenderer::<String>::default()
+            .with_line_id_allocator(allocator)
+            .configure(|options| options.min_row_height = 0);
+        for node in fixture.reserve {
+            renderer.reserve(node.to_string());
+        }
+        let mut out = String::new();
+        for node in dag.all() {
+            if fixture.missing.contains(&node.as_str()) {
+                continue;
+            }
+            let parents = dag
+                .parent_names(&node)
+                .into_iter()
+                .map(|parent| {
+                    if fixture.missing.contains(&parent.as_str()) {
+                        Ancestor::Anonymous
+                    } else if fixture
+                        .ancestors
+                        .contains(&(node.as_str(), parent.as_str()))
+                    {
+                        Ancestor::Ancestor(parent)
+                    } else {
+                        Ancestor::Parent(parent)
+                    }
+                })
+                .collect();
+            let message = fixture.messages.iter().find(|(name, _)| *name == node);
+            let message =
+                message.map_or_else(|| node.clone(), |(_, text)| format!("{node}\n{text}"));
+            renderer.write_next_lines(
+                |text, color| {
+                    if let Some(id) = *color {
+                        let digit = char::from_digit(id as u32, 10).unwrap();
+                        out.extend(text.chars().map(|ch| if ch == ' ' { ' ' } else { digit }));
+                    } else {
+                        out.push_str(text);
+                    }
+                },
+                node,
+                parents,
+                "o",
+                &message,
+            );
+        }
+        out
+    }
+
+    fn allocator_gallery(fixture: &crate::test_fixtures::TestFixture) -> String {
+        let columns: Vec<_> = [
+            ("plain", None),
+            (
+                "A",
+                build_line_id_allocator_from_rules(COLOR_RULE_PRESETS[0], 6),
+            ),
+            (
+                "G",
+                build_line_id_allocator_from_rules(COLOR_RULE_PRESETS[1], 6),
+            ),
+            (
+                "D",
+                build_line_id_allocator_from_rules(COLOR_RULE_PRESETS[2], 6),
+            ),
+        ]
+        .into_iter()
+        .map(|(name, allocator)| {
+            let text = render_fixture_ids(fixture, allocator);
+            let lines: Vec<_> = text.lines().map(|line| format!("  {line}")).collect();
+            (name, lines)
+        })
+        .collect();
+        let width = columns
+            .iter()
+            .flat_map(|(_, lines)| lines)
+            .map(|line| line.chars().count())
+            .max()
+            .unwrap()
+            + 4;
+        let mut out = columns
+            .iter()
+            .map(|(name, _)| format!("  {name:<w$}", w = width - 2))
+            .collect::<String>();
+        out.truncate(out.trim_end().len());
+        out.push('\n');
+        for row in 0..columns[0].1.len() {
+            let line: String = columns
+                .iter()
+                .map(|(_, lines)| {
+                    assert_eq!(lines.len(), columns[0].1.len());
+                    format!("{:<width$}", lines[row])
+                })
+                .collect();
+            out.push_str(line.trim_end());
+            out.push('\n');
+        }
+        indent(&out)
+    }
+
+    #[test]
+    fn test_allocator_gallery() {
+        use crate::test_fixtures;
+        assert_eq!(
+            allocator_gallery(&test_fixtures::BRANCHES_AND_MERGES),
+            r#"
+              plain             A                 G                 D
+              o  W              o  W              o  W              o  W
+              o    V            o    V            o    V            o    V
+              ├─╮               011               011               011
+              │ o    U          0 o    U          0 o    U          0 o    U
+              │ ├─╮             0 122             0 122             0 122
+              │ │ o  T          0 1 o  T          0 1 o  T          0 1 o  T
+              │ o │  S          0 o 2  S          0 o 2  S          0 o 2  S
+              o   │  R          o   2  R          o   2  R          o   2  R
+              o   │  Q          o   2  Q          o   2  Q          o   2  Q
+              ├─╮ │             011 2             033 2             011 2
+              │ o │    P        0 o 2    P        0 o 2    P        0 o 2    P
+              │ ├───╮           0 13333           0 34444           0 13333
+              │ │ │ o  O        0 1 2 o  O        0 3 2 o  O        0 1 2 o  O
+              │ │ │ o    N      0 1 2 o    N      0 3 2 o    N      0 1 2 o    N
+              │ │ │ ├─╮         0 1 2 344         0 3 2 455         0 1 2 344
+              │ o │ │ │  M      0 o 2 3 4  M      0 o 2 4 5  M      0 o 2 3 4  M
+              │ o │ │ │  L      0 o 2 3 4  L      0 o 2 4 5  L      0 o 2 3 4  L
+              o │ │ │ │  K      o 1 2 3 4  K      o 3 2 4 5  K      o 1 2 3 4  K
+              ├───────╯         444444444         055555555         044444444
+              o │ │ │  J        o 1 2 3  J        o 3 2 4  J        o 1 2 3  J
+              o │ │ │  I        o 1 2 3  I        o 3 2 4  I        o 1 2 3  I
+              ├─╯ │ │           111 2 3           033 2 4           011 2 3
+              o   │ │  H        o   2 3  H        o   2 4  H        o   2 3  H
+              o   │ │  G        o   2 3  G        o   2 4  G        o   2 3  G
+              ├─────╮           1333333           0111111           0333333
+              │   │ o  F        1   2 o  F        0   2 o  F        0   2 o  F
+              │   ├─╯           1   222           0   211           0   233
+              │   o  E          1   o  E          0   o  E          0   o  E
+              o   │  D          o   2  D          o   1  D          o   2  D
+              o   │  C          o   2  C          o   1  C          o   2  C
+              ├───╯             22222             01111             02222
+              o  B              o  B              o  B              o  B
+              o  A              o  A              o  A              o  A"#
+        );
+        assert_eq!(
+            allocator_gallery(&test_fixtures::OCTOPUS_BRANCH_AND_MERGE),
+            r#"
+              plain             A                 G                 D
+              o      J          o      J          o      J          o      J
+              ├─┬─╮             01122             01122             01122
+              │ │ o  I          0 1 o  I          0 1 o  I          0 1 o  I
+              │ o │      H      0 o 2      H      0 o 2      H      0 o 2      H
+              ╭─┼─┬─┬─╮         001223344         551030400         001223344
+              │ │ │ │ o  G      0 1 2 3 o  G      0 1 2 4 o  G      0 1 2 3 o  G
+              │ │ │ o │  E      0 1 2 o 4  E      0 1 2 o 0  E      0 1 2 o 4  E
+              │ │ │ ├─╯         0 1 2 444         0 1 2 400         0 1 2 344
+              │ │ o │  D        0 1 o 4  D        0 1 o 0  D        0 1 o 3  D
+              │ │ ├─╮           0 1 244           0 1 233           0 1 233
+              │ o │ │  C        0 o 2 4  C        0 o 2 0  C        0 o 2 3  C
+              │ ├───╯           0 44444           0 10000           0 13333
+              o │ │  F          o 4 2  F          o 0 2  F          o 1 2  F
+              ├─╯ │             444 2             500 2             011 2
+              o   │  B          o   2  B          o   2  B          o   2  B
+              ├───╯             22222             02222             02222
+              o  A              o  A              o  A              o  A"#
+        );
+        assert_eq!(
+            allocator_gallery(&test_fixtures::SPLIT_PARENTS),
+            r#"
+              plain           A               G               D
+                    o  E            o  E            o  E            o  E
+              ╭─┬─┬─┤         1131210         1131210         0010203
+              ╷ │ │ ╷         1 3 2 0         1 3 2 0         0 1 2 3
+              ╷ o │ ╷  D      1 o 2 0  D      1 o 2 0  D      0 o 2 3  D
+              ╭─┴─╮ ╷         11122 0         33344 0         00022 3
+              │   │ ╷         1   2 0         1   2 0         0   2 3
+              │   o ╷  C      1   o 0  C      1   o 0  C      0   o 3  C
+              │   ├─╯         1   000         1   200         0   233
+              o   │  B        o   0  B        o   0  B        o   2  B
+              ├───╯           00000           10000           02222
+              o  A            o  A            o  A            o  A"#
+        );
+        assert_eq!(
+            allocator_gallery(&test_fixtures::ANCESTORS),
+            r#"
+              plain       A           G           D
+                o  Z        o  Z        o  Z        o  Z
+                o  Y        o  Y        o  Y        o  Y
+              ╭─╯         000         000         111
+              o  F        o  F        o  F        o  F
+              ╷           0           0           0
+              ╷ o  X      0 o  X      0 o  X      0 o  X
+              ╭─╯         000         111         111
+              │ o  W      0 o  W      0 o  W      0 o  W
+              ├─╯         000         022         011
+              o  E        o  E        o  E        o  E
+              ╷           0           0           0
+              o    D      o    D      o    D      o    D
+              ├─╮         011         033         011
+              │ ╷         0 1         0 3         0 1
+              │ o  C      0 o  C      0 o  C      0 o  C
+              │ ╷         0 1         0 3         0 1
+              o ╷  B      o 1  B      o 3  B      o 1  B
+              ├─╯         111         033         011
+              o  A        o  A        o  A        o  A"#
+        );
+    }
+
+    #[test]
+    fn test_link_ids_follow_drawn_segments() {
+        let mut shaper = GraphRowShaper::new()
+            .with_line_id_allocator(build_line_id_allocator_from_rules(COLOR_RULE_PRESETS[0], 6));
+        shaper.next_row_shape(
+            "H",
+            vec![
+                Ancestor::Parent("A"),
+                Ancestor::Parent("B"),
+                Ancestor::Parent("C"),
+            ],
+        );
+        let row = shaper.next_row_shape("A", vec![Ancestor::Parent("C"), Ancestor::Parent("D")]);
+        let cell = &row.line_ids.as_ref().unwrap().link_line.as_ref().unwrap()[1];
+        assert_eq!(cell.vertical, ids([1]));
+        assert_eq!(cell.horizontal, ids([2]));
+        let renderers: Vec<Box<dyn PrefixLineRenderer<&str>>> =
+            vec![Box::new(BoxDrawingPrefixLineRenderer::<Curved>::new())];
+        for mut renderer in renderers {
+            let prefixes = renderer.next_prefix_lines(&row);
+            let link = prefixes
+                .iter()
+                .find(|line| line.kind == PrefixLineKind::Link)
+                .unwrap();
+            // The crossing's glyph draws only the horizontal segment.
+            assert!(link.parts.iter().any(|(part, color)| {
+                matches!(part, PrefixLinePart::Text(text) if text.contains("──") || text.contains("--"))
+                    && *color == Some(2)
+            }));
+            assert!(link.parts.iter().all(|(_, color)| *color != Some(1)));
+        }
+    }
+
+    #[test]
+    fn test_text_line_ids() {
+        use crate::pipeline::PrefixLinesToText;
+
+        let prefixes = vec![
+            PrefixLine {
+                parts: vec![
+                    (PrefixLinePart::Text("│ ".to_owned()), Some(0)),
+                    (PrefixLinePart::NodeGlyph, None),
+                    (PrefixLinePart::Text(" ╷ ".to_owned()), Some(1)),
+                ],
+                kind: PrefixLineKind::Node,
+            },
+            PrefixLine {
+                parts: vec![(PrefixLinePart::Text("│ ".to_owned()), Some(0))],
+                kind: PrefixLineKind::Term,
+            },
+            PrefixLine {
+                parts: vec![(PrefixLinePart::Text("│ ".to_owned()), Some(0))],
+                kind: PrefixLineKind::PostAncestry,
+            },
+        ];
+        let mut renderer = PrefixLinesToText::new();
+        let glyph = "\x1b[34m●\x1b[39m";
+        let mut lines = renderer.next_lines(prefixes.clone(), false, glyph, "M", 0);
+        assert_eq!(lines[0][1], (glyph.to_owned(), None));
+        assert_eq!(lines[0].last().unwrap().1, None);
+        let following = renderer.next_lines(
+            vec![PrefixLine {
+                parts: vec![(PrefixLinePart::NodeGlyph, None)],
+                kind: PrefixLineKind::Node,
+            }],
+            false,
+            "○",
+            "N",
+            0,
+        );
+        assert_eq!(following[0], vec![("│".to_owned(), Some(0))]);
+        lines.extend(following);
+        let render = |palette| render_text_lines(&lines, palette);
+        let plain = render(None);
+        assert_eq!(
+            indent(&strip_sgr(&plain)),
+            r#"
+            │ ● ╷  M
+            │
+            │
+            ○ N"#
+        );
+        let colored = render(Some(&COLORS));
+        assert_eq!(strip_sgr(&colored), strip_sgr(&plain));
+        assert_eq!(
+            indent(&colored),
+            r#"
+            [31m│[39m [34m●[39m [32m╷[39m  M
+            [31m│[39m
+            [31m│[39m
+            ○ N"#
+        );
+    }
+
+    // Snapshots contain literal SGR controls so cat and less -R show the colors.
+    #[test]
+    fn test_box_ansi_coloring() {
+        use crate::pipeline::GraphTextRenderer;
+
+        let render = |palette| {
+            let mut renderer = GraphTextRenderer::new::<BoxDrawingPrefixLineRenderer<Curved>>()
+                .with_line_id_allocator(build_line_id_allocator_from_rules(
+                    COLOR_RULE_PRESETS[0],
+                    6,
+                ));
+            let mut out = renderer.next_lines(
+                "H",
+                vec![Ancestor::Parent("N"), Ancestor::Parent("P")],
+                "o",
+                "H\nfirst\nsecond",
+            );
+            out.extend(renderer.next_lines(
+                "N",
+                vec![Ancestor::Parent("P")],
+                "o",
+                "N\nmerge\nlast",
+            ));
+            out.extend(renderer.next_lines("P", vec![], "o", "P"));
+            render_text_lines(&out, palette)
+        };
+        let plain = render(None);
+        assert_eq!(
+            indent(&plain),
+            r#"
+            o    H
+            ├─╮  first
+            │ │  second
+            o │  N
+            ├─╯  merge
+            │    last
+            o  P"#
+        );
+        let colored = render(Some(&COLORS));
+        assert_eq!(strip_sgr(&colored), plain);
+        assert_eq!(
+            indent(&colored),
+            r#"
+            o    H
+            [31m├[39m[32m─╮[39m  first
+            [31m│[39m [32m│[39m  second
+            o [32m│[39m  N
+            [32m├─╯[39m  merge
+            [32m│[39m    last
+            o  P"#
+        );
+        let colored = render(Some(&["\x1b[35m", "\x1b[36m"]));
+        assert_eq!(strip_sgr(&colored), plain);
+        assert_eq!(
+            indent(&colored),
+            r#"
+            o    H
+            [35m├[39m[36m─╮[39m  first
+            [35m│[39m [36m│[39m  second
+            o [36m│[39m  N
+            [36m├─╯[39m  merge
+            [36m│[39m    last
+            o  P"#
+        );
+    }
+
+    #[test]
+    fn test_prefix_coloring_layout() {
+        use crate::pipeline::PrefixLinesToText;
+        use crate::pipeline::row_shape_to_prefix_lines::box_drawing::DecGraphics;
+        use crate::pipeline::types::DashStyle;
+        use crate::pipeline::types::GraphRowShapeOptions;
+        use crate::pipeline::types::GraphRowShapeStyle;
+        use crate::pipeline::types::LinkLinePlacement;
+
+        for dash_style in [DashStyle::Persistent, DashStyle::Once] {
+            for column_spacing in [0, 3] {
+                for placement in [LinkLinePlacement::Top, LinkLinePlacement::Bottom] {
+                    let options = GraphRowShapeOptions {
+                        graph_row_shape_style: GraphRowShapeStyle {
+                            dash_style,
+                            column_spacing,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    };
+                    let mut shaper = GraphRowShaper::with_options(options).with_line_id_allocator(
+                        build_line_id_allocator_from_rules(COLOR_RULE_PRESETS[0], 6),
+                    );
+                    shaper.reserve("R");
+                    type PrefixRenderer = Box<dyn PrefixLineRenderer<&'static str>>;
+                    let prefixes: Vec<PrefixRenderer> = vec![
+                        Box::new(BoxDrawingPrefixLineRenderer::<Curved>::new()),
+                        Box::new(
+                            BoxDrawingPrefixLineRenderer::<Curved>::new().with_square_glyphs(),
+                        ),
+                        Box::new(BoxDrawingPrefixLineRenderer::<DecGraphics>::new()),
+                    ];
+                    let mut renderers: Vec<_> = prefixes
+                        .into_iter()
+                        .map(|prefix| {
+                            (
+                                prefix,
+                                PrefixLinesToText::new().with_link_line_placement(placement),
+                                PrefixLinesToText::new().with_link_line_placement(placement),
+                            )
+                        })
+                        .collect();
+                    for (node, parents) in [
+                        ("H", vec![Ancestor::Parent("N"), Ancestor::Parent("P")]),
+                        ("N", vec![Ancestor::Ancestor("R"), Ancestor::Anonymous]),
+                        ("P", vec![Ancestor::Parent("R")]),
+                        ("R", vec![]),
+                    ] {
+                        let row = shaper.next_row_shape(node, parents);
+                        let mut untracked = row.clone();
+                        untracked.line_ids = None;
+                        for (prefix, plain, colored) in &mut renderers {
+                            let expected = prefix.next_prefix_lines(&untracked);
+                            let actual = prefix.next_prefix_lines(&row);
+                            assert_eq!(
+                                actual.iter().map(|line| line.kind).collect::<Vec<_>>(),
+                                expected.iter().map(|line| line.kind).collect::<Vec<_>>(),
+                            );
+                            for (part, id) in actual.iter().flat_map(|line| &line.parts) {
+                                match part {
+                                    PrefixLinePart::NodeGlyph => assert!(id.is_none()),
+                                    PrefixLinePart::Text(text) => {
+                                        assert!(!text.contains("\x1b["));
+                                        if id.is_some() {
+                                            assert_eq!(text.trim_matches(' '), text);
+                                        }
+                                    }
+                                }
+                            }
+                            let message = "commit\n1\n2\n3\n4\n5";
+                            let render_row = |lines| {
+                                PrefixLinesToText::new()
+                                    .with_link_line_placement(placement)
+                                    .next_text(lines, false, "●", message, 0)
+                            };
+                            assert_eq!(render_row(actual.clone()), render_row(expected));
+                            // Reuse cached prefixes with different output styling and row state.
+                            let plain_text =
+                                plain.next_text(actual.clone(), false, "●", message, 0);
+                            let structured = colored.next_lines(actual, false, "●", message, 0);
+                            let colored_text = render_text_lines(&structured, Some(&COLORS));
+                            assert_eq!(strip_sgr(&colored_text), plain_text);
+                            assert!(
+                                prefix
+                                    .next_prefix_lines(&untracked)
+                                    .iter()
+                                    .flat_map(|line| &line.parts)
+                                    .all(|(_, ids)| ids.is_none())
+                            );
                         }
                     }
                 }

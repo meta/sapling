@@ -5,6 +5,12 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#[cfg(feature = "coloring")]
+use std::sync::Arc;
+
+#[cfg(feature = "coloring")]
+use crate::pipeline::coloring::LineIdAllocator;
+use crate::pipeline::coloring::PrefixLineColor;
 use crate::pipeline::graph_to_row_shape::GraphRowShaper;
 use crate::pipeline::prefix_lines_to_text::PrefixLinesToText;
 use crate::pipeline::row_shape_to_prefix_lines::box_drawing::BoxDrawingPrefixLineRenderer;
@@ -12,6 +18,7 @@ use crate::pipeline::types::Ancestor;
 use crate::pipeline::types::GraphRowShapeOptions;
 use crate::pipeline::types::PrefixLine;
 use crate::pipeline::types::PrefixLineRenderer;
+use crate::pipeline::types::TextLine;
 
 /// A convenience renderer that runs all text rendering pipeline stages.
 ///
@@ -51,6 +58,14 @@ where
             prefix_lines,
             text: PrefixLinesToText::new(),
         }
+    }
+
+    /// Configure line tracking before rendering the first row.
+    /// Prefix renderers attach the tracked IDs to graph fragments.
+    #[cfg(feature = "coloring")]
+    pub fn with_line_id_allocator(mut self, allocator: Option<Arc<LineIdAllocator<N>>>) -> Self {
+        self.row_shaper = self.row_shaper.with_line_id_allocator(allocator);
+        self
     }
 
     /// Configure options.
@@ -102,6 +117,46 @@ where
             out,
             prefix_lines,
             separator_line,
+            glyph,
+            message,
+            self.row_shaper.options().min_row_height,
+        );
+    }
+
+    /// Render the next node into text fragments, retaining graph line IDs.
+    pub fn next_lines(
+        &mut self,
+        node: N,
+        parents: Vec<Ancestor<N>>,
+        glyph: &str,
+        message: &str,
+    ) -> Vec<TextLine> {
+        let row_shape = self.row_shaper.next_row_shape(node, parents);
+        let prefix_lines = self.prefix_lines.next_prefix_lines(&row_shape);
+        self.text.next_lines(
+            prefix_lines,
+            row_shape.separator_line,
+            glyph,
+            message,
+            self.row_shaper.options().min_row_height,
+        )
+    }
+
+    /// Stream borrowed text and IDs. A separate newline fragment ends each line.
+    pub fn write_next_lines(
+        &mut self,
+        out: impl FnMut(&str, &PrefixLineColor),
+        node: N,
+        parents: Vec<Ancestor<N>>,
+        glyph: &str,
+        message: &str,
+    ) {
+        let row_shape = self.row_shaper.next_row_shape(node, parents);
+        let prefix_lines = self.prefix_lines.next_prefix_lines(&row_shape);
+        self.text.write_next_lines(
+            out,
+            prefix_lines,
+            row_shape.separator_line,
             glyph,
             message,
             self.row_shaper.options().min_row_height,

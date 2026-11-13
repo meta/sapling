@@ -7,7 +7,9 @@
 
 use std::marker::PhantomData;
 
+use super::TextWriter;
 use super::ancestry_lines;
+use super::split_glyph;
 use crate::pipeline::types::DashStyle;
 use crate::pipeline::types::GraphRowShape;
 use crate::pipeline::types::LinkLine;
@@ -120,15 +122,7 @@ where
         self.column_spacing = column_spacing;
         self.spaced_glyphs = (column_spacing != 1).then(|| {
             Box::new(G::GLYPHS.map(|glyph| {
-                let (prefix, glyph, suffix) = match glyph
-                    .strip_prefix("\x1B(0")
-                    .and_then(|glyph| glyph.strip_suffix("\x1B(B"))
-                {
-                    Some(glyph) => ("\x1B(0", glyph, "\x1B(B"),
-                    None => ("", glyph, ""),
-                };
-                let split = glyph.char_indices().nth(1).unwrap().0;
-                let (column, spacing) = glyph.split_at(split);
+                let (prefix, column, spacing, suffix) = split_glyph(glyph);
                 let mut out = String::with_capacity(
                     prefix.len() + column.len() + spacing.len() * column_spacing + suffix.len(),
                 );
@@ -167,9 +161,11 @@ impl<G: BoxDrawingGlyphSet, N> PrefixLineRenderer<N> for BoxDrawingPrefixLineRen
             DashStyle::Persistent => glyph::ANCESTOR,
             DashStyle::Once => glyph::ANCESTOR_ONCE,
         };
+        let writer = TextWriter::new(line);
         let mut lines = Vec::new();
 
         lines.push(render_pad_line(
+            &writer,
             glyphs,
             ancestor,
             line.pre_node_line(),
@@ -177,26 +173,24 @@ impl<G: BoxDrawingGlyphSet, N> PrefixLineRenderer<N> for BoxDrawingPrefixLineRen
         ));
 
         // Render the nodeline
-        let mut node_line = PrefixLine {
-            parts: Vec::new(),
-            kind: PrefixLineKind::Node,
-        };
-        for entry in line.node_line.iter() {
+        let mut node_line = PrefixLine::new(PrefixLineKind::Node);
+        for (i, entry) in line.node_line.iter().enumerate() {
             match entry {
                 NodeLine::Node => {
-                    node_line.parts.push(PrefixLinePart::NodeGlyph);
                     node_line
                         .parts
-                        .push(PrefixLinePart::Text(" ".repeat(line.style.column_spacing)));
+                        .push((PrefixLinePart::NodeGlyph, Default::default()));
+                    writer.write_plain(&" ".repeat(line.style.column_spacing), &mut node_line);
                 }
-                NodeLine::Parent => push_text(&mut node_line, glyphs[glyph::PARENT]),
-                NodeLine::Ancestor => push_text(&mut node_line, glyphs[ancestor]),
-                NodeLine::Blank => push_text(&mut node_line, glyphs[glyph::SPACE]),
+                NodeLine::Parent => writer.push_column(&mut node_line, i, glyphs[glyph::PARENT]),
+                NodeLine::Ancestor => writer.push_column(&mut node_line, i, glyphs[ancestor]),
+                NodeLine::Blank => writer.push_column(&mut node_line, i, glyphs[glyph::SPACE]),
             }
         }
         lines.push(node_line);
 
         lines.push(render_pad_line(
+            &writer,
             glyphs,
             ancestor,
             line.post_node_line(),
@@ -206,35 +200,35 @@ impl<G: BoxDrawingGlyphSet, N> PrefixLineRenderer<N> for BoxDrawingPrefixLineRen
         // Render the link line
         #[allow(clippy::if_same_then_else)]
         if let Some(link_row) = line.link_line.as_ref() {
-            let mut link_line = String::new();
-            for cur in link_row.iter() {
-                if cur.intersects(LinkLine::HORIZONTAL) {
+            let mut link_line = PrefixLine::new(PrefixLineKind::Link);
+            for (i, cur) in link_row.iter().enumerate() {
+                let selected = if cur.intersects(LinkLine::HORIZONTAL) {
                     if cur.intersects(LinkLine::CHILD) {
-                        link_line.push_str(glyphs[glyph::JOIN_BOTH]);
+                        glyph::JOIN_BOTH
                     } else if cur.intersects(LinkLine::ANY_FORK)
                         && cur.intersects(LinkLine::ANY_MERGE)
                     {
-                        link_line.push_str(glyphs[glyph::JOIN_BOTH]);
+                        glyph::JOIN_BOTH
                     } else if cur.intersects(LinkLine::ANY_FORK)
                         && cur.intersects(LinkLine::VERT_PARENT)
                         && !line.merge
                     {
-                        link_line.push_str(glyphs[glyph::JOIN_BOTH]);
+                        glyph::JOIN_BOTH
                     } else if cur.intersects(LinkLine::ANY_FORK) {
-                        link_line.push_str(glyphs[glyph::FORK_BOTH]);
+                        glyph::FORK_BOTH
                     } else if cur.intersects(LinkLine::ANY_MERGE) {
-                        link_line.push_str(glyphs[glyph::MERGE_BOTH]);
+                        glyph::MERGE_BOTH
                     } else {
-                        link_line.push_str(glyphs[glyph::HORIZONTAL]);
+                        glyph::HORIZONTAL
                     }
                 } else if cur.intersects(LinkLine::VERT_PARENT) && !line.merge {
                     let left = cur.intersects(LinkLine::LEFT_MERGE | LinkLine::LEFT_FORK);
                     let right = cur.intersects(LinkLine::RIGHT_MERGE | LinkLine::RIGHT_FORK);
                     match (left, right) {
-                        (true, true) => link_line.push_str(glyphs[glyph::JOIN_BOTH]),
-                        (true, false) => link_line.push_str(glyphs[glyph::JOIN_LEFT]),
-                        (false, true) => link_line.push_str(glyphs[glyph::JOIN_RIGHT]),
-                        (false, false) => link_line.push_str(glyphs[glyph::PARENT]),
+                        (true, true) => glyph::JOIN_BOTH,
+                        (true, false) => glyph::JOIN_LEFT,
+                        (false, true) => glyph::JOIN_RIGHT,
+                        (false, false) => glyph::PARENT,
                     }
                 } else if cur.intersects(LinkLine::VERT_PARENT | LinkLine::VERT_ANCESTOR)
                     && !cur.intersects(LinkLine::LEFT_FORK | LinkLine::RIGHT_FORK)
@@ -242,73 +236,68 @@ impl<G: BoxDrawingGlyphSet, N> PrefixLineRenderer<N> for BoxDrawingPrefixLineRen
                     let left = cur.intersects(LinkLine::LEFT_MERGE);
                     let right = cur.intersects(LinkLine::RIGHT_MERGE);
                     match (left, right) {
-                        (true, true) => link_line.push_str(glyphs[glyph::JOIN_BOTH]),
-                        (true, false) => link_line.push_str(glyphs[glyph::JOIN_LEFT]),
-                        (false, true) => link_line.push_str(glyphs[glyph::JOIN_RIGHT]),
+                        (true, true) => glyph::JOIN_BOTH,
+                        (true, false) => glyph::JOIN_LEFT,
+                        (false, true) => glyph::JOIN_RIGHT,
                         (false, false) => {
                             if cur.intersects(LinkLine::VERT_ANCESTOR) {
-                                link_line.push_str(glyphs[ancestor]);
+                                ancestor
                             } else {
-                                link_line.push_str(glyphs[glyph::PARENT]);
+                                glyph::PARENT
                             }
                         }
                     }
                 } else if cur.intersects(LinkLine::LEFT_FORK)
                     && cur.intersects(LinkLine::LEFT_MERGE | LinkLine::CHILD)
                 {
-                    link_line.push_str(glyphs[glyph::JOIN_LEFT]);
+                    glyph::JOIN_LEFT
                 } else if cur.intersects(LinkLine::RIGHT_FORK)
                     && cur.intersects(LinkLine::RIGHT_MERGE | LinkLine::CHILD)
                 {
-                    link_line.push_str(glyphs[glyph::JOIN_RIGHT]);
+                    glyph::JOIN_RIGHT
                 } else if cur.intersects(LinkLine::LEFT_MERGE)
                     && cur.intersects(LinkLine::RIGHT_MERGE)
                 {
-                    link_line.push_str(glyphs[glyph::MERGE_BOTH]);
+                    glyph::MERGE_BOTH
                 } else if cur.intersects(LinkLine::LEFT_FORK)
                     && cur.intersects(LinkLine::RIGHT_FORK)
                 {
-                    link_line.push_str(glyphs[glyph::FORK_BOTH]);
+                    glyph::FORK_BOTH
                 } else if cur.intersects(LinkLine::LEFT_FORK) {
-                    link_line.push_str(glyphs[glyph::FORK_LEFT]);
+                    glyph::FORK_LEFT
                 } else if cur.intersects(LinkLine::LEFT_MERGE) {
-                    link_line.push_str(glyphs[glyph::MERGE_LEFT]);
+                    glyph::MERGE_LEFT
                 } else if cur.intersects(LinkLine::RIGHT_FORK) {
-                    link_line.push_str(glyphs[glyph::FORK_RIGHT]);
+                    glyph::FORK_RIGHT
                 } else if cur.intersects(LinkLine::RIGHT_MERGE) {
-                    link_line.push_str(glyphs[glyph::MERGE_RIGHT]);
+                    glyph::MERGE_RIGHT
                 } else {
-                    link_line.push_str(glyphs[glyph::SPACE]);
-                }
+                    glyph::SPACE
+                };
+                write_link_glyph(&writer, i, selected, glyphs[selected], &mut link_line);
             }
-            lines.push(PrefixLine {
-                parts: vec![PrefixLinePart::Text(link_line)],
-                kind: PrefixLineKind::Link,
-            });
+            lines.push(link_line);
         }
 
         // Render the term line
         if let Some(term_row) = line.term_line.as_ref() {
             let term_strs = [glyphs[glyph::PARENT], glyphs[glyph::TERMINATION]];
             for term_str in term_strs.iter() {
-                let mut term_line = String::new();
+                let mut term_line = PrefixLine::new(PrefixLineKind::Term);
                 for (i, term) in term_row.iter().enumerate() {
-                    if *term {
-                        term_line.push_str(term_str);
+                    let text = if *term {
+                        term_str
                     } else {
-                        term_line
-                            .push_str(glyphs[pad_line_to_glyph(line.ancestry_line[i], ancestor)]);
-                    }
+                        glyphs[pad_line_to_glyph(line.ancestry_line[i], ancestor)]
+                    };
+                    writer.write_column(i, PrefixLineKind::Term, text, &mut term_line);
                 }
-                lines.push(PrefixLine {
-                    parts: vec![PrefixLinePart::Text(term_line)],
-                    kind: PrefixLineKind::Term,
-                });
+                lines.push(term_line);
             }
         }
 
         for (kind, columns) in ancestry_lines(line) {
-            lines.push(render_pad_line(glyphs, ancestor, columns, kind));
+            lines.push(render_pad_line(&writer, glyphs, ancestor, columns, kind));
         }
 
         lines
@@ -324,32 +313,63 @@ where
     }
 }
 
-fn push_text(line: &mut PrefixLine, text: &str) {
-    line.parts.push(PrefixLinePart::Text(text.to_owned()));
+fn write_link_glyph(
+    writer: &TextWriter<'_>,
+    index: usize,
+    selected: usize,
+    text: &str,
+    out: &mut PrefixLine,
+) {
+    if writer.is_plain() {
+        writer.write_plain(text, out);
+        return;
+    }
+    let (prefix, column, connector, suffix) = split_glyph(text);
+    let segments = match selected {
+        glyph::HORIZONTAL => LinkLine::HORIZONTAL,
+        glyph::PARENT | glyph::ANCESTOR | glyph::ANCESTOR_ONCE => LinkLine::VERTICAL,
+        glyph::MERGE_LEFT => LinkLine::LEFT_MERGE,
+        glyph::MERGE_RIGHT => LinkLine::RIGHT_MERGE,
+        glyph::MERGE_BOTH => LinkLine::LEFT_MERGE | LinkLine::RIGHT_MERGE,
+        glyph::FORK_LEFT => LinkLine::LEFT_FORK,
+        glyph::FORK_RIGHT => LinkLine::RIGHT_FORK,
+        glyph::FORK_BOTH => LinkLine::LEFT_FORK | LinkLine::RIGHT_FORK | LinkLine::HORIZONTAL,
+        glyph::JOIN_LEFT => LinkLine::VERTICAL | LinkLine::LEFT_MERGE | LinkLine::LEFT_FORK,
+        glyph::JOIN_RIGHT => LinkLine::VERTICAL | LinkLine::RIGHT_MERGE | LinkLine::RIGHT_FORK,
+        glyph::JOIN_BOTH => LinkLine::VERTICAL | LinkLine::HORIZONTAL | LinkLine::ANY_FORK_OR_MERGE,
+        _ => LinkLine::empty(),
+    };
+    writer.write_plain(prefix, out);
+    writer.write_junction(index, segments, column, out);
+    if connector.trim_matches(' ').is_empty() {
+        writer.write_plain(connector, out);
+    } else {
+        // The connector has its own line IDs, independent of the intersection glyph.
+        writer.write_link(
+            index,
+            LinkLine::HORIZONTAL | LinkLine::RIGHT_FORK | LinkLine::RIGHT_MERGE,
+            connector,
+            out,
+        );
+    }
+    writer.write_plain(suffix, out);
 }
 
 fn render_pad_line(
+    writer: &TextWriter<'_>,
     glyphs: &[&str; glyph::COUNT],
     ancestor: usize,
     line: impl IntoIterator<Item = PadLine>,
     kind: PrefixLineKind,
 ) -> PrefixLine {
-    PrefixLine {
-        parts: vec![PrefixLinePart::Text(render_pad_text(
-            glyphs, ancestor, line,
-        ))],
-        kind,
-    }
-}
-
-fn render_pad_text(
-    glyphs: &[&str; glyph::COUNT],
-    ancestor: usize,
-    line: impl IntoIterator<Item = PadLine>,
-) -> String {
-    let mut out = String::new();
-    for entry in line {
-        out.push_str(glyphs[pad_line_to_glyph(entry, ancestor)]);
+    let mut out = PrefixLine::new(kind);
+    for (i, entry) in line.into_iter().enumerate() {
+        writer.write_column(
+            i,
+            kind,
+            glyphs[pad_line_to_glyph(entry, ancestor)],
+            &mut out,
+        );
     }
     out
 }

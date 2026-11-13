@@ -55,14 +55,17 @@ impl<N> PrefixLineRenderer<N> for AsciiLargePrefixLineRenderer {
             match entry {
                 NodeLine::Node => {
                     if i > 0 {
-                        node_line
-                            .parts
-                            .push(PrefixLinePart::Text(leading_gap.clone()));
+                        node_line.parts.push((
+                            PrefixLinePart::Text(leading_gap.clone()),
+                            Default::default(),
+                        ));
                     }
-                    node_line.parts.push(PrefixLinePart::NodeGlyph);
                     node_line
                         .parts
-                        .push(PrefixLinePart::Text(String::from(" ")));
+                        .push((PrefixLinePart::NodeGlyph, Default::default()));
+                    node_line
+                        .parts
+                        .push((PrefixLinePart::Text(String::from(" ")), Default::default()));
                 }
                 NodeLine::Parent => push_text(&mut node_line, leading, "| "),
                 NodeLine::Ancestor => push_text(&mut node_line, leading, ancestor_line),
@@ -177,11 +180,11 @@ impl<N> PrefixLineRenderer<N> for AsciiLargePrefixLineRenderer {
                 }
             }
             lines.push(PrefixLine {
-                parts: vec![PrefixLinePart::Text(top_link_line)],
+                parts: vec![(PrefixLinePart::Text(top_link_line), Default::default())],
                 kind: PrefixLineKind::Link,
             });
             lines.push(PrefixLine {
-                parts: vec![PrefixLinePart::Text(bot_link_line)],
+                parts: vec![(PrefixLinePart::Text(bot_link_line), Default::default())],
                 kind: PrefixLineKind::Link,
             });
         }
@@ -206,7 +209,7 @@ impl<N> PrefixLineRenderer<N> for AsciiLargePrefixLineRenderer {
                     }
                 }
                 lines.push(PrefixLine {
-                    parts: vec![PrefixLinePart::Text(term_line)],
+                    parts: vec![(PrefixLinePart::Text(term_line), Default::default())],
                     kind: PrefixLineKind::Term,
                 });
             }
@@ -227,11 +230,10 @@ fn render_pad_line(
     kind: PrefixLineKind,
 ) -> PrefixLine {
     PrefixLine {
-        parts: vec![PrefixLinePart::Text(render_pad_text(
-            ancestor,
-            leading_gap,
-            line,
-        ))],
+        parts: vec![(
+            PrefixLinePart::Text(render_pad_text(ancestor, leading_gap, line)),
+            Default::default(),
+        )],
         kind,
     }
 }
@@ -259,5 +261,6 @@ fn push_text(line: &mut PrefixLine, leading_gap: &str, glyph: &str) {
     let mut text = String::with_capacity(leading_gap.len() + glyph.len());
     text.push_str(leading_gap);
     text.push_str(glyph);
-    line.parts.push(PrefixLinePart::Text(text));
+    line.parts
+        .push((PrefixLinePart::Text(text), Default::default()));
 }
