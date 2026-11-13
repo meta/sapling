@@ -885,6 +885,19 @@ def expushcmd(orig, ui, repo, dest=None, **opts):
             remotename = ui.config("remotenames", "rename.%s" % dest) or dest
             to = opts.get("to") or _guesspushtobookmark(repo, pushnode, remotename)
             if not to:
+                prefix = "%s/" % remotename
+                at_bookmarks = [
+                    name
+                    for name, nodes in repo._remotenames["bookmarks"].items()
+                    if name.startswith(prefix)
+                    and len(nodes) == 1
+                    and nodes[0] == pushnode
+                ]
+                if at_bookmarks:
+                    raise error.Abort(
+                        _("nothing to push - current commit is already at %s")
+                        % ", ".join(at_bookmarks)
+                    )
                 raise error.Abort(_("use '--to' to specify destination bookmark"))
         return git.push(repo, dest, [(pushnode, to)], force=force)
 
