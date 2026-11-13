@@ -25,6 +25,7 @@ use metaconfig_types::BlobConfig;
 use metaconfig_types::CensoredScubaParams;
 use metaconfig_types::CommitIdentityScheme;
 use metaconfig_types::CommonConfig;
+use metaconfig_types::GitConfigs;
 use metaconfig_types::ManifestFormatKind;
 use metaconfig_types::ObjectsCountMultiplier;
 use metaconfig_types::Redaction;
@@ -425,7 +426,11 @@ fn build_repo_config(
 
     let raw_git_configs = git_configs.unwrap_or_default();
 
-    let git_configs = raw_git_configs.convert()?;
+    let git_configs: GitConfigs = raw_git_configs.convert()?;
+    ensure!(
+        !metadata.enable_git_bundle_uri || git_configs.git_bundle_uri.is_some(),
+        "enable_git_bundle_uri is set, so the repo needs git_configs.git_bundle_uri_config"
+    );
 
     let commit_cloud_config = commit_cloud_config.convert()?.unwrap_or_default();
     let mononoke_cas_sync_config = mononoke_cas_sync_config.convert()?;
@@ -3003,6 +3008,52 @@ mod test {
         assert_eq!(merged.phabricator_callsign, Some("CALLSIGN".to_string()));
     }
 
+    fn local_bundle_uri_configs() -> repos::RawGitConfigs {
+        repos::RawGitConfigs {
+            git_bundle_uri_config: Some(repos::RawGitBundleURIConfig {
+                uri_generator_type: repos::RawUriGeneratorType::local_fs(
+                    repos::RawLocalFSGitUriGenerator {},
+                ),
+                trusted_only: true,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[mononoke::test]
+    fn test_parse_repo_spec_bundle_uri_config_needed_when_enabled() {
+        let named_storage = hashmap! {
+            "test_storage".to_string() => test_raw_storage_config(),
+        };
+        let spec = |enabled: bool, git_configs: Option<repos::RawGitConfigs>| repos::RepoSpec {
+            default_commit_identity_scheme: repos::RawCommitIdentityScheme::GIT,
+            enable_git_bundle_uri: Some(enabled),
+            repo_config: Some(RawRepoConfig {
+                storage_config: Some("test_storage".to_string()),
+                git_configs,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let error = parse_repo_spec(spec(true, None), "scs", &named_storage)
+            .expect_err("bundle-uri on without its config must fail");
+        assert!(
+            error.to_string().contains("git_bundle_uri_config"),
+            "{error:?}"
+        );
+        let off = parse_repo_spec(spec(false, None), "scs", &named_storage)
+            .expect("bundle-uri off needs no config");
+        assert!(off.git_configs.git_bundle_uri.is_none());
+        let on = parse_repo_spec(
+            spec(true, Some(local_bundle_uri_configs())),
+            "scs",
+            &named_storage,
+        )
+        .expect("bundle-uri on with its config parses");
+        assert!(on.git_configs.git_bundle_uri.is_some());
+    }
+
     #[mononoke::test]
     fn test_parse_repo_spec_basic() {
         use repos::RawCommitIdentityScheme;
@@ -3023,6 +3074,7 @@ mod test {
             tiers: vec!["scs".to_string()],
             repo_config: Some(RawRepoConfig {
                 storage_config: Some("test_storage".to_string()),
+                git_configs: Some(local_bundle_uri_configs()),
                 ..Default::default()
             }),
             tier_overrides: None,

@@ -413,6 +413,9 @@ async fn get_bundle_url(
     request_context: &RepositoryRequestContext,
     git_host: GitHost,
 ) -> Option<String> {
+    if !request_context.bundle_uri_configured() {
+        return None;
+    }
     if !request_context.ctx.metadata().client_untrusted() {
         let bundle_uri = &request_context.repo.git_bundle_uri;
         let bundle_list = bundle_uri
@@ -452,7 +455,11 @@ bundle.heuristic=creationToken
 
     let bundle_trusted_only = request_context.bundle_uri_trusted_only();
 
-    if !bundle_trusted_only || !request_context.ctx.metadata().client_untrusted() {
+    if !request_context.bundle_uri_configured() {
+        state.put(BundleUriOutcome::Success(
+            "no bundle-uri config".to_string(),
+        ));
+    } else if !bundle_trusted_only || !request_context.ctx.metadata().client_untrusted() {
         let bundle_uri = &request_context.repo.git_bundle_uri;
         let bundle_list = bundle_uri
             .get_latest_bundle_list(&request_context.ctx)

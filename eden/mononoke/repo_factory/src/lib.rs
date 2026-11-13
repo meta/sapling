@@ -1157,17 +1157,11 @@ impl RepoFactory {
             .context(RepoFactoryError::GitBundleUri)?
             .build(repo_identity.id());
 
-        let config = &repo_config
-            .git_configs
-            .git_bundle_uri
-            .as_ref()
-            .ok_or(RepoFactoryError::GitBundleUri)?;
-
         Ok(bundle_uri::bundle_uri_arc(
             self.env.fb,
             git_bundle_uri_storage,
             repo_config.repoid,
-            config,
+            repo_config.git_configs.git_bundle_uri.as_ref(),
         ))
     }
 

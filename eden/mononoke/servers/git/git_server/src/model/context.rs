@@ -75,6 +75,17 @@ impl RepositoryRequestContext {
         Ok(request_context)
     }
 
+    /// Whether the repo has a bundle-uri config. Without one its bundles have
+    /// no URLs, so bundle-uri is neither advertised nor answered with bundles.
+    pub fn bundle_uri_configured(&self) -> bool {
+        self.repo
+            .repo_config
+            .as_ref()
+            .git_configs
+            .git_bundle_uri
+            .is_some()
+    }
+
     pub fn bundle_uri_trusted_only(&self) -> bool {
         self.repo
             .repo_config

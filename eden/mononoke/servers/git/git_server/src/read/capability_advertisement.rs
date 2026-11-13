@@ -289,8 +289,9 @@ pub async fn capability_advertisement(state: &mut State) -> Result<Response<Body
 
     ScubaMiddlewareState::try_borrow_add(state, "protocol_version", protocol_version.to_string());
 
-    let use_bundle_uri =
-        force_bundle_uri.unwrap_or_else(|| request_context.repo.repo_config.enable_git_bundle_uri);
+    let use_bundle_uri = request_context.bundle_uri_configured()
+        && force_bundle_uri
+            .unwrap_or_else(|| request_context.repo.repo_config.enable_git_bundle_uri);
 
     let output = advertise_capability(
         request_context,
