@@ -1141,6 +1141,217 @@ class ClonePrecheckTest(unittest.TestCase, TemporaryDirectoryMixin):
                     instance.clone(MagicMock(), mount_path, "0" * 40)
 
 
+class CloneRegistrationTest(unittest.TestCase, TemporaryDirectoryMixin):
+    """`clone` registers the checkout in config.json before the mount, so a
+    clone that stops after the mount never leaves an unregistered mount, and a
+    failed mount leaves no entry behind."""
+
+    def make_instance(self) -> tuple[config_mod.EdenInstance, str]:
+        tmp_dir = Path(self.make_temporary_directory())
+        state_dir = tmp_dir / "state"
+        state_dir.mkdir()
+        (state_dir / "config.json").write_text(json.dumps({}))
+        instance = config_mod.EdenInstance(
+            config_dir=state_dir,
+            etc_eden_dir=tmp_dir / "etc",
+            home_dir=tmp_dir / "home",
+        )
+        return instance, str(tmp_dir / "mounts" / "repo")
+
+    def markers(self, instance: config_mod.EdenInstance) -> list[Path]:
+        """The intentionally-unmounted markers in the instance's client
+        directories."""
+        clients_dir = instance._get_clients_dir()
+        return sorted(clients_dir.glob(f"*/{util.INTENTIONALLY_UNMOUNTED}"))
+
+    def checkout_config(self) -> config_mod.CheckoutConfig:
+        return config_mod.CheckoutConfig(
+            backing_repo=Path("/repo"),
+            scm_type="hg",
+            guid="guid",
+            mount_protocol="fuse",
+            case_sensitive=True,
+            require_utf8_path=True,
+            default_revision="master",
+            redirections={},
+            redirection_targets={},
+            active_prefetch_profiles=[],
+            use_write_back_cache=False,
+            inode_catalog_type=None,
+            off_mount_repo_dir=False,
+        )
+
+    @contextlib.contextmanager
+    def thrift_client(
+        self,
+        mount_error: Exception | None,
+        list_mounts: list[MountInfo] | Exception | None = None,
+    ):
+        client = MagicMock()
+        if mount_error is not None:
+            client.mount.side_effect = mount_error
+        if isinstance(list_mounts, Exception):
+            client.listMounts.side_effect = list_mounts
+        else:
+            client.listMounts.return_value = list_mounts or []
+        yield client
+
+    def test_interrupted_post_clone_setup_leaves_a_registered_checkout(self) -> None:
+        instance, mount_path = self.make_instance()
+        with patch.object(
+            instance, "get_thrift_client", lambda timeout=None: self.thrift_client(None)
+        ):
+            with patch.object(
+                instance,
+                "_post_clone_checkout_setup",
+                side_effect=RuntimeError("killed after the mount"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "killed after the mount"):
+                    instance.clone(self.checkout_config(), mount_path, "0" * 40)
+
+        self.assertEqual([mount_path], instance.get_mount_paths())
+
+    def test_clone_marks_the_checkout_intentionally_unmounted_until_the_mount(
+        self,
+    ) -> None:
+        """The marker keeps unmount recovery from mounting the fresh entry
+        before the daemon's own mount; the daemon clears it when it mounts."""
+        instance, mount_path = self.make_instance()
+        markers: list[bool] = []
+
+        @contextlib.contextmanager
+        def thrift_client(timeout=None):
+            client = MagicMock()
+
+            def mount(mount_info) -> None:
+                client_dir = Path(os.fsdecode(mount_info.edenClientPath))
+                markers.append((client_dir / util.INTENTIONALLY_UNMOUNTED).exists())
+
+            client.mount.side_effect = mount
+            yield client
+
+        with patch.object(instance, "get_thrift_client", thrift_client):
+            with patch.object(instance, "_post_clone_checkout_setup"):
+                instance.clone(self.checkout_config(), mount_path, "0" * 40)
+
+        self.assertEqual([True], markers)
+        self.assertEqual([mount_path], instance.get_mount_paths())
+
+    def test_failed_mount_leaves_no_registration(self) -> None:
+        instance, mount_path = self.make_instance()
+        with patch.object(
+            instance,
+            "get_thrift_client",
+            lambda timeout=None: self.thrift_client(RuntimeError("mount failed")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "mount failed"):
+                instance.clone(self.checkout_config(), mount_path, "0" * 40)
+
+        self.assertEqual([], instance.get_mount_paths())
+        self.assertEqual([], self.markers(instance))
+
+    def test_failed_cleanup_does_not_hide_the_mount_error(self) -> None:
+        instance, mount_path = self.make_instance()
+        with patch.object(
+            instance,
+            "get_thrift_client",
+            lambda timeout=None: self.thrift_client(RuntimeError("mount failed")),
+        ):
+            with patch.object(
+                instance,
+                "_remove_path_from_directory_map",
+                side_effect=OSError("config.json is read-only"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "mount failed"):
+                    instance.clone(self.checkout_config(), mount_path, "0" * 40)
+
+    def test_failed_registration_leaves_no_marker(self) -> None:
+        instance, mount_path = self.make_instance()
+        with patch.object(
+            instance,
+            "_add_path_to_directory_map",
+            side_effect=OSError("config.json is read-only"),
+        ):
+            with self.assertRaisesRegex(OSError, "read-only"):
+                instance.clone(self.checkout_config(), mount_path, "0" * 40)
+
+        self.assertEqual([], instance.get_mount_paths())
+        self.assertEqual([], self.markers(instance))
+
+    def test_mount_call_failure_with_a_served_mount_keeps_the_registration(
+        self,
+    ) -> None:
+        """A client-side timeout or a lost reply does not mean the daemon did
+        not mount; the entry stays when the daemon serves the path."""
+        instance, mount_path = self.make_instance()
+        with patch.object(
+            instance,
+            "get_thrift_client",
+            lambda timeout=None: self.thrift_client(TimeoutError("timed out")),
+        ):
+            with patch.object(instance, "_daemon_serves", return_value=True):
+                with self.assertRaises(TimeoutError):
+                    instance.clone(self.checkout_config(), mount_path, "0" * 40)
+
+        self.assertEqual([mount_path], instance.get_mount_paths())
+
+    def test_mount_call_failure_with_an_unanswered_check_keeps_the_registration(
+        self,
+    ) -> None:
+        """When the daemon cannot say whether it mounted, the entry stays: a
+        registered checkout that is not mounted is the ordinary unmounted
+        state, while an unregistered mount is the state this diff prevents."""
+        instance, mount_path = self.make_instance()
+        with patch.object(
+            instance,
+            "get_thrift_client",
+            lambda timeout=None: self.thrift_client(
+                TimeoutError("timed out"), TimeoutError("timed out again")
+            ),
+        ):
+            with self.assertRaisesRegex(TimeoutError, "^timed out$"):
+                instance.clone(self.checkout_config(), mount_path, "0" * 40)
+
+        self.assertEqual([mount_path], instance.get_mount_paths())
+        # Without the marker, the checkout is recovered or mounted like any other.
+        self.assertEqual([], self.markers(instance))
+
+    def test_daemon_serves_is_unknown_when_the_daemon_does_not_answer(self) -> None:
+        instance, mount_path = self.make_instance()
+        served = [
+            MountInfo(
+                mountPoint=os.fsencode(mount_path),
+                edenClientPath=b"/clients/repo",
+                state=MountState.INITIALIZING,
+            )
+        ]
+        # The daemon reports the resolved path; a link to the mount still matches.
+        link = Path(mount_path).parent / "link"
+        link.parent.mkdir(parents=True, exist_ok=True)
+        Path(mount_path).mkdir(exist_ok=True)
+        link.symlink_to(mount_path)
+        cases: list[tuple[list[MountInfo] | Exception, bool | None]] = [
+            (served, True),
+            ([], False),
+            (TimeoutError("timed out"), None),
+        ]
+        with patch.object(
+            instance,
+            "get_thrift_client",
+            lambda timeout=None: self.thrift_client(None, served),
+        ):
+            self.assertIs(True, instance._daemon_serves(link))
+        for list_mounts, expected in cases:
+            with patch.object(
+                instance,
+                "get_thrift_client",
+                lambda timeout=None, mounts=list_mounts: self.thrift_client(
+                    None, mounts
+                ),
+            ):
+                self.assertIs(expected, instance._daemon_serves(Path(mount_path)))
+
+
 class UnregisterCheckoutTest(unittest.TestCase, TemporaryDirectoryMixin):
     """`unregister_checkout` removes a config.json entry only while it still
     names the missing state directory, so a replacement clone registered at

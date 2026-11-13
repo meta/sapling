@@ -806,13 +806,64 @@ Do you want to run `eden mount %s` instead?"""
         if mount_timeout == 0:
             mount_timeout = None
 
-        with self.get_thrift_client(timeout=mount_timeout) as client:
-            client.mount(mount_info)
+        # Register the checkout before asking the daemon to mount it. Written
+        # after the mount, the directory-map entry was lost whenever the clone
+        # stopped in between (a timeout, a kill, a failed post-clone step), which
+        # left a mount that `eden list` shows as "(unconfigured)" and that the
+        # directory map could not help remove. A checkout registered but never
+        # mounted is an ordinary unmounted checkout: `eden mount` mounts it and
+        # `eden rm` removes it.
+        #
+        # The intentionally-unmounted marker goes first: unmount recovery
+        # (`mount:mount-health-check-recovery`) remounts a registered checkout
+        # the daemon does not serve, unless the marker is set, and a tick
+        # between the registration and the daemon's own mount would otherwise
+        # mount the checkout first and fail the call below as "already mounted",
+        # skipping the post-clone setup. The daemon clears the marker when it
+        # mounts. The marker is written into the client directory directly:
+        # config.json does not name it yet.
+        try:
+            self._set_intentionally_unmounted(path, Path(client_dir))
+            self._add_path_to_directory_map(Path(path), os.path.basename(client_dir))
+            with self.get_thrift_client(timeout=mount_timeout) as client:
+                client.mount(mount_info)
+        except BaseException:
+            # A failed call does not mean a failed mount: after a client-side
+            # timeout, a lost reply or Ctrl-C the daemon can still finish it.
+            # The entry is taken out only when the daemon reports that it does
+            # not serve the path; a mount that did happen, or that cannot be
+            # checked, stays registered. The marker goes last: while the entry
+            # is still there, it keeps unmount recovery from mounting the
+            # checkout under this cleanup. Whatever the clone leaves behind is
+            # then treated like any other checkout. The cleanup must not hide
+            # the error that is being raised.
+            try:
+                if self._daemon_serves(Path(path)) is False:
+                    self._remove_path_from_directory_map(Path(path))
+                self._clear_intentionally_unmounted(path, Path(client_dir))
+            except Exception as ex:
+                log.warning(
+                    f"could not clean up after the failed mount of {path}: {ex}"
+                )
+            raise
 
         self._post_clone_checkout_setup(checkout, snapshot_id, filter_paths)
 
-        # Add mapping of mount path to client directory in config.json
-        self._add_path_to_directory_map(Path(path), os.path.basename(client_dir))
+    def _daemon_serves(self, path: Path) -> Optional[bool]:
+        """Whether the running daemon lists a mount at `path`, in any state, or
+        None when it cannot be asked. The query has its own short timeout: it
+        runs after a failed mount call, and an unresponsive daemon must not
+        hang the clone a second time."""
+        path = path.resolve(strict=False)
+        try:
+            with self.get_thrift_client(timeout=3.0) as client:
+                return any(
+                    Path(os.fsdecode(mount.mountPoint)).resolve(strict=False) == path
+                    for mount in client.listMounts()
+                )
+        except Exception as ex:
+            log.warning(f"could not ask EdenFS whether it serves {path}: {ex}")
+            return None
 
     def _create_mount_point_dir(self, path: str) -> None:
         # Create the directory
@@ -1042,16 +1093,25 @@ Do you want to run `eden mount %s` instead?"""
                     f"unmounted: {ex}"
                 )
 
-    def _intentionally_unmounted_file(self, path: str) -> Path:
-        mount_path = Path(path).resolve(strict=False)
-        client_dir = self._get_client_dir_for_mount_point(mount_path)
+    def _intentionally_unmounted_file(
+        self, path: str, client_dir: Optional[Path] = None
+    ) -> Path:
+        """The marker of `path`, in `client_dir` when given, else in the
+        client directory config.json names for the mount path."""
+        if client_dir is None:
+            mount_path = Path(path).resolve(strict=False)
+            client_dir = self._get_client_dir_for_mount_point(mount_path)
         return client_dir / INTENTIONALLY_UNMOUNTED
 
-    def _set_intentionally_unmounted(self, path: str) -> None:
-        self._intentionally_unmounted_file(path).touch()
+    def _set_intentionally_unmounted(
+        self, path: str, client_dir: Optional[Path] = None
+    ) -> None:
+        self._intentionally_unmounted_file(path, client_dir).touch()
 
-    def _clear_intentionally_unmounted(self, path: str) -> None:
-        self._intentionally_unmounted_file(path).unlink(missing_ok=True)
+    def _clear_intentionally_unmounted(
+        self, path: str, client_dir: Optional[Path] = None
+    ) -> None:
+        self._intentionally_unmounted_file(path, client_dir).unlink(missing_ok=True)
 
     def destroy_mount(
         self, path: Union[Path, str], preserve_mount_point: bool = False
