@@ -28,8 +28,11 @@ REPO_NAME = "test_github_repo"
 REPO_ID = "R_test_github_repo"
 USER_NAME = "facebook_username"
 
-ParamsType = Dict[str, Union[bool, int, str]]
-MakeRequestType = Callable[[ParamsType, str, str, Optional[str]], Result[JsonDict, str]]
+ParamsType = Dict[str, Union[bool, int, str, List[bool], List[int], List[str]]]
+MakeRequestType = Callable[
+    [ParamsType, str, str, Optional[str], Optional[Dict[str, str]]],
+    Result[JsonDict, str],
+]
 RunGitCommandType = Callable[[List[str], str], bytes]
 
 
@@ -75,6 +78,7 @@ class MockGitHubServer:
     def __init__(self, hostname: str = GITHUB_HOSTNAME):
         self.hostname: str = hostname
         self.requests: Dict[str, MockRequest] = {}
+        self._consumed_keys: set = set()
 
     async def make_request(
         self,
@@ -83,10 +87,15 @@ class MockGitHubServer:
         hostname: str,
         endpoint: str = "graphql",
         method: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
     ) -> Result[JsonDict, str]:
         """Wrapper function for `github_gh_cli.make_request`.
 
         It reads mock data from `self.requests` instead of sending network requests.
+
+        Note that `headers` is intentionally not part of the request key: the
+        headers we send (e.g., X-GitHub-Api-Version) do not affect which mock
+        response should be returned.
         """
         assert real_make_request.__name__ == "_make_request", (
             f"expected '_make_request', but got '{real_make_request.__name__}'"
@@ -96,10 +105,44 @@ class MockGitHubServer:
 
         if key not in self.requests:
             raise MockRequestNotFound(key, self.requests)
+        self._consumed_keys.add(key)
         return self.requests[key].get_response()
 
     def _add_request(self, request_key: str, request: "MockRequest") -> None:
         self.requests[request_key] = request
+
+    def unconsumed_requests(self) -> List[str]:
+        """Keys of expectations that were never requested."""
+        return sorted(k for k in self.requests if k not in self._consumed_keys)
+
+    def report_unconsumed(self, ui) -> None:
+        """Prints a warning for every expectation that was never requested.
+
+        Intended to be called after the command under test has finished (see
+        wrap_with_consumption_check). Tests that use this produce no extra
+        output when all expectations were consumed, so any warning makes the
+        test fail: this catches code paths that silently stopped making a
+        request the test author expected.
+        """
+        for key in self.unconsumed_requests():
+            first_line = key.splitlines()[0]
+            ui.status_err(f"warning, unconsumed mock request: {first_line}\n")
+
+
+def wrap_with_consumption_check(server: "MockGitHubServer", module, funcname) -> None:
+    """Wraps `module.funcname` (a command function taking `ui` as its first
+    argument) so that unconsumed mock expectations are reported after the
+    command finishes, even if it aborts.
+    """
+    from sapling import extensions
+
+    def wrapped(orig, ui, *args, **kwargs):
+        try:
+            return orig(ui, *args, **kwargs)
+        finally:
+            server.report_unconsumed(ui)
+
+    extensions.wrapfunction(module, funcname, wrapped)
 
     def expect_get_repository_request(
         self, owner: str = OWNER, name: str = REPO_NAME
