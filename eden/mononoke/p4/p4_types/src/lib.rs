@@ -44,6 +44,16 @@ pub struct FileRevision {
     pub digest: Option<Md5Digest>,
 }
 
+impl FileRevision {
+    /// The depot path to pass back to p4: never `depot_path` re-encoded, which may not give
+    /// back the bytes the server stores.
+    pub fn p4_depot_path(&self) -> &[u8] {
+        self.depot_path_bytes
+            .as_deref()
+            .unwrap_or(self.depot_path.as_bytes())
+    }
+}
+
 /// A file's head revision at some point in history, from `p4 fstat`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileAt {
