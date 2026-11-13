@@ -7,9 +7,13 @@
 
 use std::collections::BTreeMap;
 use std::ops::Range;
+#[cfg(feature = "coloring")]
+use std::sync::Arc;
 
 use crate::column::Column;
 use crate::column::ColumnsExt;
+#[cfg(feature = "coloring")]
+use crate::pipeline::coloring;
 use crate::pipeline::types::Ancestor;
 use crate::pipeline::types::DashStyle;
 use crate::pipeline::types::GraphRowShape;
@@ -28,6 +32,10 @@ pub struct GraphRowShaper<N> {
     columns: Vec<Column<N>>,
     options: GraphRowShapeOptions,
     previous_node_column: Option<usize>,
+    #[cfg(feature = "coloring")]
+    coloring: coloring::ColoringState,
+    #[cfg(feature = "coloring")]
+    line_id_allocator: Option<Arc<coloring::LineIdAllocator<N>>>,
 }
 
 impl<N> GraphRowShaper<N>
@@ -45,7 +53,23 @@ where
             columns: Vec::new(),
             options,
             previous_node_column: None,
+            #[cfg(feature = "coloring")]
+            coloring: Default::default(),
+            #[cfg(feature = "coloring")]
+            line_id_allocator: None,
         }
+    }
+
+    /// Enable line tracking with an allocator for every outgoing parent connection.
+    /// `None` disables tracking. Configure this before rendering the first row
+    /// so incoming lines are tracked. The allocator is shared when its `Arc` is cloned.
+    #[cfg(feature = "coloring")]
+    pub fn with_line_id_allocator(
+        mut self,
+        allocator: Option<Arc<coloring::LineIdAllocator<N>>>,
+    ) -> Self {
+        self.line_id_allocator = allocator;
+        self
     }
 
     /// Return the graph-shape options used by this renderer.
@@ -138,6 +162,13 @@ where
         let is_head = existing_column
             .is_none_or(|index| matches!(self.columns.get(index), Some(Column::Reserved(_))));
         let is_root = parents.is_empty();
+
+        #[cfg(feature = "coloring")]
+        let mut row_coloring = self.line_id_allocator.as_ref().map(|allocator| {
+            let state = &mut self.coloring;
+            let row = state.begin_row(self.columns.len(), column);
+            (allocator, state, row)
+        });
         self.columns[column] = Column::Empty;
 
         let merge = parents.len() > 1;
@@ -155,26 +186,42 @@ where
 
         let mut parent_columns = BTreeMap::new();
         for parent in parents.iter() {
-            if let Some(parent_id) = ancestor_id(parent) {
-                if let Some(index) = self.columns.find(parent_id) {
+            let index =
+                if let Some(index) = ancestor_id(parent).and_then(|id| self.columns.find(id)) {
                     self.columns[index].merge(&ancestor_to_column(parent));
-                    parent_columns.insert(index, parent);
-                    continue;
-                }
+                    index
+                } else if let Some(index) = self.columns.find_empty(column) {
+                    self.columns[index].merge(&ancestor_to_column(parent));
+                    index
+                } else {
+                    let index = self.columns.len();
+                    node_line.push(NodeLine::Blank);
+                    ancestry_line.push(PadLine::Blank);
+                    link_line.push(LinkLine::default());
+                    term_line.push(false);
+                    self.columns.push(ancestor_to_column(parent));
+                    index
+                };
+            #[cfg(feature = "coloring")]
+            if let Some((allocator, state, row)) = row_coloring.as_mut() {
+                state.add_parent(
+                    row,
+                    index,
+                    |before_link, column_line_ids, allocated_line_ids| {
+                        allocator(&coloring::LineIdContext {
+                            node: &node,
+                            parent,
+                            parent_count: parents.len(),
+                            node_column: column,
+                            parent_column: index,
+                            before_link,
+                            column_line_ids,
+                            allocated_line_ids,
+                        })
+                    },
+                );
             }
-
-            if let Some(index) = self.columns.find_empty(column) {
-                self.columns[index].merge(&ancestor_to_column(parent));
-                parent_columns.insert(index, parent);
-                continue;
-            }
-
-            parent_columns.insert(self.columns.len(), parent);
-            node_line.push(NodeLine::Blank);
-            ancestry_line.push(PadLine::Blank);
-            link_line.push(LinkLine::default());
-            term_line.push(false);
-            self.columns.push(ancestor_to_column(parent));
+            parent_columns.insert(index, parent);
         }
 
         for (index, parent) in parent_columns.iter() {
@@ -194,6 +241,10 @@ where
             if let Some((&parent_column, _)) = parent_columns.iter().next() {
                 if parent_column > column {
                     self.columns.swap(column, parent_column);
+                    #[cfg(feature = "coloring")]
+                    if let Some((_, state, row)) = row_coloring.as_mut() {
+                        state.move_parent(row, parent_column);
+                    }
                     if let Some(parent) = parent_columns.remove(&parent_column) {
                         parent_columns.insert(column, parent);
                     }
@@ -277,6 +328,11 @@ where
         self.columns.reset();
         self.previous_node_column = Some(column);
 
+        let link_line = need_link_line.then_some(link_line);
+        #[cfg(feature = "coloring")]
+        let line_ids = row_coloring
+            .map(|(_, state, row)| state.finish_row(row, link_line.as_deref(), &self.columns));
+
         GraphRowShape {
             node,
             merge,
@@ -286,12 +342,12 @@ where
             node_column: column,
             parent_columns: parent_columns.keys().copied().collect(),
             node_line,
-            link_line: Some(link_line).filter(|_| need_link_line),
+            link_line,
             term_line: Some(term_line).filter(|_| need_term_line),
             ancestry_line,
             separator_line,
             #[cfg(feature = "coloring")]
-            line_ids: None,
+            line_ids,
         }
     }
 

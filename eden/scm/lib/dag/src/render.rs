@@ -148,10 +148,11 @@ pub fn render_segment_dag(
     level: Level,
     group: Group,
 ) -> Result<()> {
+    let segs = dag.dag.next_segments(group.min_id(), level)?;
+    // The renderer borrows `segs` and must be dropped first.
     let mut renderer = renderdag::GraphRowRenderer::new()
         .output()
         .build_box_drawing();
-    let segs = dag.dag.next_segments(group.min_id(), level)?;
 
     for seg in segs.iter().rev() {
         let mut parents = vec![];

@@ -24,21 +24,21 @@ pub(crate) fn render_string(
 }
 
 #[derive(Default)]
-struct MiniDag {
+pub(crate) struct MiniDag {
     parents: BTreeMap<String, BTreeSet<String>>,
     name_to_rev: BTreeMap<String, usize>,
     rev_to_name: Vec<String>,
 }
 
 impl MiniDag {
-    fn from_drawdag(ascii: &str) -> Self {
+    pub(crate) fn from_drawdag(ascii: &str) -> Self {
         Self {
             parents: drawdag::parse(ascii),
             ..Default::default()
         }
     }
 
-    fn assign_rev(&mut self, name: &str) -> usize {
+    pub(crate) fn assign_rev(&mut self, name: &str) -> usize {
         if let Some(&rev) = self.name_to_rev.get(name) {
             rev
         } else {
@@ -55,13 +55,13 @@ impl MiniDag {
     }
 
     /// All names, in DESC order.
-    fn all(&self) -> Vec<String> {
+    pub(crate) fn all(&self) -> Vec<String> {
         let mut all = self.rev_to_name.clone();
         all.reverse();
         all
     }
 
-    fn parent_names(&self, name: &str) -> Vec<String> {
+    pub(crate) fn parent_names(&self, name: &str) -> Vec<String> {
         match self.parents.get(name) {
             Some(names) => names.iter().cloned().collect(),
             None => Default::default(),
