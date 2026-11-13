@@ -136,3 +136,13 @@ fn canonical_json_hash_ignores_key_order() {
         "a different value must change the hash",
     );
 }
+
+#[mononoke::test]
+fn canonical_json_hash_is_the_hash_of_its_canonical_text() {
+    let json = serde_json::json!({"b": [{"d": "\"", "c": null}], "a": 1.5});
+    assert_eq!(
+        hash_canonical_json(&json),
+        hash_of(r#"{"a":1.5,"b":[{"c":null,"d":"\""}]}"#),
+        "the hash covers the compact text with every object's keys sorted",
+    );
+}

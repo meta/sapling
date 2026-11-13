@@ -16,12 +16,16 @@ use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::io;
+use std::io::BufWriter;
 
 use anyhow::Context;
 use anyhow::Result;
 use repos::RawRepoConfig;
 use repos::RawStorageConfig;
 use repos::RepoSpec;
+use serde::Serialize;
+use serde::Serializer;
 
 /// A stable, content-addressed hash of a `RepoSpec`. Two specs with equal
 /// content hash equal regardless of map ordering; a version bump with unchanged
@@ -86,33 +90,62 @@ fn hash_of(value: impl Hash) -> u64 {
     hasher.finish()
 }
 
-/// Hash a JSON value by its canonical form (object keys recursively sorted) so
-/// map/object iteration order never affects the result.
+/// Hash a JSON value by its canonical text (compact, object keys recursively
+/// sorted) so map/object iteration order never affects the result. The text is
+/// streamed into the hasher rather than built, and hashes as the `str` it
+/// spells.
 fn hash_canonical_json(json: &serde_json::Value) -> u64 {
     let mut hasher = DefaultHasher::new();
-    canonicalize_json(json).to_string().hash(&mut hasher);
+    // serde_json writes many small pieces; the buffer hands the hasher larger ones.
+    let mut writer = BufWriter::with_capacity(1024, HashWriter(&mut hasher));
+    serde_json::to_writer(&mut writer, &Canonical(json))
+        .expect("writing a JSON value into a hasher should never fail");
+    let HashWriter(hasher) = writer
+        .into_inner()
+        .expect("flushing into a hasher should never fail");
+    // `str::hash` ends a string with this byte.
+    hasher.write_u8(0xff);
     hasher.finish()
 }
 
-/// Recursively rewrite a JSON value with object keys sorted. `serde_json`
-/// serialization preserves object insertion order (or sorts, depending on build
-/// features); sorting here makes the serialized bytes canonical either way.
-fn canonicalize_json(json: &serde_json::Value) -> serde_json::Value {
-    match json {
-        serde_json::Value::Object(map) => {
-            let mut entries: Vec<(&String, &serde_json::Value)> = map.iter().collect();
-            entries.sort_by(|a, b| a.0.cmp(b.0));
-            serde_json::Value::Object(
-                entries
-                    .into_iter()
-                    .map(|(k, v)| (k.clone(), canonicalize_json(v)))
-                    .collect(),
-            )
+/// Writes into a hasher.
+#[derive(Debug)]
+struct HashWriter<'a, H>(&'a mut H);
+
+impl<H: Hasher> io::Write for HashWriter<'_, H> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.write(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A JSON value that serializes with every object's keys in sorted order,
+/// whatever order its map keeps them in.
+struct Canonical<'a>(&'a serde_json::Value);
+
+impl Serialize for Canonical<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            // serde_json's map keeps its keys sorted unless built with `preserve_order`.
+            serde_json::Value::Object(map) if map.keys().is_sorted() => {
+                serializer.collect_map(map.iter().map(|(key, value)| (key, Canonical(value))))
+            }
+            serde_json::Value::Object(map) => {
+                let mut entries: Vec<_> = map.iter().collect();
+                entries.sort_unstable_by(|a, b| a.0.cmp(b.0));
+                serializer.collect_map(
+                    entries
+                        .into_iter()
+                        .map(|(key, value)| (key, Canonical(value))),
+                )
+            }
+            serde_json::Value::Array(items) => serializer.collect_seq(items.iter().map(Canonical)),
+            value => value.serialize(serializer),
         }
-        serde_json::Value::Array(items) => {
-            serde_json::Value::Array(items.iter().map(canonicalize_json).collect())
-        }
-        other => other.clone(),
     }
 }
 
