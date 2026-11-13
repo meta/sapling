@@ -1,8 +1,11 @@
 ---
-oncalls: ['scm_client_infra']
-apply_to_clients: ['code_review']
-apply_to_regex: 'eden/scm/.*\.(py|rs)$'
-apply_to_content: 'PathAuditor|audit|symlink|CBOR|serde|Deserialize|cfg!\(not\(windows\)\)|deprecated_default|retry|rate_limit'
+name: acr-sev-derived-patterns
+metadata:
+  oncalls: ['scm_client_infra']
+  strict: true
+  apply_to_path: 'eden/scm/.*\.(py|rs)$'
+  apply_to_content: 'PathAuditor|audit|symlink|CBOR|serde|Deserialize|cfg!\(not\(windows\)\)|deprecated_default|retry|rate_limit'
+  apply_to_clients: ['code_review']
 ---
 
 # SEV-Derived Dangerous Code Patterns
