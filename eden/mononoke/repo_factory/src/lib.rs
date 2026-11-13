@@ -2373,6 +2373,7 @@ mod tests {
         Some(P4SourceConfig {
             server_alias: "test1".to_string(),
             depot: "//test1/".to_string(),
+            path_charsets: None,
         })
     }
 

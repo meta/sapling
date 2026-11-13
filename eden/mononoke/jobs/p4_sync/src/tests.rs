@@ -17,6 +17,8 @@ use metaconfig_types::RepoConfig;
 use mononoke_macros::mononoke;
 use p4_source::P4Auth;
 use p4_source::P4Trust;
+use p4_source::PathCharsets;
+use p4_source::PathCharsetsError;
 use stats_facebook::service_data::ServiceData;
 use stats_facebook::service_data::get_service_data_singleton;
 use tokio::time::Instant;
@@ -36,6 +38,7 @@ fn test_a_repo_gets_the_entry_of_the_server_its_config_names() {
         p4_source: Some(P4SourceConfig {
             server_alias: alias.to_owned(),
             depot: "//project_test_stream/".to_owned(),
+            path_charsets: None,
         }),
         ..Default::default()
     };
@@ -48,6 +51,7 @@ fn test_a_repo_gets_the_entry_of_the_server_its_config_names() {
         ConfiguredDepot::Depot {
             alias: "test1",
             depot: "//project_test_stream/".to_owned(),
+            path_charsets: PathCharsets::default(),
             p4: &"test1-port",
         }
     );
@@ -56,6 +60,7 @@ fn test_a_repo_gets_the_entry_of_the_server_its_config_names() {
         ConfiguredDepot::Depot {
             alias: "p4htl",
             depot: "//project_test_stream/".to_owned(),
+            path_charsets: PathCharsets::default(),
             p4: &"p4htl-port",
         }
     );
@@ -72,6 +77,37 @@ fn test_a_repo_gets_the_entry_of_the_server_its_config_names() {
     assert_eq!(
         configured_depot(&RepoConfig::default(), &servers),
         ConfiguredDepot::NotAMirror
+    );
+}
+
+#[mononoke::test]
+fn test_a_repo_gets_the_path_charsets_its_config_lists() {
+    let config = |labels: &[&str]| RepoConfig {
+        p4_source: Some(P4SourceConfig {
+            server_alias: "p4htl".to_owned(),
+            depot: "//AR-G/".to_owned(),
+            path_charsets: Some(labels.iter().map(|label| label.to_string()).collect()),
+        }),
+        ..Default::default()
+    };
+    let servers = hashmap! { "p4htl".to_owned() => "p4htl-port" };
+
+    assert_eq!(
+        configured_depot(&config(&["utf-8", "gbk", "cp1252"]), &servers),
+        ConfiguredDepot::Depot {
+            alias: "p4htl",
+            depot: "//AR-G/".to_owned(),
+            path_charsets: PathCharsets::new(&["utf-8", "gbk", "cp1252"]).unwrap(),
+            p4: &"p4htl-port",
+        }
+    );
+    assert_eq!(
+        configured_depot(&config(&["utf-8", "klingon"]), &servers),
+        ConfiguredDepot::InvalidCharsets(PathCharsetsError::Unknown("klingon".to_owned()))
+    );
+    assert_eq!(
+        configured_depot(&config(&[]), &servers),
+        ConfiguredDepot::InvalidCharsets(PathCharsetsError::Empty)
     );
 }
 

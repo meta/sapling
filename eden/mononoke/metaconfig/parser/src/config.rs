@@ -3448,6 +3448,7 @@ mod test {
                 p4_source: Some(RawP4SourceConfig {
                     server_alias: "test1".to_string(),
                     depot: depot.to_string(),
+                    path_charsets: Some(vec!["utf-8".to_string(), "gbk".to_string()]),
                 }),
                 ..Default::default()
             }),
@@ -3472,6 +3473,7 @@ mod test {
             Some(P4SourceConfig {
                 server_alias: "test1".to_string(),
                 depot: "//swarm_playground/".to_string(),
+                path_charsets: Some(vec!["utf-8".to_string(), "gbk".to_string()]),
             })
         );
 

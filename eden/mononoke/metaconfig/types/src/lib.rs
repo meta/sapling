@@ -2569,6 +2569,9 @@ pub struct P4SourceConfig {
     pub server_alias: String,
     /// The depot root as a depot path, `//name/`.
     pub depot: String,
+    /// The charsets depot paths are decoded with, as encoding_rs labels, tried in order.
+    /// `None`: UTF-8 only.
+    pub path_charsets: Option<Vec<String>>,
 }
 
 /// Configuration for x repo syncs

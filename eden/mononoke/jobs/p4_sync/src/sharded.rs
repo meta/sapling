@@ -33,6 +33,8 @@ use mononoke_app::args::RepoArgs;
 use p4_import::ImportOptions;
 use p4_source::P4Cli;
 use p4_source::P4CliSource;
+use p4_source::PathCharsets;
+use p4_source::PathCharsetsError;
 use repo_identity::RepoIdentityRef;
 use sharding_ext::RepoShard;
 use stats::define_stats;
@@ -216,9 +218,12 @@ pub(crate) enum ConfiguredDepot<'a, P> {
     UnknownServer {
         configured: String,
     },
+    /// `p4_source.path_charsets` is empty or names a charset encoding_rs doesn't know.
+    InvalidCharsets(PathCharsetsError),
     Depot {
         alias: &'a str,
         depot: String,
+        path_charsets: PathCharsets,
         p4: &'a P,
     },
 }
@@ -230,6 +235,11 @@ pub(crate) fn configured_depot<'a, P>(
     let Some(p4_source) = &config.p4_source else {
         return ConfiguredDepot::NotAMirror;
     };
+    let path_charsets = match p4_source.path_charsets.as_deref().map(PathCharsets::new) {
+        None => PathCharsets::default(),
+        Some(Ok(path_charsets)) => path_charsets,
+        Some(Err(err)) => return ConfiguredDepot::InvalidCharsets(err),
+    };
     match servers.get_key_value(&p4_source.server_alias) {
         None => ConfiguredDepot::UnknownServer {
             configured: p4_source.server_alias.clone(),
@@ -237,6 +247,7 @@ pub(crate) fn configured_depot<'a, P>(
         Some((alias, p4)) => ConfiguredDepot::Depot {
             alias,
             depot: p4_source.depot.clone(),
+            path_charsets,
             p4,
         },
     }
@@ -272,15 +283,23 @@ impl RepoShardedProcess for P4SyncProcess {
         let repo_args = RepoArgs::from_repo_name(shard.repo_name.clone());
         let repo: Repo = self.app.open_repo(&repo_args).await?;
         let source = match configured_depot(repo.repo_config(), &self.settings.servers) {
-            ConfiguredDepot::Depot { alias, depot, p4 } => Ok(Source {
+            ConfiguredDepot::Depot {
+                alias,
+                depot,
+                path_charsets,
+                p4,
+            } => Ok(Source {
                 alias: alias.to_owned(),
                 depot,
-                p4: p4.clone(),
+                p4: p4.with_path_charsets(path_charsets),
             }),
             ConfiguredDepot::NotAMirror => Err("no p4_source in its repo config".to_owned()),
             ConfiguredDepot::UnknownServer { configured } => Err(format!(
                 "its p4_source.server_alias is {configured}, which this job has no --p4-server for"
             )),
+            ConfiguredDepot::InvalidCharsets(err) => {
+                Err(format!("its p4_source.path_charsets: {err}"))
+            }
         };
         if let Err(reason) = &source {
             tracing::warn!(

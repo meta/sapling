@@ -1459,6 +1459,7 @@ impl Convert for RawP4SourceConfig {
         Ok(P4SourceConfig {
             server_alias: self.server_alias,
             depot: self.depot,
+            path_charsets: self.path_charsets,
         })
     }
 }
