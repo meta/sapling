@@ -8745,9 +8745,9 @@ merge2@^1.3.0, merge2@^1.4.1:
   integrity sha512-8q7VEgMJW4J8tcfVPy8g09NcQwZdbwFEqhe/WZkoIzjn/3TGDwtOCYtXGxA3O8tPzpczCCDgv+P2P5y00ZJOOg==
 
 mermaid@^10.9.0:
-  version "10.9.5"
-  resolved "https://registry.yarnpkg.com/mermaid/-/mermaid-10.9.5.tgz#b10606abb323d34154751b5358ebe325a78c94e5"
-  integrity sha512-eRlKEjzak4z1rcXeCd1OAlyawhrptClQDo8OuI8n6bSVqJ9oMfd5Lrf3Q+TdJHewi/9AIOc3UmEo8Fz+kNzzuQ==
+  version "10.9.8"
+  resolved "https://registry.yarnpkg.com/mermaid/-/mermaid-10.9.8.tgz#e096f78fe1ab02f383f0f802834068d67e6a1f6e"
+  integrity sha512-gmIhmkmD/3DL5lErDV71E/cFUkEbBW4VTFpsJH1HSYjeBICRKOoc4AZem+RNz/FhhCXKBMZiD75bIfBlb2A4yA==
   dependencies:
     "@braintree/sanitize-url" "^6.0.1"
     "@types/d3-scale" "^4.0.3"
@@ -8767,7 +8767,7 @@ mermaid@^10.9.0:
     non-layered-tidy-tree-layout "^2.0.2"
     stylis "^4.1.3"
     ts-dedent "^2.2.0"
-    uuid "^9.0.0"
+    uuid "^9.0.0 || ^10 || ^11.1.0 || ^12 || ^13 || ^14.0.0"
     web-worker "^1.2.0"
 
 methods@~1.1.2:
@@ -13079,10 +13079,10 @@ uuid@^8.3.2:
   resolved "https://registry.yarnpkg.com/uuid/-/uuid-8.3.2.tgz#80d5b5ced271bb9af6c445f21a1a04c606cefbe2"
   integrity sha512-+NYs2QeMWy+GWFOEm9xnn6HCDp0l7QBD7ml8zLUmJ+93Q5NF0NocErnwkTkXVFNiX3/fpC6afS8Dhb/gz7R7eg==
 
-uuid@^9.0.0:
-  version "9.0.1"
-  resolved "https://registry.yarnpkg.com/uuid/-/uuid-9.0.1.tgz#e188d4c8853cc722220392c424cd637f32293f30"
-  integrity sha512-b+1eJOlsR9K8HJpow9Ok3fiWOWSIcIzXodvv0rQjVoOVNpWMpxf1wZNpt4y9h10odCNrqnYp1OBzRktckBe3sA==
+"uuid@^9.0.0 || ^10 || ^11.1.0 || ^12 || ^13 || ^14.0.0":
+  version "14.0.1"
+  resolved "https://registry.yarnpkg.com/uuid/-/uuid-14.0.1.tgz#8a5975b3e038902bfd169a10b5202f5ec0cf3faf"
+  integrity sha512-6ZxzVpzDXDa3bJWaHilVayA+BH/1zmxCJoVgvmqJnid/gPoKHxUrS/aC/T6LGQtNHT+XHG9fXPJB4d+IrU30Ew==
 
 uvu@^0.5.0:
   version "0.5.6"
