@@ -19,14 +19,17 @@ pub use convert::Convert;
 
 pub use crate::config::RepoConfigEntry;
 pub use crate::config::RepoConfigs;
+pub use crate::config::ResolvedRepoConfig;
 pub use crate::config::StorageConfigs;
 pub use crate::config::configerator_manifest_handle;
 pub use crate::config::configerator_repo_config_handle;
 pub use crate::config::configerator_repo_spec_handle;
 pub use crate::config::load_empty_repo_configs;
 pub use crate::config::load_repo_configs_from_manifest;
+pub use crate::config::named_storage_config;
 pub use crate::config::parse_manifest_common_and_storage;
 pub use crate::config::parse_repo_spec;
+pub use crate::config::resolve_repo_config_with_provenance;
 pub use crate::config::resolve_repo_spec_with_provenance;
 pub use crate::config_hash::SharedGenerations;
 pub use crate::config_hash::spec_hash;

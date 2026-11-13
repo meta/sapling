@@ -215,10 +215,33 @@ pub fn configerator_repo_spec_handle(
     config_store.get_config_handle::<RepoSpec>(config_path.to_owned())
 }
 
+/// A repo's raw config for a tier, and the shared configs it names.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedRepoConfig<C> {
+    /// The repo's raw config, resolved from its layers.
+    pub config: C,
+    /// The storage config that `storage_config` names.
+    pub storage: RawStorageConfig,
+}
+
 /// Resolves a repo's raw config for a tier from its layers: the spec's
 /// `repo_config`, then the spec's override for the tier, whose top-level fields
-/// replace the spec's whole. The result records which layer set each value.
+/// replace the spec's whole. The result records which layer set each value, and
+/// holds the storage config the resolved config names, from
+/// `named_storage_configs`.
 pub fn resolve_repo_spec_with_provenance(
+    repo_spec: &RepoSpec,
+    tier_name: &str,
+    named_storage_configs: &HashMap<String, RawStorageConfig>,
+) -> Result<ResolvedRepoConfig<Layered<RawRepoConfig>>> {
+    let config = resolve_repo_config_with_provenance(repo_spec, tier_name)?;
+    let storage = named_storage_config(&config.value, named_storage_configs)?;
+    Ok(ResolvedRepoConfig { config, storage })
+}
+
+/// The raw config [`resolve_repo_spec_with_provenance`] resolves, without
+/// looking up the storage config it names.
+pub fn resolve_repo_config_with_provenance(
     repo_spec: &RepoSpec,
     tier_name: &str,
 ) -> Result<Layered<RawRepoConfig>> {
@@ -227,8 +250,36 @@ pub fn resolve_repo_spec_with_provenance(
 
 /// The config [`resolve_repo_spec_with_provenance`] resolves, without
 /// recording where each value came from.
-fn resolve_repo_spec(repo_spec: &RepoSpec, tier_name: &str) -> Result<RawRepoConfig> {
-    layer_repo_config(&repo_config_layers(repo_spec, tier_name))
+fn resolve_repo_spec(
+    repo_spec: &RepoSpec,
+    tier_name: &str,
+    named_storage_configs: &HashMap<String, RawStorageConfig>,
+) -> Result<ResolvedRepoConfig<RawRepoConfig>> {
+    let config = layer_repo_config(&repo_config_layers(repo_spec, tier_name))?;
+    let storage = named_storage_config(&config, named_storage_configs)?;
+    Ok(ResolvedRepoConfig { config, storage })
+}
+
+/// The storage config that a resolved raw repo config names.
+pub fn named_storage_config(
+    config: &RawRepoConfig,
+    named_storage_configs: &HashMap<String, RawStorageConfig>,
+) -> Result<RawStorageConfig> {
+    ensure!(
+        config.storage.is_none(),
+        "repo_config.storage is not supported: define the storage in the shared storage \
+         configs and name it in storage_config"
+    );
+    let name = config
+        .storage_config
+        .as_ref()
+        .ok_or_else(|| anyhow!("missing storage_config from configuration"))?;
+    Ok(named_storage_configs
+        .get(name)
+        .ok_or_else(|| {
+            ConfigurationError::InvalidConfig(format!("Storage \"{name}\" not defined"))
+        })?
+        .clone())
 }
 
 /// `repo_spec`'s config layers on `tier_name`, lowest first.
@@ -256,9 +307,9 @@ fn repo_config_layers<'a>(repo_spec: &'a RepoSpec, tier_name: &str) -> Vec<Layer
 
 /// Parse a RepoSpec into a RepoConfig for a specific tier.
 ///
-/// Resolves the repo's raw config as [`resolve_repo_spec_with_provenance`]
-/// does. Uses the RepoSpec's identity fields (hipster_acl, enabled, readonly,
-/// etc.) instead of hardcoded defaults.
+/// Resolves the repo's raw config and storage config as
+/// [`resolve_repo_spec_with_provenance`] does. Uses the RepoSpec's identity
+/// fields (hipster_acl, enabled, readonly, etc.) instead of hardcoded defaults.
 ///
 /// `named_storage_configs` typically comes from `TierManifest.storage`.
 pub fn parse_repo_spec(
@@ -266,7 +317,7 @@ pub fn parse_repo_spec(
     tier_name: &str,
     named_storage_configs: &HashMap<String, RawStorageConfig>,
 ) -> Result<RepoConfig> {
-    let resolved_config = resolve_repo_spec(&repo_spec, tier_name)?;
+    let resolved = resolve_repo_spec(&repo_spec, tier_name, named_storage_configs)?;
 
     let readonly = if repo_spec.readonly {
         RepoReadOnly::ReadOnly("Set by config option".to_string())
@@ -279,7 +330,7 @@ pub fn parse_repo_spec(
         .unwrap_or_default();
 
     build_repo_config(
-        resolved_config,
+        resolved,
         RepoMetadata {
             repoid: RepositoryId::new(repo_spec.repo_id),
             enabled: repo_spec.enabled,
@@ -288,23 +339,16 @@ pub fn parse_repo_spec(
             default_commit_identity_scheme,
             enable_git_bundle_uri: repo_spec.enable_git_bundle_uri.unwrap_or(false),
         },
-        named_storage_configs,
     )
 }
 
-/// Shared conversion logic: converts a `RawRepoConfig` plus pre-resolved
-/// metadata into a `RepoConfig`.
-///
-/// Both `parse_with_repo_definition` (monolithic loading path) and
-/// `parse_repo_spec` (per-repo split-loading path) delegate to this function.
+/// Converts a resolved raw repo config, its storage config and the repo's
+/// identity into a `RepoConfig`.
 fn build_repo_config(
-    raw_repo_config: RawRepoConfig,
+    resolved: ResolvedRepoConfig<RawRepoConfig>,
     metadata: RepoMetadata,
-    named_storage_configs: &HashMap<String, RawStorageConfig>,
 ) -> Result<RepoConfig> {
     let RawRepoConfig {
-        storage_config,
-        storage,
         bookmarks,
         hook_manager_params,
         hooks,
@@ -353,25 +397,11 @@ fn build_repo_config(
         commit_rate_limit_config,
         p4_source,
         ..
-    } = raw_repo_config;
-
-    ensure!(
-        storage.is_none(),
-        "repo_config.storage is not supported: define the storage in the shared storage \
-         configs and name it in storage_config"
-    );
-    let storage_name =
-        storage_config.ok_or_else(|| anyhow!("missing storage_config from configuration"))?;
+    } = resolved.config;
 
     let hooks: Vec<_> = hooks.unwrap_or_default().convert()?;
 
-    let storage_config: StorageConfig = named_storage_configs
-        .get(&storage_name)
-        .cloned()
-        .ok_or_else(|| {
-            ConfigurationError::InvalidConfig(format!("Storage \"{storage_name}\" not defined"))
-        })?
-        .convert()?;
+    let storage_config: StorageConfig = resolved.storage.convert()?;
 
     let walker_config = walker_config.convert()?;
 
@@ -3093,6 +3123,56 @@ mod test {
     }
 
     #[mononoke::test]
+    fn test_resolve_repo_spec_storage() {
+        let other = RawStorageConfig {
+            metadata: repos::RawMetadataConfig::local(repos::RawDbLocal {
+                local_db_path: "/tmp/other_db".to_string(),
+            }),
+            ..test_raw_storage_config()
+        };
+        let named_storage = hashmap! {
+            "main".to_string() => test_raw_storage_config(),
+            "other".to_string() => other.clone(),
+        };
+        let spec = repos::RepoSpec {
+            repo_config: Some(RawRepoConfig {
+                storage_config: Some("main".to_string()),
+                ..Default::default()
+            }),
+            tier_overrides: Some(hashmap! {
+                "scs".to_string() => RawRepoConfig {
+                    storage_config: Some("other".to_string()),
+                    ..Default::default()
+                },
+            }),
+            ..Default::default()
+        };
+
+        let resolve = |tier| resolve_repo_spec_with_provenance(&spec, tier, &named_storage);
+        assert_eq!(
+            resolve("gitimport")
+                .expect("resolve should succeed")
+                .storage,
+            test_raw_storage_config(),
+            "the storage config the spec names",
+        );
+        assert_eq!(
+            resolve("scs").expect("resolve should succeed").storage,
+            other,
+            "the storage config the tier override names, on its tier",
+        );
+
+        let missing = resolve_repo_spec_with_provenance(&spec, "scs", &HashMap::new())
+            .expect_err("a storage config that is not defined must fail");
+        assert!(
+            missing
+                .to_string()
+                .contains("Storage \"other\" not defined"),
+            "{missing}"
+        );
+    }
+
+    #[mononoke::test]
     fn test_resolve_repo_spec_provenance() {
         let spec = repos::RepoSpec {
             repo_config: Some(RawRepoConfig {
@@ -3109,7 +3189,12 @@ mod test {
             ..Default::default()
         };
 
-        let scs = resolve_repo_spec_with_provenance(&spec, "scs").expect("resolve should succeed");
+        let named_storage = hashmap! {
+            "test_storage".to_string() => test_raw_storage_config(),
+        };
+        let scs = resolve_repo_spec_with_provenance(&spec, "scs", &named_storage)
+            .expect("resolve should succeed")
+            .config;
         assert_eq!(scs.value.phabricator_callsign.as_deref(), Some("SCS"));
         assert_eq!(
             scs.provenance.source(&config_path("phabricator_callsign")),
@@ -3124,8 +3209,9 @@ mod test {
             &ConfigSource::Default
         );
 
-        let gitimport =
-            resolve_repo_spec_with_provenance(&spec, "gitimport").expect("resolve should succeed");
+        let gitimport = resolve_repo_spec_with_provenance(&spec, "gitimport", &named_storage)
+            .expect("resolve should succeed")
+            .config;
         assert_eq!(
             gitimport.value.phabricator_callsign.as_deref(),
             Some("SPEC")
