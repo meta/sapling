@@ -350,9 +350,7 @@ async fn first_pass_rebuilds_a_repo_changed_while_startup_built_it() {
     )
     .await
     .unwrap();
-    // FIXME: the first pass takes every loaded repo to be current, so "a"
-    // keeps serving its old config.
-    assert_eq!(*mgr.built.lock().unwrap(), Vec::<String>::new());
+    assert_eq!(*mgr.built.lock().unwrap(), vec!["a".to_string()]);
 }
 
 #[mononoke::test]

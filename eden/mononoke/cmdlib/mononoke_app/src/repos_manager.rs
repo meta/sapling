@@ -894,7 +894,9 @@ where
             // Reconcile counts a skipped rebuild as applied; it built nothing.
             let unchanged = manager.unchanged.load(Ordering::Relaxed);
             let rebuilt = outcome.rebuilt.saturating_sub(unchanged);
-            if outcome.built + outcome.rebuilt + outcome.dropped > 0 || !outcome.failed.is_empty() {
+            // A pass that applies nothing is routine: the first one after
+            // startup usually finds every repo unchanged.
+            if outcome.built + rebuilt + outcome.dropped > 0 || !outcome.failed.is_empty() {
                 info!(
                     "reconcile: built={} rebuilt={} unchanged={} dropped={} failed={} deferred={}",
                     outcome.built,
@@ -903,6 +905,11 @@ where
                     outcome.dropped,
                     outcome.failed.len(),
                     outcome.deferred,
+                );
+            } else if unchanged > 0 || outcome.deferred > 0 {
+                debug!(
+                    "reconcile: no changes applied (unchanged={} deferred={})",
+                    unchanged, outcome.deferred,
                 );
             }
             STATS::reconcile_applied.add_value((outcome.built + rebuilt) as i64);

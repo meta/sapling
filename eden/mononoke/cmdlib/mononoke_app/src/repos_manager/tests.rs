@@ -14,10 +14,19 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use anyhow::Result;
 use arc_swap::ArcSwap;
 use cached_config::ConfigStore;
 use cached_config::ModificationTime;
 use cached_config::TestSource;
+use config_reconcile::RepoState;
+use environment::MononokeEnvironment;
+use fbinit::FacebookInit;
+use futures::FutureExt;
+use futures::future::BoxFuture;
+use justknobs::test_helpers::JustKnobsInMemory;
+use justknobs::test_helpers::KnobVal;
+use justknobs::test_helpers::with_just_knobs_async;
 use metaconfig_parser::RepoConfigs;
 use metaconfig_parser::StorageConfigs;
 use metaconfig_types::CommitIdentityScheme;
@@ -27,12 +36,15 @@ use metaconfig_types::CommitIdentityScheme::UNKNOWN;
 use metaconfig_types::CommonConfig;
 use metaconfig_types::LazyLoadingConfig;
 use metaconfig_types::RepoConfig;
+use metaconfig_types::RepoConfigRef;
 use metaconfig_types::ShardedService;
 use mononoke_configs::ConfigUpdateReceiver;
 use mononoke_configs::MononokeConfigs;
 use mononoke_macros::mononoke;
 use mononoke_repos::MononokeRepos;
+use mononoke_repos::RepoLoader;
 use mononoke_types::RepositoryId;
+use repo_factory::RepoFactory;
 use repos::RawAllowlistIdentity;
 use repos::RawBlobstoreConfig;
 use repos::RawBlobstoreDisabled;
@@ -44,10 +56,14 @@ use repos::RawStorageConfig;
 use repos::TierManifest;
 use repos::TierRepoEntry;
 use tokio::sync::Notify;
+use tokio::sync::Semaphore;
 
+use super::ConfigDefinedRepoLoader;
 use super::MononokeConfigUpdateReceiver;
+use super::ReconcileDriver;
 use super::ReconcileTrigger;
 use super::RepoFilter;
+use super::SplayState;
 use super::get_or_load_repo_in;
 use super::lazy_for_service;
 use super::memoized_spec_hash;
@@ -950,4 +966,183 @@ async fn test_get_or_load_repo_is_a_no_op_without_a_loader() {
         eager.iter_names().next().is_none(),
         "no placeholder without a loader"
     );
+}
+
+// --- reconcile and a first-request build ------------------------------------
+
+#[facet::container]
+struct ConfigOnlyRepo {
+    #[facet]
+    repo_config: RepoConfig,
+}
+
+/// The production first-request loader, holding the repo it built until
+/// released, so the slot stays Building.
+struct PausedLoader {
+    inner: ConfigDefinedRepoLoader,
+    built: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+impl RepoLoader<ConfigOnlyRepo> for PausedLoader {
+    fn load(&self, repo_name: String) -> BoxFuture<'static, Result<ConfigOnlyRepo>> {
+        let build = RepoLoader::<ConfigOnlyRepo>::load(&self.inner, repo_name);
+        let (built, release) = (self.built.clone(), self.release.clone());
+        async move {
+            let repo = build.await?;
+            built.notify_one();
+            release.notified().await;
+            Ok(repo)
+        }
+        .boxed()
+    }
+}
+
+fn spec_with_acl(acl: &str) -> String {
+    let mut spec: repos::RepoSpec = serde_json::from_str(&spec_json(1, "a", true)).unwrap();
+    spec.hipster_acl = acl.to_string();
+    serde_json::to_string(&spec).unwrap()
+}
+
+/// Reconcile over an assigned deep-sharded repo whose first request builds it
+/// while its spec changes (or doesn't, when `change` is false). Returns the
+/// config it serves at the end, and whether that is the repo the first request
+/// built.
+async fn first_request_build_during_a_spec_change(
+    fb: FacebookInit,
+    change: bool,
+) -> Result<(RepoConfig, bool)> {
+    let entries = [("a", git_path("a"))];
+    let mut manifest: TierManifest = serde_json::from_str(&manifest_json(&entries))?;
+    manifest.repos[0].repo_id = 1;
+    let source = Arc::new(TestSource::new());
+    source.insert_config(
+        MANIFEST_PATH,
+        &serde_json::to_string(&manifest)?,
+        ModificationTime::UnixTimestamp(0),
+    );
+    source.insert_config(
+        &git_path("a"),
+        &spec_with_acl("old_acl"),
+        ModificationTime::UnixTimestamp(0),
+    );
+    let store = ConfigStore::new(source.clone(), Duration::from_secs(3600), None);
+    let configs = Arc::new(MononokeConfigs::new(
+        TIER,
+        &store,
+        tokio::runtime::Handle::current(),
+    )?);
+    let repo_factory = Arc::new(RepoFactory::new(
+        Arc::new(MononokeEnvironment::for_test(fb, &store)),
+        configs.clone(),
+    ));
+    let built = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let repos = Arc::new(MononokeRepos::new_lazy(Arc::new(PausedLoader {
+        inner: ConfigDefinedRepoLoader {
+            configs: configs.clone(),
+            repo_factory: repo_factory.clone(),
+            redaction_disabled: false,
+            build_permits: Arc::new(Semaphore::new(1)),
+        },
+        built: built.clone(),
+        release: release.clone(),
+    })));
+    let driver = ReconcileDriver {
+        configs: configs.clone(),
+        repo_factory,
+        repos: repos.clone(),
+        redaction_disabled: false,
+        reconcile_state: Arc::new(ArcSwap::from_pointee(HashMap::new())),
+        splay_state: Mutex::new(SplayState::default()),
+        spec_hash_cache: Arc::new(Mutex::new(HashMap::new())),
+        reconcile_lock: Arc::new(tokio::sync::Mutex::new(())),
+    };
+    let pass = || {
+        with_just_knobs_async(
+            JustKnobsInMemory::new(HashMap::from([(
+                "scm/mononoke:use_config_reconcile".to_string(),
+                KnobVal::Bool(true),
+            )])),
+            driver.pass().boxed(),
+        )
+    };
+
+    // ShardManager assigns the repo; its first request builds it from the
+    // spec as it is then.
+    repos.add_placeholder("a", 1);
+    let first_request = {
+        let repos = repos.clone();
+        tokio::spawn(async move { repos.get("a").await })
+    };
+    built.notified().await;
+    if change {
+        source.insert_config(
+            &git_path("a"),
+            &spec_with_acl("new_acl"),
+            ModificationTime::UnixTimestamp(1),
+        );
+        source.insert_to_refresh(git_path("a"));
+        store.force_update_configs();
+    }
+
+    pass().await?;
+    assert!(
+        repos.get_by_name("a").is_none(),
+        "the repo is still building"
+    );
+    assert!(
+        !driver.reconcile_state.load().contains_key("a"),
+        "reconcile records no generation for a repo that is building"
+    );
+
+    release.notify_one();
+    let first = first_request
+        .await??
+        .expect("the first request gets the repo");
+    assert_eq!(
+        first.repo_config().hipster_acl.as_deref(),
+        Some("old_acl"),
+        "built from the old spec"
+    );
+
+    pass().await?;
+    assert!(
+        matches!(
+            driver.reconcile_state.load().get("a"),
+            Some(RepoState::Loaded { .. })
+        ),
+        "reconcile records the generation it applied"
+    );
+    let serving = repos.get_by_name("a").expect("still served");
+    pass().await?;
+    assert!(
+        Arc::ptr_eq(&serving, &repos.get_by_name("a").expect("still served")),
+        "a later pass with nothing changed builds nothing"
+    );
+    Ok((serving.repo_config().clone(), Arc::ptr_eq(&serving, &first)))
+}
+
+// A first request builds an assigned deep-sharded repo from its spec as the
+// build starts. Reconcile passes it by while it builds; the first pass after
+// that compares the config it serves with the live one and rebuilds it only if
+// the spec changed meanwhile, with no further edit or restart.
+#[mononoke::fbinit_test]
+async fn test_reconcile_applies_a_spec_changed_during_a_first_request_build(
+    fb: FacebookInit,
+) -> Result<()> {
+    let (serving, kept) = first_request_build_during_a_spec_change(fb, true).await?;
+    assert_eq!(serving.hipster_acl.as_deref(), Some("new_acl"));
+    assert!(!kept, "rebuilt");
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_reconcile_keeps_a_first_request_build_whose_spec_is_unchanged(
+    fb: FacebookInit,
+) -> Result<()> {
+    let (serving, kept) = first_request_build_during_a_spec_change(fb, false).await?;
+    assert_eq!(serving.hipster_acl.as_deref(), Some("old_acl"));
+    assert!(kept, "the repo the first request built is kept");
+    Ok(())
 }

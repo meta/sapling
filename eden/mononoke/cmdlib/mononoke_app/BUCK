@@ -15,6 +15,7 @@ rust_library(
     ),
     test_deps = [
         "fbsource//third-party/rust:serde_json",
+        "//common/rust/shed/fbinit:fbinit-tokio",
     ],
     deps = (
         [

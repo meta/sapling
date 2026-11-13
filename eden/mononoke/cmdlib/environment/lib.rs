@@ -10,7 +10,14 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use blobstore_factory::BlobstoreOptions;
+use blobstore_factory::CachelibBlobstoreOptions;
+use blobstore_factory::ChaosOptions;
+use blobstore_factory::DelayOptions;
+#[cfg(fbcode_build)]
+use blobstore_factory::ManifoldOptions;
+use blobstore_factory::PackOptions;
 use blobstore_factory::ReadOnlyStorage;
+use blobstore_factory::ThrottleOptions;
 use cached_config::ConfigStore;
 use clap::ValueEnum;
 use clientinfo::ClientEntryPoint;
@@ -21,6 +28,7 @@ use megarepo_config::MononokeMegarepoConfigsOptions;
 use mononoke_types::DerivableType;
 use observability::ObservabilityContext;
 use permission_checker::AclProvider;
+use permission_checker::dummy::DummyAclProvider;
 use rendezvous::RendezVousOptions;
 use scuba_ext::MononokeScubaSampleBuilder;
 use sql_ext::facebook::MysqlOptions;
@@ -169,4 +177,53 @@ pub struct MononokeEnvironment {
     pub derivation_queue_namespace: String,
     pub use_pipeline_zelos_config: bool,
     pub redaction_disabled: bool,
+}
+
+impl MononokeEnvironment {
+    /// An environment for tests that build repos without storage: no caching,
+    /// Scuba samples discarded, every ACL allowing. Call it inside a Tokio
+    /// runtime.
+    pub fn for_test(fb: FacebookInit, config_store: &ConfigStore) -> Self {
+        Self {
+            fb,
+            scuba_sample_builder: MononokeScubaSampleBuilder::with_discard(),
+            warm_bookmarks_cache_scuba_sample_builder: MononokeScubaSampleBuilder::with_discard(),
+            config_store: config_store.clone(),
+            caching: Caching::Disabled,
+            observability_context: ObservabilityContext::new_static(config_store),
+            runtime: Handle::current(),
+            mysql_options: MysqlOptions::default(),
+            blobstore_options: BlobstoreOptions::new(
+                ChaosOptions::new(None, None),
+                DelayOptions::default(),
+                ThrottleOptions::default(),
+                #[cfg(fbcode_build)]
+                ManifoldOptions::default(),
+                PackOptions::default(),
+                CachelibBlobstoreOptions::default(),
+                None,
+                MysqlOptions::default(),
+            ),
+            readonly_storage: ReadOnlyStorage(false),
+            rendezvous_options: RendezVousOptions::for_test(),
+            megarepo_configs_options: MononokeMegarepoConfigsOptions::Prod,
+            remote_derivation_options: RemoteDerivationOptions {
+                derive_remotely: false,
+            },
+            remote_diff_options: RemoteDiffOptions {
+                diff_remotely: false,
+            },
+            disabled_hooks: HashMap::new(),
+            acl_provider: Arc::new(DummyAclProvider),
+            bookmark_cache_options: BookmarkCacheOptions::default(),
+            filter_repos: None,
+            commit_graph_options: CommitGraphOptions {
+                skip_preloading_commit_graph: true,
+            },
+            client_entry_point_for_service: ClientEntryPoint::Tests,
+            derivation_queue_namespace: String::new(),
+            use_pipeline_zelos_config: false,
+            redaction_disabled: false,
+        }
+    }
 }

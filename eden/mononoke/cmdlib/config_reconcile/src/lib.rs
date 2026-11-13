@@ -236,8 +236,10 @@ pub(crate) fn compute_actions(
             // New shallow enabled member.
             Some(RepoAction::Build)
         } else if is_loaded && d.is_some_and(|d| d.enabled) {
-            // Loaded + enabled (shallow or deep): rebuild on real drift, or
-            // if there is no known-good generation (prior failure / seeded).
+            // Loaded + enabled (shallow or deep): rebuild on real drift, or if
+            // there is no known-good generation (a failed build, or a repo
+            // loaded before reconcile tracked it, which the manager skips
+            // building if its config is unchanged).
             match (d, served_gen) {
                 (Some(d), Some(g)) if d.spec_hash != g.spec_hash => Some(RepoAction::Rebuild),
                 (Some(d), Some(g)) if d.shared_gen != g.shared_gen => match schedule {
@@ -295,26 +297,7 @@ pub async fn reconcile<C: ConfigSource, M: RepoManager>(
         .filter_map(|e| config.desired(&e.name).map(|d| (e.name.clone(), d)))
         .collect();
 
-    // Seed state for repos that are loaded but not yet tracked (built by startup
-    // / ShardManager before reconcile ran): record them at their current
-    // generation so the first pass does NOT needlessly rebuild the whole fleet.
-    // Genuine drift is still caught on later passes.
     let mut state = current_state.clone();
-    for name in &loaded {
-        if !state.contains_key(name) {
-            let generation = desired.get(name).map_or(
-                RepoGeneration {
-                    spec_hash: 0,
-                    shared_gen: 0,
-                },
-                |d| RepoGeneration {
-                    spec_hash: d.spec_hash,
-                    shared_gen: d.shared_gen,
-                },
-            );
-            state.insert(name.clone(), RepoState::Loaded { generation });
-        }
-    }
 
     let Plan {
         actions,
