@@ -170,10 +170,10 @@ pub async fn fetch_key_list(
 pub(super) fn redaction_config_key_lists(
     app: &MononokeApp,
 ) -> Result<HashMap<RedactionKeyListId, bool>> {
-    let config_path = &app
-        .repo_configs()
+    let repo_configs = app.repo_configs();
+    let config_path = &repo_configs
         .common
-        .redaction_config
+        .require_redaction_config()?
         .redaction_sets_location;
     let config: Arc<RedactionSets> = app
         .environment()

@@ -621,11 +621,14 @@ impl RepoFactory {
     ) -> Result<Arc<RedactedBlobs>> {
         self.redacted_blobs
             .get_or_try_init(db_config, || async move {
+                let redaction_config = common_config.require_redaction_config().context(
+                    "redaction is enabled for this repo; to serve it without redaction, set `redaction` to false in its config",
+                )?;
                 let blobstore = self.redaction_config_blobstore(common_config).await?;
                 Ok(Arc::new(
                     RedactedBlobs::from_configerator(
                         &self.env.config_store,
-                        &common_config.redaction_config.redaction_sets_location,
+                        &redaction_config.redaction_sets_location,
                         ctx,
                         blobstore,
                     )
@@ -1437,8 +1440,10 @@ impl RepoFactory {
         &self,
         common_config: &ArcCommonConfig,
     ) -> Result<ArcRedactionConfigBlobstore> {
-        self.redaction_config_blobstore_from_config(&common_config.redaction_config.blobstore)
-            .await
+        self.redaction_config_blobstore_from_config(
+            &common_config.require_redaction_config()?.blobstore,
+        )
+        .await
     }
 
     pub async fn repo_ephemeral_store(

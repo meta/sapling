@@ -564,10 +564,12 @@ fn parse_common_config(
             .mutable_blobstore)
     };
 
-    let redaction_config = common.redaction_config.unwrap_or_default();
-    let redaction_config = RedactionConfig {
-        blobstore: get_mutable_blobstore(&redaction_config.blobstore)?,
-        redaction_sets_location: redaction_config.redaction_sets_location,
+    let redaction_config = match common.redaction_config {
+        Some(redaction_config) => Some(RedactionConfig {
+            blobstore: get_mutable_blobstore(&redaction_config.blobstore)?,
+            redaction_sets_location: redaction_config.redaction_sets_location,
+        }),
+        None => None,
     };
 
     let async_requests_config = match common.async_requests_config {
@@ -1889,10 +1891,10 @@ mod test {
                     table: Some("censored_table".to_string()),
                     local_path: Some("censored_local_path".to_string()),
                 },
-                redaction_config: RedactionConfig {
+                redaction_config: Some(RedactionConfig {
                     blobstore: main_storage_config.blobstore,
                     redaction_sets_location: "loc".to_string(),
-                },
+                }),
                 internal_identity: Some(Identity {
                     id_type: "SERVICE_IDENTITY".to_string(),
                     id_data: "internal".to_string(),
@@ -3037,6 +3039,29 @@ mod test {
         assert_eq!(
             result.default_commit_identity_scheme,
             CommitIdentityScheme::GIT
+        );
+    }
+
+    #[mononoke::test]
+    fn test_common_config_optional_fields() {
+        let manifest = TierManifest {
+            storage: hashmap! {
+                "only_storage".to_string() => test_raw_storage_config(),
+            },
+            ..Default::default()
+        };
+        let (common, _) = parse_manifest_common_and_storage(&manifest)
+            .expect("an empty common config should parse");
+        assert!(!common.enable_http_control_api);
+        assert_eq!(common.internal_identity, None);
+        assert_eq!(common.redaction_config, None);
+        let error = common
+            .require_redaction_config()
+            .expect_err("the tier has no redaction config")
+            .to_string();
+        assert!(
+            error.contains("the tier has no redaction config"),
+            "{error}"
         );
     }
 

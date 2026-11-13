@@ -151,8 +151,9 @@ pub struct CommonConfig {
     /// Whether to enable the control API over HTTP. At this time, this is only meant to be used in
     /// tests.
     pub enable_http_control_api: bool,
-    /// Configuration for redaction of blobs
-    pub redaction_config: RedactionConfig,
+    /// Where the tier's redaction sets are. `None` means the tier has no
+    /// redaction, so only repos with redaction disabled can be served.
+    pub redaction_config: Option<RedactionConfig>,
     /// Service identity for internal Mononoke services. `None` means there is
     /// none: no CAT verifies and no request counts as internal.
     pub internal_identity: Option<Identity>,
@@ -229,6 +230,15 @@ impl CommonConfig {
                     .default_pinned_manifest_path()
                     .to_string()
             })
+    }
+}
+
+impl CommonConfig {
+    /// The tier's redaction config, or an error if the tier has none.
+    pub fn require_redaction_config(&self) -> Result<&RedactionConfig> {
+        self.redaction_config
+            .as_ref()
+            .context("the tier has no redaction config")
     }
 }
 

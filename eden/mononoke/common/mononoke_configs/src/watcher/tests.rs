@@ -599,7 +599,6 @@ use futures::FutureExt;
 use justknobs::test_helpers::JustKnobsInMemory;
 use justknobs::test_helpers::KnobVal;
 use justknobs::test_helpers::with_just_knobs_async;
-use repos::RawCommonConfig;
 
 use crate::tests::TEST_STORAGE;
 use crate::tests::test_raw_common_config;
@@ -633,10 +632,10 @@ fn good_manifest(trusted_tier: &str, repos: Vec<TierRepoEntry>) -> TierManifest 
     manifest
 }
 
-/// Default `RawCommonConfig` fails conversion, so common/storage parsing fails.
+/// A common config that fails conversion, so common/storage parsing fails.
 fn unparsable_manifest(repos: Vec<TierRepoEntry>) -> TierManifest {
     let manifest = TierManifest {
-        common: RawCommonConfig::default(),
+        common: crate::tests::unparsable_raw_common_config(),
         storage: test_storage_map(),
         repos,
         ..Default::default()

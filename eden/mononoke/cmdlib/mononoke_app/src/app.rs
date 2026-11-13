@@ -1075,7 +1075,11 @@ impl MononokeApp {
     pub async fn redaction_config_blobstore(&self) -> Result<Arc<RedactionConfigBlobstore>> {
         self.repo_factory
             .redaction_config_blobstore_from_config(
-                &self.repo_configs().common.redaction_config.blobstore,
+                &self
+                    .repo_configs()
+                    .common
+                    .require_redaction_config()?
+                    .blobstore,
             )
             .await
     }

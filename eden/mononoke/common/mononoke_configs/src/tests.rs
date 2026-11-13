@@ -497,7 +497,19 @@ fn test_get_or_load_repo_config_records_config_source() {
 
 // --- Sourcing `common`/`storage` from the manifest ---
 
-/// A default `RawCommonConfig` is not parsable: two required fields fail conversion.
+/// A `RawCommonConfig` that names a redaction blobstore that is not defined, so it
+/// fails conversion.
+pub(crate) fn unparsable_raw_common_config() -> RawCommonConfig {
+    RawCommonConfig {
+        redaction_config: Some(RawRedactionConfig {
+            blobstore: "undefined_storage".to_string(),
+            redaction_sets_location: "test/redaction_sets".to_string(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
 pub(crate) fn test_raw_common_config(trusted_tier: &str) -> RawCommonConfig {
     RawCommonConfig {
         trusted_parties_hipster_tier: Some(trusted_tier.to_string()),
@@ -578,8 +590,8 @@ fn test_tier_mode_constructs_from_manifest() {
 // Fail-closed startup: an unparsable manifest aborts construction.
 #[mononoke::test]
 fn test_tier_mode_fails_closed_on_unparsable_manifest() {
-    // Default RawCommonConfig is unparsable (required fields fail conversion).
     let bad_manifest = TierManifest {
+        common: unparsable_raw_common_config(),
         storage: test_storage_map(),
         ..Default::default()
     };
