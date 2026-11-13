@@ -19,7 +19,7 @@ clap = { version = "4.6.2", features = ["derive", "env", "string", "unicode", "w
 context = { version = "0.1.0", path = "../../../../servers/slapi/slapi_server/context" }
 facet = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main", features = ["impl_never_type"] }
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
-git2 = "0.20.4"
+git2 = "0.21.0"
 mononoke_app = { version = "0.1.0", path = "../../../../cmdlib/mononoke_app" }
 mononoke_types = { version = "0.1.0", path = "../../../../mononoke_types" }
 repo_blobstore = { version = "0.1.0", path = "../../../../repo_attributes/repo_blobstore" }

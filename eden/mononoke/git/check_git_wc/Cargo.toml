@@ -15,7 +15,7 @@ context = { version = "0.1.0", path = "../../servers/slapi/slapi_server/context"
 derivation_queue_thrift = { version = "0.1.0", path = "../../repo_attributes/repo_derivation_queues/if" }
 filestore = { version = "0.1.0", path = "../../repo_attributes/filestore" }
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
-git2 = "0.20.4"
+git2 = "0.21.0"
 manifest = { version = "0.1.0", path = "../../manifest" }
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
 mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
