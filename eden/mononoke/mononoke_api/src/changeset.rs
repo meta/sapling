@@ -2588,9 +2588,9 @@ impl<R: MononokeRepo> ChangesetContext<R> {
     /// When false, `has_access` will be `None`.
     pub async fn paths_restriction_info(
         &self,
-        paths: Vec<NonRootMPath>,
+        paths: Vec<MPath>,
         check_permissions: bool,
-    ) -> Result<Vec<(NonRootMPath, Vec<PathAccessInfo>)>, MononokeError> {
+    ) -> Result<Vec<(MPath, Vec<PathAccessInfo>)>, MononokeError> {
         stream::iter(paths)
             .map(|path| async move {
                 let restriction_ctx = self.path_restriction(path.clone()).await?;

@@ -289,10 +289,10 @@ async fn test_batch_restriction_info_mixed_paths(fb: FacebookInit) -> Result<()>
     .await?;
 
     let paths = vec![
-        NonRootMPath::new("first/file1.txt")?,
-        NonRootMPath::new("second/subdir/file2.txt")?,
-        NonRootMPath::new("third/nested/deep/file3.txt")?,
-        NonRootMPath::new("unrestricted/file4.txt")?,
+        MPath::new("first/file1.txt")?,
+        MPath::new("second/subdir/file2.txt")?,
+        MPath::new("third/nested/deep/file3.txt")?,
+        MPath::new("unrestricted/file4.txt")?,
     ];
 
     let results = cs_ctx.paths_restriction_info(paths, true).await?;
@@ -342,9 +342,9 @@ async fn test_batch_all_restricted(fb: FacebookInit) -> Result<()> {
         create_test_changeset(fb, vec![("restricted", "GROUP:my-acl")]).await?;
 
     let paths = vec![
-        NonRootMPath::new("restricted/file1.txt")?,
-        NonRootMPath::new("restricted/file2.txt")?,
-        NonRootMPath::new("restricted/subdir/file3.txt")?,
+        MPath::new("restricted/file1.txt")?,
+        MPath::new("restricted/file2.txt")?,
+        MPath::new("restricted/subdir/file3.txt")?,
     ];
 
     let results = cs_ctx.paths_restriction_info(paths, true).await?;
@@ -391,8 +391,8 @@ async fn test_batch_all_unrestricted(fb: FacebookInit) -> Result<()> {
         create_test_changeset(fb, vec![("restricted", "GROUP:my-acl")]).await?;
 
     let paths = vec![
-        NonRootMPath::new("unrestricted/file1.txt")?,
-        NonRootMPath::new("other/file2.txt")?,
+        MPath::new("unrestricted/file1.txt")?,
+        MPath::new("other/file2.txt")?,
     ];
 
     let results = cs_ctx.paths_restriction_info(paths, true).await?;
@@ -423,6 +423,36 @@ async fn test_batch_all_unrestricted(fb: FacebookInit) -> Result<()> {
     Ok(())
 }
 
+#[mononoke::fbinit_test]
+async fn test_batch_root_is_unrestricted(fb: FacebookInit) -> Result<()> {
+    let (_repo_ctx, cs_ctx) =
+        create_test_changeset(fb, vec![("restricted", "GROUP:my-acl")]).await?;
+
+    let paths = vec![MPath::ROOT, MPath::new("restricted/file.txt")?];
+
+    let mut results = cs_ctx.paths_restriction_info(paths, true).await?;
+    results.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let expected = vec![
+        (MPath::ROOT, vec![]),
+        (
+            MPath::new("restricted/file.txt")?,
+            vec![PathAccessInfo {
+                restriction: PathRestrictionInfo {
+                    restriction_root: NonRootMPath::new("restricted")?,
+                    repo_region_acl: "GROUP:my-acl".to_string(),
+                    permission_request_group: MononokeIdentity::from_str("GROUP:my-acl")?,
+                    rollout_allowlist_group: None,
+                },
+                has_access: Some(true),
+            }],
+        ),
+    ];
+    pretty_assertions::assert_eq!(results, expected);
+
+    Ok(())
+}
+
 // What it tests: Both-mode path metadata should include config-only
 // restrictions after metadata results are unioned across sources.
 // Expected: config-only restrictions are returned.
@@ -437,7 +467,7 @@ async fn test_batch_restriction_info_both_mode_config_only_root(fb: FacebookInit
     .await?;
 
     let results = cs_ctx
-        .paths_restriction_info(vec![NonRootMPath::new("config_only/file.txt")?], false)
+        .paths_restriction_info(vec![MPath::new("config_only/file.txt")?], false)
         .await?;
 
     let infos = results
@@ -469,10 +499,7 @@ async fn test_batch_restriction_info_both_mode_acl_manifest_only_root(
     .await?;
 
     let results = cs_ctx
-        .paths_restriction_info(
-            vec![NonRootMPath::new("acl_manifest_only/file.txt")?],
-            false,
-        )
+        .paths_restriction_info(vec![MPath::new("acl_manifest_only/file.txt")?], false)
         .await?;
 
     let infos = results
@@ -507,7 +534,7 @@ async fn test_batch_restriction_info_both_mode_same_root_prefers_acl_manifest(
     .await?;
 
     let results = cs_ctx
-        .paths_restriction_info(vec![NonRootMPath::new("shared/file.txt")?], false)
+        .paths_restriction_info(vec![MPath::new("shared/file.txt")?], false)
         .await?;
 
     let infos = results
@@ -601,7 +628,7 @@ async fn test_batch_restriction_info_both_mode_same_root_requires_both_acls(
         vec!["shared/file.txt"],
     )
     .await?;
-    let path = NonRootMPath::new("shared/file.txt")?;
+    let path = MPath::new("shared/file.txt")?;
 
     let results = cs_ctx
         .paths_restriction_info(vec![path.clone()], true)

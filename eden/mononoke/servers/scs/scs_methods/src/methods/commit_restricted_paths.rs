@@ -8,7 +8,6 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
-use anyhow::Context;
 use anyhow::Result;
 use futures::StreamExt;
 use futures::TryStreamExt;
@@ -84,17 +83,16 @@ pub(crate) async fn restricted_paths_access_impl(
         });
     }
 
-    let non_root_paths: Vec<NonRootMPath> = paths
+    let parsed_paths = paths
         .iter()
         .map(|p| {
-            NonRootMPath::try_from(p.as_str())
-                .with_context(|| format!("Casting path {p} to NonRootMPath"))
+            MPath::try_from(p.as_str())
+                .map_err(|e| scs_errors::invalid_request(format!("invalid path '{p}': {e}")))
         })
-        .collect::<anyhow::Result<Vec<_>>>()
-        .map_err(|err| MononokeError::InternalError(err.into()))?;
+        .collect::<Result<Vec<_>, _>>()?;
 
     let restriction_results = cs_ctx
-        .paths_restriction_info(non_root_paths, check_permissions)
+        .paths_restriction_info(parsed_paths, check_permissions)
         .await?;
 
     struct AggregatedResult {
@@ -478,6 +476,7 @@ mod tests {
     mod lookup_modes;
     #[cfg(fbcode_build)]
     mod rollback;
+    mod root_path;
 
     #[cfg(not(fbcode_build))]
     #[mononoke::test]
