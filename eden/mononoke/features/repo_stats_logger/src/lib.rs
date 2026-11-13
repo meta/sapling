@@ -611,4 +611,36 @@ mod tests {
 
         Ok(())
     }
+
+    #[mononoke::fbinit_test]
+    async fn test_drop_stops_logging_task(fb: FacebookInit) -> Result<(), Error> {
+        let repo: Repo = TestRepoFactory::new(fb)?.build().await?;
+        let logger = RepoStatsLogger::new(
+            fb,
+            "repo".to_string(),
+            repo.repo_config_arc(),
+            repo.bookmarks_arc(),
+            repo.repo_blobstore_arc(),
+            repo.repo_derived_data_arc(),
+        )
+        .await?;
+        let bookmarks = Arc::downgrade(&repo.bookmarks_arc());
+        let repo_derived_data = Arc::downgrade(&repo.repo_derived_data_arc());
+
+        drop(repo);
+        drop(logger);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert_eq!(
+            bookmarks.strong_count(),
+            0,
+            "logging task still holds bookmarks"
+        );
+        assert_eq!(
+            repo_derived_data.strong_count(),
+            0,
+            "logging task still holds derived data"
+        );
+        Ok(())
+    }
 }
