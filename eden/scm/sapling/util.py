@@ -492,7 +492,16 @@ def versionagedays() -> int:
     try:
         v = version()
         parts = remod.split("_", v)
-        approxbuilddate = datetime.datetime.strptime(parts[1], "%Y%m%d")
+        # The build-date segment's index varies by build path: Meta's internal
+        # Buck build prepends a "MAIN_VERSION" part (making it "x.y.z_YYYYMMDD_
+        # HHMMSS_hash", date at index 1), while the open-source build.py path
+        # omits that prefix ("YYYYMMDD_HHMMSS_hash", date at index 0). Scan for
+        # the first all-digit, 8-character part instead of assuming a fixed
+        # index, so this doesn't silently misparse a HHMMSS part as a date.
+        datepart = next((p for p in parts if len(p) == 8 and p.isdigit()), None)
+        if datepart is None:
+            return 0
+        approxbuilddate = datetime.datetime.strptime(datepart, "%Y%m%d")
         now = datetime.datetime.now()
         return (now - approxbuilddate).days
     except Exception:
