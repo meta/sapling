@@ -29,7 +29,7 @@
     "clsx": "^1.2.1",
     "deep-equal": "^2.1.0",
     "docusaurus-plugin-internaldocs-fb": "1.19.1",
-    "qs": ">=6.14.2",
+    "qs": ">=6.15.2",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-simple-code-editor": "^0.14.1",
@@ -75,7 +75,7 @@
     "flatted": ">=3.4.2",
     "minimatch": ">=3.1.4",
     "picomatch": ">=2.3.2",
-    "qs": ">=6.14.2",
+    "qs": ">=6.15.2",
     "serialize-javascript": ">=7.0.5",
     "svgo": ">=3.3.3",
     "yaml": ">=1.10.3"
