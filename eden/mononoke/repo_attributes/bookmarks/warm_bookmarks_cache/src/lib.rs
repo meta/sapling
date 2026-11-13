@@ -119,7 +119,7 @@ use stats::prelude::*;
 use tokio::sync::Notify;
 #[cfg(fbcode_build)]
 use tokio::sync::broadcast::error::RecvError;
-use tokio::task::JoinHandle;
+use tokio_util::task::AbortOnDropHandle;
 use tracing::Instrument;
 use unodes::RootUnodeManifestId;
 
@@ -1578,7 +1578,7 @@ struct BookmarksCoordinator {
     repo: BookmarksCoordinatorRepo,
     warmers: Arc<Vec<Warmer>>,
     live_updaters: Arc<RwLock<HashMap<BookmarkKey, BookmarkUpdaterState>>>,
-    updaters_handles: HashMap<BookmarkKey, JoinHandle<()>>,
+    updaters_handles: HashMap<BookmarkKey, AbortOnDropHandle<()>>,
 }
 
 impl BookmarksCoordinator {
@@ -1680,7 +1680,7 @@ impl BookmarksCoordinator {
                 );
                 self.updaters_handles.insert(
                     book.key().clone(),
-                    mononoke::spawn_task(async move {
+                    AbortOnDropHandle::new(mononoke::spawn_task(async move {
                         let res = single_bookmark_updater(
                             &ctx,
                             &repo,
@@ -1714,7 +1714,7 @@ impl BookmarksCoordinator {
                                 live_updaters.insert(book.key().clone(), state.into_finished(&res));
                             }
                         });
-                    }),
+                    })),
                 );
             }
         }

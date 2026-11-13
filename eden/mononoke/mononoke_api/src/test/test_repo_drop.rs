@@ -132,23 +132,6 @@ async fn dropping_repo_frees_its_facets(fb: FacebookInit) -> Result<()> {
         .filter(|(_, is_alive)| is_alive())
         .map(|(name, _)| *name)
         .collect();
-    // FIXME: the warm bookmarks cache updater keeps running after the repo is
-    // dropped, and holds these facets.
-    assert_eq!(
-        alive,
-        vec![
-            "repo_derived_data",
-            "repo_identity",
-            "bonsai_git_mapping",
-            "repo_event_publisher",
-            "bonsai_hg_mapping",
-            "bookmark_update_log",
-            "bookmarks",
-            "phases",
-            "repo_config",
-            "commit_graph",
-            "filenodes",
-        ]
-    );
+    assert_eq!(alive, Vec::<&str>::new());
     Ok(())
 }
