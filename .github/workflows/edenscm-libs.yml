@@ -3,6 +3,9 @@ name: EdenSCM Rust Libraries
 on:
   workflow_dispatch
 
+permissions:
+  contents: read
+
 jobs:
   build:
 
