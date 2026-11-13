@@ -1702,6 +1702,8 @@ where
                         .any(|path| within_restrictions(path, &path_restrictions))
                 });
             }
+        }
+        if !copy_path_map.is_empty() {
             let to_paths: HashSet<MPath> = copy_path_map.values().flatten().cloned().collect();
 
             let other_root_manifest_id = other.root_content_manifest_id().await?;
@@ -1808,17 +1810,20 @@ where
         // We check if `self` contains paths that were source for copy or move in `other`
         // If self does contain a path, then we consider it to be a copy, otherwise
         // it's a move to the first location it was copied to.
-        let copied_paths = self
-            .root_content_manifest_id()
-            .await?
-            .find_entries(
-                self.ctx().clone(),
-                self.repo_ctx().repo().repo_blobstore().clone(),
-                copy_path_map.keys().cloned(),
-            )
-            .map_ok(|(from_path, _)| from_path)
-            .try_collect::<HashSet<_>>()
-            .await?;
+        let copied_paths = if copy_path_map.is_empty() {
+            HashSet::new()
+        } else {
+            self.root_content_manifest_id()
+                .await?
+                .find_entries(
+                    self.ctx().clone(),
+                    self.repo_ctx().repo().repo_blobstore().clone(),
+                    copy_path_map.keys().cloned(),
+                )
+                .map_ok(|(from_path, _)| from_path)
+                .try_collect::<HashSet<_>>()
+                .await?
+        };
 
         let diff_files = diff_items.contains(&ChangesetDiffItem::FILES);
         let diff_trees = diff_items.contains(&ChangesetDiffItem::TREES);
