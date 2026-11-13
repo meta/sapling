@@ -369,8 +369,8 @@ impl Drop for DeferredRead {
 /// 3. **Inactive** — `on_pipeline_inactive` called in reverse order
 ///    (tail→head). The C++ shim cancels both readiness hooks before invoking
 ///    Rust; no readiness callback can enter Rust after the inactive transition.
-/// 4. **Closing** — any `close()` call is idempotent and terminal: clears
-///    readiness lists, event lists, and queues `handler_removed` in LIFO
+/// 4. **Closing** — any `close()` call is idempotent and terminal: it disarms
+///    every handler's ready wait and queues `handler_removed` in LIFO
 ///    order. Within the same callback that called `close()`,
 ///    `fire_read`/`fire_write` still forward to the tail/head endpoints.
 /// 5. **Removed** — `handler_removed` called in LIFO order, once. No
@@ -803,11 +803,12 @@ impl<'callback> CallbackContext<'callback> {
 
     /// Idempotently close the pipeline (terminal operation).
     ///
-    /// Clears readiness lists and event lists, then fires `handler_removed` in
-    /// LIFO order. After `close()`, `is_closed()` returns `true`. Within the
-    /// same callback that called `close()`, `fire_read`/`fire_write` still
-    /// forward to the tail/head endpoints. Subsequent pipeline calls return
-    /// `Result::Error`. This call is `noexcept` on the C++ side.
+    /// Disarms every handler's ready wait, then fires `handler_removed` in LIFO
+    /// order. After `close()`, `is_closed()` returns `true`.
+    ///
+    /// Within the same callback that called `close()`, `fire_read`/`fire_write`
+    /// still forward to the tail/head endpoints. Subsequent pipeline calls
+    /// return `Result::Error`. This call is `noexcept` on the C++ side.
     pub fn close(&mut self) {
         self.inner.as_mut().close();
     }
