@@ -491,10 +491,16 @@ def versionagedays() -> int:
     """Returns approximate age in days of the current version, or 0 if not available."""
     try:
         v = version()
-        parts = remod.split("_", v)
-        approxbuilddate = datetime.datetime.strptime(parts[1], "%Y%m%d")
-        now = datetime.datetime.now()
-        return (now - approxbuilddate).days
+        parts = remod.split(r"[_\.\-+]", v)
+        for part in parts:
+            if len(part) == 8 and part.isdigit():
+                try:
+                    approxbuilddate = datetime.datetime.strptime(part, "%Y%m%d")
+                    now = datetime.datetime.now()
+                    return max(0, (now - approxbuilddate).days)
+                except ValueError:
+                    pass
+        return 0
     except Exception:
         return 0
 
