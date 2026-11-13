@@ -49,6 +49,7 @@ use metaconfig_types::BlobConfig;
 use metaconfig_types::BlobstoreId;
 use metaconfig_types::Redaction;
 use metaconfig_types::RepoConfig;
+use metaconfig_types::RepoConfigRef;
 use metaconfig_types::ShardedService;
 use mononoke_configs::MononokeConfigs;
 #[allow(unused)]
@@ -707,6 +708,7 @@ impl MononokeApp {
     ) -> Result<MononokeReposManager<Repo>>
     where
         Repo: for<'builder> AsyncBuildable<'builder, RepoFactoryBuilder<'builder>>
+            + RepoConfigRef
             + Send
             + Sync
             + 'static,
@@ -725,6 +727,7 @@ impl MononokeApp {
     ) -> Result<MononokeReposManager<Repo>>
     where
         Repo: for<'builder> AsyncBuildable<'builder, RepoFactoryBuilder<'builder>>
+            + RepoConfigRef
             + Send
             + Sync
             + 'static,
@@ -743,6 +746,7 @@ impl MononokeApp {
     ) -> Result<MononokeReposManager<Repo>>
     where
         Repo: for<'builder> AsyncBuildable<'builder, RepoFactoryBuilder<'builder>>
+            + RepoConfigRef
             + Send
             + Sync
             + 'static,
@@ -845,6 +849,7 @@ impl MononokeApp {
     where
         Names: IntoIterator<Item = String>,
         Repo: for<'builder> AsyncBuildable<'builder, RepoFactoryBuilder<'builder>>
+            + RepoConfigRef
             + Send
             + Sync
             + 'static,
@@ -869,6 +874,7 @@ impl MononokeApp {
     where
         Names: IntoIterator<Item = String>,
         Repo: for<'builder> AsyncBuildable<'builder, RepoFactoryBuilder<'builder>>
+            + RepoConfigRef
             + Send
             + Sync
             + 'static,
@@ -891,6 +897,7 @@ impl MononokeApp {
     where
         Names: IntoIterator<Item = String>,
         Repo: for<'builder> AsyncBuildable<'builder, RepoFactoryBuilder<'builder>>
+            + RepoConfigRef
             + Send
             + Sync
             + 'static,
@@ -929,6 +936,7 @@ impl MononokeApp {
     ) -> Result<MononokeReposManager<Repo>>
     where
         Repo: for<'builder> AsyncBuildable<'builder, RepoFactoryBuilder<'builder>>
+            + RepoConfigRef
             + Send
             + Sync
             + 'static,

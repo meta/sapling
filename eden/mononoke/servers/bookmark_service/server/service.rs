@@ -23,6 +23,7 @@ use context::SessionContainerBuilder;
 use fbinit::FacebookInit;
 use futures::future::BoxFuture;
 use futures_stats::TimedFutureExt;
+use metaconfig_types::RepoConfig;
 use mononoke_app::MononokeApp;
 use mononoke_app::MononokeReposManager;
 use mononoke_thrift_server::RequestContext;
@@ -52,6 +53,8 @@ pub(crate) struct BookmarkServiceRepo {
     repo_identity: RepoIdentity,
     #[facet]
     scoped_bookmarks_cache: dyn ScopedBookmarksCache,
+    #[facet]
+    repo_config: RepoConfig,
 }
 
 pub fn internal_error<E: Into<Error>>(e: E) -> InternalError {

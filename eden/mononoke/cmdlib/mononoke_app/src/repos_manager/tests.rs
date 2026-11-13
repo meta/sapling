@@ -18,7 +18,6 @@ use arc_swap::ArcSwap;
 use cached_config::ConfigStore;
 use cached_config::ModificationTime;
 use cached_config::TestSource;
-use config_reconcile::RepoGeneration;
 use metaconfig_parser::RepoConfigs;
 use metaconfig_parser::StorageConfigs;
 use metaconfig_types::CommitIdentityScheme;
@@ -49,7 +48,6 @@ use tokio::sync::Notify;
 use super::MononokeConfigUpdateReceiver;
 use super::ReconcileTrigger;
 use super::RepoFilter;
-use super::apply_generation;
 use super::get_or_load_repo_in;
 use super::lazy_for_service;
 use super::memoized_spec_hash;
@@ -442,27 +440,6 @@ async fn test_reconcile_loop_abort_stops() {
         count.load(Ordering::SeqCst),
         1,
         "an aborted loop must not run further passes",
-    );
-}
-
-// --- apply_generation ------------------------------------------------------
-
-#[mononoke::test]
-fn test_apply_generation_truth_table() {
-    let generation = RepoGeneration {
-        spec_hash: 11,
-        shared_gen: 22,
-    };
-
-    // Shallow reload always applies, so a generation is always recorded.
-    assert_eq!(apply_generation(false, true, generation), Some(generation));
-    // Deep reload that hit a present repo records the generation.
-    assert_eq!(apply_generation(true, true, generation), Some(generation));
-    // Deep reload of a not-present repo (reload_if_present == false) records none.
-    assert_eq!(
-        apply_generation(true, false, generation),
-        None,
-        "a deep repo that was not present must not record a generation",
     );
 }
 

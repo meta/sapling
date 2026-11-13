@@ -52,6 +52,7 @@ use mercurial_types::HgFileNodeId;
 use mercurial_types::HgManifestId;
 use mercurial_types::sharded_augmented_manifest::hg_manifest_diff;
 use mercurial_types::sharded_augmented_manifest::list_hg_leaf_entries;
+use metaconfig_types::RepoConfig;
 use mononoke_app::MononokeApp;
 use mononoke_app::MononokeAppBuilder;
 use mononoke_app::args::OptRepoArgs;
@@ -96,6 +97,8 @@ pub struct Repo {
     filestore_config: FilestoreConfig,
     #[facet]
     repo_identity: RepoIdentity,
+    #[facet]
+    repo_config: RepoConfig,
 }
 
 /// Tool to calculate repo statistic

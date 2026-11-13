@@ -39,6 +39,7 @@ use justknobs::test_helpers::KnobVal;
 use justknobs::test_helpers::with_just_knobs_async;
 use metaconfig_types::DerivationPipelineConfig;
 use metaconfig_types::DerivationPipelineStageConfig;
+use metaconfig_types::RepoConfig;
 use mononoke_types::ChangesetId;
 use mononoke_types::DerivableType;
 use mononoke_types::MPath;
@@ -61,6 +62,7 @@ pub struct TestRepo(
     RepoDerivedData,
     RepoBlobstore,
     FilestoreConfig,
+    RepoConfig,
 );
 
 /// The pipeline-derivable types verified by the harness.

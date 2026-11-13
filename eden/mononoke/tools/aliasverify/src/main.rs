@@ -43,6 +43,7 @@ use futures::stream;
 use futures::stream::StreamExt;
 use futures::stream::TryStreamExt;
 use mercurial_types::FileBytes;
+use metaconfig_types::RepoConfig;
 use metaconfig_types::ShardedService;
 use mononoke_app::MononokeApp;
 use mononoke_app::MononokeAppBuilder;
@@ -83,6 +84,8 @@ pub struct Repo {
     mutable_counters: dyn MutableCounters,
     #[facet]
     commit_graph_bulk_fetcher: CommitGraphBulkFetcher,
+    #[facet]
+    repo_config: RepoConfig,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

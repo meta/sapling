@@ -49,6 +49,7 @@ use metaconfig_parser::spec_hash;
 use metaconfig_types::CommitIdentityScheme;
 use metaconfig_types::Redaction;
 use metaconfig_types::RepoConfig;
+use metaconfig_types::RepoConfigRef;
 use metaconfig_types::RepoConfigSource;
 use metaconfig_types::ShardedService;
 use mononoke_api::Mononoke;
@@ -93,6 +94,8 @@ define_stats! {
     repo_loaded_on_demand: timeseries(Rate, Sum),
     repo_load_on_demand_failed: timeseries(Rate, Sum),
     reconcile_applied: timeseries(Average, Sum, Count),
+    // Repos reconcile would have rebuilt whose new config equals the one serving.
+    reconcile_unchanged: timeseries(Average, Sum, Count),
     reconcile_dropped: timeseries(Average, Sum, Count),
     reconcile_failed_repos: timeseries(Average, Sum, Count),
     reconcile_tick_duration_ms: timeseries(Average, Sum, Count),
@@ -237,6 +240,7 @@ impl<Repo> MononokeReposManager<Repo> {
     where
         Names: IntoIterator<Item = String>,
         Repo: for<'builder> AsyncBuildable<'builder, RepoFactoryBuilder<'builder>>
+            + RepoConfigRef
             + Send
             + Sync
             + 'static,
@@ -257,6 +261,7 @@ impl<Repo> MononokeReposManager<Repo> {
     where
         Names: IntoIterator<Item = String>,
         Repo: for<'builder> AsyncBuildable<'builder, RepoFactoryBuilder<'builder>>
+            + RepoConfigRef
             + Send
             + Sync
             + 'static,
@@ -472,6 +477,7 @@ impl<Repo> MononokeReposManager<Repo> {
     pub async fn reconcile(&self) -> Result<()>
     where
         Repo: for<'builder> AsyncBuildable<'builder, RepoFactoryBuilder<'builder>>
+            + RepoConfigRef
             + Send
             + Sync
             + 'static,
@@ -690,27 +696,15 @@ struct ReconcileRepoManager<Repo> {
     tier: String,
     shared: Arc<SharedGenerations>,
     redaction_disabled: bool,
-}
-
-/// Whether a completed build should record a generation. A deep-sharded repo that
-/// was not already present is skipped (`reload_if_present` returned false) → `None`;
-/// every other case records the generation.
-fn apply_generation(
-    deep: bool,
-    applied: bool,
-    generation: RepoGeneration,
-) -> Option<RepoGeneration> {
-    if deep && !applied {
-        None
-    } else {
-        Some(generation)
-    }
+    /// Rebuilds skipped this pass because the config was unchanged.
+    unchanged: AtomicUsize,
 }
 
 #[async_trait]
 impl<Repo> RepoManager for ReconcileRepoManager<Repo>
 where
     Repo: for<'builder> AsyncBuildable<'builder, RepoFactoryBuilder<'builder>>
+        + RepoConfigRef
         + Send
         + Sync
         + 'static,
@@ -732,29 +726,36 @@ where
         if self.redaction_disabled {
             repo_config.redaction = Redaction::Disabled;
         }
-        let repo_id = repo_config.repoid.id();
-        let common_config = self.configs.repo_configs().common.clone();
-        let repo = self
-            .repo_factory
-            .build(name.to_string(), repo_config, common_config, source)
-            .await?;
-        // The build (async) is done; the insert below is synchronous and takes
-        // the MononokeRepos update lock internally — no lock across an await.
-        let applied = if deep {
-            self.repos
-                .reload_if_present(repo_id, name.to_string(), repo)
-        } else {
-            self.repos.reload(vec![(repo_id, name.to_string(), repo)]);
-            true
+        let generation = RepoGeneration {
+            spec_hash,
+            shared_gen,
         };
-        Ok(apply_generation(
-            deep,
-            applied,
-            RepoGeneration {
-                spec_hash,
-                shared_gen,
-            },
-        ))
+        let unchanged = self
+            .repos
+            .get_by_name(name)
+            .is_some_and(|serving| *serving.repo_config() == repo_config);
+        let present = if unchanged {
+            self.unchanged.fetch_add(1, Ordering::Relaxed);
+            true
+        } else {
+            let repo_id = repo_config.repoid.id();
+            let common_config = self.configs.repo_configs().common.clone();
+            let repo = self
+                .repo_factory
+                .build(name.to_string(), repo_config, common_config, source)
+                .await?;
+            // The build (async) is done; the insert below is synchronous and takes
+            // the MononokeRepos update lock internally — no lock across an await.
+            if deep {
+                self.repos
+                    .reload_if_present(repo_id, name.to_string(), repo)
+            } else {
+                self.repos.reload(vec![(repo_id, name.to_string(), repo)]);
+                true
+            }
+        };
+        // A deep-sharded repo that left this job during the build records nothing.
+        Ok(present.then_some(generation))
     }
 
     fn drop_repo(&self, name: &str) {
@@ -811,6 +812,7 @@ where
 impl<Repo> ReconcileDriver<Repo>
 where
     Repo: for<'builder> AsyncBuildable<'builder, RepoFactoryBuilder<'builder>>
+        + RepoConfigRef
         + Send
         + Sync
         + 'static,
@@ -853,6 +855,7 @@ where
                 tier,
                 shared,
                 redaction_disabled: self.redaction_disabled,
+                unchanged: AtomicUsize::new(0),
             };
             let current = self.reconcile_state.load_full();
             let splay = Splay {
@@ -888,17 +891,22 @@ where
                 }
             };
 
+            // Reconcile counts a skipped rebuild as applied; it built nothing.
+            let unchanged = manager.unchanged.load(Ordering::Relaxed);
+            let rebuilt = outcome.rebuilt.saturating_sub(unchanged);
             if outcome.built + outcome.rebuilt + outcome.dropped > 0 || !outcome.failed.is_empty() {
                 info!(
-                    "reconcile: built={} rebuilt={} dropped={} failed={} deferred={}",
+                    "reconcile: built={} rebuilt={} unchanged={} dropped={} failed={} deferred={}",
                     outcome.built,
-                    outcome.rebuilt,
+                    rebuilt,
+                    unchanged,
                     outcome.dropped,
                     outcome.failed.len(),
                     outcome.deferred,
                 );
             }
-            STATS::reconcile_applied.add_value((outcome.built + outcome.rebuilt) as i64);
+            STATS::reconcile_applied.add_value((outcome.built + rebuilt) as i64);
+            STATS::reconcile_unchanged.add_value(unchanged as i64);
             STATS::reconcile_dropped.add_value(outcome.dropped as i64);
             STATS::reconcile_failed_repos.add_value(outcome.failed.len() as i64);
             STATS::reconcile_deferred.add_value(outcome.deferred as i64);
@@ -988,6 +996,7 @@ fn spawn_reconcile_loop<Repo>(
 ) -> JoinHandle<()>
 where
     Repo: for<'builder> AsyncBuildable<'builder, RepoFactoryBuilder<'builder>>
+        + RepoConfigRef
         + Send
         + Sync
         + 'static,

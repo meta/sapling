@@ -26,6 +26,7 @@ futures_ext = { package = "futures_01_ext", version = "0.1.0", git = "https://gi
 manifest = { version = "0.1.0", path = "../../manifest" }
 mercurial_derivation = { version = "0.1.0", path = "../../derived_data/mercurial_derivation" }
 mercurial_types = { version = "0.1.0", path = "../../mercurial/types" }
+metaconfig_types = { version = "0.1.0", path = "../../metaconfig/types" }
 mononoke_app = { version = "0.1.0", path = "../../cmdlib/mononoke_app" }
 mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
 redactedblobstore = { version = "0.1.0", path = "../../blobstore/redactedblobstore" }
