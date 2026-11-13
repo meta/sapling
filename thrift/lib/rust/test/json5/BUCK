@@ -1,0 +1,19 @@
+load("@fbsource//tools/build_defs:fbsource_utils.bzl", "is_xplat")
+load(
+    "@fbsource//xplat/thrift:defs.bzl",
+    "thrift_rust_unittest",
+)
+
+oncall("rust_thrift")
+
+# buildifier: disable=no-effect
+thrift_rust_unittest(
+    name = "test",
+    srcs = ["test.rs"],
+    allow_oss_build = False,
+    deps = [
+        "fbcode//thrift/lib/rust:fbthrift",
+        "fbcode//thrift/test/json5:json5_negative_test-rust",
+        "fbcode//thrift/test/json5:json5_test-rust",
+    ],
+) if not is_xplat() else None
