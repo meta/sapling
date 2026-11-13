@@ -1241,17 +1241,38 @@ impl Screen {
         key: KeyEvent,
         event_sender: &EventSender,
     ) -> DisplayAction {
-        if let Some(binding) = self.keymap.get(key.modifiers, key.key) {
+        if let Some(binding) = Self::key_candidates(key)
+            .into_iter()
+            .find_map(|key| self.keymap.get(key.modifiers, key.key))
+        {
             match binding {
                 Binding::Action(action) => {
                     let action = action.clone();
                     return self.dispatch_action(action, event_sender);
                 }
-                Binding::Custom(b) => b.run(self.file.index()),
+                Binding::Custom(b) => {
+                    b.run(self.file.index());
+                    return DisplayAction::Render;
+                }
                 Binding::Unrecognized(_) => {}
             }
         }
         DisplayAction::Render
+    }
+
+    fn key_candidates(key: KeyEvent) -> Vec<KeyEvent> {
+        use termwiz::input::{KeyCode, Modifiers};
+
+        let mut candidates = vec![key.clone()];
+        if matches!(key.key, KeyCode::Char(_)) && key.modifiers.contains(Modifiers::SHIFT) {
+            let mut modifiers = key.modifiers;
+            modifiers.remove(Modifiers::SHIFT);
+            candidates.push(KeyEvent {
+                key: key.key,
+                modifiers,
+            });
+        }
+        candidates
     }
 
     /// Append a digit to the repeat count.
@@ -1416,5 +1437,40 @@ impl Screen {
         // Fetch 1 screen + config.read_ahead_lines.
         let needed_lines = self.rendered.bottom_line + self.height + self.config.read_ahead_lines;
         self.file.set_needed_lines(needed_lines);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use termwiz::input::{KeyCode, Modifiers};
+
+    #[test]
+    fn shifted_char_tries_exact_binding_before_unshifted_fallback() {
+        let key = KeyEvent {
+            key: KeyCode::Char('G'),
+            modifiers: Modifiers::SHIFT,
+        };
+
+        assert_eq!(
+            Screen::key_candidates(key)
+                .into_iter()
+                .map(|key| (key.modifiers, key.key))
+                .collect::<Vec<_>>(),
+            vec![
+                (Modifiers::SHIFT, KeyCode::Char('G')),
+                (Modifiers::NONE, KeyCode::Char('G')),
+            ]
+        );
+    }
+
+    #[test]
+    fn shifted_non_char_has_no_unshifted_fallback() {
+        let key = KeyEvent {
+            key: KeyCode::UpArrow,
+            modifiers: Modifiers::SHIFT,
+        };
+
+        assert_eq!(Screen::key_candidates(key).len(), 1);
     }
 }

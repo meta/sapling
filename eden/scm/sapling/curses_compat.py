@@ -173,7 +173,13 @@ class Surface:
                 code = ord(ch)
                 if modifiers == Modifiers.NONE:
                     return code
-                if modifiers in [Modifiers.CTRL or Modifiers.RIGHT_CTRL]:
+                if modifiers & Modifiers.SHIFT:
+                    # Ghostty with modifyOtherKeys=2 sends Shift+A as
+                    # Char('a')+SHIFT instead of plain 'A' (0x41).
+                    # Normalize to uppercase so crecord keybindings like
+                    # 'A' (toggle all), 'G', 'J', 'H', 'F' work.
+                    return ord(ch.upper())
+                if modifiers & (Modifiers.CTRL | Modifiers.RIGHT_CTRL):
                     # emulate curses behavior, ord(upper) & 0x1f
                     return ord(ch.upper()) & 0x1F
             case {"Function": fn}:
