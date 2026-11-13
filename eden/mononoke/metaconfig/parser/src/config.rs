@@ -539,11 +539,7 @@ fn parse_common_config(
         .filter(|category| !category.is_empty());
     let scuba_censored_table = common.scuba_censored_table;
     let scuba_censored_local_path = common.scuba_local_path_censored;
-    let internal_identity = common
-        .internal_identity
-        .map(Convert::convert)
-        .transpose()?
-        .unwrap_or_default();
+    let internal_identity = common.internal_identity.map(Convert::convert).transpose()?;
     let git_memory_upper_bound = common
         .git_memory_upper_bound
         .map(|bound| bound.try_into())
@@ -1897,10 +1893,10 @@ mod test {
                     blobstore: main_storage_config.blobstore,
                     redaction_sets_location: "loc".to_string(),
                 },
-                internal_identity: Identity {
+                internal_identity: Some(Identity {
                     id_type: "SERVICE_IDENTITY".to_string(),
                     id_data: "internal".to_string(),
-                },
+                }),
                 git_memory_upper_bound: Some(100),
                 edenapi_dumper_scuba_table: Some("dumped_requests".to_string()),
                 async_requests_config: AsyncRequestsConfig {
@@ -3132,6 +3128,28 @@ mod test {
             RepoReadOnly::ReadOnly("Set by config option".to_string()),
             "readonly=true should produce ReadOnly"
         );
+    }
+
+    #[mononoke::test]
+    fn test_common_config_missing_identity_and_control_api() {
+        let manifest = TierManifest {
+            common: RawCommonConfig {
+                redaction_config: Some(repos::RawRedactionConfig {
+                    blobstore: "only_storage".to_string(),
+                    redaction_sets_location: "redaction_sets".to_string(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            storage: hashmap! {
+                "only_storage".to_string() => test_raw_storage_config(),
+            },
+            ..Default::default()
+        };
+        let (common, _) = parse_manifest_common_and_storage(&manifest)
+            .expect("a common config without identity or control API should parse");
+        assert!(!common.enable_http_control_api);
+        assert_eq!(common.internal_identity, None);
     }
 
     #[mononoke::test]

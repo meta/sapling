@@ -605,8 +605,9 @@ mod h2m {
         // Invalid CAT tokens are silently discarded (with a warn log emitted
         // by `try_get_cats_idents`) so that the request proceeds without
         // CAT-derived identities rather than failing the whole request.
-        let cats_identities =
-            try_get_cats_idents(conn.pending.acceptor.fb.clone(), headers, internal_identity);
+        let cats_identities = internal_identity.as_ref().and_then(|identity| {
+            try_get_cats_idents(conn.pending.acceptor.fb.clone(), headers, identity)
+        });
 
         if is_trusted {
             if let (Some(encoded_identities), Some(client_address), Some(client_port)) = (

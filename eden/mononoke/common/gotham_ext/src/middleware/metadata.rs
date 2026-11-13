@@ -54,7 +54,7 @@ impl MetadataState {
 
 pub struct MetadataMiddleware {
     fb: FacebookInit,
-    internal_identity: Identity,
+    internal_identity: Option<Identity>,
     entry_point: ClientEntryPoint,
     mtls_disabled: bool,
     requires_client_info: bool,
@@ -63,7 +63,7 @@ pub struct MetadataMiddleware {
 impl MetadataMiddleware {
     pub fn new(
         fb: FacebookInit,
-        internal_identity: Identity,
+        internal_identity: Option<Identity>,
         entry_point: ClientEntryPoint,
         mtls_disabled: bool,
         requires_client_info: bool,
@@ -166,8 +166,10 @@ impl Middleware for MetadataMiddleware {
             let maybe_identities = if self.mtls_disabled {
                 ingress_request_identities_from_headers(headers)
             } else {
-                let maybe_cat_idents =
-                    try_get_cats_idents(self.fb, headers, &self.internal_identity);
+                let maybe_cat_idents = self
+                    .internal_identity
+                    .as_ref()
+                    .and_then(|identity| try_get_cats_idents(self.fb, headers, identity));
 
                 let maybe_tls_or_proxied_idents: Option<MononokeIdentitySet> =
                     cert_idents.and_then(|x| self.extract_client_identities(x, headers));

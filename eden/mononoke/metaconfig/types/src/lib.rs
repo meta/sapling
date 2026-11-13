@@ -153,8 +153,9 @@ pub struct CommonConfig {
     pub enable_http_control_api: bool,
     /// Configuration for redaction of blobs
     pub redaction_config: RedactionConfig,
-    /// Service identity for internal Mononoke services.
-    pub internal_identity: Identity,
+    /// Service identity for internal Mononoke services. `None` means there is
+    /// none: no CAT verifies and no request counts as internal.
+    pub internal_identity: Option<Identity>,
     /// Upper bound in bytes for the RSS memory that can be utilized by Mononoke GRit
     /// server for serving packfile stream
     pub git_memory_upper_bound: Option<u64>,
