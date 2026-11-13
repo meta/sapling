@@ -196,27 +196,42 @@ where
         let build_permits = self.build_permits.clone();
         async move {
             let _permit = build_permits.acquire_owned().await?;
-            // get_or_load_repo_config_and_source subscribes the per-repo
-            // ConfigHandle internally.
-            let (mut repo_config, source) = configs
-                .get_or_load_repo_config_and_source(&repo_name)
-                .inspect_err(|_| STATS::lazy_repo_build_failed.add_value(1))?;
-            if redaction_disabled {
-                repo_config.redaction = Redaction::Disabled;
-            }
-            let common_config = configs.repo_configs().common.clone();
             let start = Instant::now();
-            let repo = repo_factory
-                .build(repo_name.clone(), repo_config, common_config, source)
-                .await
-                .inspect_err(|_| STATS::lazy_repo_build_failed.add_value(1))?;
-            STATS::lazy_repo_build_duration_ms.add_value(start.elapsed().as_millis() as i64);
-            info!(
-                "Built repo on first request: {} in {:?}",
-                repo_name,
-                start.elapsed()
-            );
-            anyhow::Ok(repo)
+            let result: Result<Repo> = async {
+                // get_or_load_repo_config_and_source subscribes the per-repo
+                // ConfigHandle internally.
+                let (mut repo_config, source) =
+                    configs.get_or_load_repo_config_and_source(&repo_name)?;
+                if redaction_disabled {
+                    repo_config.redaction = Redaction::Disabled;
+                }
+                let common_config = configs.repo_configs().common.clone();
+                Ok(repo_factory
+                    .build(repo_name.clone(), repo_config, common_config, source)
+                    .await?)
+            }
+            .await;
+            let elapsed = start.elapsed();
+
+            let mut scuba = repo_factory.env.scuba_sample_builder.clone();
+            scuba
+                .add("repo", repo_name.as_str())
+                .add("duration_ms", elapsed.as_millis() as i64);
+            match &result {
+                Ok(_) => {
+                    STATS::lazy_repo_build_duration_ms.add_value(elapsed.as_millis() as i64);
+                    info!(
+                        "Built repo on first request: {} in {:?}",
+                        repo_name, elapsed
+                    );
+                    scuba.log_with_msg("Lazy repo built", None);
+                }
+                Err(e) => {
+                    STATS::lazy_repo_build_failed.add_value(1);
+                    scuba.log_with_msg("Lazy repo build failed", format!("{e:#}"));
+                }
+            }
+            result
         }
         .boxed()
     }
