@@ -2956,7 +2956,7 @@ def diffui(*args, **kw):
 
 def _filepairs(ctx1, ctx2, modified, added, removed, copy, opts):
     """generates tuples (f1, f2, copyop), where f1 is the name of the file
-    before and f2 is the the name after. For added files, f1 will be None,
+    before and f2 is the name after. For added files, f1 will be None,
     and for removed files, f2 will be None. copyop may be set to None, 'copy'
     or 'rename' (the latter two only if opts.git is set)."""
     gone = set()

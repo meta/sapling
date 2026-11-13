@@ -1546,7 +1546,7 @@ def rebase(ui, repo, templ=None, **opts):
         singletransaction = True
 
       By default, rebase writes to the working copy, but you can configure it
-      to run in-memory for for better performance, and to allow it to run if the
+      to run in-memory for better performance, and to allow it to run if the
       current checkout is dirty::
 
         [rebase]

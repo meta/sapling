@@ -1289,7 +1289,7 @@ class curseschunkselector:
         self, item=None, ignorefolding=False, recursechildren=True, towin=True
     ):
         """
-        use __printitem() to print the the specified item.applied.
+        use __printitem() to print the specified item.applied.
         if item is not specified, then print the entire patch.
         (hiding folded elements, etc. -- see __printitem() docstring)
         """

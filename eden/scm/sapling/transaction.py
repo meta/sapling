@@ -413,7 +413,7 @@ class transaction(util.transactional):
         generator will be executed.
 
         The `location` arguments may be used to indicate the files are located
-        outside of the the standard directory for transaction. It should match
+        outside of the standard directory for transaction. It should match
         one of the key of the `transaction.vfsmap` dictionary.
 
         In a lockfree transaction, filenames must be tracked by metalog.
