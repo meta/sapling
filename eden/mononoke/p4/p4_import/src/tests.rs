@@ -559,6 +559,7 @@ impl FakeSource {
 fn revision(depot_path: &str, action: Action, file_type: &str, size: Option<u64>) -> FileRevision {
     FileRevision {
         depot_path: depot_path.to_owned(),
+        depot_path_bytes: None,
         action,
         file_type: file_type.to_owned(),
         revision: 1,

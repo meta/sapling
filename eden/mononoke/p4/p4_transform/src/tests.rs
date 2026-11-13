@@ -49,6 +49,7 @@ fn revision(depot_path: &str, action: Action) -> FileRevision {
 fn typed_revision(depot_path: &str, action: Action, file_type: &str) -> FileRevision {
     FileRevision {
         depot_path: depot_path.to_owned(),
+        depot_path_bytes: None,
         action,
         file_type: file_type.to_owned(),
         revision: 1,

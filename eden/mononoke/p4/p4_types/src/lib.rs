@@ -30,8 +30,11 @@ pub struct Changelist {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileRevision {
-    /// Strict UTF-8 is exactly the bytes p4 sent, so passing it back to p4 is lossless.
+    /// As the repo names the file: the bytes p4 sent, decoded.
     pub depot_path: String,
+    /// The depot path as p4 sent it, only when `depot_path` was decoded from another charset
+    /// than UTF-8.
+    pub depot_path_bytes: Option<Vec<u8>>,
     pub action: Action,
     pub file_type: String,
     pub revision: u32,
