@@ -13,6 +13,7 @@ ascii = "1.1.0"
 bookmarks_types = { version = "0.1.0", path = "../../repo_attributes/bookmarks/bookmarks_types" }
 cached_config = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 commitsync = { version = "0.1.0", path = "../../../../configerator/structs/scm/mononoke/repos/commitsync" }
+derive_more = { version = "2.1.1", features = ["full"] }
 im = { version = "15.1", features = ["rayon", "serde"] }
 itertools = "0.15.0"
 metaconfig_types = { version = "0.1.0", path = "../types" }
@@ -21,6 +22,7 @@ nonzero_ext = "0.2"
 permission_checker = { version = "0.1.0", path = "../../common/permission_checker" }
 repos = { version = "0.1.0", path = "../../../../configerator/structs/scm/mononoke/repos/repos" }
 rusoto_core = "0.48.0"
+serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 thiserror = "2.0.21"
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
@@ -30,7 +32,6 @@ maplit = "1.0"
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
 mononoke_types-mocks = { version = "0.1.0", path = "../../mononoke_types/mocks" }
 pretty_assertions = { version = "1.4.1", features = ["alloc"], default-features = false }
-serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_ignored = "0.1.14"
 toml = { version = "1.2.1", features = ["preserve_order"] }
 

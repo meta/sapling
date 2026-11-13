@@ -38,7 +38,6 @@ rust_library(
     test_deps = [
         "fbsource//third-party/rust:maplit",
         "fbsource//third-party/rust:pretty_assertions",
-        "fbsource//third-party/rust:serde",
         "fbsource//third-party/rust:serde_ignored",
         "fbsource//third-party/rust:toml",
         "//eden/mononoke/common/mononoke_macros:mononoke_macros",
@@ -47,10 +46,12 @@ rust_library(
     deps = [
         "fbsource//third-party/rust:anyhow",
         "fbsource//third-party/rust:ascii",
+        "fbsource//third-party/rust:derive_more",
         "fbsource//third-party/rust:im",
         "fbsource//third-party/rust:itertools",
         "fbsource//third-party/rust:nonzero_ext",
         "fbsource//third-party/rust:rusoto_core",
+        "fbsource//third-party/rust:serde",
         "fbsource//third-party/rust:serde_json",
         "fbsource//third-party/rust:thiserror",
         "fbsource//third-party/rust:tracing",

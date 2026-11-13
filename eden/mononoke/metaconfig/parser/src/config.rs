@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::str;
 use std::sync::Arc;
+use std::sync::LazyLock;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -45,6 +46,12 @@ use repos::TierManifest;
 
 use crate::convert::Convert;
 use crate::errors::ConfigurationError;
+use crate::layering::ConfigSource;
+use crate::layering::Layer;
+use crate::layering::LayerMode;
+use crate::layering::Layered;
+use crate::layering::layer_repo_config;
+use crate::layering::layer_repo_config_with_provenance;
 
 const LIST_KEYS_PATTERNS_MAX_DEFAULT: u64 = 500_000;
 const HOOK_MAX_FILE_SIZE_DEFAULT: u64 = 8 * 1024 * 1024; // 8MiB
@@ -208,40 +215,50 @@ pub fn configerator_repo_spec_handle(
     config_store.get_config_handle::<RepoSpec>(config_path.to_owned())
 }
 
-/// Merge a tier-specific override on top of a base RawRepoConfig.
-///
-/// For each field in the override, if it is set (not None/null), it replaces
-/// the corresponding field in the base. Unset fields in the override leave the
-/// base value unchanged.
-///
-/// Uses JSON-based merging to handle all fields generically, avoiding the need
-/// to enumerate all ~50 fields of RawRepoConfig. This matches the Python
-/// pipeline's merge semantics in repo_spec_processing.cinc.
-fn merge_raw_repo_config(
-    base: RawRepoConfig,
-    tier_override: &RawRepoConfig,
-) -> Result<RawRepoConfig> {
-    let mut base_json = serde_json::to_value(&base)?;
-    let override_json = serde_json::to_value(tier_override)?;
+/// Resolves a repo's raw config for a tier from its layers: the spec's
+/// `repo_config`, then the spec's override for the tier, whose top-level fields
+/// replace the spec's whole. The result records which layer set each value.
+pub fn resolve_repo_spec_with_provenance(
+    repo_spec: &RepoSpec,
+    tier_name: &str,
+) -> Result<Layered<RawRepoConfig>> {
+    layer_repo_config_with_provenance(&repo_config_layers(repo_spec, tier_name))
+}
 
-    if let (serde_json::Value::Object(base_map), serde_json::Value::Object(override_map)) =
-        (&mut base_json, override_json)
+/// The config [`resolve_repo_spec_with_provenance`] resolves, without
+/// recording where each value came from.
+fn resolve_repo_spec(repo_spec: &RepoSpec, tier_name: &str) -> Result<RawRepoConfig> {
+    layer_repo_config(&repo_config_layers(repo_spec, tier_name))
+}
+
+/// `repo_spec`'s config layers on `tier_name`, lowest first.
+fn repo_config_layers<'a>(repo_spec: &'a RepoSpec, tier_name: &str) -> Vec<Layer<'a>> {
+    static NO_REPO_CONFIG: LazyLock<RawRepoConfig> = LazyLock::new(RawRepoConfig::default);
+    let mut layers = Vec::new();
+    layers.push(Layer {
+        source: ConfigSource::Spec,
+        config: repo_spec.repo_config.as_ref().unwrap_or(&NO_REPO_CONFIG),
+        mode: LayerMode::Merge,
+    });
+    if let Some(config) = repo_spec
+        .tier_overrides
+        .as_ref()
+        .and_then(|overrides| overrides.get(tier_name))
     {
-        for (key, value) in override_map {
-            if !value.is_null() {
-                base_map.insert(key, value);
-            }
-        }
+        layers.push(Layer {
+            source: ConfigSource::TierOverride(tier_name.to_owned()),
+            config,
+            mode: LayerMode::ReplaceTopLevel,
+        });
     }
-
-    serde_json::from_value(base_json).context("Failed to deserialize merged RawRepoConfig")
+    layers
 }
 
 /// Parse a RepoSpec into a RepoConfig for a specific tier.
 ///
-/// Resolves tier_overrides by merging the tier-specific partial config on top
-/// of the base repo_config. Uses the RepoSpec's identity fields (hipster_acl,
-/// enabled, readonly, etc.) instead of hardcoded defaults.
+/// Resolves the repo's raw config as [`resolve_repo_spec_with_provenance`]
+/// does. Uses the RepoSpec's identity fields (hipster_acl, enabled, readonly,
+/// etc.) instead of hardcoded defaults.
 ///
 /// `named_storage_configs` typically comes from `TierManifest.storage`.
 pub fn parse_repo_spec(
@@ -249,14 +266,7 @@ pub fn parse_repo_spec(
     tier_name: &str,
     named_storage_configs: &HashMap<String, RawStorageConfig>,
 ) -> Result<RepoConfig> {
-    let base_config = repo_spec.repo_config.unwrap_or_default();
-    let resolved_config = match repo_spec.tier_overrides {
-        Some(ref overrides) => match overrides.get(tier_name) {
-            Some(tier_override) => merge_raw_repo_config(base_config, tier_override)?,
-            None => base_config,
-        },
-        None => base_config,
-    };
+    let resolved_config = resolve_repo_spec(&repo_spec, tier_name)?;
 
     let readonly = if repo_spec.readonly {
         RepoReadOnly::ReadOnly("Set by config option".to_string())
@@ -815,6 +825,11 @@ mod test {
     use serde::Deserialize;
 
     use super::*;
+    use crate::layering::ConfigPath;
+
+    fn config_path(text: &str) -> ConfigPath {
+        text.parse().expect("valid path")
+    }
 
     /// Parse a collection of raw commit sync config into commit sync config and validate it.
     #[cfg(test)]
@@ -2934,6 +2949,29 @@ mod test {
         }
     }
 
+    /// A spec's config with a tier override layered on top, checking that
+    /// layering with and without provenance agree.
+    fn merge_raw_repo_config(
+        base: RawRepoConfig,
+        tier_override: &RawRepoConfig,
+    ) -> Result<RawRepoConfig> {
+        let layers = [
+            Layer {
+                source: ConfigSource::Spec,
+                config: &base,
+                mode: LayerMode::Merge,
+            },
+            Layer {
+                source: ConfigSource::TierOverride("scs".to_owned()),
+                config: tier_override,
+                mode: LayerMode::ReplaceTopLevel,
+            },
+        ];
+        let value = layer_repo_config(&layers)?;
+        assert_eq!(layer_repo_config_with_provenance(&layers)?.value, value);
+        Ok(value)
+    }
+
     #[mononoke::test]
     fn test_merge_raw_repo_config_override_replaces_set_fields() {
         // Base config has storage_config set
@@ -3052,6 +3090,53 @@ mod test {
         )
         .expect("bundle-uri on with its config parses");
         assert!(on.git_configs.git_bundle_uri.is_some());
+    }
+
+    #[mononoke::test]
+    fn test_resolve_repo_spec_provenance() {
+        let spec = repos::RepoSpec {
+            repo_config: Some(RawRepoConfig {
+                storage_config: Some("test_storage".to_string()),
+                phabricator_callsign: Some("SPEC".to_string()),
+                ..Default::default()
+            }),
+            tier_overrides: Some(hashmap! {
+                "scs".to_string() => RawRepoConfig {
+                    phabricator_callsign: Some("SCS".to_string()),
+                    ..Default::default()
+                },
+            }),
+            ..Default::default()
+        };
+
+        let scs = resolve_repo_spec_with_provenance(&spec, "scs").expect("resolve should succeed");
+        assert_eq!(scs.value.phabricator_callsign.as_deref(), Some("SCS"));
+        assert_eq!(
+            scs.provenance.source(&config_path("phabricator_callsign")),
+            &ConfigSource::TierOverride("scs".to_owned())
+        );
+        assert_eq!(
+            scs.provenance.source(&config_path("storage_config")),
+            &ConfigSource::Spec
+        );
+        assert_eq!(
+            scs.provenance.source(&config_path("hooks")),
+            &ConfigSource::Default
+        );
+
+        let gitimport =
+            resolve_repo_spec_with_provenance(&spec, "gitimport").expect("resolve should succeed");
+        assert_eq!(
+            gitimport.value.phabricator_callsign.as_deref(),
+            Some("SPEC")
+        );
+        assert_eq!(
+            gitimport
+                .provenance
+                .source(&config_path("phabricator_callsign")),
+            &ConfigSource::Spec,
+            "another tier's override does not apply"
+        );
     }
 
     #[mononoke::test]
