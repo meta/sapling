@@ -17,7 +17,7 @@ import re
 import struct
 import zlib
 from hashlib import sha1
-from typing import Iterator, List, Optional, Pattern, Sized, Tuple, Union
+from typing import Any, Iterator, List, Optional, Pattern, Sized, Tuple, Union
 
 import bindings
 
@@ -80,6 +80,24 @@ class diffopts:
     filtercopysource removes copy/rename if source does not match matcher
     """
 
+    context: int
+    text: bool
+    showfunc: bool
+    git: bool
+    nodates: bool
+    nobinary: bool
+    noprefix: bool
+    index: int
+    ignorews: bool
+    ignorewsamount: bool
+    ignorewseol: bool
+    ignoreblanklines: bool
+    upgrade: bool
+    showsimilarity: bool
+    worddiff: bool
+    hashbinary: bool
+    filtercopysource: bool
+
     defaults = {
         "context": 3,
         "text": False,
@@ -126,43 +144,37 @@ class diffopts:
 defaultopts = diffopts()
 
 
-def wsclean(opts, text: str, blank: bool = True) -> bytes:
+def wsclean(opts, text: bytes, blank: bool = True) -> bytes:
     if opts.ignorews:
         text = bdiff.fixws(text, 1)
     elif opts.ignorewsamount:
         text = bdiff.fixws(text, 0)
     if blank and opts.ignoreblanklines:
-        # pyre-fixme[9]: text has type `str`; used as `bytes`.
         text = re.sub(b"\n+", b"\n", text).strip(b"\n")
     if opts.ignorewseol:
-        # pyre-fixme[9]: text has type `str`; used as `bytes`.
         text = re.sub(b"[ \t\r\f]+\n", b"\n", text)
     return text
 
 
-def splitblock(
-    base1, lines1: List[Union[bytes, int]], base2, lines2: List[Union[bytes, int]], opts
-):
+def splitblock(base1, lines1: List[bytes], base2, lines2: List[bytes], opts):
     # The input lines matches except for interwoven blank lines. We
     # transform it into a sequence of matching blocks and blank blocks.
-    # pyre-fixme[6]: For 2nd param expected `str` but got `Union[bytes, int]`.
-    lines1 = [(wsclean(opts, l) and 1 or 0) for l in lines1]
-    # pyre-fixme[6]: For 2nd param expected `str` but got `Union[bytes, int]`.
-    lines2 = [(wsclean(opts, l) and 1 or 0) for l in lines2]
-    s1, e1 = 0, len(lines1)
-    s2, e2 = 0, len(lines2)
+    flags1 = [(wsclean(opts, l) and 1 or 0) for l in lines1]
+    flags2 = [(wsclean(opts, l) and 1 or 0) for l in lines2]
+    s1, e1 = 0, len(flags1)
+    s2, e2 = 0, len(flags2)
     while s1 < e1 or s2 < e2:
         i1, i2, btype = s1, s2, "="
-        if i1 >= e1 or lines1[i1] == 0 or i2 >= e2 or lines2[i2] == 0:
+        if i1 >= e1 or flags1[i1] == 0 or i2 >= e2 or flags2[i2] == 0:
             # Consume the block of blank lines
             btype = "~"
-            while i1 < e1 and lines1[i1] == 0:
+            while i1 < e1 and flags1[i1] == 0:
                 i1 += 1
-            while i2 < e2 and lines2[i2] == 0:
+            while i2 < e2 and flags2[i2] == 0:
                 i2 += 1
         else:
             # Consume the matching lines
-            while i1 < e1 and lines1[i1] == 1 and lines2[i2] == 1:
+            while i1 < e1 and flags1[i1] == 1 and flags2[i2] == 1:
                 i1 += 1
                 i2 += 1
         yield [base1 + s1, base1 + i1, base2 + s2, base2 + i2], btype
@@ -237,8 +249,8 @@ def blocksinrange(blocks, rangeb):
 
 
 def allblocks(
-    text1: str,
-    text2: str,
+    text1: bytes,
+    text2: bytes,
     opts: Optional[diffopts] = None,
     lines1: Optional[List[bytes]] = None,
     lines2: Optional[List[bytes]] = None,
@@ -252,13 +264,8 @@ def allblocks(
     """
     if opts is None:
         opts = defaultopts
-    # pyre-fixme[16]: `diffopts` has no attribute `ignorews`.
-    # pyre-fixme[16]: `diffopts` has no attribute `ignorewsamount`.
-    # pyre-fixme[16]: `diffopts` has no attribute `ignorewseol`.
     if opts.ignorews or opts.ignorewsamount or opts.ignorewseol:
-        # pyre-fixme[9]: text1 has type `str`; used as `bytes`.
         text1 = wsclean(opts, text1, False)
-        # pyre-fixme[9]: text2 has type `str`; used as `bytes`.
         text2 = wsclean(opts, text2, False)
     diff = blocks(text1, text2)
     for i, s1 in enumerate(diff):
@@ -276,17 +283,12 @@ def allblocks(
         # and deals with the special first match case described above
         if s[0] != s[1] or s[2] != s[3]:
             type = "!"
-            # pyre-fixme[16]: `diffopts` has no attribute `ignoreblanklines`.
             if opts.ignoreblanklines:
                 if lines1 is None:
-                    # pyre-fixme[6]: For 1st param expected `bytes` but got `str`.
                     lines1 = splitnewlines(text1)
                 if lines2 is None:
-                    # pyre-fixme[6]: For 1st param expected `bytes` but got `str`.
                     lines2 = splitnewlines(text2)
-                # pyre-fixme[6]: For 2nd param expected `str` but got `bytes`.
                 old = wsclean(opts, b"".join(lines1[s[0] : s[1]]))
-                # pyre-fixme[6]: For 2nd param expected `str` but got `bytes`.
                 new = wsclean(opts, b"".join(lines2[s[2] : s[3]]))
                 if old == new:
                     type = "~"
@@ -295,7 +297,7 @@ def allblocks(
 
 
 def unidiff(
-    a: Sized,
+    a: Optional[bytes],
     ad: str,
     b,
     bd: str,
@@ -316,8 +318,6 @@ def unidiff(
     """
 
     def datetag(date: str, fn: "Optional[str]" = None) -> bytes:
-        # pyre-fixme[16]: `diffopts` has no attribute `git`.
-        # pyre-fixme[16]: `diffopts` has no attribute `nodates`.
         if not opts.git and not opts.nodates:
             return b"\t%s" % date.encode()
         if fn and " " in fn:
@@ -328,7 +328,6 @@ def unidiff(
     if not a and not b:
         return sentinel
 
-    # pyre-fixme[16]: `diffopts` has no attribute `noprefix`.
     if opts.noprefix:
         aprefix = bprefix = b""
     else:
@@ -340,12 +339,10 @@ def unidiff(
     fn1 = util.pconvert(fn1)
     fn2 = util.pconvert(fn2)
 
-    # pyre-fixme[16]: `diffopts` has no attribute `text`.
     if not opts.text and check_binary and (util.binary(a) or util.binary(b)):
         if a and b and len(a) == len(b) and a == b:
             return sentinel
         headerlines = []
-        # pyre-fixme[16]: `diffopts` has no attribute `hashbinary`.
         if opts.hashbinary and b:
             message = b"Binary file %s has changed to %s\n" % (
                 fn1.encode(),
@@ -371,9 +368,7 @@ def unidiff(
             hunklines.append(_missing_newline_marker)
         hunks = iter([(hunkrange, hunklines)])
     elif not b:
-        # pyre-fixme[16]: `Sized` has no attribute `__getitem__`.
         without_newline = a[-1:] != b"\n"
-        # pyre-fixme[6]: For 1st param expected `bytes` but got `Sized`.
         al = splitnewlines(a)
         l1 = b"--- %s%s%s" % (aprefix, fn1.encode(), datetag(ad, fn1))
         if b is None:
@@ -389,7 +384,6 @@ def unidiff(
             hunklines.append(_missing_newline_marker)
         hunks = iter([(hunkrange, hunklines)])
     else:
-        # pyre-fixme[6]: For 1st param expected `bytes` but got `Sized`.
         hunks = _unidiff(a, b, opts=opts)
         if not next(hunks):
             return sentinel
@@ -404,7 +398,7 @@ def unidiff(
 
 def _unidiff(
     t1: bytes, t2: bytes, opts: "diffopts" = defaultopts
-) -> "Iterator[Tuple[Tuple[int, int, int, int], List[bytes]]]":
+) -> "Iterator[Union[bool, Tuple[Tuple[int, int, int, int], List[bytes]]]]":
     """Yield hunks of a headerless unified diff from t1 and t2 texts.
 
     Each hunk consists of a (hunkrange, hunklines) tuple where `hunkrange` is a
@@ -495,13 +489,11 @@ def _unidiff(
     # below finds the spaces between those matching sequences and translates
     # them into diff output.
     #
-    hunk = None
+    hunk: "Optional[List[Any]]" = None
     ignoredlines = 0
     # tracks '~' blocks, at most `opts.context` of them fit in a hunk's context
     ignored = collections.deque(maxlen=opts.context)
     has_hunks = False
-    # pyre-fixme[6]: For 1st param expected `str` but got `bytes`.
-    # pyre-fixme[6]: For 2nd param expected `str` but got `bytes`.
     for s, stype in allblocks(t1, t2, opts, l1, l2):
         a1, a2, b1, b2 = s
         if stype != "!":
@@ -536,18 +528,16 @@ def _unidiff(
             else:
                 if not has_hunks:
                     has_hunks = True
-                    # pyre-fixme[7]: Expected `Iterator[Tuple[Tuple[int, int, int,
-                    #  int], List[bytes]]]` but got `Generator[bool, None, None]`.
                     yield True
                 for x in yieldhunk(hunk):
                     yield x
         if prev:
             # we've joined the previous hunk, record the new ending points.
-            # pyre-fixme[16]: `Optional` has no attribute `__setitem__`.
-            hunk[1] = a2
-            hunk[3] = b2
-            # pyre-fixme[16]: `Optional` has no attribute `__getitem__`.
-            delta = hunk[4]
+            # `prev` is the same list object as `hunk` (see the join branch
+            # above), so these updates mutate the joined hunk in place.
+            prev[1] = a2
+            prev[3] = b2
+            delta = prev[4]
         else:
             # create a new hunk
             hunk = [astart, a2, bstart, b2, delta, skew]
@@ -559,14 +549,10 @@ def _unidiff(
     if hunk:
         if not has_hunks:
             has_hunks = True
-            # pyre-fixme[7]: Expected `Iterator[Tuple[Tuple[int, int, int, int],
-            #  List[bytes]]]` but got `Generator[bool, None, None]`.
             yield True
         for x in yieldhunk(hunk):
             yield x
     elif not has_hunks:
-        # pyre-fixme[7]: Expected `Iterator[Tuple[Tuple[int, int, int, int],
-        #  List[bytes]]]` but got `Generator[bool, None, None]`.
         yield False
 
 
