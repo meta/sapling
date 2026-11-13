@@ -87,7 +87,6 @@ eden_add_library(eden_fs_store
     Folly::folly_conv
     Folly::folly_coro_collect
     Folly::folly_coro_invoke
-    Folly::folly_io_iobuf
     Folly::folly_portability
     eden_fs_model_git_gitignore
     eden_fs_telemetry_log_info

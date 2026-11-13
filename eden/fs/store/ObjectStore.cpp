@@ -12,7 +12,6 @@
 #include <folly/coro/Invoke.h>
 #include <folly/coro/Task.h>
 #include <folly/futures/Future.h>
-#include <folly/io/IOBuf.h>
 
 #include <stdexcept>
 
@@ -779,7 +778,7 @@ ImmediateFuture<Hash20> ObjectStore::getBlobSha1(
 }
 
 Hash32 ObjectStore::computeBlake3(const Blob& blob) const {
-  const auto content = blob.getContents();
+  const auto& content = blob.getContents();
   // This should maybe be read at startup and saved in a member variable, but in
   // practice this key should never change. Hold the snapshot while hashing: a
   // reference into a temporary snapshot dangles once a reload drops it.
