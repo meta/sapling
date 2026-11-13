@@ -37,7 +37,6 @@ use facet::AsyncBuildable;
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use futures::stream;
-use futures::stream::AbortHandle;
 use futures::stream::StreamExt;
 use futures::stream::TryStreamExt;
 use itertools::Itertools;
@@ -553,14 +552,6 @@ impl<Repo> MononokeReposManager<Repo> {
             .await?;
         self.repos.populate(repos_input);
         Ok(())
-    }
-
-    pub fn add_stats_handle_for_repo(&self, repo_name: &str, handle: AbortHandle) {
-        self.repos.add_stats_handle_for_repo(repo_name, handle)
-    }
-
-    pub fn remove_stats_handle_for_repo(&self, repo_name: &str) {
-        self.repos.remove_stats_handle_for_repo(repo_name)
     }
 }
 

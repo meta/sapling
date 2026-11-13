@@ -13,7 +13,6 @@ use anyhow::Result;
 use anyhow::bail;
 use arc_swap::ArcSwap;
 use futures::future::BoxFuture;
-use futures::stream::AbortHandle;
 use parking_lot::Mutex;
 
 mod slot;
@@ -33,7 +32,6 @@ pub struct MononokeRepos<R> {
     name_to_repo_map: ArcSwap<HashMap<String, Arc<RepoSlot<R>>>>,
     id_to_name_map: ArcSwap<HashMap<i32, String>>,
     update_lock: Arc<Mutex<()>>, // Dedicated lock for guarding update operations.
-    stats_handles: ArcSwap<HashMap<String, AbortHandle>>,
     /// Absent for a collection whose repos are all built elsewhere and handed
     /// in through `add` and friends.
     loader: Option<Arc<dyn RepoLoader<R>>>,
@@ -47,7 +45,6 @@ impl<R> MononokeRepos<R> {
             name_to_repo_map: ArcSwap::from_pointee(HashMap::new()),
             id_to_name_map: ArcSwap::from_pointee(HashMap::new()),
             update_lock: Arc::new(Mutex::new(())),
-            stats_handles: ArcSwap::from_pointee(HashMap::new()),
             loader: None,
         }
     }
@@ -193,21 +190,6 @@ impl<R> MononokeRepos<R> {
         drop(lock);
     }
 
-    pub fn add_stats_handle_for_repo(&self, repo_name: &str, handle: AbortHandle) {
-        // Acquire the lock to avoid race conditions during update.
-        let lock = self.update_lock.lock();
-        let stats_handles = self.stats_handles.load();
-        let mut new_stats_handles = HashMap::from_iter(
-            stats_handles
-                .iter()
-                .map(|(name, stats_handle)| (name.to_owned(), stats_handle.clone())),
-        );
-        new_stats_handles.insert(repo_name.to_owned(), handle);
-        self.stats_handles.store(Arc::new(new_stats_handles));
-        // Drop the lock to allow other threads to update the repos.
-        drop(lock);
-    }
-
     /// Attempts to add a new repo corresponding to the provided repo-name
     /// and repo-id. If a repo already exists for that combination, then
     /// it is replaced by the passed in new repo.
@@ -259,24 +241,6 @@ impl<R> MononokeRepos<R> {
                 }
             }));
         self.name_to_repo_map.store(Arc::new(new_name_to_repo_map));
-    }
-
-    pub fn remove_stats_handle_for_repo(&self, repo_name: &str) {
-        // Acquire the lock to avoid race conditions during update.
-        let lock = self.update_lock.lock();
-        let stats_handles = self.stats_handles.load();
-        let new_stats_handles =
-            HashMap::from_iter(stats_handles.iter().filter_map(|(name, handle)| {
-                if name != repo_name {
-                    Some((name.to_string(), handle.clone()))
-                } else {
-                    handle.abort();
-                    None
-                }
-            }));
-        self.stats_handles.store(Arc::new(new_stats_handles));
-        // Drop the lock to allow other threads to update the repos.
-        drop(lock);
     }
 
     /// Removes an existing repo if that repo exists. If it doesn't

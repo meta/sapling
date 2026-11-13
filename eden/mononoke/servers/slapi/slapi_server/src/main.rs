@@ -191,7 +191,6 @@ impl MononokeServerProcessExecutor {
         let config = self.repos_mgr.repo_config(repo_name).with_context(|| {
             format!("Failure in remove repo {repo_name}. The config for repo doesn't exist")
         })?;
-        self.repos_mgr.remove_stats_handle_for_repo(repo_name);
         // Check if the current repo is a deep-sharded or shallow-sharded repo. If the
         // repo is deep-sharded, then remove it since SM wants some other host to serve it.
         // If repo is shallow-sharded, then keep it since regardless of SM sharding, shallow
