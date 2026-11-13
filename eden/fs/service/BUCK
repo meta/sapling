@@ -1,4 +1,4 @@
-load("@fbcode//eden:defs.bzl", "get_oss_suffix", "make_rule_compatible_with")
+load("//eden:defs.bzl", "get_oss_suffix", "make_rule_compatible_with")
 load("@fbcode_macros//build_defs:cpp_binary.bzl", "cpp_binary")
 load("@fbcode_macros//build_defs:cpp_library.bzl", "cpp_library")
 load("@fbcode_macros//build_defs:java_binary.bzl", "java_binary")
@@ -70,7 +70,7 @@ cpp_library(
 cpp_binary(
     name = "edenfs",
     srcs = [
-        "facebook/main.cpp",
+        "oss/main.cpp",
     ],
     allocator = select({
         "DEFAULT": None,
