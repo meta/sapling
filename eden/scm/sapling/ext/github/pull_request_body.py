@@ -272,17 +272,59 @@ def parse_stack_information(body: str) -> List[_StackEntry]:
     ...     '* #4\n')
     >>> parse_stack_information(body)
     [(False, 1), (False, 2), (True, 42), (False, 4)]
+
+    Free-text introduction lines between the modern marker and the bullet
+    list are tolerated (e.g. customized prose, or the footer was edited by
+    hand on github.com):
+    >>> body = (
+    ...     'The original commit message.\n' +
+    ...     '---\n' +
+    ...     '[//]: # (BEGIN SAPLING FOOTER)\n' +
+    ...     'This stack is best reviewed commit by commit.\n' +
+    ...     '\n' +
+    ...     '* #1\n' +
+    ...     '* __->__ #2\n')
+    >>> parse_stack_information(body)
+    [(False, 1), (True, 2)]
+
+    Text after the bullet list still ends the list:
+    >>> body = (
+    ...     '[//]: # (BEGIN SAPLING FOOTER)\n' +
+    ...     'Introduction.\n' +
+    ...     '* #1\n' +
+    ...     'Not a stack entry.\n' +
+    ...     '* #2\n')
+    >>> parse_stack_information(body)
+    [(False, 1)]
+
+    Without the modern marker (legacy bodies), free text still ends the
+    search so that detection stays conservative:
+    >>> body = (
+    ...     'Stack created with [Sapling](https://sapling-scm.com).\n' +
+    ...     'Some other prose.\n' +
+    ...     '* #1\n')
+    >>> parse_stack_information(body)
+    []
     """
     in_stack_list = False
+    saw_modern_marker = False
+    seen_stack_entry = False
     stack_entries = []
     for line in body.splitlines():
         if _line_has_stack_list_marker(line):
             in_stack_list = True
+            saw_modern_marker = saw_modern_marker or line == _SAPLING_FOOTER_MARKER
         elif in_stack_list:
             match = _STACK_ENTRY.match(line)
             if match:
+                seen_stack_entry = True
                 arrow, number = match.groups()
                 stack_entries.append((bool(arrow), int(number, 10)))
+            elif saw_modern_marker and not seen_stack_entry:
+                # Free-text introduction between the modern footer marker and
+                # the bullet list (e.g. prose customized or edited by hand on
+                # github.com); skip it.
+                continue
             else:
                 # This must be the end of the list.
                 break
