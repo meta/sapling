@@ -52,19 +52,40 @@ mononoke_queries! {
          WHERE repo_id = {repo_id} AND bookmark_name = {bookmark_name}"
     }
 
-    // Full run info queries
-    write SetFullRunTimestamp(
+    // Full run info queries. Not `REPLACE INTO`: that would delete the row and
+    // with it `fallback_bookmark`.
+    write SetFullRunInfo(
         repo_id: RepositoryId,
         last_full_run_timestamp: Timestamp,
+        fallback_bookmark: Option<String>,
     ) {
         none,
-        "REPLACE INTO repo_metadata_full_run_info (repo_id, last_full_run_timestamp) VALUES ({repo_id}, {last_full_run_timestamp})"
+        mysql("INSERT INTO repo_metadata_full_run_info (repo_id, last_full_run_timestamp, fallback_bookmark) VALUES ({repo_id}, {last_full_run_timestamp}, {fallback_bookmark}) ON DUPLICATE KEY UPDATE last_full_run_timestamp = {last_full_run_timestamp}, fallback_bookmark = COALESCE({fallback_bookmark}, fallback_bookmark)")
+        sqlite("INSERT INTO repo_metadata_full_run_info (repo_id, last_full_run_timestamp, fallback_bookmark) VALUES ({repo_id}, {last_full_run_timestamp}, {fallback_bookmark}) ON CONFLICT(repo_id) DO UPDATE SET last_full_run_timestamp = excluded.last_full_run_timestamp, fallback_bookmark = COALESCE(excluded.fallback_bookmark, repo_metadata_full_run_info.fallback_bookmark)")
     }
 
     read GetFullRunTimestamp(
         repo_id: RepositoryId,
     ) -> (Timestamp,) {
         "SELECT last_full_run_timestamp
+         FROM repo_metadata_full_run_info
+         WHERE repo_id = {repo_id}"
+    }
+
+    write SetFallbackBookmark(
+        repo_id: RepositoryId,
+        bookmark_name: String,
+    ) {
+        none,
+        "UPDATE repo_metadata_full_run_info
+         SET fallback_bookmark = {bookmark_name}
+         WHERE repo_id = {repo_id}"
+    }
+
+    read GetFallbackBookmark(
+        repo_id: RepositoryId,
+    ) -> (Option<String>,) {
+        "SELECT fallback_bookmark
          FROM repo_metadata_full_run_info
          WHERE repo_id = {repo_id}"
     }
@@ -217,6 +238,43 @@ impl RepoMetadataCheckpoint for SqlRepoMetadataCheckpoint {
         Ok(())
     }
 
+    async fn get_fallback_bookmark(&self) -> Result<Option<String>> {
+        let results = GetFallbackBookmark::query(
+            &self.connections.read_connection,
+            self.sql_query_tel.clone(),
+            &self.repo_id,
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "Failure in fetching fallback bookmark for repo {}",
+                self.repo_id
+            )
+        })?;
+
+        Ok(results
+            .into_iter()
+            .next()
+            .and_then(|(bookmark_name,)| bookmark_name))
+    }
+
+    async fn set_fallback_bookmark(&self, bookmark_name: String) -> Result<()> {
+        SetFallbackBookmark::query(
+            &self.connections.write_connection,
+            self.sql_query_tel.clone(),
+            &self.repo_id,
+            &bookmark_name,
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to set fallback bookmark for repo {} to {}",
+                self.repo_id, bookmark_name,
+            )
+        })?;
+        Ok(())
+    }
+
     async fn get_last_full_run_timestamp(&self) -> Result<Option<Timestamp>> {
         let results = GetFullRunTimestamp::query(
             &self.connections.read_connection,
@@ -234,18 +292,23 @@ impl RepoMetadataCheckpoint for SqlRepoMetadataCheckpoint {
         Ok(results.into_iter().next().map(|(ts,)| ts))
     }
 
-    async fn set_last_full_run_timestamp(&self, timestamp: Timestamp) -> Result<()> {
-        SetFullRunTimestamp::query(
+    async fn record_full_run(
+        &self,
+        timestamp: Timestamp,
+        fallback_bookmark: Option<String>,
+    ) -> Result<()> {
+        SetFullRunInfo::query(
             &self.connections.write_connection,
             self.sql_query_tel.clone(),
             &self.repo_id,
             &timestamp,
+            &fallback_bookmark,
         )
         .await
         .with_context(|| {
             format!(
-                "Failed to set full run timestamp for repo {} to {:?}",
-                self.repo_id, timestamp,
+                "Failed to record full run and fallback for repo {}",
+                self.repo_id
             )
         })?;
         Ok(())

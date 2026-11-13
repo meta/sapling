@@ -55,12 +55,24 @@ pub trait RepoMetadataCheckpoint: Send + Sync {
     /// Add new or update existing repo metadata entries for the given repo
     async fn add_or_update_entries(&self, entries: Vec<RepoMetadataCheckpointEntry>) -> Result<()>;
 
+    /// Get the fallback bookmark last chosen for this repo, if any.
+    async fn get_fallback_bookmark(&self) -> Result<Option<String>>;
+
+    /// Record the fallback bookmark chosen for this repo. Does nothing until a
+    /// full mode run has been recorded for the repo.
+    async fn set_fallback_bookmark(&self, bookmark_name: String) -> Result<()>;
+
     /// Get the timestamp of the last successful full mode run for this repo.
     /// Returns None if no full run has ever completed.
     async fn get_last_full_run_timestamp(&self) -> Result<Option<Timestamp>>;
 
-    /// Record that a full mode run completed successfully at the given timestamp.
-    async fn set_last_full_run_timestamp(&self, timestamp: Timestamp) -> Result<()>;
+    /// Atomically record a successful full run and any supplied fallback change.
+    /// When no change is supplied, preserve the currently stored choice.
+    async fn record_full_run(
+        &self,
+        timestamp: Timestamp,
+        fallback_bookmark: Option<String>,
+    ) -> Result<()>;
 }
 
 /// Check whether a full run should be skipped based on the last run timestamp.
