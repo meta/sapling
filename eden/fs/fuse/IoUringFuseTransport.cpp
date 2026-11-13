@@ -96,28 +96,32 @@ std::string describeQueueSetupError(const QueueSetupError& error) {
       error.errnum);
 }
 
+// Takes a pointer rather than a reference: with IORING_SETUP_SQE128 each SQE
+// is 128 bytes, larger than `io_uring_sqe`, and `cmd` extends past the end of
+// the struct. Through a reference, clang sizes `cmd` from the declared struct
+// (16 bytes) and rejects larger copies into it with -Wfortify-source.
 void prepareUringCmdSqe(
-    io_uring_sqe& sqe,
+    io_uring_sqe* sqe,
     uint32_t cmdOp,
     uint16_t queueId,
     uint64_t commitId,
     void* userData) {
-  std::memset(&sqe, 0, sizeof(sqe));
-  sqe.opcode = IORING_OP_URING_CMD;
-  sqe.flags = IOSQE_FIXED_FILE;
-  sqe.ioprio = 0;
-  sqe.fd = 0;
-  sqe.off = 0;
-  sqe.rw_flags = 0;
-  io_uring_sqe_set_data(&sqe, userData);
-  sqe.cmd_op = cmdOp;
-  sqe.__pad1 = 0;
+  std::memset(sqe, 0, sizeof(*sqe));
+  sqe->opcode = IORING_OP_URING_CMD;
+  sqe->flags = IOSQE_FIXED_FILE;
+  sqe->ioprio = 0;
+  sqe->fd = 0;
+  sqe->off = 0;
+  sqe->rw_flags = 0;
+  io_uring_sqe_set_data(sqe, userData);
+  sqe->cmd_op = cmdOp;
+  sqe->__pad1 = 0;
 
   fuse_uring_cmd_req cmd = {};
   cmd.flags = 0;
   cmd.commit_id = commitId;
   cmd.qid = queueId;
-  std::memcpy(sqe.cmd, &cmd, sizeof(cmd));
+  std::memcpy(sqe->cmd, &cmd, sizeof(cmd));
 }
 
 size_t roundUpToPageSize(size_t size) {
@@ -669,7 +673,7 @@ void IoUringFuseTransport::prepareFetchRequest(
   }
 
   prepareUringCmdSqe(
-      *sqe,
+      sqe,
       FUSE_IO_URING_CMD_REGISTER,
       static_cast<uint16_t>(queue.queueId),
       /* commitId */ 0,
@@ -963,7 +967,7 @@ void IoUringFuseTransport::prepareCommitAndFetchSqe(
   }
 
   prepareUringCmdSqe(
-      *sqe,
+      sqe,
       FUSE_IO_URING_CMD_COMMIT_AND_FETCH,
       static_cast<uint16_t>(entry.queueId),
       entry.requestCommitId,
