@@ -258,7 +258,6 @@ mod tests {
                 NodeLine::Blank,
             ],
             link_line: None,
-            link_line_from_node: None,
             term_line: None,
             ancestry_line: vec![PadLine::Ancestor, PadLine::Parent, PadLine::Blank],
         };

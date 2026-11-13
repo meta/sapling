@@ -166,27 +166,6 @@ pub struct GraphRowShape<N> {
     /// an explicit link line.
     pub link_line: Option<Vec<LinkLine>>,
 
-    /// The part of `link_line` that is directly emitted from this row's node.
-    ///
-    /// For example:
-    ///
-    /// ```plain
-    ///   │ o   // node line
-    ///   ├─╯   // link line
-    /// ```
-    ///
-    /// The `link_line_from_node` LinkLine looks like:
-    ///
-    /// ```plain
-    ///   ╭─╯
-    /// ```
-    ///
-    /// Note "├" is changed to "╭".
-    ///
-    /// Consumers can use this to follow or highlight edges that originate from
-    /// the current node without guessing from the full link line.
-    pub link_line_from_node: Option<Vec<LinkLine>>,
-
     /// Terminator columns for anonymous parents.
     ///
     /// A `true` entry marks a column where the edge should terminate. Other

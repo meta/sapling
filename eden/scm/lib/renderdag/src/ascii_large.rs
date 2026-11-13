@@ -86,7 +86,6 @@ where
             parent_columns: Vec::new(),
             node_line: line.node_line,
             link_line: line.link_line,
-            link_line_from_node: None,
             term_line: line.term_line,
             ancestry_line: line.pad_lines,
         };
