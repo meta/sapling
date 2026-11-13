@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
 use acl_manifest::DirectoryAclInputs;
 use acl_manifest::RootAclManifestId;
@@ -23,6 +25,7 @@ use blobstore::BlobstoreGetData;
 use blobstore::BlobstoreIsPresent;
 use blobstore::KeyedBlobstore;
 use blobstore::Loadable;
+use blobstore::LoadableError;
 use blobstore::Storable;
 use bonsai_hg_mapping::BonsaiHgMappingRef;
 use cacheblob::MemWritesKeyedBlobstore;
@@ -110,6 +113,8 @@ struct DenyGetKeyedBlobstore<B> {
     inner: B,
     denied: DeniedGet,
     result: DeniedGetResult,
+    denied_gets: Arc<AtomicUsize>,
+    misses: usize,
 }
 
 impl<B> DenyGetKeyedBlobstore<B> {
@@ -118,6 +123,8 @@ impl<B> DenyGetKeyedBlobstore<B> {
             inner,
             denied: DeniedGet::Keys(HashSet::from([denied_key])),
             result: DeniedGetResult::Error,
+            denied_gets: Arc::new(AtomicUsize::new(0)),
+            misses: usize::MAX,
         }
     }
 
@@ -126,6 +133,8 @@ impl<B> DenyGetKeyedBlobstore<B> {
             inner,
             denied: DeniedGet::Prefix(denied_prefix.to_string()),
             result: DeniedGetResult::Error,
+            denied_gets: Arc::new(AtomicUsize::new(0)),
+            misses: usize::MAX,
         }
     }
 
@@ -134,6 +143,8 @@ impl<B> DenyGetKeyedBlobstore<B> {
             inner,
             denied: DeniedGet::Keys(denied_keys.into_iter().collect()),
             result: DeniedGetResult::Missing,
+            denied_gets: Arc::new(AtomicUsize::new(0)),
+            misses: usize::MAX,
         }
     }
 
@@ -142,6 +153,8 @@ impl<B> DenyGetKeyedBlobstore<B> {
             inner,
             denied: DeniedGet::Keys(denied_keys.into_iter().collect()),
             result: DeniedGetResult::Error,
+            denied_gets: Arc::new(AtomicUsize::new(0)),
+            misses: usize::MAX,
         }
     }
 }
@@ -159,7 +172,9 @@ impl<B: KeyedBlobstore + Clone> KeyedBlobstore for DenyGetKeyedBlobstore<B> {
         ctx: &'a CoreContext,
         key: &'a str,
     ) -> Result<Option<BlobstoreGetData>> {
-        if self.denied.matches(key) {
+        if self.denied.matches(key)
+            && self.denied_gets.fetch_add(1, Ordering::Relaxed) < self.misses
+        {
             return match self.result {
                 DeniedGetResult::Error => {
                     Err(anyhow!("unexpected load of denied blobstore key {key}"))
@@ -5866,6 +5881,166 @@ async fn test_upload_path_builds_a_leaf_directory_alone(fb: FacebookInit) -> Res
         .await?;
 
     assert_upload_path_matches_derivation(&ctx, &repo, parent, child, &["src/deep"]).await
+}
+
+async fn assert_upload_dependency_visibility(
+    ctx: &CoreContext,
+    repo: &Repo,
+    tree: HgManifestId,
+    dependency_key: String,
+) -> Result<()> {
+    let tree_key = HgAugmentedManifestId::new(tree.into_nodehash()).blobstore_key();
+    let expected = repo
+        .repo_blobstore()
+        .get(ctx, &tree_key)
+        .await?
+        .context("the fixture must have a canonical augmented envelope")?
+        .into_raw_bytes();
+
+    for misses in [0, 1, 2, usize::MAX] {
+        let denied = DenyGetKeyedBlobstore {
+            misses,
+            ..DenyGetKeyedBlobstore::missing(
+                DenyGetKeyedBlobstore::missing(repo.repo_blobstore().clone(), [tree_key.clone()]),
+                [dependency_key.clone()],
+            )
+        };
+        let reads = denied.denied_gets.clone();
+        let overlay: Arc<dyn KeyedBlobstore> = Arc::new(MemWritesKeyedBlobstore::new(denied));
+        let result = build_one_uploaded_tree(ctx, repo, &overlay, tree).await;
+        // FIXME: a transient dependency miss should recover without aborting the tree build.
+        if misses == 0 {
+            result?;
+            let actual = overlay
+                .get(ctx, &tree_key)
+                .await?
+                .context("the successful build must store its envelope")?
+                .into_raw_bytes();
+            assert_eq!(actual, expected);
+        } else {
+            let err = result.expect_err("missing dependencies currently abort the build");
+            assert!(err.chain().any(|cause| {
+                cause.downcast_ref::<UploadTreeBuildError>().is_some()
+                    || matches!(
+                        cause.downcast_ref::<LoadableError>(),
+                        Some(LoadableError::Missing(_))
+                    )
+            }));
+            assert!(overlay.get(ctx, &tree_key).await?.is_none());
+        }
+        assert_eq!(reads.load(Ordering::Relaxed), 1);
+    }
+
+    let denied = DenyGetKeyedBlobstore::new(
+        DenyGetKeyedBlobstore::missing(repo.repo_blobstore().clone(), [tree_key.clone()]),
+        dependency_key,
+    );
+    let reads = denied.denied_gets.clone();
+    let overlay: Arc<dyn KeyedBlobstore> = Arc::new(MemWritesKeyedBlobstore::new(denied));
+    build_one_uploaded_tree(ctx, repo, &overlay, tree)
+        .await
+        .expect_err("read errors must propagate without retry");
+    assert_eq!(reads.load(Ordering::Relaxed), 1);
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_upload_path_external_child_visibility(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: Repo = test_repo_factory::build_empty(fb).await?;
+    let commit = CreateCommitContext::new_root(&ctx, &repo)
+        .add_file("src/deep/file", "content")
+        .commit()
+        .await?;
+    let manifest = hg_manifest_id_of(&ctx, &repo, commit).await?;
+    derive_hg_augmented_manifest::derive_from_hg_manifest_and_parents(
+        &ctx,
+        repo.repo_blobstore(),
+        manifest,
+        vec![],
+        &Default::default(),
+        repo.restricted_paths().config_based(),
+        derive_acl_overlay(&ctx, &repo, commit).await?,
+    )
+    .await?;
+    let src = tree_id_at_path(&ctx, &repo, manifest, "src").await?;
+    let deep = tree_id_at_path(&ctx, &repo, manifest, "src/deep").await?;
+    assert_upload_dependency_visibility(
+        &ctx,
+        &repo,
+        src,
+        HgAugmentedManifestId::new(deep.into_nodehash()).blobstore_key(),
+    )
+    .await
+}
+
+#[mononoke::fbinit_test]
+async fn test_upload_path_parent_shard_visibility(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: Repo = test_repo_factory::build_empty(fb).await?;
+    let files = (0..WIDE_DIRECTORY_FILES)
+        .map(|i| Ok((NonRootMPath::new(format!("f{i:05}"))?, format!("v{i}"))))
+        .collect::<Result<Vec<_>>>()?;
+    let parent = CreateCommitContext::new_root(&ctx, &repo)
+        .add_files(files)
+        .commit()
+        .await?;
+    let child = CreateCommitContext::new(&ctx, &repo, vec![parent])
+        .add_file("f00000", "changed")
+        .commit()
+        .await?;
+    let parent_manifest = hg_manifest_id_of(&ctx, &repo, parent).await?;
+    let child_manifest = hg_manifest_id_of(&ctx, &repo, child).await?;
+    let parent_root = derive_hg_augmented_manifest::derive_from_hg_manifest_and_parents(
+        &ctx,
+        repo.repo_blobstore(),
+        parent_manifest,
+        vec![],
+        &Default::default(),
+        repo.restricted_paths().config_based(),
+        derive_acl_overlay(&ctx, &repo, parent).await?,
+    )
+    .await?;
+    derive_hg_augmented_manifest::derive_from_hg_manifest_and_parents(
+        &ctx,
+        repo.repo_blobstore(),
+        child_manifest,
+        vec![parent_root],
+        &Default::default(),
+        repo.restricted_paths().config_based(),
+        derive_acl_overlay(&ctx, &repo, child).await?,
+    )
+    .await?;
+
+    let parent_envelope = HgAugmentedManifestEnvelope::load(
+        &ctx,
+        repo.repo_blobstore(),
+        HgAugmentedManifestId::new(parent_manifest.into_nodehash()),
+    )
+    .await?
+    .context("the parent envelope must exist")?;
+    let probe = DenyGetKeyedBlobstore {
+        result: DeniedGetResult::Missing,
+        ..DenyGetKeyedBlobstore::new_denying_prefix(
+            repo.repo_blobstore().clone(),
+            "hgaugmentedmanifest.map2node.",
+        )
+    };
+    let err = parent_envelope
+        .augmented_manifest
+        .subentries
+        .into_entries(&ctx, &probe)
+        .try_collect::<Vec<_>>()
+        .await
+        .expect_err("the wide parent must read a stored shard");
+    let shard_key = err
+        .chain()
+        .find_map(|cause| match cause.downcast_ref::<LoadableError>() {
+            Some(LoadableError::Missing(key)) => Some(key.clone()),
+            _ => None,
+        })
+        .context("the missing shard must retain its typed error")?;
+    assert_upload_dependency_visibility(&ctx, &repo, child_manifest, shard_key).await
 }
 
 /// What it tests: a tree whose child directory has not been derived yet fails,
