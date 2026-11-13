@@ -97,6 +97,12 @@ impl GitStore {
     /// `open` a Git bare repo at `git_dir`. Gain access to its odb (object database).
     pub fn open(git_dir: &Path, config: &dyn Config) -> Result<Self> {
         let mut git = BareGit::from_git_dir_and_config(git_dir.to_owned(), config);
+        // libgit2 < 2.0 rejects reftable repos ("unsupported extension name
+        // extensions.refstorage"). GitStore only uses libgit2 for the odb. References
+        // are read by gitcompat, which supports reftable. So tolerating the extension
+        // is enough.
+        // SAFETY: This sets a libgit2 global. Every caller sets the same value.
+        unsafe { git2::opts::set_extensions(&["refstorage"])? };
         let git_repo = match git2::Repository::open(git_dir) {
             Ok(repo) => repo,
             Err(err) if err.message() == "unsupported extension name extensions.partialclone" => {
@@ -135,6 +141,15 @@ impl GitStore {
             }
             Err(err) => return Err(err.into()),
         };
+        // "<format>://<path>" stores references at a custom path. gitcompat cannot
+        // read those, so keep rejecting them, like libgit2 did.
+        if let Ok(value) = git_repo.config()?.get_string("extensions.refstorage") {
+            if value.contains("://") {
+                anyhow::bail!(
+                    "Git references stored at a custom path are not supported (extensions.refstorage = {value:?})"
+                );
+            }
+        }
         let odb = git_repo.odb()?;
 
         // Git's negotiation algorithm works on commit reference level and can add significant
