@@ -16,6 +16,7 @@ name = "renderdag"
 
 [dependencies]
 bitflags = { version = "2.13.2", features = ["serde", "std"], default-features = false }
+sapling-small-set = { version = "0.1.0", path = "../util/small_set", optional = true }
 serde = { version = "1.0.229", features = ["derive", "rc"], optional = true }
 
 [dev-dependencies]
@@ -23,5 +24,6 @@ sapling-drawdag = { version = "0.2.0", path = "../drawdag" }
 unicode-width = "0.2.3"
 
 [features]
-default = []
-serialize = ["serde"]
+coloring = ["sapling-small-set"]
+default = ["coloring"]
+serialize = ["sapling-small-set?/serialize", "serde"]

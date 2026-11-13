@@ -8,6 +8,8 @@
 #[cfg(feature = "serialize")]
 use serde::Serialize;
 
+#[cfg(feature = "coloring")]
+use super::coloring;
 pub use crate::render::Ancestor;
 pub use crate::render::LinkLine;
 pub use crate::render::NodeLine;
@@ -174,6 +176,10 @@ pub struct GraphRowShape<N> {
 
     /// Abstract columns for ancestry continuation below this row.
     pub ancestry_line: Vec<PadLine>,
+
+    /// Optional line identities for graph coloring.
+    #[cfg(feature = "coloring")]
+    pub line_ids: Option<Box<coloring::GraphRowLineIds>>,
 }
 
 // See `GraphRowShape` docstring for what the lines mean.

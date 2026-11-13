@@ -10,8 +10,9 @@ sl_rust_library(
             # Cargo feature-gated dep ("serialize" feature not enabled in Buck).
             "extra_buck_dependencies": {"dependencies": ["fbsource//third-party/rust:serde"]},
             "features": {
-                "default": [],
-                "serialize": ["serde"],
+                "coloring": ["sapling-small-set"],
+                "default": ["coloring"],
+                "serialize": ["serde", "sapling-small-set?/serialize"],
             },
             "package": {
                 "description": "Render a DAG into ASCII or Unicode text.",
@@ -19,12 +20,13 @@ sl_rust_library(
         },
     },
     crate_root = "src/lib.rs",
-    features = [],
+    features = ["coloring"],
     test_deps = [
         "fbsource//third-party/rust:unicode-width",
         "//eden/scm/lib/drawdag:drawdag",
     ],
     deps = [
         "fbsource//third-party/rust:bitflags",
+        "//eden/scm/lib/util/small_set:small_set",
     ],
 )

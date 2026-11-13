@@ -88,6 +88,8 @@ where
             link_line: line.link_line,
             term_line: line.term_line,
             ancestry_line: line.pad_lines,
+            #[cfg(feature = "coloring")]
+            line_ids: None,
         };
         let prefix_lines = self.prefix_lines.next_prefix_lines(&row_shape);
         self.text.next_text(

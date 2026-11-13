@@ -290,6 +290,8 @@ where
             term_line: Some(term_line).filter(|_| need_term_line),
             ancestry_line,
             separator_line,
+            #[cfg(feature = "coloring")]
+            line_ids: None,
         }
     }
 

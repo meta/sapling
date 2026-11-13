@@ -28,6 +28,8 @@
 //!   Step 2 result (since the commit graph is not changing), and only update
 //!   the message part later.
 
+#[cfg(feature = "coloring")]
+pub mod coloring;
 pub mod graph_text_renderer;
 pub mod graph_to_row_shape;
 pub mod prefix_lines_to_text;
@@ -260,6 +262,8 @@ mod tests {
             link_line: None,
             term_line: None,
             ancestry_line: vec![PadLine::Ancestor, PadLine::Parent, PadLine::Blank],
+            #[cfg(feature = "coloring")]
+            line_ids: None,
         };
 
         assert!(row.has_indirect_ancestor());
