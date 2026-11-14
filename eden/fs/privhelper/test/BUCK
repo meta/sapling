@@ -27,6 +27,7 @@ cpp_unittest(
         "fbsource//xplat/folly:portability",
         "fbsource//xplat/folly:range",
         "fbsource//xplat/folly:scope_guard",
+        "fbsource//xplat/folly:string",
         "fbsource//xplat/folly:synchronized",
         "fbsource//xplat/folly/futures:core",
         "fbsource//xplat/folly/io:fs_util",
@@ -54,7 +55,6 @@ cpp_unittest(
         "//eden/fs/telemetry:xplat_logger",
         "//eden/fs/utils:mount_info_table",
         "//eden/fs/utils:statmount",
-        "//folly:string",
     ],
     external_deps = [
         ("boost", None, "boost_filesystem"),
