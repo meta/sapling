@@ -16,7 +16,7 @@ name = "tracing_sampler"
 [dependencies]
 sapling-sampling = { version = "0.1.0", path = "../sampling" }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
-tracing-serde = "0.1.3"
+tracing-serde = "0.2.0"
 tracing-subscriber = { version = "0.3.23", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
 
 [dev-dependencies]
