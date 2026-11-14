@@ -50,8 +50,8 @@ cxx = { git = "https://github.com/facebookexperimental/cxx.git", rev = "b835645d
 cxx-build = { git = "https://github.com/facebookexperimental/cxx.git", rev = "b835645da52253df462725516fbd460ef000d496" }
 darwin-libproc = { git = "https://github.com/fbsource/darwin-libproc", rev = "f73ddb1002d51ae74c1b41670fae56bd5896b7a3" }
 fixed = { git = "https://gitlab.com/tinozzo123/fixed", rev = "e7d72487b9da972d3ed7aec7bc32c12cd8881994" }
-gimli = { git = "https://github.com/gimli-rs/gimli.git", rev = "ebad63b48e960270b8d8d0dec74f5b2e54cad13f" }
-gimli034 = { package = "gimli", git = "https://github.com/gimli-rs/gimli.git", rev = "64a7a194fb5fe43d474fd9c101555e5a81b1d36c" }
+gimli = { git = "https://github.com/gimli-rs/gimli.git", rev = "64a7a194fb5fe43d474fd9c101555e5a81b1d36c" }
+gimli-0-33 = { package = "gimli", git = "https://github.com/gimli-rs/gimli.git", rev = "ebad63b48e960270b8d8d0dec74f5b2e54cad13f" }
 imgui = { git = "https://github.com/imgui-rs/imgui-rs.git", rev = "2abba18c08fb5e70c699ba7992342e7ff8573b09" }
 imgui-sys = { git = "https://github.com/imgui-rs/imgui-rs.git", rev = "2abba18c08fb5e70c699ba7992342e7ff8573b09" }
 lru-disk-cache = { git = "https://github.com/mozilla/sccache", rev = "fdbf843d174c6796d736b2b61dab0297670390f8" }
