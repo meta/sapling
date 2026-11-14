@@ -15,7 +15,7 @@ name = "io"
 
 [dependencies]
 parking_lot = { version = "0.13.0", features = ["arc_lock", "send_guard", "serde"] }
-pipe = "0.2"
+pipe = "0.3.0"
 sapling-configmodel = { version = "0.2.0", path = "../config/model" }
 sapling-hgplain = { version = "0.1.0", path = "../util/hgplain" }
 sapling-spawn-ext = { version = "0.1.0", path = "../spawn-ext" }
