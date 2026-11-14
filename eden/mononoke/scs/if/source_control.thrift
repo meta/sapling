@@ -2315,6 +2315,13 @@ struct CommitLookupXRepoParams {
 
 struct CustomAclParams {
   1: string hipster_group;
+  /// Identities granted `read` and `write` on top of the standard grants,
+  /// only when this call creates the ACL (an existing ACL is left as it is).
+  /// For an automation that writes the first commit on the caller's behalf,
+  /// such as the repo portal's provisioning job; `AUTH_SET` entries are
+  /// checked to exist before the create, other identity types are validated
+  /// by Hipster.
+  2: list<AclIdentity> writers;
 }
 
 /// A Hipster identity, as `<id_type>:<id_data>` spells it (e.g. AUTH_SET:scm).
