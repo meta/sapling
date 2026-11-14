@@ -71,7 +71,7 @@ export function serializeAsyncCall<T>(asyncFun: () => Promise<T>): () => Promise
     return scheduledCall;
   };
   return () => {
-    if (pendingCall == null) {
+    if (pendingCall == null && scheduledCall == null) {
       return startAsyncCall();
     } else {
       return scheduleNextCall();
