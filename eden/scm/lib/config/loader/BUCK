@@ -1,7 +1,14 @@
+load("@fbcode_macros//build_defs:export_files.bzl", "export_file")
 load("@fbcode_macros//build_defs/lib:rust_oss.bzl", "rust_oss")
 load("//eden/scm:targets.bzl", "sl_rust_binary", "sl_rust_library")
 
 oncall("sapling")
+
+export_file(
+    name = "dynamic_system_source",
+    src = "src/fb/dynamic_system.rs",
+    visibility = ["fbsource//fbandroid/devEnv/mercurial/mergedriver:"],
+)
 
 sl_rust_library(
     name = "configloader",
