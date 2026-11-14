@@ -27,7 +27,7 @@ serde_derive = "1.0.229"
 stats = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 strum = { version = "0.28.0", features = ["derive"] }
 thiserror = "2.0.21"
-trait-set = "0.4.0"
+trait-set = "0.5.0"
 zstd = { version = "0.14.3", features = ["experimental", "zstdmt"] }
 
 [dev-dependencies]

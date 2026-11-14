@@ -525,7 +525,6 @@ pub trait BlobstoreKeySource: Blobstore {
 trait_set! {
     /// A trait alias that represents blobstores that can be enumerated,
     /// updated and have their keys unlinked.
-    #[auto_impl(Arc, Box)]
     pub trait BlobstoreEnumerableWithUnlink = BlobstoreKeySource + Blobstore;
 }
 
