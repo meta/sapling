@@ -7,7 +7,7 @@ edition = "2024"
 
 [dependencies]
 cpython = { version = "0.7.2", features = ["python3-sys"], default-features = false }
-pipe = "0.3.0"
+pipe = "0.4.0"
 sapling-clidispatch = { version = "0.1.0", path = "../../../../lib/clidispatch" }
 sapling-cpython-ext = { version = "0.1.0", path = "../../../../lib/cpython-ext" }
 sapling-streampager = { version = "0.12.0", path = "../../../../lib/third-party/streampager" }
