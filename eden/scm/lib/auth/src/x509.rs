@@ -161,7 +161,17 @@ fn parse_valid_date_range(cert: &[u8]) -> Result<(DateTime<Utc>, DateTime<Utc>),
             if let Some(ASN1Block::Sequence(_, validity)) = fields.get(4) {
                 if let Some(ASN1Block::UTCTime(_, not_before)) = validity.first() {
                     if let Some(ASN1Block::UTCTime(_, not_after)) = validity.get(1) {
-                        return Ok((*not_before, *not_after));
+                        let not_before = DateTime::from_timestamp(
+                            not_before.assume_utc().unix_timestamp(),
+                            not_before.nanosecond(),
+                        );
+                        let not_after = DateTime::from_timestamp(
+                            not_after.assume_utc().unix_timestamp(),
+                            not_after.nanosecond(),
+                        );
+                        if let (Some(not_before), Some(not_after)) = (not_before, not_after) {
+                            return Ok((not_before, not_after));
+                        }
                     }
                 }
             }
