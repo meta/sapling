@@ -982,6 +982,10 @@ struct OrgStorageConfigPollResponse {
   1: OrgStorageConfigMutationState state;
   /// Configo's error text when FAILED or ABORTED.
   2: optional string message;
+  /// Configo's error type when FAILED, by name (`COMPILE_ERROR`,
+  /// `VALIDATION_ERROR`, ...; Configo's `ErrorType`). Unset when Configo
+  /// reports none.
+  3: optional string error_type;
 }
 
 struct OrgStorageConfigParams {
