@@ -27,6 +27,7 @@ pub struct CoreContext {
     pub fb: FacebookInit,
     session: SessionContainer,
     logging: LoggingContainer,
+    access_label: Option<&'static str>,
 }
 
 impl CoreContext {
@@ -39,6 +40,7 @@ impl CoreContext {
             fb,
             logging,
             session,
+            access_label: None,
         }
     }
 
@@ -81,8 +83,12 @@ impl CoreContext {
 
     /// Create a new CoreContext, with a reset LoggingContainer. This is useful to reset perf
     /// counters. The existing CoreContext is unaffected.
+    /// The access label is kept.
     pub fn clone_and_reset(&self) -> Self {
-        self.session.new_context(self.scuba().clone())
+        Self {
+            access_label: self.access_label,
+            ..self.session.new_context(self.scuba().clone())
+        }
     }
 
     pub fn clone_and_sample(&self, sampling_key: SamplingKey) -> Self {
@@ -90,6 +96,7 @@ impl CoreContext {
             fb: self.fb,
             session: self.session.clone(),
             logging: self.logging.clone_and_sample(sampling_key),
+            access_label: self.access_label,
         }
     }
 
@@ -101,7 +108,27 @@ impl CoreContext {
             fb: self.fb,
             session: self.session.clone(),
             logging: self.logging.with_mutated_scuba(mutator),
+            access_label: self.access_label,
         }
+    }
+
+    /// Return a copy of this context labelled with `label`, so storage layers
+    /// can tell which component is reading through it.
+    ///
+    /// The label belongs to the returned copy and to clones made from it. The
+    /// context it was made from, and its other clones, are unaffected, unlike
+    /// the flags such as `set_override_sampling` that are shared by every
+    /// clone of a request's context. Labelling again replaces the label.
+    pub fn with_access_label(&self, label: &'static str) -> Self {
+        Self {
+            access_label: Some(label),
+            ..self.clone()
+        }
+    }
+
+    /// The label set by `with_access_label`, if any.
+    pub fn access_label(&self) -> Option<&'static str> {
+        self.access_label
     }
 
     /// Return a clone of this context with the session's metadata overridden,
@@ -115,6 +142,7 @@ impl CoreContext {
             fb: self.fb,
             session: self.session.override_metadata(metadata),
             logging: self.logging.clone(),
+            access_label: self.access_label,
         }
     }
 
@@ -207,5 +235,81 @@ impl CoreContext {
         self.metadata()
             .client_info()
             .and_then(|ci| ci.request_info.as_ref().map(|cri| cri.correlator.as_str()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use fbinit::FacebookInit;
+    use mononoke_macros::mononoke;
+
+    use super::*;
+
+    #[mononoke::fbinit_test]
+    fn test_label_does_not_leak_to_original_or_sibling_clones(fb: FacebookInit) {
+        // Given: a context and a clone of it made before labelling.
+        let ctx = CoreContext::test_mock(fb);
+        let sibling = ctx.clone();
+
+        // When: a labelled copy is made from the context.
+        let labelled = ctx.with_access_label("reader");
+
+        // Then: the copy is labelled, but neither the context nor its earlier
+        // clone is, nor a clone made from the context afterwards.
+        assert_eq!(labelled.access_label(), Some("reader"));
+        assert_eq!(
+            ctx.access_label(),
+            None,
+            "the original must stay unlabelled"
+        );
+        assert_eq!(
+            sibling.access_label(),
+            None,
+            "earlier clones must stay unlabelled"
+        );
+        assert_eq!(
+            ctx.clone().access_label(),
+            None,
+            "later clones of the original must stay unlabelled",
+        );
+    }
+
+    #[mononoke::fbinit_test]
+    fn test_label_survives_derived_copies(fb: FacebookInit) {
+        // Given: a labelled context.
+        let labelled = CoreContext::test_mock(fb).with_access_label("reader");
+
+        // When/Then: every way of copying it keeps the label.
+        assert_eq!(labelled.clone().access_label(), Some("reader"));
+        assert_eq!(labelled.clone_and_reset().access_label(), Some("reader"));
+        assert_eq!(
+            labelled.clone_and_sample(SamplingKey::new()).access_label(),
+            Some("reader"),
+        );
+        assert_eq!(
+            labelled.with_mutated_scuba(|scuba| scuba).access_label(),
+            Some("reader"),
+        );
+        assert_eq!(
+            labelled
+                .with_overridden_metadata(Arc::new(Metadata::default()))
+                .access_label(),
+            Some("reader"),
+        );
+    }
+
+    #[mononoke::fbinit_test]
+    async fn test_label_survives_into_spawned_task(fb: FacebookInit) {
+        // Given: a labelled context.
+        let labelled = CoreContext::test_mock(fb).with_access_label("reader");
+
+        // When: a spawned task reads the label from its own clone.
+        let ctx = labelled.clone();
+        let label = mononoke::spawn_task(async move { ctx.access_label() })
+            .await
+            .expect("spawned task should not panic");
+
+        // Then: the task sees the label.
+        assert_eq!(label, Some("reader"));
     }
 }

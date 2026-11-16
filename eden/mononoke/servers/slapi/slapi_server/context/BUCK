@@ -11,6 +11,7 @@ rust_library(
     cpp_deps = [] if rust_oss.is_oss_build() else [":cpu_time"],
     cxx_bridge = None if rust_oss.is_oss_build() else "src/facebook/cpu_time.rs",
     test_deps = [
+        "//common/rust/shed/fbinit:fbinit-tokio",
         "//eden/mononoke/common/mononoke_macros:mononoke_macros",
     ]
     + (
