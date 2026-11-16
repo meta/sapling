@@ -10,7 +10,7 @@ license = "GPLv2+"
 [dependencies]
 ahash = { version = "0.8.11", features = ["runtime-rng"] }
 anyhow = "1.0.104"
-array-init = "1.0.0"
+array-init = "2.1.0"
 async-trait = "0.1.92"
 auto_impl = "1.4.0"
 bitflags = { version = "2.13.2", features = ["serde", "std"], default-features = false }
