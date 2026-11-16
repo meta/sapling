@@ -372,7 +372,7 @@ async fn ignored_usage_counts_for_mount(checkout: &EdenFsCheckout) -> Result<u64
 
 fn get_hg_cache_path() -> Result<PathBuf> {
     let output = Exec::cmd("hg")
-        .args(&["config", "remotefilelog.cachepath"])
+        .args(["config", "remotefilelog.cachepath"])
         .stdout(SubprocessRedirection::Pipe)
         .stderr(SubprocessRedirection::Pipe)
         .env_clear()
