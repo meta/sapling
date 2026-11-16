@@ -39,7 +39,7 @@ tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tokio-stream = { version = "0.1.19", features = ["fs", "io-util", "net", "signal", "sync", "time"] }
 tokio-util = { version = "0.7.20", features = ["full"] }
 topo_sort = { version = "0.1.0", path = "../../common/topo_sort" }
-unicode-truncate = "2.0.1"
+unicode-truncate = "3.0.0"
 unicode-width = "0.2.3"
 
 [dev-dependencies]
