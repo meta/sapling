@@ -38,6 +38,19 @@ pub(super) struct CommandArgs {
     /// Format for the output
     #[clap(long, value_enum, default_value = "commit-id")]
     format: MutationHistoryFormat,
+    /// Include the canonical mutation entry for a split part.
+    #[clap(long)]
+    follow_splits: bool,
+}
+
+impl CommandArgs {
+    fn history_params(&self) -> thrift::CommitHgMutationHistoryParams {
+        thrift::CommitHgMutationHistoryParams {
+            format: self.format.clone().into(),
+            follow_splits: self.follow_splits,
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -212,13 +225,7 @@ pub(super) async fn run(app: ScscApp, args: CommandArgs) -> Result<()> {
         ..Default::default()
     };
     let hg_mutation_history = conn
-        .commit_hg_mutation_history(
-            &commit,
-            &thrift::CommitHgMutationHistoryParams {
-                format: args.format.clone().into(),
-                ..Default::default()
-            },
-        )
+        .commit_hg_mutation_history(&commit, &args.history_params())
         .await
         .map_err(|e| e.handle_selection_error(&commit.repo))?;
 
@@ -260,5 +267,49 @@ pub(super) async fn run(app: ScscApp, args: CommandArgs) -> Result<()> {
             app.target.render_one(&args, output).await
         }
         thrift::HgMutationHistory::UnknownField(_) => bail!("Unknown field"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+    use fbthrift::compact_protocol;
+    use mononoke_macros::mononoke;
+
+    use super::CommandArgs;
+    use super::thrift;
+
+    #[mononoke::test]
+    fn follow_splits_flag_is_opt_in_and_reaches_the_request() {
+        for enabled in [false, true] {
+            let mut argv = vec![
+                "hg-mutation-history",
+                "--repo",
+                "repo",
+                "--hg-commit-id",
+                "0000000000000000000000000000000000000001",
+            ];
+            if enabled {
+                argv.push("--follow-splits");
+            }
+            let args = CommandArgs::try_parse_from(argv).expect("valid mutation history arguments");
+            let params = args.history_params();
+            assert_eq!(params.follow_splits, enabled);
+            assert_eq!(params.format, thrift::MutationHistoryFormat::COMMIT_ID);
+            let bytes = compact_protocol::serialize(params.clone());
+            let decoded: thrift::CommitHgMutationHistoryParams =
+                compact_protocol::deserialize(bytes).expect("request round trip");
+            assert_eq!(decoded, params);
+        }
+    }
+
+    #[mononoke::test]
+    fn old_request_without_follow_splits_decodes_as_legacy() {
+        // Compact field 1 is I32 format=COMMIT_ID(1), followed by STOP.
+        let old_bytes = &[0x15, 0x02, 0x00][..];
+        let params: thrift::CommitHgMutationHistoryParams =
+            compact_protocol::deserialize(old_bytes).expect("old request remains readable");
+        assert_eq!(params.format, thrift::MutationHistoryFormat::COMMIT_ID);
+        assert!(!params.follow_splits);
     }
 }

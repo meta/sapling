@@ -13,6 +13,7 @@ use std::time::Duration;
 use anyhow::Error;
 use anyhow::Result;
 use anyhow::anyhow;
+use anyhow::ensure;
 use async_trait::async_trait;
 use bytes::Bytes;
 use caching_ext::CacheDisposition;
@@ -25,6 +26,7 @@ use caching_ext::McErrorKind;
 use caching_ext::McResult;
 use caching_ext::MemcacheEntity;
 use caching_ext::MemcacheHandler;
+use caching_ext::get_or_fill;
 use caching_ext::get_or_fill_chunked;
 use context::CoreContext;
 use fbthrift::compact_protocol;
@@ -38,6 +40,9 @@ use quickcheck_arbitrary_derive::Arbitrary;
 
 use crate::HgMutationEntry;
 use crate::HgMutationStore;
+
+#[cfg(test)]
+mod tests;
 
 /// Struct representing the cache entry for
 /// (repo_id, cs_id) -> Vec<HgMutationEntry> mapping
@@ -192,6 +197,23 @@ impl HgMutationStore for CachedHgMutationStore {
 
         Ok(mutation_entries_by_changeset)
     }
+
+    async fn all_predecessors_following_splits(
+        &self,
+        ctx: &CoreContext,
+        changeset_id: HgChangesetId,
+    ) -> Result<Vec<HgMutationEntry>> {
+        let request = SplitCacheRequest {
+            ctx,
+            store: self,
+            changeset_id,
+        };
+        let mut entries = get_or_fill(&request, HashSet::from([changeset_id])).await?;
+        let entry = entries.remove(&changeset_id).ok_or_else(|| {
+            anyhow!("Split mutation cache omitted requested commit {changeset_id}")
+        })?;
+        Ok(entry.into_entries(self.repo_id(), changeset_id)?.1)
+    }
 }
 
 fn get_cache_key(repo_id: RepositoryId, cs: &HgChangesetId) -> String {
@@ -262,5 +284,64 @@ impl KeyedEntityStore<HgChangesetId, HgMutationCacheEntry> for CacheRequest<'_> 
                 })
                 .collect(),
         )
+    }
+}
+
+struct SplitCacheRequest<'a> {
+    ctx: &'a CoreContext,
+    store: &'a CachedHgMutationStore,
+    changeset_id: HgChangesetId,
+}
+
+fn get_split_cache_key(repo_id: RepositoryId, cs: &HgChangesetId) -> String {
+    format!("split1.{}.{}", repo_id.prefix(), cs)
+}
+
+impl EntityStore<HgMutationCacheEntry> for SplitCacheRequest<'_> {
+    fn cachelib(&self) -> &CachelibHandler<HgMutationCacheEntry> {
+        &self.store.cachelib
+    }
+
+    fn keygen(&self) -> &KeyGen {
+        &self.store.keygen
+    }
+
+    fn memcache(&self) -> &MemcacheHandler {
+        &self.store.memcache
+    }
+
+    fn cache_determinator(&self, _: &HgMutationCacheEntry) -> CacheDisposition {
+        CacheDisposition::Cache(CacheTtl::Ttl(Duration::from_hours(1)))
+    }
+
+    caching_ext::impl_singleton_stats!("hg_mutation_store_split");
+}
+
+#[async_trait]
+impl KeyedEntityStore<HgChangesetId, HgMutationCacheEntry> for SplitCacheRequest<'_> {
+    fn get_cache_key(&self, key: &HgChangesetId) -> String {
+        get_split_cache_key(self.store.repo_id(), key)
+    }
+
+    async fn get_from_db(
+        &self,
+        keys: HashSet<HgChangesetId>,
+    ) -> Result<HashMap<HgChangesetId, HgMutationCacheEntry>, Error> {
+        if keys.is_empty() {
+            return Ok(HashMap::new());
+        }
+        ensure!(
+            keys == HashSet::from([self.changeset_id]),
+            "Split cache fill must match its single requested commit"
+        );
+        let entries = self
+            .store
+            .inner_store
+            .all_predecessors_following_splits(self.ctx, self.changeset_id)
+            .await?;
+        Ok(HashMap::from([(
+            self.changeset_id,
+            HgMutationCacheEntry::from_entries(entries, self.store.repo_id(), self.changeset_id),
+        )]))
     }
 }

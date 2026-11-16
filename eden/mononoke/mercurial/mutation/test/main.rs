@@ -10,4 +10,5 @@
 mod basic;
 mod caching;
 mod cycles;
+mod splits;
 mod util;

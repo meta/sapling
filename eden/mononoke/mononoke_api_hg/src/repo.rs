@@ -788,6 +788,18 @@ impl<R: MononokeRepo> HgRepoContext<R> {
             .await?)
     }
 
+    /// Fetch canonical history for one commit, including its split membership.
+    pub async fn fetch_mutations_following_splits(
+        &self,
+        hg_changeset: HgChangesetId,
+    ) -> Result<Vec<HgMutationEntry>, MononokeError> {
+        Ok(self
+            .repo()
+            .hg_mutation_store()
+            .all_predecessors_following_splits(self.ctx(), hg_changeset)
+            .await?)
+    }
+
     /// Record mutations in the mutation store, timestamped with the current
     /// time. The Mercurial changesets of the successors and predecessors are
     /// derived if necessary.

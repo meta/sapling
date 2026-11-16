@@ -584,7 +584,12 @@ impl AddScubaParams for thrift::CommitPathHistoryParams {
     }
 }
 
-impl AddScubaParams for thrift::CommitHgMutationHistoryParams {}
+impl AddScubaParams for thrift::CommitHgMutationHistoryParams {
+    fn add_scuba_params(&self, scuba: &mut MononokeScubaSampleBuilder) {
+        scuba.add("param_follow_splits", self.follow_splits);
+        scuba.add("param_format", self.format.to_string());
+    }
+}
 
 impl AddScubaParams for thrift::CommitGitMutationHistoryParams {}
 

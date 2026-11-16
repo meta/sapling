@@ -7,7 +7,9 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::collections::hash_map;
+use std::iter::once;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -29,6 +31,9 @@ use tracing::debug;
 
 use crate::HgMutationStore;
 use crate::entry::HgMutationEntry;
+
+#[cfg(test)]
+mod tests;
 
 /// To avoid overloading the database with too many changesets in a single
 /// select, we chunk selects of chains to this size.
@@ -268,13 +273,18 @@ impl SqlHgMutationStore {
         ctx: &CoreContext,
         connection: &Connection,
         sql_perf_counter: PerfCounterType,
-        rows: I,
+        batch: MutationEntryRead<I>,
     ) -> Result<HashMap<HgChangesetId, HgMutationEntry>>
     where
         I: IntoIterator<Item = EntryRow>,
     {
+        let MutationEntryRead {
+            rows,
+            follow_splits,
+        } = batch;
         let mut entries = HashMap::new();
         let mut to_fetch_split = Vec::new();
+        let mut split_counts = HashMap::new();
         for (
             successor,
             pred_count,
@@ -297,6 +307,9 @@ impl SqlHgMutationStore {
                     let successor = entry.key().clone();
                     if split_count > 0 {
                         to_fetch_split.push(successor.clone());
+                        if follow_splits {
+                            split_counts.insert(successor, split_count);
+                        }
                     }
                     entry.insert(HgMutationEntry::new(
                         successor,
@@ -326,6 +339,13 @@ impl SqlHgMutationStore {
             )
             .await?;
             for (successor, seq, split_successor) in rows {
+                if follow_splits
+                    && !split_counts
+                        .get(&successor)
+                        .is_some_and(|count| seq < *count)
+                {
+                    continue;
+                }
                 if let Some(entry) = entries.get_mut(&successor) {
                     entry.add_split(seq, split_successor).with_context(|| {
                         format!("Failed to collect split successor {seq} for {successor}")
@@ -372,7 +392,10 @@ impl SqlHgMutationStore {
                 ctx,
                 connection,
                 sql_perf_counter,
-                rows.into_iter().flatten(),
+                MutationEntryRead {
+                    rows: rows.into_iter().flatten(),
+                    follow_splits: false,
+                },
             )
             .await?;
 
@@ -445,6 +468,42 @@ impl HgMutationStore for SqlHgMutationStore {
         );
         Ok(group_entries_by_successor(changeset_ids, entries))
     }
+    async fn all_predecessors_following_splits(
+        &self,
+        ctx: &CoreContext,
+        changeset_id: HgChangesetId,
+    ) -> Result<Vec<HgMutationEntry>> {
+        let changesets = HashSet::from([changeset_id]);
+        let (connection, sql_perf_counter) = self
+            .read_connection_for_changesets(ctx, &changesets)
+            .await?;
+        ctx.perf_counters().increment_counter(sql_perf_counter);
+        let rows = SelectBySuccessorChainFollowingSplits::query(
+            connection,
+            ctx.sql_query_telemetry(),
+            &self.repo_id,
+            &self.mutation_chain_limit,
+            &changeset_id,
+        )
+        .await
+        .with_context(|| format!("Error fetching split mutation chain for: {changeset_id}"))?;
+        let entries = self
+            .collect_entries(
+                ctx,
+                connection,
+                sql_perf_counter,
+                MutationEntryRead {
+                    rows,
+                    follow_splits: true,
+                },
+            )
+            .await?;
+        ctx.perf_counters().add_to_counter(
+            PerfCounterType::HgMutationStoreNumFetched,
+            entries.len() as i64,
+        );
+        Ok(group_entries_following_splits(changeset_id, entries))
+    }
 }
 
 /// Group entries into groups of predecessors of the given changeset ids.
@@ -483,6 +542,47 @@ pub(crate) fn group_entries_by_successor(
         mutation_history.insert(successor_id, entries);
     }
     mutation_history
+}
+
+struct MutationEntryRead<I> {
+    rows: I,
+    follow_splits: bool,
+}
+
+fn group_entries_following_splits(
+    successor_id: HgChangesetId,
+    all_entries: HashMap<HgChangesetId, HgMutationEntry>,
+) -> Vec<HgMutationEntry> {
+    let mut split_heads = all_entries
+        .values()
+        .flat_map(|entry| entry.split().map(|member| (*member, *entry.successor())))
+        .into_group_map();
+    for heads in split_heads.values_mut() {
+        heads.sort_unstable();
+    }
+    let mut entries = Vec::new();
+    let mut processed = HashSet::new();
+    let mut changeset_ids = VecDeque::from([successor_id]);
+    while let Some(changeset_id) = changeset_ids.pop_front() {
+        let entry_ids = once(changeset_id).chain(
+            split_heads
+                .get(&changeset_id)
+                .into_iter()
+                .flatten()
+                .copied(),
+        );
+        for entry_id in entry_ids {
+            if !processed.insert(entry_id) {
+                continue;
+            }
+            let Some(entry) = all_entries.get(&entry_id) else {
+                continue;
+            };
+            changeset_ids.extend(entry.predecessors().copied());
+            entries.push(entry.clone());
+        }
+    }
+    entries
 }
 
 mononoke_queries! {
@@ -636,6 +736,73 @@ mononoke_queries! {
             mp.op, mp.user, mp.timestamp, mp.tz, mp.extra
         FROM mp
         ORDER BY mp.successor, mp.seq ASC"
+    }
+
+    read SelectBySuccessorChainFollowingSplits(repo_id: RepositoryId, mut_lim: usize, cs_id: HgChangesetId) -> (
+        HgChangesetId,
+        u64,
+        u64,
+        HgChangesetId,
+        u64,
+        String,
+        String,
+        i64,
+        i32,
+        String
+    ) {
+        "WITH RECURSIVE mp AS (
+            SELECT
+                m.successor, 1 AS step
+            FROM
+                hg_mutation_info m
+            WHERE m.repo_id = {repo_id} AND m.successor = {cs_id}
+            UNION
+            SELECT
+                m.successor, 1 AS step
+            FROM
+                hg_mutation_splits s
+                JOIN hg_mutation_info m
+                    ON m.repo_id = s.repo_id AND m.successor = s.successor
+            WHERE s.repo_id = {repo_id} AND s.split_successor = {cs_id}
+                AND s.seq < m.split_count
+            UNION
+            SELECT
+                p.predecessor AS successor, mp.step + 1
+            FROM
+                mp
+                JOIN hg_mutation_info m
+                    ON m.repo_id = {repo_id} AND m.successor = mp.successor
+                JOIN hg_mutation_preds p
+                    ON p.repo_id = m.repo_id AND p.successor = m.successor
+            WHERE p.seq < m.pred_count AND mp.step < {mut_lim}
+            UNION
+            SELECT
+                s.successor, mp.step + 1
+            FROM
+                mp
+                JOIN hg_mutation_info m
+                    ON m.repo_id = {repo_id} AND m.successor = mp.successor
+                JOIN hg_mutation_preds p
+                    ON p.repo_id = m.repo_id AND p.successor = m.successor
+                JOIN hg_mutation_splits s
+                    ON s.repo_id = p.repo_id AND s.split_successor = p.predecessor
+                JOIN hg_mutation_info split_head
+                    ON split_head.repo_id = s.repo_id AND split_head.successor = s.successor
+            WHERE p.seq < m.pred_count AND s.seq < split_head.split_count
+                AND mp.step < {mut_lim}
+        )
+        SELECT
+            m.successor,
+            m.pred_count, p.seq, p.predecessor,
+            m.split_count,
+            m.op, m.user, m.timestamp, m.tz, m.extra
+        FROM
+            (SELECT DISTINCT successor FROM mp) mp
+            JOIN hg_mutation_info m
+                ON m.repo_id = {repo_id} AND m.successor = mp.successor
+            JOIN hg_mutation_preds p
+                ON p.repo_id = m.repo_id AND p.successor = m.successor
+        ORDER BY m.successor, p.seq ASC"
     }
 
     read SelectSplitsBySuccessor(repo_id: RepositoryId, >list cs_id: HgChangesetId) -> (

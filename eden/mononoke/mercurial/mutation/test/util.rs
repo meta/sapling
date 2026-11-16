@@ -36,6 +36,25 @@ fn get_successors(entries: &[HgMutationEntry]) -> Vec<&HgChangesetId> {
     entries.iter().map(|entry| entry.successor()).collect()
 }
 
+pub(crate) async fn check_entries_following_splits(
+    store: &dyn HgMutationStore,
+    ctx: &CoreContext,
+    changeset_ids: HashSet<HgChangesetId>,
+    entries: &HashMap<usize, HgMutationEntry>,
+    indexes: &[usize],
+) -> Result<()> {
+    let mut fetched = HashSet::new();
+    for changeset_id in changeset_ids {
+        let history = store
+            .all_predecessors_following_splits(ctx, changeset_id)
+            .await?;
+        assert_eq!(history.len(), history.iter().collect::<HashSet<_>>().len());
+        fetched.extend(history);
+    }
+    assert_eq!(fetched, get_entries(entries, indexes).into_iter().collect());
+    Ok(())
+}
+
 pub(crate) async fn check_entries(
     store: &dyn HgMutationStore,
     ctx: &CoreContext,

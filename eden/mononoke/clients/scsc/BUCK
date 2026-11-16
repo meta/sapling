@@ -24,6 +24,7 @@ rust_binary(
     link_style = "static_pic",
     test_deps = [
         "//eden/mononoke/common/mononoke_macros:mononoke_macros",
+        "//thrift/lib/rust:fbthrift",
     ],
     deps = [
         "fbsource//third-party/rust:ansi_term",

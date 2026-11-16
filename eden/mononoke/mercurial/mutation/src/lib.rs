@@ -76,6 +76,13 @@ pub trait HgMutationStore: Send + Sync {
         changeset_ids: HashSet<HgChangesetId>,
     ) -> Result<HashMap<HgChangesetId, Vec<HgMutationEntry>>>;
 
+    /// Get canonical mutation history for one commit, following split membership.
+    async fn all_predecessors_following_splits(
+        &self,
+        ctx: &CoreContext,
+        changeset_id: HgChangesetId,
+    ) -> Result<Vec<HgMutationEntry>>;
+
     /// Get the repository for which the mutation history is being added
     /// and retrieved.
     fn repo_id(&self) -> RepositoryId;

@@ -1979,6 +1979,10 @@ struct CommitSubtreeChangesParams {
 struct CommitHgMutationHistoryParams {
   /// The format of the mutation history to return.
   1: MutationHistoryFormat format;
+  /// Also follow a split part to the split it came from. The response then
+  /// includes the split entry, whose successor is the final part, with the
+  /// requested commit in `split`.
+  2: bool follow_splits;
 }
 
 struct CommitGitMutationHistoryParams {

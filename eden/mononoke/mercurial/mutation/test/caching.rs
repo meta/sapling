@@ -31,6 +31,7 @@ use sql_construct::SqlConstruct;
 
 use crate::basic::create_entries;
 use crate::util::check_entries;
+use crate::util::check_entries_following_splits;
 
 struct CountedHgMutationStore {
     inner_store: Arc<dyn HgMutationStore>,
@@ -80,6 +81,60 @@ impl HgMutationStore for CountedHgMutationStore {
             .all_predecessors_by_changeset(ctx, changeset_ids)
             .await
     }
+
+    async fn all_predecessors_following_splits(
+        &self,
+        ctx: &CoreContext,
+        changeset_id: HgChangesetId,
+    ) -> Result<Vec<HgMutationEntry>> {
+        self.all_predecessors.fetch_add(1, Ordering::Relaxed);
+        self.inner_store
+            .all_predecessors_following_splits(ctx, changeset_id)
+            .await
+    }
+}
+
+#[mononoke::fbinit_test]
+async fn cached_split_member_keeps_legacy_empty_until_explicit_opt_in(
+    fb: FacebookInit,
+) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let entries = create_entries();
+    let inner = SqlHgMutationStoreBuilder::with_sqlite_in_memory()?.with_repo_id(REPO_ZERO);
+    inner
+        .add_entries(
+            &ctx,
+            (1..=7).map(make_hg_cs_id).collect(),
+            entries.values().cloned().collect(),
+        )
+        .await?;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counted = CountedHgMutationStore::new(
+        Arc::new(inner),
+        Arc::new(AtomicUsize::new(0)),
+        calls.clone(),
+    );
+    let cached = CachedHgMutationStore::new_test(Arc::new(counted));
+    check_entries(&cached, &ctx, hashset![make_hg_cs_id(7)], &entries, &[]).await?;
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    for _ in 0..2 {
+        check_entries_following_splits(
+            &cached,
+            &ctx,
+            hashset![make_hg_cs_id(7)],
+            &entries,
+            &[2, 4, 5, 6],
+        )
+        .await?;
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            2,
+            "the first split read fills its own key; the repeat reuses it"
+        );
+    }
+    check_entries(&cached, &ctx, hashset![make_hg_cs_id(7)], &entries, &[]).await?;
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+    Ok(())
 }
 
 #[mononoke::fbinit_test]

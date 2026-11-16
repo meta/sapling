@@ -76,6 +76,15 @@ use crate::source_control_impl::SourceControlServiceImpl;
 // Magic number used when we want to limit concurrency with buffer_unordered.
 const CONCURRENCY_LIMIT: usize = 100;
 
+fn follow_split_members(requested: bool) -> bool {
+    requested
+        && justknobs::eval(
+            "scm/mononoke:enable_split_member_mutation_lookup",
+            None,
+            None,
+        )
+}
+
 /// Convert the thrift `run_as` union into a set of Mononoke identities to run
 /// hooks as. The `encoded_authenticated_identities` variant carries a
 /// Compact-thrift-encoded `AuthenticatedIdentityList` and preserves identity
@@ -1742,10 +1751,21 @@ impl SourceControlServiceImpl {
             .await?
             .ok_or_else(|| scs_errors::invalid_request("commit is not a hg commit".to_string()))?;
 
-        let mutations = repo
-            .hg()
-            .fetch_mutations(HashSet::from_iter([changeset_id]))
-            .await?;
+        let follow_splits = follow_split_members(params.follow_splits);
+        if params.follow_splits {
+            let mut scuba = ctx.scuba().clone();
+            scuba.add("follow_splits_effective", follow_splits);
+            scuba.log_with_msg("Mutation history read mode", None);
+        }
+        let mutations = if follow_splits {
+            repo.hg()
+                .fetch_mutations_following_splits(changeset_id)
+                .await?
+        } else {
+            repo.hg()
+                .fetch_mutations(HashSet::from_iter([changeset_id]))
+                .await?
+        };
 
         let hg_mutation_history = match params.format {
             thrift::MutationHistoryFormat::COMMIT_ID => {
@@ -2087,6 +2107,51 @@ impl SourceControlServiceImpl {
             Some(page) => commit_restricted_paths::compact::from_stream(stream, page.limit).await,
             None => commit_restricted_paths::legacy_comparison_response(stream).await,
         }
+    }
+}
+
+#[cfg(test)]
+mod split_history_tests {
+    use std::collections::HashMap;
+
+    use justknobs::test_helpers::JustKnobsInMemory;
+    use justknobs::test_helpers::KnobVal;
+    use justknobs::test_helpers::with_just_knobs;
+    use mononoke_macros::mononoke;
+
+    use super::follow_split_members;
+
+    const KNOB: &str = "scm/mononoke:enable_split_member_mutation_lookup";
+
+    #[mononoke::test]
+    fn split_following_requires_request_and_emergency_permission() {
+        for enabled in [false, true] {
+            let knobs =
+                JustKnobsInMemory::new(HashMap::from([(KNOB.to_owned(), KnobVal::Bool(enabled))]));
+            with_just_knobs(knobs, || {
+                assert!(!follow_split_members(false));
+                assert_eq!(follow_split_members(true), enabled);
+            });
+        }
+    }
+
+    #[mononoke::test]
+    fn default_request_does_not_read_a_missing_or_invalid_knob() {
+        for values in [
+            HashMap::new(),
+            HashMap::from([(KNOB.to_owned(), KnobVal::Int(1))]),
+        ] {
+            with_just_knobs(JustKnobsInMemory::new(values), || {
+                assert!(!follow_split_members(false));
+            });
+        }
+    }
+
+    #[mononoke::test]
+    #[should_panic(expected = "JustKnobs eval failed")]
+    fn opted_in_request_does_not_hide_an_invalid_knob() {
+        let knobs = JustKnobsInMemory::new(HashMap::from([(KNOB.to_owned(), KnobVal::Int(1))]));
+        with_just_knobs(knobs, || follow_split_members(true));
     }
 }
 

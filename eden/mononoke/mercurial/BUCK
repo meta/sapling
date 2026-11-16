@@ -212,7 +212,12 @@ rust_library(
     autocargo = {"cargo_toml_dir": "mutation"},
     test_deps = [
         "fbsource//third-party/rust:quickcheck",
+        ":mercurial_types-mocks",
+        "//common/rust/shed/fbinit:fbinit",
+        "//common/rust/shed/fbinit:fbinit-tokio",
         "//common/rust/shed/quickcheck_arbitrary_derive:quickcheck_arbitrary_derive",
+        "//eden/mononoke/common/mononoke_macros:mononoke_macros",
+        "//eden/mononoke/mononoke_types:mononoke_types-mocks",
     ],
     deps = [
         "fbsource//third-party/rust:anyhow",

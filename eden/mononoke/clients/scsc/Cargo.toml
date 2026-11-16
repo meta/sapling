@@ -43,6 +43,7 @@ unicode-truncate = "0.2"
 unicode-width = "0.2.3"
 
 [dev-dependencies]
+fbthrift = { version = "0.0.1", git = "https://github.com/facebook/fbthrift.git", branch = "main" }
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
