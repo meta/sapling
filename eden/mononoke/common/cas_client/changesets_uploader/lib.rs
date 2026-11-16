@@ -59,7 +59,17 @@ use tracing::warn;
 const MAX_CONCURRENT_MANIFESTS: usize = 50;
 const MAX_CONCURRENT_MANIFESTS_TREES_ONLY: usize = 500;
 const MAX_CONCURRENT_FILES_PER_MANIFEST: usize = 20;
+const MAX_CONCURRENT_RESTRICTION_CHECKS: usize = 20;
 const DEBUG_LOG_INTERVAL: usize = 10000;
+
+async fn load_preloaded_manifest(
+    ctx: &CoreContext,
+    repo: &impl Repo,
+    manifest_id: HgAugmentedManifestId,
+) -> anyhow::Result<HgPreloadedAugmentedManifest> {
+    let envelope = manifest_id.load(ctx, repo.repo_blobstore()).await?;
+    HgPreloadedAugmentedManifest::load_from_sharded(envelope, ctx, repo.repo_blobstore()).await
+}
 
 #[derive(Default, Debug)]
 pub struct UploadCounters {
@@ -284,7 +294,8 @@ where
     /// Upload a given Changeset to a CAS backend.
     /// The implementation assumes that if hg manifest is derived, then augmented manifest is also derived.
     ///
-    /// Trees under restricted paths are never uploaded; files under them are.
+    /// Trees under restricted paths are never uploaded, nor are trees with a restriction root as
+    /// a direct child (see `has_restricted_child`). Files are always uploaded.
     pub async fn upload_single_changeset<'a>(
         &self,
         ctx: &'a CoreContext,
@@ -375,22 +386,12 @@ where
             if tree_paths.is_empty() || !repo.restricted_paths().may_have_restricted_paths() {
                 Vec::new()
             } else {
-                let roots: Vec<_> = repo
-                    .restricted_paths()
+                repo.restricted_paths()
                     .get_path_restriction_info(ctx, Some(*changeset_id), &tree_paths)
                     .await?
                     .into_iter()
                     .map(|info| info.restriction_root)
-                    .collect();
-                if !roots.is_empty() {
-                    info!(
-                        "Found {} restricted path roots for changeset {}: {:?}",
-                        roots.len(),
-                        changeset_id,
-                        roots,
-                    );
-                }
-                roots
+                    .collect()
             };
 
         let total_before_filter = diff_stream.len();
@@ -408,16 +409,7 @@ where
                 .collect()
         };
 
-        if diff_stream.len() < total_before_filter {
-            info!(
-                "Filtered out {} of {} entries (trees under restricted paths) for changeset {}",
-                total_before_filter - diff_stream.len(),
-                total_before_filter,
-                changeset_id,
-            );
-        }
-
-        let manifests_list = diff_stream
+        let mut manifests_list = diff_stream
             .iter()
             .filter_map(|(_, elem)| {
                 if let Entry::Tree(treeid) = elem {
@@ -428,6 +420,46 @@ where
             })
             .map(|treeid| (HgAugmentedManifestId::new(treeid.into_nodehash()), None))
             .collect::<Vec<_>>();
+
+        // The root manifest is checked even when unchanged, because UploadPolicy::All uploads it
+        // regardless.
+        let restriction_root_parents = if matches!(upload_policy, UploadPolicy::BlobsOnly) {
+            HashSet::new()
+        } else {
+            let trees = manifests_list
+                .iter()
+                .map(|(treeid, _)| *treeid)
+                .chain([hg_root_manifest_id])
+                .collect();
+            self.parents_of_restriction_roots(ctx, repo, trees).await?
+        };
+        manifests_list.retain(|(treeid, _)| !restriction_root_parents.contains(treeid));
+
+        // No await between these, so the sync job's concurrent uploads keep each changeset's
+        // lines together.
+        if !restricted_path_roots.is_empty() {
+            info!(
+                "Found {} restricted path roots for changeset {}: {:?}",
+                restricted_path_roots.len(),
+                changeset_id,
+                restricted_path_roots,
+            );
+        }
+        if diff_stream.len() < total_before_filter {
+            info!(
+                "Filtered out {} of {} entries (trees under restricted paths) for changeset {}",
+                total_before_filter - diff_stream.len(),
+                total_before_filter,
+                changeset_id,
+            );
+        }
+        if !restriction_root_parents.is_empty() {
+            info!(
+                "Skipped {} parent trees of restriction roots for changeset {}",
+                restriction_root_parents.len(),
+                changeset_id,
+            );
+        }
 
         let files_list = diff_stream
             .iter()
@@ -505,18 +537,20 @@ where
                 });
 
                 // Upload the root manifest last
-                let outcome_root = self
-                    .client
-                    .upload_augmented_tree(
-                        ctx,
-                        &blobstore,
-                        &hg_root_manifest_id,
-                        None,
-                        trees_lookup,
-                    )
-                    .watched()
-                    .await?;
-                upload_counter.tick_trees(ctx, outcome_root);
+                if !restriction_root_parents.contains(&hg_root_manifest_id) {
+                    let outcome_root = self
+                        .client
+                        .upload_augmented_tree(
+                            ctx,
+                            &blobstore,
+                            &hg_root_manifest_id,
+                            None,
+                            trees_lookup,
+                        )
+                        .watched()
+                        .await?;
+                    upload_counter.tick_trees(ctx, outcome_root);
+                }
             }
         }
         upload_counter.warn_skipped_redacted(changeset_id);
@@ -540,8 +574,9 @@ where
     /// directory costs one manifest load and one batched CAS lookup for all of its children.
     /// Content is fetched from the blobstore only for digests that CAS reports missing.
     ///
-    /// Restriction root trees are never uploaded; everything below them is. Each tree is checked
-    /// with `RestrictedPaths::is_restricted_manifest`, so the sources selected by `AclManifestMode`
+    /// Restriction root trees and trees with a restriction root as a direct child are never
+    /// uploaded; everything else is. Each tree is checked with
+    /// `RestrictedPaths::is_restricted_manifest`, so the sources selected by `AclManifestMode`
     /// decide. A single file given via `path` is uploaded regardless.
     pub async fn upload_single_changeset_recursively<'a>(
         &self,
@@ -629,6 +664,7 @@ where
         );
 
         let skipped_restricted_trees = RelaxedCounter::new(0);
+        let skipped_parent_trees = RelaxedCounter::new(0);
 
         bounded_traversal::bounded_traversal_stream(
             max_concurrent_manifests,
@@ -637,29 +673,29 @@ where
                 cloned!(upload_counter);
                 let upload_policy = upload_policy.clone();
                 let skipped_restricted_trees = &skipped_restricted_trees;
+                let skipped_parent_trees = &skipped_parent_trees;
                 async move {
                     let upload_trees = !matches!(upload_policy, UploadPolicy::BlobsOnly);
                     let upload_files = !matches!(upload_policy, UploadPolicy::TreesOnly);
 
-                    let envelope = manifest_id.load(ctx, repo.repo_blobstore()).await?;
-                    let manifest = HgPreloadedAugmentedManifest::load_from_sharded(
-                        envelope,
-                        ctx,
-                        repo.repo_blobstore(),
-                    )
-                    .await?;
+                    let manifest = load_preloaded_manifest(ctx, repo, manifest_id).await?;
                     let tree_digest = MononokeDigest(
                         manifest.augmented_manifest_id,
                         manifest.augmented_manifest_size,
                     );
 
-                    // Only tree uploads are restricted, so BlobsOnly skips the check.
+                    // Only tree uploads are restricted, so BlobsOnly skips the checks.
                     let restricted = upload_trees
                         && self
                             .is_restricted_tree(ctx, repo, &manifest_id, manifest.is_restricted)
                             .await?;
+                    let parent_of_restricted = upload_trees
+                        && !restricted
+                        && self.has_restricted_child(ctx, repo, &manifest).await?;
                     if restricted {
                         skipped_restricted_trees.inc();
+                    } else if parent_of_restricted {
+                        skipped_parent_trees.inc();
                     }
 
                     let mut files = Vec::new();
@@ -680,7 +716,7 @@ where
                     }
 
                     // One batched lookup covers this directory's own tree and its files.
-                    let upload_tree = upload_trees && !restricted;
+                    let upload_tree = upload_trees && !restricted && !parent_of_restricted;
                     let to_lookup: Vec<MononokeDigest> = (upload_tree && trees_lookup)
                         .then_some(tree_digest)
                         .into_iter()
@@ -767,6 +803,13 @@ where
                 skipped_restricted_trees, changeset_id,
             );
         }
+        let skipped_parent_trees = skipped_parent_trees.get();
+        if skipped_parent_trees > 0 {
+            info!(
+                "Skipped {} parent trees of restriction roots for changeset {}",
+                skipped_parent_trees, changeset_id,
+            );
+        }
         upload_counter.warn_skipped_redacted(changeset_id);
 
         upload_counter.log(ctx);
@@ -809,9 +852,71 @@ where
             .await?)
     }
 
+    /// Whether a directory child of this tree is a restriction root. SLAPI marks such a child
+    /// with `has_acl`, which CAS trees cannot carry, so a client reading this tree from CAS would
+    /// see the child as unrestricted.
+    async fn has_restricted_child<'a>(
+        &self,
+        ctx: &'a CoreContext,
+        repo: &impl Repo,
+        manifest: &HgPreloadedAugmentedManifest,
+    ) -> Result<bool, CasChangesetUploaderError> {
+        let children: Vec<_> = manifest
+            .children_augmented_metadata
+            .iter()
+            .filter_map(|(name, entry)| match entry {
+                HgAugmentedManifestEntry::DirectoryNode(dir) => Some((
+                    HgAugmentedManifestId::new(dir.treenode),
+                    manifest
+                        .child_restriction_map
+                        .get(name)
+                        .copied()
+                        .unwrap_or(false),
+                )),
+                HgAugmentedManifestEntry::FileNode(_) => None,
+            })
+            .collect();
+        let mut restricted_children = stream::iter(children)
+            .map(|(child_id, acl_manifest_is_restricted)| async move {
+                self.is_restricted_tree(ctx, repo, &child_id, acl_manifest_is_restricted)
+                    .await
+            })
+            .buffer_unordered(MAX_CONCURRENT_RESTRICTION_CHECKS);
+        while let Some(restricted) = restricted_children.try_next().await? {
+            if restricted {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// The trees among `trees` that have a restriction root as a direct child.
+    async fn parents_of_restriction_roots<'a>(
+        &self,
+        ctx: &'a CoreContext,
+        repo: &impl Repo,
+        trees: HashSet<HgAugmentedManifestId>,
+    ) -> Result<HashSet<HgAugmentedManifestId>, CasChangesetUploaderError> {
+        if !repo.restricted_paths().may_have_restricted_paths() {
+            return Ok(HashSet::new());
+        }
+        stream::iter(trees)
+            .map(|tree_id| async move {
+                let manifest = load_preloaded_manifest(ctx, repo, tree_id).await?;
+                let is_parent = self.has_restricted_child(ctx, repo, &manifest).await?;
+                Ok::<_, CasChangesetUploaderError>(is_parent.then_some(tree_id))
+            })
+            .buffer_unordered(MAX_CONCURRENT_MANIFESTS)
+            .try_filter_map(future::ok)
+            .try_collect()
+            .await
+    }
+
     /// Check if a given Changeset is already uploaded to a CAS backend by validating the presence of the hg root augmented manifest.
     /// This is not full scan check but the best approximation we can do.
     /// The lookup shouldn't be relied on if a changeset was uploaded with TreeOnly policy, the mode that isn't used in production.
+    /// It is always false when a top-level directory is a restriction root, as the root manifest
+    /// is then never uploaded.
     pub async fn is_changeset_uploaded<'a>(
         &self,
         ctx: &'a CoreContext,

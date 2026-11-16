@@ -47,11 +47,11 @@ must arrive from the parent the sync does NOT diff against.
   $ hg push -r $M --to master_bookmark -q
 
 The bookmark move A -> M expands to [B, C, M], so one run covers both the linear
-case and the merge case. Both C and M are filtered, for 9 digests: A's root,
-public and public/readme; B's root and feature; C's root and restricted/secret;
-and M's root and restricted/secret. Neither C's nor M's restricted tree is
-uploaded, and they are the same tree -- an unchanged directory reuses its
-parent's node.
+case and the merge case. Both C and M are filtered, for 7 digests: A's root,
+public and public/readme; B's root and feature; C's restricted/secret; and M's
+restricted/secret. Neither C's nor M's restricted tree is uploaded, and they are
+the same tree -- an unchanged directory reuses its parent's node. Their root
+trees have "restricted" as a child, so they are not uploaded either.
   $ mononoke_cas_sync repo 0
   [INFO] [execute{repo=repo}] Initiating mononoke RE CAS sync command execution
   [INFO] [execute{repo=repo}] using repo "repo" repoid RepositoryId(0) and CAS use case "source-control-testing"
@@ -59,9 +59,11 @@ parent's node.
   [INFO] [execute{repo=repo}] log entry BookmarkUpdateLogEntry * is a creation of bookmark (glob)
   [INFO] [execute{repo=repo}] Found 1 restricted path roots for changeset *: [NonRootMPath("restricted")] (glob)
   [INFO] [execute{repo=repo}] Filtered out 1 of 3 entries (trees under restricted paths) for changeset * (glob)
+  [INFO] [execute{repo=repo}] Skipped 1 parent trees of restriction roots for changeset * (glob)
   [INFO] [execute{repo=repo}] Found 1 restricted path roots for changeset *: [NonRootMPath("restricted")] (glob)
   [INFO] [execute{repo=repo}] Filtered out 1 of 3 entries (trees under restricted paths) for changeset * (glob)
-  [INFO] [execute{repo=repo}] log entries [1, 2] synced (4 commits uploaded, upload stats: uploaded digests: 9, already present digests: 0, uploaded bytes: *, the largest uploaded blob: *), took overall * sec, derivation checks took * sec (glob)
+  [INFO] [execute{repo=repo}] Skipped 1 parent trees of restriction roots for changeset * (glob)
+  [INFO] [execute{repo=repo}] log entries [1, 2] synced (4 commits uploaded, upload stats: uploaded digests: 7, already present digests: 0, uploaded bytes: *, the largest uploaded blob: *), took overall * sec, derivation checks took * sec (glob)
   [INFO] [execute{repo=repo}] queue size after processing: 0
   [INFO] [execute{repo=repo}] successful sync of entries [1, 2]
   [INFO] [execute{repo=repo}] Finished mononoke RE CAS sync command execution for repo repo
