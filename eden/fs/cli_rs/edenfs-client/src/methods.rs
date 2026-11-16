@@ -39,6 +39,7 @@ pub enum EdenThriftMethod {
     ListMounts,
     StreamStartStatus,
     GetDaemonInfo,
+    GetRegexExportedValues,
     Unknown,
 }
 
