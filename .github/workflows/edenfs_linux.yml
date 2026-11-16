@@ -107,8 +107,13 @@ jobs:
         sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
         ctest --test-dir _build --output-on-failure
 
+    # upload-artifact's zip doesn't keep file permissions, so the executables
+    # would lose their exec bits. A tarball keeps them.
     - name: Install
-      run: DESTDIR="$PWD/_artifacts/linux" cmake --install _build
+      run: |
+        DESTDIR="$PWD/_install" cmake --install _build
+        mkdir _artifacts
+        tar -czf _artifacts/eden-linux.tar.gz -C _install .
     - uses: actions/upload-artifact@v6
       with:
         name: eden

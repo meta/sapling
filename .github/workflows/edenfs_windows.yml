@@ -136,6 +136,13 @@ jobs:
     - name: Test
       run: ctest --test-dir _build --output-on-failure
 
+    - name: Install
+      run: cmake --install _build --prefix _install
+    - uses: actions/upload-artifact@v6
+      with:
+        name: eden
+        path: _install
+
     - name: Show sccache stats
       if: always()
       run: sccache --show-stats
