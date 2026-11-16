@@ -105,6 +105,7 @@ fn get_global_path_default(
     Some(expand_path(value))
 }
 
+/// Manage EdenFS checkouts.
 #[derive(Parser, Debug)]
 #[clap(
     name = "edenfsctl",
