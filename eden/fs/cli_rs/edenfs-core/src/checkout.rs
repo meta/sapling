@@ -42,6 +42,7 @@ use serde::Serialize;
 use serde::Serializer;
 use serde::ser::SerializeMap;
 use strum::EnumString;
+use strum::IntoStaticStr;
 use strum::VariantNames;
 use thrift_types::edenfs::MountInfo;
 use thrift_types::edenfs::MountState;
@@ -67,7 +68,15 @@ const SNAPSHOT_MAGIC_4: &[u8] = b"eden\x00\x00\x00\x04";
 // List of supported repository types. This should stay in sync with the list
 // in the Python CLI at fs/cli_rs/edenfs-client/src/checkout.rs and the list in
 // the Daemon's CheckoutConfig at fs/config/CheckoutConfig.h.
-#[derive(Deserialize, Serialize, Debug, PartialEq, VariantNames, EnumString)]
+#[derive(
+    Deserialize,
+    Serialize,
+    Debug,
+    PartialEq,
+    VariantNames,
+    EnumString,
+    IntoStaticStr
+)]
 #[serde(rename_all = "lowercase")]
 enum RepositoryType {
     // The daemon no longer mounts "git" or "recas" checkouts; the CLI keeps
@@ -82,7 +91,15 @@ enum RepositoryType {
     FilteredHg,
 }
 
-#[derive(Deserialize, Serialize, Debug, PartialEq, VariantNames, EnumString)]
+#[derive(
+    Deserialize,
+    Serialize,
+    Debug,
+    PartialEq,
+    VariantNames,
+    EnumString,
+    IntoStaticStr
+)]
 #[serde(rename_all = "lowercase")]
 enum MountProtocol {
     #[strum(serialize = "fuse")]
@@ -93,7 +110,15 @@ enum MountProtocol {
     Prjfs,
 }
 
-#[derive(Deserialize, Serialize, Debug, PartialEq, VariantNames, EnumString)]
+#[derive(
+    Deserialize,
+    Serialize,
+    Debug,
+    PartialEq,
+    VariantNames,
+    EnumString,
+    IntoStaticStr
+)]
 #[serde(rename_all = "lowercase")]
 enum InodeCatalogType {
     #[strum(serialize = "legacy")]
@@ -356,6 +381,27 @@ impl CheckoutConfig {
         let content = String::from_utf8(std::fs::read(config_path).from_err()?).from_err()?;
         let config: CheckoutConfig = toml::from_str(&content).from_err()?;
         Ok(config)
+    }
+
+    /// The repository type, such as `hg` or `git`.
+    pub fn scm_type(&self) -> &'static str {
+        (&self.repository.repo_type).into()
+    }
+
+    /// The filesystem protocol the checkout mounts with: `fuse`, `nfs` or
+    /// `prjfs`.
+    pub fn mount_protocol(&self) -> &'static str {
+        (&self.repository.protocol).into()
+    }
+
+    /// Whether the checkout treats paths as case sensitive.
+    pub fn case_sensitive(&self) -> bool {
+        self.repository.case_sensitive
+    }
+
+    /// The inode catalog type, if the config sets one.
+    pub fn inode_catalog_type(&self) -> Option<&'static str> {
+        self.repository.inode_catalog_type.as_ref().map(Into::into)
     }
 
     pub fn get_prefetch_profiles(&self) -> Result<&Vec<String>> {
@@ -1131,6 +1177,38 @@ mod tests {
                 Err(_) => Ok(()),
             }
         }
+    }
+
+    #[test]
+    fn test_repository_accessors() -> Result<()> {
+        let temp_dir = tempdir().context("couldn't create temp dir")?;
+        std::fs::write(
+            temp_dir.path().join(MOUNT_CONFIG),
+            r#"
+            [repository]
+            path = "/tmp/"
+            type = "git"
+            protocol = "nfs"
+            case-sensitive = false
+            inode-catalog-type = "legacyephemeral"
+
+            [redirections]
+            "#,
+        )
+        .from_err()?;
+        let config = CheckoutConfig::parse_config(temp_dir.path())?;
+        assert_eq!(config.scm_type(), "git");
+        assert_eq!(config.mount_protocol(), "nfs");
+        assert!(!config.case_sensitive());
+        assert_eq!(config.inode_catalog_type(), Some("legacyephemeral"));
+
+        let config = CheckoutConfig::parse_config(create_test_checkout_config()?.path())?;
+        assert_eq!(
+            config.inode_catalog_type(),
+            None,
+            "the default config sets no inode catalog type"
+        );
+        Ok(())
     }
 
     #[test]
