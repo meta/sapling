@@ -290,16 +290,11 @@ async fn test_change_target_config_reads_augmented_manifests(
     // Then: the target is the same.
     assert_eq!(from_augmented, from_hg);
 
-    // And: when deriving the hg changeset does not create it, the merge has no
-    // augmented manifest, and the rebuild fails instead of reading Hg
-    // manifests.
-    let err = target_after_config_change(fb, knobs(true, false))
-        .await
-        .expect_err("the merge has no augmented manifest");
-    assert!(
-        format!("{err:#}").contains("hgaugmentedmanifest.sha1."),
-        "the error names the missing augmented manifest: {err:#}"
-    );
+    // And: when deriving the hg changeset does not create it, the merge's
+    // augmented manifest is still derived first, because Hg changesets depend
+    // on augmented manifests, so the target is the same.
+    let without_creation = target_after_config_change(fb, knobs(true, false)).await?;
+    assert_eq!(without_creation, from_hg);
     Ok(())
 }
 

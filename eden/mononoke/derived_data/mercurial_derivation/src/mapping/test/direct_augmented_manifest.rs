@@ -74,9 +74,7 @@ async fn derive_old_path_augmented_manifest_envelopes(
     csids: Vec<ChangesetId>,
 ) -> Result<HashMap<ChangesetId, HgAugmentedManifestEnvelope>> {
     let manager = repo.repo_derived_data().manager();
-    manager
-        .derive_exactly_batch::<MappedHgChangesetId>(ctx, csids.clone(), None)
-        .await?;
+    fixtures::store_hg_changesets_as_uploaded(ctx, repo, csids.clone()).await?;
     manager
         .derive_exactly_batch::<RootAclManifestId>(ctx, csids.clone(), None)
         .await?;
@@ -223,9 +221,7 @@ async fn test_augmented_manifest_derive_single_uses_mapped_hg_root_when_availabl
 
     // Given: the canonical Hg root is available through the Bonsai-Hg
     // mapping, as if a client uploaded a canonical Hg manifest.
-    manager
-        .derive_exactly_batch::<MappedHgChangesetId>(&ctx, vec![root], None)
-        .await?;
+    fixtures::store_hg_changesets_as_uploaded(&ctx, &repo, vec![root]).await?;
     manager
         .derive_exactly_batch::<RootAclManifestId>(&ctx, vec![root], None)
         .await?;

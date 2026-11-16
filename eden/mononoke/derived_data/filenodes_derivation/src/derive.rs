@@ -130,9 +130,9 @@ pub(crate) async fn prepare_filenodes_for_cs(
 /// the BonsaiDerivable implementation in mapping.rs
 ///
 /// With `scm/mononoke:hgmanifest_read_from_augmented` on for the repo, the
-/// augmented manifests of this commit and its parents must exist too. Filenodes
-/// depend only on Hg changesets, so nothing guarantees that until Hg changesets
-/// depend on augmented manifests. The switch must stay off until then.
+/// augmented manifests of this commit and its parents must exist too. Hg
+/// changesets depend on augmented manifests, so deriving filenodes through the
+/// derivation manager derives them first.
 pub(crate) async fn generate_all_filenodes(
     ctx: &CoreContext,
     derivation_ctx: &DerivationContext,
@@ -1134,7 +1134,7 @@ mod tests {
             .await?;
 
         // Given: a commit with an Hg changeset but no augmented manifest.
-        repo.derive_hg_changeset(&ctx, commit).await?;
+        fixtures::store_hg_changesets_as_uploaded(&ctx, &repo, vec![commit]).await?;
         blocker.arm();
 
         // When: filenodes are generated with the switch on.
@@ -1183,6 +1183,54 @@ mod tests {
 
         // Then: both repos have the same derived data and filenodes for every
         // commit, the empty ones included.
+        let from_hg = hg_repo
+            .repo_derived_data()
+            .manager()
+            .fetch_derived_batch::<FilenodesOnlyPublic>(&ctx, commits.all.clone(), None)
+            .await?;
+        let from_augmented = augmented_repo
+            .repo_derived_data()
+            .manager()
+            .fetch_derived_batch::<FilenodesOnlyPublic>(&ctx, commits.all.clone(), None)
+            .await?;
+        assert_eq!(from_augmented.len(), commits.all.len());
+        assert_eq!(from_augmented, from_hg);
+        for cs_id in commits.all {
+            compare_filenodes(&ctx, &hg_repo, &augmented_repo, cs_id).await?;
+        }
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn derive_filenodes_from_augmented_derives_augmented_manifests_first(
+        fb: FacebookInit,
+    ) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        set_read_from_augmented(false);
+
+        // Given: the same new commits in two repos, one with filenodes derived
+        // from Hg manifests, and no derived data in the other.
+        let hg_repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+        let commits = create_commits(&ctx, &hg_repo).await?;
+        let augmented_repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+        let augmented_commits = create_commits(&ctx, &augmented_repo).await?;
+        assert_eq!(augmented_commits.all, commits.all);
+        let head = *commits.all.last().expect("commits are not empty");
+        hg_repo
+            .repo_derived_data()
+            .derive::<FilenodesOnlyPublic>(&ctx, head, DerivationPriority::LOW)
+            .await?;
+
+        // When: the other repo derives filenodes through the manager with the
+        // switch on, without deriving augmented manifests first.
+        set_read_from_augmented(true);
+        augmented_repo
+            .repo_derived_data()
+            .derive::<FilenodesOnlyPublic>(&ctx, head, DerivationPriority::LOW)
+            .await?;
+
+        // Then: both repos have the same derived data and filenodes for every
+        // commit.
         let from_hg = hg_repo
             .repo_derived_data()
             .manager()

@@ -65,7 +65,7 @@ pub struct HgChangesetDeriveOptions {
 impl BonsaiDerivable for MappedHgChangesetId {
     const VARIANT: DerivableType = DerivableType::HgChangesets;
 
-    type Dependencies = dependencies![];
+    type Dependencies = dependencies![RootHgAugmentedManifestId];
 
     async fn derive_single(
         ctx: &CoreContext,
@@ -621,6 +621,12 @@ mod test {
         let manager = repo.repo_derived_data().manager();
 
         manager
+            .derive_exactly_batch::<RootAclManifestId>(ctx, csids.clone(), None)
+            .await?;
+        manager
+            .derive_exactly_batch::<RootHgAugmentedManifestId>(ctx, csids.clone(), None)
+            .await?;
+        manager
             .derive_exactly_batch::<MappedHgChangesetId>(ctx, csids.clone(), None)
             .await?;
         let batch_derived = manager
@@ -695,9 +701,7 @@ mod test {
             .await?;
         let csids = vec![root, child];
         let manager = repo.repo_derived_data().manager();
-        manager
-            .derive_exactly_batch::<MappedHgChangesetId>(&ctx, csids.clone(), None)
-            .await?;
+        fixtures::store_hg_changesets_as_uploaded(&ctx, &repo, csids.clone()).await?;
         manager
             .derive_exactly_batch::<RootAclManifestId>(&ctx, csids.clone(), None)
             .await?;
@@ -765,9 +769,7 @@ mod test {
             .await?;
         let csids = vec![root, child];
         let manager = repo.repo_derived_data().manager();
-        manager
-            .derive_exactly_batch::<MappedHgChangesetId>(&ctx, csids.clone(), None)
-            .await?;
+        fixtures::store_hg_changesets_as_uploaded(&ctx, &repo, csids.clone()).await?;
         manager
             .derive_exactly_batch::<RootAclManifestId>(&ctx, csids.clone(), None)
             .await?;
@@ -946,6 +948,151 @@ mod test {
                 "augmented root should match the Hg manifest for {cs_id}",
             );
         }
+
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn test_hg_changeset_derive_derives_augmented_and_acl_manifests_first(
+        fb: FacebookInit,
+    ) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+        let control_repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+
+        // Given: a new two-commit stack with no derived data, and the same
+        // stack in a second repo.
+        let mut csids = Vec::new();
+        for repo in [&repo, &control_repo] {
+            let root = CreateCommitContext::new_root(&ctx, repo)
+                .add_file("dir/a.txt", "initial")
+                .commit()
+                .await?;
+            let child = CreateCommitContext::new(&ctx, repo, vec![root])
+                .add_file("dir/a.txt", "modified")
+                .add_file("b.txt", "new file")
+                .commit()
+                .await?;
+            csids.push(vec![root, child]);
+        }
+        assert_eq!(csids[0], csids[1], "both repos have the same commits");
+        let (root, child) = (csids[0][0], csids[0][1]);
+        let manager = repo.repo_derived_data().manager();
+
+        // When: the manager derives the Hg changeset of the head.
+        let hg_cs_id = manager
+            .derive::<MappedHgChangesetId>(
+                &ctx,
+                child,
+                None,
+                derivation_queue_thrift::DerivationPriority::LOW,
+            )
+            .await?
+            .hg_changeset_id();
+
+        // Then: the ACL and augmented manifests of both commits were derived.
+        for cs_id in [root, child] {
+            assert!(
+                manager
+                    .fetch_derived::<RootAclManifestId>(&ctx, cs_id, None)
+                    .await?
+                    .is_some(),
+                "deriving the Hg changeset derives the ACL manifest of {cs_id}",
+            );
+            assert!(
+                manager
+                    .fetch_derived::<RootHgAugmentedManifestId>(&ctx, cs_id, None)
+                    .await?
+                    .is_some(),
+                "deriving the Hg changeset derives the augmented manifest of {cs_id}",
+            );
+        }
+
+        // And: the augmented manifest describes the Hg manifest that was
+        // derived after it.
+        let aug = manager
+            .fetch_derived::<RootHgAugmentedManifestId>(&ctx, child, None)
+            .await?
+            .context("Missing RootHgAugmentedManifestId for child")?;
+        let aug_envelope =
+            Loadable::load(&aug.hg_augmented_manifest_id(), &ctx, &repo.repo_blobstore).await?;
+        let hg_manifest_id = Loadable::load(&hg_cs_id, &ctx, &repo.repo_blobstore)
+            .await?
+            .manifestid();
+        assert_eq!(
+            aug_envelope.augmented_manifest.hg_node_id,
+            hg_manifest_id.into_nodehash(),
+            "the augmented manifest has the Hg manifest's id",
+        );
+
+        // And: the Hg changeset is the one derived without the manager, which
+        // knows nothing of dependencies.
+        let control_ctx = control_repo
+            .repo_derived_data()
+            .manager()
+            .derivation_context(None);
+        let mut bonsais = Vec::new();
+        for cs_id in [root, child] {
+            bonsais.push(Loadable::load(&cs_id, &ctx, &control_repo.repo_blobstore).await?);
+        }
+        let control = MappedHgChangesetId::derive_batch(&ctx, &control_ctx, bonsais).await?;
+        assert_eq!(
+            control
+                .get(&child)
+                .map(MappedHgChangesetId::hg_changeset_id),
+            Some(hg_cs_id),
+            "the dependency does not change the Hg changeset",
+        );
+
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn test_stored_hg_changeset_is_returned_without_deriving_augmented_manifest(
+        fb: FacebookInit,
+    ) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+
+        // Given: a commit whose Hg changeset was stored outside derivation, as
+        // when a client uploads it.
+        let commit = CreateCommitContext::new_root(&ctx, &repo)
+            .add_file("dir/a.txt", "initial")
+            .commit()
+            .await?;
+        fixtures::store_hg_changesets_as_uploaded(&ctx, &repo, vec![commit]).await?;
+        let manager = repo.repo_derived_data().manager();
+        let uploaded = manager
+            .fetch_derived::<MappedHgChangesetId>(&ctx, commit, None)
+            .await?
+            .context("Missing uploaded MappedHgChangesetId")?;
+
+        // When: the manager derives the Hg changeset.
+        let derived = manager
+            .derive::<MappedHgChangesetId>(
+                &ctx,
+                commit,
+                None,
+                derivation_queue_thrift::DerivationPriority::LOW,
+            )
+            .await?;
+
+        // Then: it returns the stored Hg changeset and derives nothing else.
+        assert_eq!(derived, uploaded);
+        assert!(
+            manager
+                .fetch_derived::<RootHgAugmentedManifestId>(&ctx, commit, None)
+                .await?
+                .is_none(),
+            "a stored Hg changeset does not derive the augmented manifest",
+        );
+        assert!(
+            manager
+                .fetch_derived::<RootAclManifestId>(&ctx, commit, None)
+                .await?
+                .is_none(),
+            "a stored Hg changeset does not derive the ACL manifest",
+        );
 
         Ok(())
     }

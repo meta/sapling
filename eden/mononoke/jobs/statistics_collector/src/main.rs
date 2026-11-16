@@ -1001,7 +1001,10 @@ mod tests {
             .add_file("c", "1\n2\n3\n")
             .commit()
             .await?;
-        // Derive the hg changesets without their augmented manifests.
+        // Derive the hg changesets without their augmented manifests:
+        // derivation would also derive augmented manifests, so store the Hg
+        // changesets as an upload does.
+        fixtures::store_hg_changesets_as_uploaded(ctx, &repo, vec![root, child]).await?;
         let (root_hg, child_hg) = with_just_knobs_async(
             JustKnobsInMemory::new(hashmap! {
                 "scm/mononoke:derive_hg_augmented_manifest_with_hg_changeset".to_string() => KnobVal::Bool(false),

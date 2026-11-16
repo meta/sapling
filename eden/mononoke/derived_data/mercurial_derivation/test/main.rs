@@ -1707,6 +1707,19 @@ mod octopus_merges {
             .map(|_| ())
             .expect_err("Derivation should fail on conflict");
 
+        // Hg changesets depend on augmented manifests, whose derivation fails
+        // on the conflict first.
+        assert!(format!("{err:?}").contains("Unresolved content conflict at foo"));
+
+        // Hg changeset derivation itself fails on the conflict too.
+        for parent in [p1, p2, p3] {
+            helper.lookup_changeset(parent).await?;
+        }
+        let err =
+            fixtures::store_hg_changesets_as_uploaded(&helper.ctx, &helper.repo, vec![commit])
+                .await
+                .expect_err("Hg changeset derivation should fail on conflict");
+
         assert!(format!("{err:?}").contains("Unresolved conflict"));
         Ok(())
     }
@@ -1740,6 +1753,19 @@ mod octopus_merges {
         let err = root
             .map(|_| ())
             .expect_err("Derivation should fail on conflict");
+
+        // Hg changesets depend on augmented manifests, whose derivation fails
+        // on the conflict first.
+        assert!(format!("{err:?}").contains("Unresolved file type conflict at foo"));
+
+        // Hg changeset derivation itself fails on the conflict too.
+        for parent in [p1, p2, p3] {
+            helper.lookup_changeset(parent).await?;
+        }
+        let err =
+            fixtures::store_hg_changesets_as_uploaded(&helper.ctx, &helper.repo, vec![commit])
+                .await
+                .expect_err("Hg changeset derivation should fail on conflict");
 
         assert!(format!("{err:?}").contains("Unresolved conflict"));
 

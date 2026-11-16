@@ -955,9 +955,7 @@ mod tests {
         cs_ids: &[ChangesetId],
     ) -> Result<()> {
         let manager = repo.repo_derived_data().manager();
-        manager
-            .derive_exactly_batch::<MappedHgChangesetId>(ctx, cs_ids.to_vec(), None)
-            .await?;
+        fixtures::store_hg_changesets_as_uploaded(ctx, repo, cs_ids.to_vec()).await?;
         manager
             .derive_exactly_batch::<RootAclManifestId>(ctx, cs_ids.to_vec(), None)
             .await?;
@@ -982,9 +980,7 @@ mod tests {
 
         let stored_aug = {
             let manager = repo.repo.repo_derived_data().manager();
-            manager
-                .derive_exactly_batch::<MappedHgChangesetId>(ctx, vec![root], None)
-                .await?;
+            fixtures::store_hg_changesets_as_uploaded(ctx, &repo, vec![root]).await?;
             manager
                 .derive_exactly_batch::<RootAclManifestId>(ctx, vec![root], None)
                 .await?;

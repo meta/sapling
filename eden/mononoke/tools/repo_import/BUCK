@@ -19,6 +19,7 @@ rust_binary(
         "//eden/mononoke/metaconfig:metaconfig_parser",
         "//eden/mononoke/repo_attributes/repo_derivation_queues/if:derivation_queue_thrift-rust",
         "//eden/mononoke/repo_factory:test_repo_factory",
+        "//eden/mononoke/tests/fixtures:fixtures",
         "//eden/mononoke/tests/utils:tests_utils",
     ],
     deps = [

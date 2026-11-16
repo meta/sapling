@@ -13,6 +13,7 @@ rust_library(
         "//eden/mononoke/blobstore:memblob",
         "//eden/mononoke/repo_attributes/filestore:filestore",
         "//eden/mononoke/repo_factory:test_repo_factory",
+        "//eden/mononoke/tests/fixtures:fixtures",
         "//eden/mononoke/tests/utils:tests_utils",
     ],
     deps = [

@@ -237,9 +237,7 @@ async fn test_augmented_manifest_hg_blobs_loadable(fb: FacebookInit) -> Result<(
     let manager = repo.repo_derived_data().manager();
 
     // Pre-derive HgChangesets for the old HgManifest-based augmented path.
-    manager
-        .derive_exactly_batch::<MappedHgChangesetId>(&ctx, vec![root, child], None)
-        .await?;
+    fixtures::store_hg_changesets_as_uploaded(&ctx, &repo, vec![root, child]).await?;
 
     // Pre-derive RootAclManifestId (batch dependency of RootHgAugmentedManifestId)
     manager
@@ -484,9 +482,7 @@ async fn test_augmented_manifest_multi_batch(fb: FacebookInit) -> Result<()> {
     let manager = repo.repo_derived_data().manager();
 
     // Pre-derive dependencies of RootHgAugmentedManifestId.
-    manager
-        .derive_exactly_batch::<MappedHgChangesetId>(&ctx, csids.clone(), None)
-        .await?;
+    fixtures::store_hg_changesets_as_uploaded(&ctx, &repo, csids.clone()).await?;
     manager
         .derive_exactly_batch::<RootAclManifestId>(&ctx, csids.clone(), None)
         .await?;
@@ -617,9 +613,7 @@ async fn test_augmented_manifest_skip_writes(fb: FacebookInit) -> Result<()> {
     let manager = repo.repo_derived_data().manager();
 
     // Prederive the static manager dependency retained in this stack.
-    manager
-        .derive_exactly_batch::<MappedHgChangesetId>(&ctx, vec![root, child, grandchild], None)
-        .await?;
+    fixtures::store_hg_changesets_as_uploaded(&ctx, &repo, vec![root, child, grandchild]).await?;
 
     // Pre-derive RootAclManifestId (batch dependency of RootHgAugmentedManifestId)
     manager
@@ -857,9 +851,7 @@ async fn test_resolve_copy_from_filenodes(fb: FacebookInit) -> Result<()> {
     let manager = repo.repo_derived_data().manager();
 
     // Pre-derive HgChangesets for the old HgManifest-based augmented path.
-    manager
-        .derive_exactly_batch::<MappedHgChangesetId>(&ctx, vec![root], None)
-        .await?;
+    fixtures::store_hg_changesets_as_uploaded(&ctx, &repo, vec![root]).await?;
     manager
         .derive_exactly_batch::<RootAclManifestId>(&ctx, vec![root], None)
         .await?;
@@ -969,9 +961,7 @@ async fn test_resolve_copy_from_filenodes_missing_source(fb: FacebookInit) -> Re
 
     let manager = repo.repo_derived_data().manager();
 
-    manager
-        .derive_exactly_batch::<MappedHgChangesetId>(&ctx, vec![root, child], None)
-        .await?;
+    fixtures::store_hg_changesets_as_uploaded(&ctx, &repo, vec![root, child]).await?;
     manager
         .derive_exactly_batch::<RootAclManifestId>(&ctx, vec![root, child], None)
         .await?;
@@ -1052,9 +1042,7 @@ async fn test_compute_hg_node_id_matches_materialised(fb: FacebookInit) -> Resul
         .await?;
 
     let manager = repo.repo_derived_data().manager();
-    manager
-        .derive_exactly_batch::<MappedHgChangesetId>(&ctx, vec![cs_id], None)
-        .await?;
+    fixtures::store_hg_changesets_as_uploaded(&ctx, &repo, vec![cs_id]).await?;
     manager
         .derive_exactly_batch::<RootAclManifestId>(&ctx, vec![cs_id], None)
         .await?;
@@ -1126,9 +1114,7 @@ async fn derive_augmented_manifests(
     cs_ids: Vec<ChangesetId>,
 ) -> Result<Vec<(HgAugmentedManifestId, HgAugmentedManifestEnvelope)>> {
     let manager = repo.repo_derived_data().manager();
-    manager
-        .derive_exactly_batch::<MappedHgChangesetId>(ctx, cs_ids.clone(), None)
-        .await?;
+    fixtures::store_hg_changesets_as_uploaded(ctx, repo, cs_ids.clone()).await?;
     manager
         .derive_exactly_batch::<RootAclManifestId>(ctx, cs_ids.clone(), None)
         .await?;
@@ -4978,9 +4964,7 @@ async fn test_augmented_manifest_batch_handles_repeated_merge_acl_root(
         .await?;
     let csids = vec![base, left1, right1, merge1, left2, right2, merge2];
     let manager = repo.repo_derived_data().manager();
-    manager
-        .derive_exactly_batch::<MappedHgChangesetId>(&ctx, csids.clone(), None)
-        .await?;
+    fixtures::store_hg_changesets_as_uploaded(&ctx, &repo, csids.clone()).await?;
     manager
         .derive_exactly_batch::<RootAclManifestId>(&ctx, csids.clone(), None)
         .await?;
@@ -5169,9 +5153,7 @@ async fn test_augmented_manifest_skip_writes_uses_mapped_hg_roots(fb: FacebookIn
 
     let csids = vec![root, child, grandchild];
     let manager = repo.repo_derived_data().manager();
-    manager
-        .derive_exactly_batch::<MappedHgChangesetId>(&ctx, csids.clone(), None)
-        .await?;
+    fixtures::store_hg_changesets_as_uploaded(&ctx, &repo, csids.clone()).await?;
     manager
         .derive_exactly_batch::<RootAclManifestId>(&ctx, csids.clone(), None)
         .await?;
@@ -6075,6 +6057,7 @@ async fn test_upload_path_fails_when_a_child_is_not_derived(fb: FacebookInit) ->
                 .await?;
 
             let parent_manifest = hg_manifest_id_of(&ctx, &repo, parent).await?;
+            fixtures::store_hg_changesets_as_uploaded(&ctx, &repo, vec![child]).await?;
             let child_manifest = hg_manifest_id_of(&ctx, &repo, child).await?;
             derive_hg_augmented_manifest::derive_from_hg_manifest_and_parents(
                 &ctx,

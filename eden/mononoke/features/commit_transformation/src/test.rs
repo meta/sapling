@@ -1120,6 +1120,9 @@ async fn squash_source(ctx: &CoreContext, augmented_for_head: bool) -> Result<Sq
     } else {
         vec![parent]
     };
+    // Derivation would also derive augmented manifests, so store the Hg
+    // changesets as an upload does.
+    fixtures::store_hg_changesets_as_uploaded(ctx, &repo, vec![parent, side, head]).await?;
     for cs_id in [parent, head] {
         repo.derive_hg_changeset(ctx, cs_id).await?;
     }

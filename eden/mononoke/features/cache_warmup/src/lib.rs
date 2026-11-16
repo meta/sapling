@@ -390,12 +390,16 @@ mod tests {
             .add_file("dir/b", "b")
             .commit()
             .await?;
+        // Derivation would also derive the augmented manifest, so store the Hg
+        // changeset as an upload does, and derive exactly its filenodes.
+        fixtures::store_hg_changesets_as_uploaded(ctx, &repo, vec![cs_id]).await?;
         let hg_cs_id = with_just_knobs_async(
             knobs(false),
             async {
                 let hg_cs_id = repo.derive_hg_changeset(ctx, cs_id).await?;
                 repo.repo_derived_data()
-                    .derive::<FilenodesOnlyPublic>(ctx, cs_id, DerivationPriority::LOW)
+                    .manager()
+                    .derive_exactly_batch::<FilenodesOnlyPublic>(ctx, vec![cs_id], None)
                     .await?;
                 anyhow::Ok(hg_cs_id)
             }

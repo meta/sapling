@@ -76,6 +76,9 @@ impl HgManifestFixture {
             read_from_augmented(false),
             async {
                 repo.derive_hg_changeset(ctx, root).await?;
+                // Derivation would derive the child's augmented manifest along
+                // with its Hg changeset, so store it as an upload does.
+                fixtures::store_hg_changesets_as_uploaded(ctx, &repo, vec![child]).await?;
                 repo.derive_hg_changeset(ctx, child).await
             }
             .boxed(),

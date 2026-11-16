@@ -25,11 +25,15 @@ use std::io::Write;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
+use blobstore::Loadable;
 use bonsai_hg_mapping::BonsaiHgMappingRef;
 use bulk_derivation::BulkDerivation;
 use clap::Parser;
 use context::CoreContext;
 use derived_data_manager::BonsaiDerivable;
+use futures::StreamExt;
+use futures::TryStreamExt;
+use futures::stream;
 use mercurial_derivation::MappedHgChangesetId;
 use mercurial_derivation::RootHgAugmentedManifestId;
 use mononoke_app::MononokeApp;
@@ -37,6 +41,7 @@ use mononoke_app::args::RepoArgs;
 use mononoke_types::ChangesetId;
 use mononoke_types::DerivableType;
 use phases::PhasesRef;
+use repo_blobstore::RepoBlobstoreRef;
 use repo_derived_data::RepoDerivedDataRef;
 use repo_identity::RepoIdentityRef;
 use tests_utils::drawdag::extend_from_dag_with_actions;
@@ -65,6 +70,8 @@ pub struct CommandArgs {
 
     /// Skip augmented-manifest derivation, for tests that need a commit
     /// deliberately left without one (e.g. to exercise the fail-closed path).
+    /// Hg changesets are then stored the way an upload stores them, because
+    /// deriving them would derive their augmented manifests first.
     #[clap(long)]
     no_derive_hg_augmented: bool,
 }
@@ -132,7 +139,11 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
                     Some(repo.repo_identity().name()),
                 ))
             .then(|| csids.clone());
-            derive::<MappedHgChangesetId>(&ctx, &repo, csids).await?;
+            if args.no_derive_hg_augmented {
+                store_hg_changesets_as_uploaded(&ctx, &repo, csids).await?;
+            } else {
+                derive::<MappedHgChangesetId>(&ctx, &repo, csids).await?;
+            }
             if let Some(csids) = augmented_csids {
                 derive::<RootHgAugmentedManifestId>(&ctx, &repo, csids).await?;
             }
@@ -176,6 +187,24 @@ async fn derive<D: BonsaiDerivable>(
         .await
         .with_context(|| format!("Failed to derive {}", D::NAME))?;
     Ok(())
+}
+
+/// Store the Hg changesets of `csids`, which are in topological order, outside
+/// the derived data manager, so that no augmented manifest is derived for them.
+async fn store_hg_changesets_as_uploaded(
+    ctx: &CoreContext,
+    repo: &Repo,
+    csids: Vec<ChangesetId>,
+) -> Result<()> {
+    let derivation_ctx = repo.repo_derived_data().manager().derivation_context(None);
+    let bonsais = stream::iter(csids)
+        .map(|csid| async move { csid.load(ctx, repo.repo_blobstore()).await })
+        .buffered(100)
+        .try_collect()
+        .await?;
+    let derived = MappedHgChangesetId::derive_batch(ctx, &derivation_ctx, bonsais).await?;
+    MappedHgChangesetId::store_mapping_batch(ctx, &derivation_ctx, derived.into_iter().collect())
+        .await
 }
 
 async fn derive_all(ctx: &CoreContext, repo: &Repo, csids: &[ChangesetId]) -> Result<()> {

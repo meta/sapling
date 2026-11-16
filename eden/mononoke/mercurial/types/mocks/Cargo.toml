@@ -28,6 +28,7 @@ context = { version = "0.1.0", path = "../../../servers/slapi/slapi_server/conte
 derivation_queue_thrift = { version = "0.1.0", path = "../../../repo_attributes/repo_derivation_queues/if" }
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
+fixtures = { version = "0.1.0", path = "../../../tests/fixtures" }
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
 justknobs_ext = { version = "0.1.0", path = "../../../common/rust/justknobs_ext" }
 manifest = { version = "0.1.0", path = "../../../manifest" }

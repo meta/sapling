@@ -155,6 +155,9 @@ async fn existing_commit(
         .add_file("dir/b", "b")
         .commit()
         .await?;
+    if !augmented {
+        fixtures::store_hg_changesets_as_uploaded(ctx, repo, vec![cs_id]).await?;
+    }
     let hg_cs_id = repo.derive_hg_changeset(ctx, cs_id).await?;
     if augmented {
         repo.repo_derived_data()

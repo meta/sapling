@@ -650,13 +650,13 @@ async fn derive_and_load_hg_augmented_manifest(
 ) -> Result<(HgAugmentedManifestId, HgAugmentedManifestEnvelope)> {
     let manager = repo.repo_derived_data().manager();
     manager
-        .derive_exactly_batch::<MappedHgChangesetId>(ctx, vec![cs_id], None)
-        .await?;
-    manager
         .derive_exactly_batch::<RootAclManifestId>(ctx, vec![cs_id], None)
         .await?;
     manager
         .derive_exactly_batch::<RootHgAugmentedManifestId>(ctx, vec![cs_id], None)
+        .await?;
+    manager
+        .derive_exactly_batch::<MappedHgChangesetId>(ctx, vec![cs_id], None)
         .await?;
     let root_hg_augmented_manifest_id = manager
         .fetch_derived::<RootHgAugmentedManifestId>(ctx, cs_id, None)

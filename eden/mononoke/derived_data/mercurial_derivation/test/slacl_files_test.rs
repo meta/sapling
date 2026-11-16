@@ -11,7 +11,6 @@ use anyhow::Result;
 use blobstore::Loadable;
 use context::CoreContext;
 use fbinit::FacebookInit;
-use mercurial_derivation::MappedHgChangesetId;
 use mercurial_derivation::RootHgAugmentedManifestId;
 use mercurial_types::HgAugmentedManifestEntry;
 use mercurial_types::HgAugmentedManifestEnvelope;
@@ -76,9 +75,7 @@ async fn test_root_and_waypoint_acl_manifest_pointers(fb: FacebookInit) -> Resul
     // Verify AclManifest is NOT the canonical empty manifest (pre-derive batch dependencies first)
     let manager = repo.repo_derived_data().manager();
     // Pre-derive batch dependencies
-    manager
-        .derive_exactly_batch::<MappedHgChangesetId>(&ctx, vec![root], None)
-        .await?;
+    fixtures::store_hg_changesets_as_uploaded(&ctx, &repo, vec![root]).await?;
     manager
         .derive_exactly_batch::<RootAclManifestId>(&ctx, vec![root], None)
         .await?;
@@ -765,9 +762,7 @@ async fn derive_and_load_augmented_manifest(
 ) -> Result<HgAugmentedManifestEnvelope> {
     let manager = repo.repo_derived_data().manager();
     // Pre-derive batch dependencies of RootHgAugmentedManifestId
-    manager
-        .derive_exactly_batch::<MappedHgChangesetId>(ctx, batch.clone(), None)
-        .await?;
+    fixtures::store_hg_changesets_as_uploaded(ctx, repo, batch.clone()).await?;
     manager
         .derive_exactly_batch::<RootAclManifestId>(ctx, batch.clone(), None)
         .await?;

@@ -55,8 +55,8 @@ Create commit that modifies git submodule in small repo
   Error: Failed to derive Mercurial changeset
   
   Caused by:
-      0: failed to derive hgchangesets batch (start:ac220d3e57adf7c31a869141787d3bc638d79a3f1dd54b0ba54d545c260f14e6, end:f299e57c379932297b130d60f6d86e54c87c8e02507bf0867783e23d7d8f8a50)
-      1: failed deriving stack of Some(ChangesetId(Blake2(ac220d3e57adf7c31a869141787d3bc638d79a3f1dd54b0ba54d545c260f14e6))) to Some(ChangesetId(Blake2(3fa05e617e5bd79190a61e16cc23669825b57f36474df1902a63c071998b181d)))
+      0: failed to derive dependent types
+      1: failed to derive hg_augmented_manifests batch (start:ac220d3e57adf7c31a869141787d3bc638d79a3f1dd54b0ba54d545c260f14e6, end:f299e57c379932297b130d60f6d86e54c87c8e02507bf0867783e23d7d8f8a50)
       2: Git submodules not supported
   @  54a6db91baf1 L_A
       file_in_large_repo.txt |  1 +

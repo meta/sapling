@@ -9,6 +9,7 @@ license = "GPLv2+"
 
 [dependencies]
 anyhow = "1.0.104"
+blobstore = { version = "0.1.0", path = "../../blobstore" }
 blobstore_sync_queue = { version = "0.1.0", path = "../../blobstore_sync_queue" }
 bonsai_hg_mapping = { version = "0.1.0", path = "../../repo_attributes/bonsai_hg_mapping" }
 bookmarks = { version = "0.1.0", path = "../../repo_attributes/bookmarks" }
@@ -23,6 +24,7 @@ derived_data_manager = { version = "0.1.0", path = "../../derived_data/manager" 
 facet = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main", features = ["impl_never_type"] }
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 filestore = { version = "0.1.0", path = "../../repo_attributes/filestore" }
+futures = { version = "0.3.34", features = ["async-await", "compat"] }
 justknobs_ext = { version = "0.1.0", path = "../../common/rust/justknobs_ext" }
 mercurial_derivation = { version = "0.1.0", path = "../../derived_data/mercurial_derivation" }
 metaconfig_types = { version = "0.1.0", path = "../../metaconfig/types" }

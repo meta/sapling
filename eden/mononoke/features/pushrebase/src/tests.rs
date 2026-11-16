@@ -5613,6 +5613,12 @@ async fn branch_merge(ctx: &CoreContext, augmented_for_onto: bool) -> Result<Bra
     } else {
         vec![p1, p2, merge]
     };
+    if !augmented_for_onto {
+        // Derivation would derive `onto`'s augmented manifest along with its
+        // Hg changeset, so store the Hg changeset as an upload does.
+        repo.derive_hg_changeset(ctx, p1).await?;
+        fixtures::store_hg_changesets_as_uploaded(ctx, &repo, vec![onto]).await?;
+    }
     for cs_id in [p1, p2, merge, onto] {
         repo.derive_hg_changeset(ctx, cs_id).await?;
     }

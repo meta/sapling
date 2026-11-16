@@ -1813,7 +1813,10 @@ mod tests {
             .add_file("c", "c")
             .commit()
             .await?;
-        // Derive the hg changesets without their augmented manifests.
+        // Derive the hg changesets without their augmented manifests:
+        // derivation would also derive augmented manifests, so store the Hg
+        // changesets as an upload does.
+        fixtures::store_hg_changesets_as_uploaded(ctx, &repo, vec![root, child]).await?;
         let (root_mf_id, child_mf_id) = with_just_knobs_async(
             no_augmented_with_hg_changeset(),
             async {

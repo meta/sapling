@@ -151,6 +151,7 @@ rust_unittest(
         "//eden/mononoke/repo_attributes/repo_identity:repo_identity",
         "//eden/mononoke/repo_factory:test_repo_factory",
         "//eden/mononoke/servers/slapi/slapi_server/context:context",
+        "//eden/mononoke/tests/fixtures:fixtures",
         "//eden/mononoke/tests/utils:tests_utils",
     ],
 )

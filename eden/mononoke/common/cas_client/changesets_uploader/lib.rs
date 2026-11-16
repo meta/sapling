@@ -910,6 +910,9 @@ mod tests {
             .add_file("new/c", "c")
             .commit()
             .await?;
+        // Derivation would also derive augmented manifests, so store the Hg
+        // changesets as an upload does.
+        fixtures::store_hg_changesets_as_uploaded(ctx, &repo, vec![root, child]).await?;
         for cs_id in [root, child] {
             with_just_knobs_async(knobs(false), repo.derive_hg_changeset(ctx, cs_id).boxed())
                 .await?;

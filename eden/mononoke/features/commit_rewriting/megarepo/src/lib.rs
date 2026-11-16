@@ -631,6 +631,9 @@ mod test {
             .add_file_with_type("dir/c", "c\n", FileType::Executable)
             .commit()
             .await?;
+        // Derivation would also derive augmented manifests, so store the Hg
+        // changesets as an upload does.
+        fixtures::store_hg_changesets_as_uploaded(ctx, &*repo, vec![cs_id]).await?;
         with_just_knobs_async(
             read_from_augmented(false),
             repo.derive_hg_changeset(ctx, cs_id).boxed(),

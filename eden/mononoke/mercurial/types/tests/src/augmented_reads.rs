@@ -94,6 +94,9 @@ async fn fixture(ctx: &CoreContext) -> Result<Fixture> {
             "scm/mononoke:derive_hg_augmented_manifest_with_hg_changeset".to_string() => KnobVal::Bool(false),
         }),
         async {
+            // Derivation would also derive augmented manifests, so store the
+            // Hg changesets as an upload does.
+            fixtures::store_hg_changesets_as_uploaded(ctx, &repo, vec![root, child]).await?;
             anyhow::Ok((
                 root_manifest(ctx, &repo, root).await?,
                 root_manifest(ctx, &repo, child).await?,

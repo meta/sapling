@@ -18,6 +18,7 @@ rust_library(
         "//eden/mononoke/common/rust/justknobs_ext:justknobs",
         "//eden/mononoke/derived_data/mercurial_derivation:mercurial_derivation",
         "//eden/mononoke/repo_factory:test_repo_factory",
+        "//eden/mononoke/tests/fixtures:fixtures",
         "//eden/mononoke/tests/utils:tests_utils",
     ],
     deps = [

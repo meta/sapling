@@ -15,12 +15,16 @@ use anyhow::anyhow;
 use anyhow::ensure;
 use async_trait::async_trait;
 use blobstore::KeyedBlobstore;
+use blobstore::Loadable;
 use bookmarks::BookmarkKey;
 use bookmarks::BookmarkUpdateReason;
 use bytes::Bytes;
 use context::CoreContext;
+use derived_data_manager::BonsaiDerivable;
 use fbinit::FacebookInit;
 use filestore::StoreRequest;
+use futures::StreamExt;
+use futures::TryStreamExt;
 use futures::stream;
 use mercurial_derivation::DeriveHgChangeset;
 use mercurial_derivation::MappedHgChangesetId;
@@ -46,6 +50,8 @@ use mononoke_types::FileType;
 use mononoke_types::GitLfs;
 use mononoke_types::RepositoryId;
 use mononoke_types::sha1_hash::Sha1;
+use repo_blobstore::RepoBlobstoreRef;
+use repo_derived_data::RepoDerivedDataRef;
 use sorted_vector_map::SortedVectorMap;
 use test_repo_factory::TestRepoFactory;
 use test_repo_factory::TestRepoFactoryBuilder;
@@ -110,14 +116,34 @@ pub async fn set_bookmark(
     txn.commit().await.unwrap();
 }
 
+/// Store the Hg changesets of `cs_ids` the way a client upload does: outside
+/// the derived data manager, so their augmented and ACL manifests are not
+/// derived. `cs_ids` must be in topological order, and every parent outside
+/// them must already have an Hg changeset.
+pub async fn store_hg_changesets_as_uploaded(
+    ctx: &CoreContext,
+    repo: &(impl RepoBlobstoreRef + RepoDerivedDataRef),
+    cs_ids: Vec<ChangesetId>,
+) -> Result<()> {
+    let derivation_ctx = repo.repo_derived_data().manager().derivation_context(None);
+    let bonsais = stream::iter(cs_ids)
+        .map(|cs_id| async move { cs_id.load(ctx, repo.repo_blobstore()).await })
+        .buffered(100)
+        .try_collect()
+        .await?;
+    let derived = MappedHgChangesetId::derive_batch(ctx, &derivation_ctx, bonsais).await?;
+    MappedHgChangesetId::store_mapping_batch(ctx, &derivation_ctx, derived.into_iter().collect())
+        .await
+}
+
 /// Store `cs_id`'s root Hg manifest under `supplied` and point `cs_id`'s Hg
 /// changeset at it, the way legacy `unbundle` stores a client-supplied root
 /// hash without checking it. The stored manifest keeps its content and
 /// parents, so its `computed_node_id` is still the content hash.
 ///
-/// Hg changesets are derived through the derived data manager, not
-/// `derive_hg_changeset`, which in tests also derives augmented manifests from
-/// the root this replaces.
+/// The parents' Hg changesets are derived through the derived data manager,
+/// and `cs_id`'s is stored like an upload, so that no augmented manifest is
+/// derived from the root this replaces.
 pub async fn store_supplied_hg_root(
     ctx: &CoreContext,
     repo: &impl Repo,
@@ -125,9 +151,11 @@ pub async fn store_supplied_hg_root(
     supplied: HgNodeHash,
 ) -> Result<HgManifestId> {
     let manager = repo.repo_derived_data().manager();
+    let bonsai = cs_id.load(ctx, repo.repo_blobstore()).await?;
     manager
-        .derive_heads::<MappedHgChangesetId>(ctx.clone(), vec![cs_id], None, None)
+        .derive_heads::<MappedHgChangesetId>(ctx.clone(), bonsai.parents().collect(), None, None)
         .await?;
+    store_hg_changesets_as_uploaded(ctx, repo, vec![cs_id]).await?;
     let hg_cs_id = manager
         .fetch_derived::<MappedHgChangesetId>(ctx, cs_id, None)
         .await?
