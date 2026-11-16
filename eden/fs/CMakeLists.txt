@@ -13,6 +13,18 @@ add_executable(
 # on Windows.
 if(WIN32)
   install(TARGETS edenfs RUNTIME DESTINATION libexec)
+  # libsodium is the one library that edenfs links as a DLL. Install it beside
+  # edenfs from wherever PATH has it, which is where the build's tests find it.
+  install(CODE [[
+    file(GET_RUNTIME_DEPENDENCIES
+      EXECUTABLES "$<TARGET_FILE:edenfs>"
+      RESOLVED_DEPENDENCIES_VAR edenfs_dlls
+      PRE_INCLUDE_REGEXES "^libsodium"
+      PRE_EXCLUDE_REGEXES ".*"
+      DIRECTORIES $ENV{PATH}
+    )
+    file(INSTALL ${edenfs_dlls} DESTINATION "${CMAKE_INSTALL_PREFIX}/libexec")
+  ]])
 else()
   install(TARGETS edenfs RUNTIME DESTINATION libexec/eden)
 endif()
