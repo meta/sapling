@@ -56,8 +56,6 @@ const KNOWN_ACCEPTED: &[&str] = &[
     "UnionUnknownThenKnownField",
     // Reads `"."` as `0.0`.
     "FloatTrailingDotOnlyQuoted",
-    // Skips a leading byte order mark as whitespace.
-    "Utf8Bom",
 ];
 
 fn write(value: &Example, options: Json5WriterOptions) -> String {
