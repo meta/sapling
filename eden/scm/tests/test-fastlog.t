@@ -115,3 +115,34 @@ Fastlog should never get called on draft commits
   $ curl -s -X PUT http://localhost:$CONDUIT_PORT/set_log_response/a5957b6bf0bdeb9b96368bddd2838004ad966b7d/crash
   $ sl log -f x > /dev/null
   1 files fetched over 1 fetches - (1 misses, 0.00% hit ratio) over 0.00s (?)
+
+Fastlog extension when the fastlog query fails
+
+  $ cat >> .sl/config <<EOF
+  > [extensions]
+  > fastlog=
+  > [fastlog]
+  > files=True
+  > EOF
+  $ curl -s -X PUT http://localhost:$CONDUIT_PORT/fail_next/scmquery-unavailable
+  $ sl log -f x -T '{node|short} {desc} {phase} {files}\n'
+  ** Sapling SCM (version *) has crashed: (glob)
+  Traceback (most recent call last):
+  ...
+  sapling.ext.extlib.phabricator.graphql.ClientError: scmquery-unavailable
+  [1]
+
+pathlog starting from a draft commit when the fastlog query fails
+
+  $ curl -s -X PUT http://localhost:$CONDUIT_PORT/fail_next/scmquery-unavailable
+  $ sl debugshell -c '
+  > from sapling import pathlog
+  > for node in pathlog.pathlog(repo, repo["."].node(), "x"):
+  >     ctx = repo[node]
+  >     ui.write(f"{ctx} {ctx.description()} {ctx.phasestr()}\n")
+  > '
+  a5957b6bf0bd xx3 draft
+  Traceback (most recent call last):
+  ...
+  sapling.ext.extlib.phabricator.graphql.ClientError: scmquery-unavailable
+  [1]
