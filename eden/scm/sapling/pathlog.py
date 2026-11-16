@@ -137,23 +137,47 @@ def strategy_fastlog(
     skip = 0
     use_mutable_history = repo.ui.configbool("fastlog", "followmutablehistory")
     batch_size = repo.ui.configint("fastlog", "batchsize", FASTLOG_BATCH_SIZE)
+    fallback = repo.ui.configbool("fastlog", "fallback", True)
     start_time = int(timer())
 
     while True:
         loop_start_time = int(timer())
 
-        results = client.scmquery_log(
-            reponame,
-            scm_type,
-            start_hex,
-            file_paths=[path],
-            skip=skip,
-            number=batch_size,
-            use_mutable_history=use_mutable_history,
-            timeout=FASTLOG_TIMEOUT,
-        )
-        if results is None:
-            raise error.Abort(_("ScmQuery fastlog returned nothing unexpectedly"))
+        try:
+            results = client.scmquery_log(
+                reponame,
+                scm_type,
+                start_hex,
+                file_paths=[path],
+                skip=skip,
+                number=batch_size,
+                use_mutable_history=use_mutable_history,
+                timeout=FASTLOG_TIMEOUT,
+            )
+            if results is None:
+                raise error.Abort(_("ScmQuery fastlog returned nothing unexpectedly"))
+        except Exception as ex:
+            # Fall back only before any ScmQuery result is yielded. Nodes yielded
+            # above are not ancestors of `node`, so they won't be yielded again.
+            if skip or not fallback:
+                raise
+            repo.ui.log_exception(
+                exception_type=type(ex).__name__,
+                exception_msg=str(ex),
+                fatal="false",
+                source="fastlog_fallback",
+            )
+            repo.ui.debug(
+                "fastlog: query failed (%r), falling back to path history\n" % ex
+            )
+            yield from strategy_pathhisotry(
+                repo,
+                node,
+                path,
+                is_prefetch_commit_text=is_prefetch_commit_text,
+                stats=stats,
+            )
+            return
 
         batch_end_time = int(timer())
         if stats:

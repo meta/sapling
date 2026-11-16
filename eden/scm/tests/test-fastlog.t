@@ -125,7 +125,20 @@ Fastlog extension when the fastlog query fails
   > files=True
   > EOF
   $ curl -s -X PUT http://localhost:$CONDUIT_PORT/fail_next/scmquery-unavailable
-  $ sl log -f x -T '{node|short} {desc} {phase} {files}\n'
+  $ sl log -f x -T '{node|short} {desc} {phase} {files}\n' --debug
+  found common parent at 7200df4e0acad9339167ac526b0054b1bab32dee with path 'x'
+  using strategy_fastlog for 'x'
+  fastlog: query failed (ClientError('scmquery-unavailable')), falling back to path history
+  using strategy_pathhisotry for 'x'
+  a5957b6bf0bd xx3 draft x
+  32e6611f6149 xx2-fake-rebased public x
+  0632994590a8 xx public x
+  b292c1e3311f x public x
+
+Fastlog extension when the fastlog query fails with the fallback disabled
+
+  $ curl -s -X PUT http://localhost:$CONDUIT_PORT/fail_next/scmquery-unavailable
+  $ sl log -f x -T '{node|short} {desc} {phase} {files}\n' --config fastlog.fallback=false
   ** Sapling SCM (version *) has crashed: (glob)
   Traceback (most recent call last):
   ...
@@ -135,14 +148,17 @@ Fastlog extension when the fastlog query fails
 pathlog starting from a draft commit when the fastlog query fails
 
   $ curl -s -X PUT http://localhost:$CONDUIT_PORT/fail_next/scmquery-unavailable
-  $ sl debugshell -c '
+  $ sl debugshell --debug -c '
   > from sapling import pathlog
   > for node in pathlog.pathlog(repo, repo["."].node(), "x"):
   >     ctx = repo[node]
   >     ui.write(f"{ctx} {ctx.description()} {ctx.phasestr()}\n")
   > '
+  using strategy_fastlog for 'x'
   a5957b6bf0bd xx3 draft
-  Traceback (most recent call last):
-  ...
-  sapling.ext.extlib.phabricator.graphql.ClientError: scmquery-unavailable
-  [1]
+  fastlog: query failed (ClientError('scmquery-unavailable')), falling back to path history
+  using strategy_pathhisotry for 'x'
+  strategy_pathhisotry stats for 'x': PathlogStats(*) (glob)
+  32e6611f6149 xx2-fake-rebased public
+  0632994590a8 xx public
+  b292c1e3311f x public
