@@ -38,7 +38,9 @@ use sql_construct::SqlConstruct;
 use sql_ext::Connection;
 
 mod guard_chunks;
+mod log_allocation;
 mod log_lock;
+mod writer_allocation_interop;
 mod writer_interop;
 
 /// Test fixture providing two repos that share the same underlying DB.

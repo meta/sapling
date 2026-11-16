@@ -7,6 +7,14 @@ rust_library(
     name = "multi_repo_bookmarks_transaction",
     srcs = glob(["src/**/*.rs"]),
     autocargo = {"cargo_toml_dir": "."},
+    test_deps = [
+        "fbsource//third-party/rust:futures",
+        "//common/rust/shed/fbinit:fbinit",
+        "//common/rust/shed/fbinit:fbinit-tokio",
+        "//eden/mononoke/common/mononoke_macros:mononoke_macros",
+        "//eden/mononoke/common/sql_construct:sql_construct",
+        "//eden/mononoke/mononoke_types:mononoke_types-mocks",
+    ],
     deps = [
         "fbsource//third-party/rust:anyhow",
         "//common/rust/shed/stats:stats",
