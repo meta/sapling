@@ -30,6 +30,7 @@ arrow-buffer = { version = "57", git = "https://github.com/apache/arrow-rs", rev
 arrow-cast = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
 arrow-csv = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
 arrow-data = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
+arrow-flight = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
 arrow-ipc = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
 arrow-json = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
 arrow-ord = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
