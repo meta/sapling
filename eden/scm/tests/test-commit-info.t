@@ -41,3 +41,26 @@ FIXME: no "predecessors"
   > EOS
   {"category": "commit-info", "data": {"author": "test", "metrics_type": "commit_info", "mutation": "importstack", "node": "75e5b2af7d86c003e77552934d7ce0da89d6a8a0", "predecessors": "426bada5c67598ca65036d57d9e4b64b0c1ce7a0", "repo": "repo2_server"}}
   {":1": "75e5b2af7d86c003e77552934d7ce0da89d6a8a0"}
+
+Re-importing an unchanged commit as an amend of itself returns the existing node.
+FIXME: it is logged and recorded as its own predecessor
+
+  $ sl debugimportstack << EOS
+  > [["commit", {"author": "test", "date": [0, 0], "text": "changed", "mark": ":1", "parents": [],
+  >   "predecessors": ["75e5b2af7d86c003e77552934d7ce0da89d6a8a0"], "operation": "amend",
+  >   "files": {"A": {"data": "changed"}}}]]
+  > EOS
+  {"category": "commit-info", "data": {"author": "test", "metrics_type": "commit_info", "mutation": "amend", "node": "75e5b2af7d86c003e77552934d7ce0da89d6a8a0", "predecessors": "75e5b2af7d86c003e77552934d7ce0da89d6a8a0", "repo": "repo2_server"}}
+  {":1": "75e5b2af7d86c003e77552934d7ce0da89d6a8a0"}
+  $ sl log -r 75e5b2af7d86 -T '{predecessors}\n'
+  75e5b2af7d86
+
+FIXME: a self-including predecessor list also logs the commit as its own predecessor
+
+  $ sl debugimportstack << EOS
+  > [["commit", {"author": "test", "date": [0, 0], "text": "changed", "mark": ":1", "parents": [],
+  >   "predecessors": ["75e5b2af7d86c003e77552934d7ce0da89d6a8a0", "$A"], "operation": "fold",
+  >   "files": {"A": {"data": "changed"}}}]]
+  > EOS
+  {"category": "commit-info", "data": {"author": "test", "metrics_type": "commit_info", "mutation": "fold", "node": "75e5b2af7d86c003e77552934d7ce0da89d6a8a0", "predecessors": "75e5b2af7d86c003e77552934d7ce0da89d6a8a0 426bada5c67598ca65036d57d9e4b64b0c1ce7a0", "repo": "repo2_server"}}
+  {":1": "75e5b2af7d86c003e77552934d7ce0da89d6a8a0"}
