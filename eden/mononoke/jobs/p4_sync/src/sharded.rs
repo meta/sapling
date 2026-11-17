@@ -71,6 +71,7 @@ pub(crate) struct Settings {
     pub(crate) servers: HashMap<String, P4Cli>,
     pub(crate) batch_size: NonZeroUsize,
     pub(crate) idle_interval: Duration,
+    pub(crate) import_options: ImportOptions,
 }
 
 /// After `failures` failed batches in a row: 5s, 10s, 20s, … up to `MAX_RETRY_DELAY`.
@@ -381,7 +382,7 @@ impl RepoShardedProcessExecutor for P4SyncProcessExecutor {
 impl P4SyncProcessExecutor {
     async fn import_loop(&self, repo_name: &str, last_success: &LastSuccess) -> Result<()> {
         let bookmark = BookmarkKey::new(BOOKMARK)?;
-        let options = ImportOptions::default();
+        let options = self.settings.import_options.clone();
 
         let mut state = None;
         let mut failures = 0;

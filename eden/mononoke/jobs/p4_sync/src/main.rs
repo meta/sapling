@@ -21,6 +21,7 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
 use anyhow::ensure;
+use clap::Args;
 use clap::Parser;
 use executor_lib::args::ShardedExecutorArgs;
 use fbinit::FacebookInit;
@@ -30,6 +31,7 @@ use mononoke_app::args::RepoFilterAppExtension;
 use mononoke_app::args::TLSArgs;
 use mononoke_app::monitoring::AliveService;
 use mononoke_app::monitoring::MonitoringAppExtension;
+use p4_import::ImportOptions;
 use p4_source::P4Args;
 use p4_source::P4AuthArgs;
 use p4_source::P4Cli;
@@ -88,6 +90,42 @@ struct P4SyncArgs {
     /// least 1)
     #[clap(long, value_parser = parse_secs, default_value = "30")]
     idle_interval_secs: Duration,
+
+    #[clap(flatten)]
+    import_args: ImportArgs,
+}
+
+/// Each unset flag takes `ImportOptions::default()`'s value.
+#[derive(Args)]
+struct ImportArgs {
+    /// Changelists fetched at once while an earlier one is built
+    #[clap(long)]
+    changelist_lookahead: Option<usize>,
+
+    /// Files fetched at once per changelist
+    #[clap(long)]
+    file_concurrency: Option<usize>,
+
+    /// Seconds a batch builds before it stops taking changelists: the one in progress is
+    /// finished, and the rest are left for the next batch
+    #[clap(long)]
+    max_batch_build_secs: Option<u64>,
+}
+
+impl ImportArgs {
+    fn import_options(self) -> ImportOptions {
+        let defaults = ImportOptions::default();
+        ImportOptions {
+            changelist_lookahead: self
+                .changelist_lookahead
+                .unwrap_or(defaults.changelist_lookahead),
+            file_concurrency: self.file_concurrency.unwrap_or(defaults.file_concurrency),
+            max_build_time: self
+                .max_batch_build_secs
+                .map_or(defaults.max_build_time, Duration::from_secs),
+            ..defaults
+        }
+    }
 }
 
 /// One `--p4-server`.
@@ -210,6 +248,7 @@ async fn async_main(app: MononokeApp) -> Result<()> {
         servers,
         batch_size: args.batch_size,
         idle_interval: args.idle_interval_secs,
+        import_options: args.import_args.import_options(),
     };
     sharded::run(app, args.sharded_executor_args, settings).await
 }

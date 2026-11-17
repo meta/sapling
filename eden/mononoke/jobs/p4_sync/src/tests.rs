@@ -221,6 +221,60 @@ fn test_idle_interval_must_be_at_least_a_second() {
     );
 }
 
+/// The job's import options with `flags` after the flags it requires.
+fn import_options(flags: &[&str]) -> ImportOptions {
+    let required = [
+        "--exit-file",
+        "/exit",
+        "--p4-binary",
+        "/mononoke/p4",
+        "--p4-user",
+        "svc-scm-p4mirror",
+        "--p4-server",
+        "test1=ssl6:[2001:db8::1]:1818,AB:CD,/run/secrets/p4ticket-test1",
+    ];
+    let argv = ["p4_sync"]
+        .into_iter()
+        .chain(required)
+        .chain(flags.iter().copied());
+    let args = P4SyncArgs::try_parse_from(argv).unwrap_or_else(|error| panic!("{error}"));
+    args.import_args.import_options()
+}
+
+/// The options the import flags set.
+fn tuning(options: &ImportOptions) -> (usize, usize, Duration) {
+    (
+        options.changelist_lookahead,
+        options.file_concurrency,
+        options.max_build_time,
+    )
+}
+
+/// Without the import flags, the job imports as `ImportOptions::default()` says.
+#[mononoke::test]
+fn test_unset_import_flags_take_the_import_options_defaults() {
+    let options = import_options(&[]);
+    assert_eq!(tuning(&options), tuning(&ImportOptions::default()));
+}
+
+/// Each import flag sets its own option and leaves the other two at their defaults.
+#[mononoke::test]
+fn test_each_import_flag_sets_its_import_option() {
+    let (lookahead, concurrency, build_time) = tuning(&ImportOptions::default());
+    assert_eq!(
+        tuning(&import_options(&["--changelist-lookahead", "5"])),
+        (5, concurrency, build_time)
+    );
+    assert_eq!(
+        tuning(&import_options(&["--file-concurrency", "4"])),
+        (lookahead, 4, build_time)
+    );
+    assert_eq!(
+        tuning(&import_options(&["--max-batch-build-secs", "90"])),
+        (lookahead, concurrency, Duration::from_secs(90))
+    );
+}
+
 #[mononoke::test]
 fn test_import_follows_the_enabled_knob() {
     let knob = |on| {
