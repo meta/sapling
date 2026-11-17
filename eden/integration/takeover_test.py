@@ -181,7 +181,7 @@ class TakeoverTestBase(TakeoverTestCase):
             self.assertEqual(self.page2, f.read(self.pagesize))
 
 
-@testcase.eden_repo_test
+@testcase.eden_repo_test(run_io_uring=False)
 class TakeoverTest(TakeoverTestBase):
     def test_takeover(self) -> None:
         return self.do_takeover_test()
@@ -519,7 +519,7 @@ class TakeoverTest(TakeoverTestBase):
         self.eden.graceful_restart()
 
 
-@testcase.eden_repo_test(run_on_nfs=False)
+@testcase.eden_repo_test(run_on_nfs=False, run_io_uring=False)
 class TakeoverTestNoNFSServer(TakeoverTestBase):
     def edenfs_extra_config(self) -> Optional[Dict[str, List[str]]]:
         return {}
@@ -581,7 +581,7 @@ class TakeoverNfsServerDisabledTest(TakeoverTestCase):
         self._assert_nfs_mount_served()
 
 
-@testcase.eden_repo_test
+@testcase.eden_repo_test(run_io_uring=False)
 class TakeoverRocksDBStressTest(TakeoverTestCase):
     enable_fault_injection: bool = True
 
