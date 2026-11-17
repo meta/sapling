@@ -204,6 +204,7 @@ eden_add_test(eden_fs_inodes_test_file_inode
     ${LIBGMOCK_LIBRARIES}
     Folly::folly_coro_gtest_helpers
     Folly::folly_range
+    Folly::folly_scope_guard
     Folly::folly_test_test_utils
     eden_fs_inodes
     eden_fs_journal

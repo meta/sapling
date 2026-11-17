@@ -245,6 +245,7 @@ cpp_unittest(
         "fbsource//third-party/fmt:fmt",
         "fbsource//third-party/googletest:gtest",
         "fbsource//xplat/folly:range",
+        "fbsource//xplat/folly:scope_guard",
         "fbsource//xplat/folly/coro:gtest_helpers",
         "fbsource//xplat/folly/test:test_utils",
         "//eden/common/utils:fault_injector",

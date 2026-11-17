@@ -12,6 +12,7 @@
 #include <fb303/ServiceData.h>
 #include <fmt/format.h>
 #include <folly/Range.h>
+#include <folly/ScopeGuard.h>
 #include <folly/coro/GtestHelpers.h>
 #include <folly/test/TestUtils.h>
 #include <gtest/gtest.h>
@@ -20,6 +21,7 @@
 
 #include "eden/common/utils/FaultInjector.h"
 #include "eden/common/utils/StatTimes.h"
+#include "eden/fs/inodes/Overlay.h"
 #include "eden/fs/inodes/OverlayFileAccess.h"
 #include "eden/fs/inodes/RequestContext.h"
 #include "eden/fs/inodes/TreeInode.h"
@@ -259,6 +261,127 @@ TEST_F(FileInodeTest, journalFaultUsesMountInjectorBeforeAdvancingSequence) {
   EXPECT_EQ(sequence, journal.peekLatest()->sequenceID);
   EXPECT_EQ(3, inode->write("new", 0, context).get());
   EXPECT_EQ(sequence + 1, journal.peekLatest()->sequenceID);
+}
+
+TEST_F(FileInodeTest, failedOverlayWriteInvalidatesHashesAfterPossibleEffect) {
+  mount_.addFile("dir/failed-write", "old payload");
+  auto inode = mount_.getFileInode("dir/failed-write");
+  auto* access = mount_.getEdenMount()->getOverlayFileAccess();
+  const auto oldSha1 = access->getSha1(*inode);
+  const auto oldBlake3 = access->getBlake3(*inode, std::nullopt);
+  auto& injector = mount_.getServerState()->getFaultInjector();
+  injector.injectError(
+      "overlay-write-complete",
+      fmt::format("{}", inode->getNodeId()),
+      std::runtime_error("failure after write effect"),
+      1);
+
+  EXPECT_THROW_RE(
+      inode->write("new", 0, ObjectFetchContext::getNullContext()).get(),
+      std::runtime_error,
+      "failure after write effect");
+
+  EXPECT_EQ(
+      "new payload",
+      inode->readAll(ObjectFetchContext::getNullContext()).get());
+  EXPECT_NE(oldSha1, access->getSha1(*inode));
+  EXPECT_NE(oldBlake3, access->getBlake3(*inode, std::nullopt));
+  mount_.addFile("dir/write-reference", "new payload");
+  auto reference = mount_.getFileInode("dir/write-reference");
+  EXPECT_EQ(access->getSha1(*reference), access->getSha1(*inode));
+  EXPECT_EQ(
+      access->getBlake3(*reference, std::nullopt),
+      access->getBlake3(*inode, std::nullopt));
+}
+
+TEST_F(FileInodeTest, failedOverlayTruncateInvalidatesSizeAndHashes) {
+  mount_.addFile("dir/failed-truncate", "old payload");
+  auto inode = mount_.getFileInode("dir/failed-truncate");
+  auto* access = mount_.getEdenMount()->getOverlayFileAccess();
+  EXPECT_EQ(11, access->getFileSize(*inode));
+  const auto oldSha1 = access->getSha1(*inode);
+  const auto oldBlake3 = access->getBlake3(*inode, std::nullopt);
+  mount_.getServerState()->getFaultInjector().injectError(
+      "overlay-truncate-complete",
+      fmt::format("{}", inode->getNodeId()),
+      std::runtime_error("failure after truncate effect"),
+      1);
+
+  EXPECT_THROW_RE(
+      access->truncate(*inode, 3),
+      std::runtime_error,
+      "failure after truncate effect");
+
+  EXPECT_EQ(3, access->getFileSize(*inode));
+  EXPECT_NE(oldSha1, access->getSha1(*inode));
+  EXPECT_NE(oldBlake3, access->getBlake3(*inode, std::nullopt));
+  mount_.addFile("dir/truncate-reference", "old");
+  auto reference = mount_.getFileInode("dir/truncate-reference");
+  EXPECT_EQ(access->getSha1(*reference), access->getSha1(*inode));
+  EXPECT_EQ(
+      access->getBlake3(*reference, std::nullopt),
+      access->getBlake3(*inode, std::nullopt));
+}
+
+TEST_F(FileInodeTest, overlayIoErrorsPropagate) {
+  mount_.addFile("dir/io-error", "unchanged");
+  auto inode = mount_.getFileInode("dir/io-error");
+  auto* access = mount_.getEdenMount()->getOverlayFileAccess();
+  struct iovec invalid = {nullptr, 1};
+  EXPECT_THROW_ERRNO(access->write(*inode, &invalid, 1, 0), EFAULT);
+  EXPECT_THROW_ERRNO(
+      access->truncate(
+          *inode,
+          -static_cast<FileOffset>(FsFileContentStore::kHeaderLength) - 1),
+      EINVAL);
+  EXPECT_EQ(
+      "unchanged", inode->readAll(ObjectFetchContext::getNullContext()).get());
+}
+
+TEST_F(FileInodeTest, hashesComputedDuringWriteAreNotRetainedAfterCompletion) {
+  mount_.addFile("dir/concurrent-write", "old payload");
+  auto inode = mount_.getFileInode("dir/concurrent-write");
+  auto* access = mount_.getEdenMount()->getOverlayFileAccess();
+  auto& injector = mount_.getServerState()->getFaultInjector();
+  const auto key = fmt::format("{}", inode->getNodeId());
+  injector.injectBlock("overlay-write-complete", key, 1);
+  std::exception_ptr writerError;
+  std::thread writer([&] {
+    try {
+      inode->write("new", 0, ObjectFetchContext::getNullContext()).get();
+    } catch (...) {
+      writerError = std::current_exception();
+    }
+  });
+  SCOPE_EXIT {
+    injector.removeFault("overlay-write-complete", key);
+    injector.unblock("overlay-write-complete", key);
+    if (writer.joinable()) {
+      writer.join();
+    }
+  };
+  ASSERT_TRUE(injector.waitUntilBlocked("overlay-write-complete", 5s));
+  const auto duringSha1 = access->getSha1(*inode);
+  const auto duringBlake3 = access->getBlake3(*inode, std::nullopt);
+  injector.unblock("overlay-write-complete", key);
+  writer.join();
+  ASSERT_FALSE(writerError);
+
+  injector.injectError(
+      "overlay-sha1-compute", key, std::runtime_error("sha1 cache miss"), 1);
+  injector.injectError(
+      "overlay-blake3-compute",
+      key,
+      std::runtime_error("blake3 cache miss"),
+      1);
+  EXPECT_THROW_RE(
+      access->getSha1(*inode), std::runtime_error, "sha1 cache miss");
+  EXPECT_THROW_RE(
+      access->getBlake3(*inode, std::nullopt),
+      std::runtime_error,
+      "blake3 cache miss");
+  EXPECT_EQ(duringSha1, access->getSha1(*inode));
+  EXPECT_EQ(duringBlake3, access->getBlake3(*inode, std::nullopt));
 }
 
 TEST_F(FileInodeTest, getattrFromBlob) {
@@ -549,6 +672,57 @@ TEST_F(FileInodeTest, fallocate) {
   auto attr = getFileAttr(mount_, inode);
   BASIC_ATTR_XCHECKS(inode, attr);
   EXPECT_EQ(42, attr.st_size);
+}
+
+TEST_F(FileInodeTest, fallocateInvalidatesOverlaySizeAndHashes) {
+  mount_.addFile("dir/allocated", "old");
+  auto inode = mount_.getFileInode("dir/allocated");
+  auto* access = mount_.getEdenMount()->getOverlayFileAccess();
+  EXPECT_EQ(3, access->getFileSize(*inode));
+  const auto oldSha1 = access->getSha1(*inode);
+  const auto oldBlake3 = access->getBlake3(*inode, std::nullopt);
+
+  inode->fallocate(0, 42, ObjectFetchContext::getNullContext()).get(0ms);
+
+  std::string expected = "old";
+  expected.resize(42, '\0');
+  mount_.addFile("dir/expected", expected);
+  auto reference = mount_.getFileInode("dir/expected");
+  EXPECT_EQ(
+      expected, inode->readAll(ObjectFetchContext::getNullContext()).get());
+  EXPECT_EQ(42, access->getFileSize(*inode));
+  EXPECT_NE(oldSha1, access->getSha1(*inode));
+  EXPECT_NE(oldBlake3, access->getBlake3(*inode, std::nullopt));
+  EXPECT_EQ(access->getSha1(*reference), access->getSha1(*inode));
+  EXPECT_EQ(
+      access->getBlake3(*reference, std::nullopt),
+      access->getBlake3(*inode, std::nullopt));
+}
+
+TEST_F(FileInodeTest, failedFallocateInvalidatesAfterPossibleExtension) {
+  mount_.addFile("dir/failed-allocate", "old");
+  auto inode = mount_.getFileInode("dir/failed-allocate");
+  auto* access = mount_.getEdenMount()->getOverlayFileAccess();
+  EXPECT_EQ(3, access->getFileSize(*inode));
+  const auto oldSha1 = access->getSha1(*inode);
+  const auto oldBlake3 = access->getBlake3(*inode, std::nullopt);
+  mount_.getServerState()->getFaultInjector().injectError(
+      "overlay-fallocate-complete",
+      fmt::format("{}", inode->getNodeId()),
+      std::runtime_error("failure after allocation effect"),
+      1);
+
+  EXPECT_THROW_RE(
+      inode->fallocate(0, 42, ObjectFetchContext::getNullContext()).get(0ms),
+      std::runtime_error,
+      "failure after allocation effect");
+
+  EXPECT_EQ(42, access->getFileSize(*inode));
+  EXPECT_NE(oldSha1, access->getSha1(*inode));
+  EXPECT_NE(oldBlake3, access->getBlake3(*inode, std::nullopt));
+  EXPECT_THROW_ERRNO(
+      access->fallocate(*inode, std::numeric_limits<uint64_t>::max(), 1),
+      EINVAL);
 }
 #endif
 

@@ -11,6 +11,7 @@
 
 #include <folly/Expected.h>
 #include <folly/Range.h>
+#include <folly/ScopeGuard.h>
 #include <folly/logging/xlog.h>
 #include <folly/portability/OpenSSL.h>
 
@@ -240,6 +241,8 @@ Hash20 OverlayFileAccess::getSha1(FileInode& inode) {
 
   // SHA-1 is not known, so recompute it. Do so while the lock is not held to
   // improve concurrency.
+  inode.getMount()->getServerState()->getFaultInjector().check(
+      "overlay-sha1-compute", inode.getNodeId());
 
   SHA_CTX ctx;
   SHA1_Init(&ctx);
@@ -276,6 +279,8 @@ Hash32 OverlayFileAccess::getBlake3(
     version = info->version;
   }
 
+  inode.getMount()->getServerState()->getFaultInjector().check(
+      "overlay-blake3-compute", inode.getNodeId());
   auto blake3 = Blake3::create(maybeBlake3Key);
   if (auto r = hash(
           [&blake3](const auto* buf, auto len) { blake3.update(buf, len); },
@@ -355,33 +360,40 @@ size_t OverlayFileAccess::write(
   inode.getMount()->getServerState()->getFaultInjector().check(
       "overlay-write", inode.getNodeId());
   auto entry = getEntryForInode(inode.getNodeId());
+  // Even a failed write may change bytes. Invalidate after the attempt so
+  // hash computations racing the I/O cannot leave a mid-write cached value.
+  SCOPE_EXIT {
+    entry->info.wlock()->invalidateMetadata();
+  };
 
   auto xfer =
       entry->file.pwritev(iov, iovcnt, off + FsFileContentStore::kHeaderLength);
+  inode.getMount()->getServerState()->getFaultInjector().check(
+      "overlay-write-complete", inode.getNodeId());
   if (xfer.hasError()) {
     throw InodeError(
         xfer.error(),
         inode.inodePtrFromThis(),
         "pwritev failed during file write");
   }
-  auto info = entry->info.wlock();
-  info->invalidateMetadata();
 
   return xfer.value();
 }
 
 void OverlayFileAccess::truncate(FileInode& inode, FileOffset size) {
   auto entry = getEntryForInode(inode.getNodeId());
+  SCOPE_EXIT {
+    entry->info.wlock()->invalidateMetadata();
+  };
   auto result = entry->file.ftruncate(size + FsFileContentStore::kHeaderLength);
+  inode.getMount()->getServerState()->getFaultInjector().check(
+      "overlay-truncate-complete", inode.getNodeId());
   if (result.hasError()) {
     throw InodeError(
         result.error(),
         inode.inodePtrFromThis(),
         "unable to ftruncate overlay file");
   }
-
-  auto info = entry->info.wlock();
-  info->invalidateMetadata();
 }
 
 void OverlayFileAccess::fsync(FileInode& inode, bool datasync) {
@@ -403,8 +415,13 @@ void OverlayFileAccess::fallocate(
     uint64_t offset,
     uint64_t length) {
   auto entry = getEntryForInode(inode.getNodeId());
+  SCOPE_EXIT {
+    entry->info.wlock()->invalidateMetadata();
+  };
   auto result =
       entry->file.fallocate(offset, length + FsFileContentStore::kHeaderLength);
+  inode.getMount()->getServerState()->getFaultInjector().check(
+      "overlay-fallocate-complete", inode.getNodeId());
   if (result.hasError()) {
     throw InodeError(
         result.error(),
