@@ -102,6 +102,7 @@ if sys.platform == "win32":
         "start_test.StartWithRepoTestHg": True,
         "stats_test.GenericStatsTest": [
             "test_summary_counters_available",  # counter not implemented for PrjFS (T147669123)
+            "test_debug_counters_report_statfs",  # the test checks a FUSE counter
         ],
         "stats_test.ObjectCacheStatsTest": [
             "test_get_tree_memory",  # unloadInodeForPath not implemented
@@ -276,6 +277,7 @@ elif sys.platform.startswith("darwin"):
     # We can enable this test once those are added (T147665665)
     TEST_DISABLED["stats_test.GenericStatsTest"] = [
         "test_summary_counters_available",
+        "test_debug_counters_report_statfs",  # the test checks a FUSE counter
     ]
 
     TEST_DISABLED["takeover_test.TakeoverTestHg"] = [
