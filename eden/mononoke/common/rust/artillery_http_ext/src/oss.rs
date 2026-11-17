@@ -16,6 +16,14 @@ pub fn continue_trace_from_context(
     None
 }
 
+pub fn start_trace(
+    _fb: FacebookInit,
+    _operation_name: &'static str,
+    _endpoint: &'static str,
+) -> Option<ArtilleryTraceGuard> {
+    None
+}
+
 pub fn current_trace_id() -> Option<String> {
     None
 }

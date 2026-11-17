@@ -7,8 +7,13 @@ rust_library(
     srcs = glob(["src/**/*.rs"]),
     named_deps = {
         "service_tracing": "//artillery/artillery2/api/rust:service_tracing",
+        "trace_context": "//artillery/artillery2/api/rust:trace_context",
+        "trace_objects": "//artillery/artillery2/api/rust:trace_objects",
         "tracer": "//artillery/artillery2/api/rust:tracer",
     },
+    test_deps = [
+        "//eden/mononoke/common/mononoke_macros:mononoke_macros",
+    ],
     deps = [
         "//common/rust/shed/fbinit:fbinit",
     ],

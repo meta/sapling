@@ -48,7 +48,9 @@ use gotham_ext::response::StreamBody;
 use gotham_ext::response::TryIntoResponse;
 use gotham_ext::response::build_response;
 use gotham_ext::state_ext::StateExt;
+use http::Method;
 use http::Response;
+use http::Uri;
 use mime::Mime;
 use mononoke_api::Repo;
 use mononoke_macros::mononoke;
@@ -89,6 +91,52 @@ pub(crate) use handler::SaplingRemoteApiHandler;
 use self::handler::SaplingRemoteApiContext;
 
 const REPORTING_LOOP_WAIT: u64 = 5;
+
+/// Endpoints where a land enters this server. Values are the labels bound to
+/// the `mononoke_endpoint` Luna key, kept in step with the matching
+/// `SaplingRemoteApiMethod`. `replay_identical_moves` also moves a bookmark but
+/// is excluded: it replays already-landed moves onto shadow replicas.
+const LAND_ENDPOINTS: &[(&str, &str)] = &[
+    (land::LandStackHandler::ENDPOINT, "land_stack"),
+    (bookmarks::SetBookmarkHandler::ENDPOINT, "set_bookmark"),
+];
+
+/// Label for everything that is not a land.
+///
+/// Deliberately one bucket rather than a per-endpoint label. Resolving the
+/// actual `SaplingRemoteApiMethod` here would mean a second table of all 44
+/// endpoints, maintained by hand alongside `build_router` and free to drift
+/// from it. The policy only needs to tell lands apart from the rest, so that
+/// is all this reports. Splitting this bucket later means giving `build_router`
+/// and the table a shared source of handler types, not extending this list.
+const OTHER_ENDPOINT: &str = "other";
+
+/// Label every request for Artillery trace rooting. See
+/// `gotham_ext::handler::RootTraceSelector`.
+///
+/// Every request is eligible: the rate each label actually gets is the
+/// `mononoke_scm` policy's decision, not this function's. Returning `None`
+/// would put that decision in code, where changing it needs a deploy.
+///
+/// Matched on the raw path, whose leading segment is the repo name: this runs
+/// before routing, so `HandlerInfo` is not in `State` yet.
+pub fn select_root_trace_endpoint(state: &State) -> Option<&'static str> {
+    let method = Method::try_borrow_from(state)?;
+    let path = Uri::try_borrow_from(state)?.path();
+    Some(root_trace_endpoint_for(method, path))
+}
+
+/// Split out from [`select_root_trace_endpoint`] so the matching itself is
+/// testable without standing up a gotham `State`.
+fn root_trace_endpoint_for(method: &Method, path: &str) -> &'static str {
+    if method != Method::POST {
+        return OTHER_ENDPOINT;
+    }
+    LAND_ENDPOINTS
+        .iter()
+        .find(|(endpoint, _)| path.ends_with(endpoint))
+        .map_or(OTHER_ENDPOINT, |(_, label)| *label)
+}
 
 /// Enum identifying the SaplingRemoteAPI method that each handler corresponds to.
 /// Used to identify the handler for logging and stats collection.
@@ -599,4 +647,74 @@ pub fn build_router<R: Send + Sync + Clone + 'static>(ctx: ServerContext<R>) -> 
             .with_query_string_extractor::<files::UploadFileQueryString>()
             .to(upload_file_handler);
     })
+}
+
+#[cfg(test)]
+mod root_trace_selector_tests {
+    use super::*;
+
+    #[mononoke::test]
+    fn labels_land_endpoints() {
+        // The leading segment is the repo name, so matching is on the suffix.
+        assert_eq!(
+            root_trace_endpoint_for(&Method::POST, "/fbsource/land"),
+            "land_stack",
+        );
+        assert_eq!(
+            root_trace_endpoint_for(&Method::POST, "/fbsource/bookmarks/set"),
+            "set_bookmark",
+        );
+    }
+
+    #[mononoke::test]
+    fn labels_reads_as_other() {
+        // These are the high-QPS endpoints. They are eligible to root, but the
+        // policy rates `other` far below the land labels. They are POST too, so
+        // method alone would not tell them apart from a land.
+        for path in ["/fbsource/trees", "/fbsource/files2", "/fbsource/history"] {
+            assert_eq!(
+                root_trace_endpoint_for(&Method::POST, path),
+                OTHER_ENDPOINT,
+                "read endpoint {path} should fall to the catch-all label",
+            );
+        }
+    }
+
+    #[mononoke::test]
+    fn a_land_path_on_the_wrong_method_is_not_a_land() {
+        assert_eq!(
+            root_trace_endpoint_for(&Method::GET, "/fbsource/land"),
+            OTHER_ENDPOINT,
+        );
+    }
+
+    #[mononoke::test]
+    fn does_not_match_on_a_bare_substring() {
+        // The endpoint constants carry a leading slash, so a repo or path that
+        // merely ends in the same letters must not be labelled a land.
+        assert_eq!(
+            root_trace_endpoint_for(&Method::POST, "/myland"),
+            OTHER_ENDPOINT,
+        );
+        assert_eq!(
+            root_trace_endpoint_for(&Method::POST, "/fbsource/bookmarks2"),
+            OTHER_ENDPOINT,
+        );
+    }
+
+    #[mononoke::test]
+    fn labels_match_the_api_method_names() {
+        // The labels are bound to the `mononoke_endpoint` Luna sample key and
+        // prefix-matched by the mononoke_scm policy. Keeping them equal to
+        // SaplingRemoteApiMethod's Display output is what lets the policy, the
+        // ODS stats and the traces talk about endpoints the same way.
+        assert_eq!(
+            root_trace_endpoint_for(&Method::POST, "/fbsource/land"),
+            SaplingRemoteApiMethod::LandStack.to_string(),
+        );
+        assert_eq!(
+            root_trace_endpoint_for(&Method::POST, "/fbsource/bookmarks/set"),
+            SaplingRemoteApiMethod::SetBookmark.to_string(),
+        );
+    }
 }

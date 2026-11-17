@@ -128,6 +128,7 @@ pub fn build<R: Send + Sync + Clone + 'static>(
     let router = build_router(ctx);
 
     let handler = MononokeHttpHandler::builder()
+        .with_root_trace_selector(crate::handlers::select_root_trace_endpoint)
         .add(TlsSessionDataMiddleware::new(tls_session_data_log_path)?)
         .add(MetadataMiddleware::new(
             fb,

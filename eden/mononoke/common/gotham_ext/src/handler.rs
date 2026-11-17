@@ -29,6 +29,7 @@ use hyper::body::Incoming;
 use tower_service::Service;
 
 use crate::middleware::Middleware;
+use crate::middleware::artillery::ArtilleryRootEndpoint;
 use crate::middleware::artillery::ArtilleryTracingEnabled;
 use crate::middleware::artillery::artillery_http_tracing_enabled;
 use crate::middleware::post_request::PostResponseTask;
@@ -40,10 +41,26 @@ pub enum SlapiCommitIdentityScheme {
     Git,
 }
 
+/// Labels a request for Artillery trace rooting, for the case where it arrives
+/// with no inbound context to continue.
+///
+/// `Some(endpoint)` binds `endpoint` to the `mononoke_endpoint` Luna sample
+/// key, leaving the policy to decide whether to sample the request and at what
+/// rate. `None` means the request may never root, whatever the policy says.
+///
+/// Servers that never call [`MononokeHttpHandlerBuilder::with_root_trace_selector`]
+/// behave exactly as they do today.
+///
+/// Runs before routing, so it sees only the raw request and must not depend on
+/// anything a handler puts into `State`. It is on the path of every request,
+/// so it must be cheap.
+pub type RootTraceSelector = fn(&State) -> Option<&'static str>;
+
 #[derive(Clone)]
 pub struct MononokeHttpHandler<H> {
     inner: H,
     middleware: Arc<Vec<Box<dyn Middleware>>>,
+    root_trace_selector: Option<RootTraceSelector>,
 }
 
 impl<H> MononokeHttpHandler<H> {
@@ -111,7 +128,13 @@ async fn run_middleware(
 impl<H: Handler + Send + Sync + 'static> Handler for MononokeHttpHandler<H> {
     fn handle(self, mut state: State) -> Pin<Box<HandlerFuture>> {
         let tracing_enabled = artillery_http_tracing_enabled();
+        let root_endpoint = if tracing_enabled {
+            self.root_trace_selector.and_then(|select| select(&state))
+        } else {
+            None
+        };
         state.put(ArtilleryTracingEnabled(tracing_enabled));
+        state.put(ArtilleryRootEndpoint(root_endpoint));
 
         let fut = async move {
             // On request, middleware is called in order, then called the other way around on
@@ -160,12 +183,16 @@ impl<H: Handler + Send + Sync + 'static> Handler for MononokeHttpHandler<H> {
 // "handler" type is () here.
 impl MononokeHttpHandler<()> {
     pub fn builder() -> MononokeHttpHandlerBuilder {
-        MononokeHttpHandlerBuilder { middleware: vec![] }
+        MononokeHttpHandlerBuilder {
+            middleware: vec![],
+            root_trace_selector: None,
+        }
     }
 }
 
 pub struct MononokeHttpHandlerBuilder {
     middleware: Vec<Box<dyn Middleware>>,
+    root_trace_selector: Option<RootTraceSelector>,
 }
 
 impl MononokeHttpHandlerBuilder {
@@ -175,10 +202,19 @@ impl MononokeHttpHandlerBuilder {
         self
     }
 
+    /// Opt this server in to rooting Artillery traces for selected requests
+    /// that arrive without inbound context. Servers that do not call this are
+    /// unaffected. See [`RootTraceSelector`].
+    pub fn with_root_trace_selector(mut self, selector: RootTraceSelector) -> Self {
+        self.root_trace_selector = Some(selector);
+        self
+    }
+
     pub fn build<H: Handler + Send + Sync + 'static>(self, inner: H) -> MononokeHttpHandler<H> {
         MononokeHttpHandler {
             inner,
             middleware: Arc::new(self.middleware),
+            root_trace_selector: self.root_trace_selector,
         }
     }
 }
