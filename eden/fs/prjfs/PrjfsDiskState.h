@@ -20,6 +20,7 @@
 #include "eden/common/utils/PathMap.h"
 #include "eden/fs/inodes/overlay/gen-cpp2/overlay_types.h"
 #include "eden/fs/model/ObjectId.h"
+#include "eden/fs/model/TreeEntry.h"
 
 namespace facebook::eden {
 
@@ -55,6 +56,7 @@ struct FsckFileState {
 
   bool inScm = false;
   dtype_t scmDtype = dtype_t::Unknown;
+  std::optional<TreeEntryType> scmType = std::nullopt;
   std::optional<ObjectId> scmId = std::nullopt;
 
   bool shouldExist = false;

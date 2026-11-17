@@ -26,6 +26,7 @@
 #include "eden/fs/inodes/InodeNumber.h"
 #include "eden/fs/inodes/overlay/gen-cpp2/overlay_types.h"
 #include "eden/fs/model/ObjectId.h"
+#include "eden/fs/model/TreeEntry.h"
 #include "eden/fs/prjfs/PrjfsDiskState.h"
 #include "eden/fs/utils/ProjfsUtil.h"
 
@@ -135,14 +136,28 @@ void populateOverlayState(
 void populateScmState(FsckFileState& state, const TreeEntry& treeEntry) {
   state.scmId = treeEntry.getObjectId();
   state.scmDtype = treeEntry.getDtype();
+  state.scmType = treeEntry.getType();
   state.inScm = true;
+}
+
+// On Windows the overlay mode is the only record of the executable bit, and
+// EdenFS reports it as the source control type of the entry.
+mode_t desiredMode(const FsckFileState& state) {
+  if (state.scmType.has_value() && state.scmDtype == state.desiredDtype) {
+    return modeFromTreeEntryType(*state.scmType);
+  }
+  if (state.overlayEntry.has_value() &&
+      state.overlayDtype == state.desiredDtype) {
+    return static_cast<mode_t>(*state.overlayEntry->mode());
+  }
+  return dtype_to_mode(state.desiredDtype);
 }
 
 InodeNumber addOrUpdateOverlay(
     InodeCatalog& inodeCatalog,
     InodeNumber parentInodeNum,
     PathComponentPiece name,
-    dtype_t dtype,
+    mode_t mode,
     std::optional<ObjectId> id,
     const PathMap<overlay::OverlayEntry>& parentInsensitiveOverlayDir) {
   if (inodeCatalog.hasChild(parentInodeNum, name)) {
@@ -166,7 +181,7 @@ InodeNumber addOrUpdateOverlay(
   } else {
     overlayEntry.hash().reset();
   }
-  overlayEntry.mode() = dtype_to_mode(dtype);
+  overlayEntry.mode() = mode;
   inodeCatalog.addChild(parentInodeNum, name, overlayEntry);
   return InodeNumber(*overlayEntry.inodeNumber());
 }
@@ -259,7 +274,7 @@ std::optional<InodeNumber> fixup(
           inodeCatalog,
           parentInodeNum,
           name,
-          state.desiredDtype,
+          desiredMode(state),
           state.desiredId,
           insensitiveOverlayDir);
     } else {
@@ -430,7 +445,7 @@ ImmediateFuture<bool> processChildren(
                       inodeCatalog,
                       inodeNumber,
                       childPath.basename(),
-                      childState.desiredDtype,
+                      desiredMode(childState),
                       childState.desiredId,
                       updatedInsensitiveOverlayDir);
                 }

@@ -331,6 +331,7 @@ if sys.platform != "win32":
         {
             "changes_test.ChangesTestWin": True,
             "windows_fsck_test.WindowsFsckTest": True,
+            "windows_fsck_test.WindowsFsckExecutableBitTest": True,
             "prjfs_stress.PrjFSStress": True,
             "prjfs_stress.PrjfsStressNoListenToFull": True,
             "projfs_buffer.PrjFSBuffer": True,

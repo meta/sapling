@@ -15,11 +15,17 @@ from eden.fs.service.eden.thrift_types import (
     CheckoutConflict,
     CheckoutMode,
     CheckOutRevisionParams,
+    FileAttributeDataOrErrorV2,
+    FileAttributeDataV2,
+    FileAttributes,
+    GetAttributesFromFilesParams,
     ScmFileStatus,
+    SourceControlType,
+    SourceControlTypeOrError,
     SyncBehavior,
 )
 
-from .lib import prjfs_test, testcase
+from .lib import hgrepo, prjfs_test, testcase
 
 
 @testcase.eden_repo_test
@@ -626,3 +632,84 @@ MATERIALIZED = True
 UNMATERIALIZED = False
 FILE_MODE = 32768
 DIR_MODE = 16384
+
+
+@testcase.eden_repo_test
+class WindowsFsckExecutableBitTest(prjfs_test.PrjFSTestBase):
+    """Windows fsck keeps the executable bit from source control"""
+
+    git_test_supported: bool = False
+    initial_commit: str = ""
+
+    def populate_repo(self) -> None:
+        assert isinstance(self.repo, hgrepo.HgRepository)
+        self.repo.write_file("tools/regular.py", "regular\n")
+        self.repo.commit("Initial commit.")
+        patch = Path(self.make_temporary_directory()) / "executable.patch"
+        patch.write_text(
+            "diff --git a/tools/run.py b/tools/run.py\n"
+            "new file mode 100755\n"
+            "--- /dev/null\n"
+            "+++ b/tools/run.py\n"
+            "@@ -0,0 +1,1 @@\n"
+            "+run\n"
+        )
+        self.repo.hg("import", "--bypass", "-m", "Add executable.", str(patch))
+        self.initial_commit = self.repo.hg(
+            "log", "-r", "max(all())", "-T", "{node}"
+        ).strip()
+        self.repo.update(self.initial_commit)
+
+    def get_initial_commit(self) -> str:
+        return self.initial_commit
+
+    def select_storage_engine(self) -> str:
+        return "sqlite"
+
+    async def get_source_control_types(
+        self, paths: List[str]
+    ) -> Sequence[FileAttributeDataOrErrorV2]:
+        async with self.get_async_thrift_client() as client:
+            result = await client.getAttributesFromFilesV2(
+                GetAttributesFromFilesParams(
+                    mountPoint=self.mount_path_bytes,
+                    paths=[path.encode() for path in paths],
+                    requestedAttributes=FileAttributes.SOURCE_CONTROL_TYPE,
+                    sync=SyncBehavior(),
+                )
+            )
+        return result.res
+
+    def source_control_type(
+        self, scm_type: SourceControlType
+    ) -> FileAttributeDataOrErrorV2:
+        return FileAttributeDataOrErrorV2(
+            fileAttributeData=FileAttributeDataV2(
+                sourceControlType=SourceControlTypeOrError(sourceControlType=scm_type)
+            )
+        )
+
+    async def assert_executable_bits(self) -> None:
+        self.assertEqual(
+            await self.get_source_control_types(["tools/run.py", "tools/regular.py"]),
+            [
+                self.source_control_type(SourceControlType.EXECUTABLE_FILE),
+                self.source_control_type(SourceControlType.REGULAR_FILE),
+            ],
+        )
+
+    async def test_fsck_keeps_executable_bit(self) -> None:
+        """
+        Reading the files puts entries for them on disk, so fsck rebuilds their
+        overlay entries on restart. The entries should keep the executable bit
+        from source control.
+        """
+        tools = self.mount_path / "tools"
+        self.assertEqual((tools / "run.py").read_text(), "run\n")
+        self.assertEqual((tools / "regular.py").read_text(), "regular\n")
+        await self.assert_executable_bits()
+
+        self.eden.shutdown()
+        self.eden.start()
+
+        await self.assert_executable_bits()
