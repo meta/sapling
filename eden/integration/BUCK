@@ -1,5 +1,4 @@
 load("@fbcode//eden:defs.bzl", "get_integration_test_env_and_deps", "get_oss_suffix", "get_test_env_and_deps")
-load("@fbcode_macros//build_defs:python_integration_test.bzl", "python_integration_test")
 load("@fbcode_macros//build_defs:python_unittest.bzl", "python_unittest")
 load("@fbcode_macros//build_defs:sanitizers.bzl", "sanitizers")
 load("@fbsource//tools/build_defs:selects.bzl", "selects")
@@ -872,7 +871,8 @@ python_unittest(
 # the initialization code.
 full_artifacts = get_test_env_and_deps("")
 
-python_integration_test(
+# @lint-ignore BUCKLINT Preserve the existing network-access default.
+python_unittest(
     name = "basic",
     srcs = [
         "basic_test.py",
