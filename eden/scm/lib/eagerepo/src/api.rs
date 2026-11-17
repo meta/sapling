@@ -1309,10 +1309,11 @@ impl SaplingRemoteApi for EagerRepo {
         );
         self.refresh_for_api()?;
 
+        let enforce = self.enforce_server_acls();
         let mut values = Vec::new();
         for manifest_id in request.manifest_ids {
-            let has_slacl = self.tree_has_slacl(manifest_id)?;
-            let (request_acl, denial_message) = if has_slacl {
+            let denied = enforce && self.tree_has_slacl(manifest_id)?;
+            let (request_acl, denial_message) = if denied {
                 (
                     Some(crate::eager_repo::EAGER_PLACEHOLDER_ACL.to_string()),
                     self.server_denial_message(),
@@ -1323,7 +1324,7 @@ impl SaplingRemoteApi for EagerRepo {
 
             values.push(Ok(CheckManifestPermissionResponse {
                 manifest_id,
-                has_access: !has_slacl,
+                has_access: !denied,
                 request_acl,
                 denial_message,
             }));

@@ -97,17 +97,6 @@ pub enum TreeMetadataMode {
     OptIn,
 }
 
-/// Controls how path-based ACL restrictions are handled for tree entries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RestrictedTreeMode {
-    /// No ACL checking. permission_denied_children() returns empty.
-    Disabled,
-    /// ACL checks are performed and results logged, but not enforced.
-    Logged,
-    /// ACL checks are performed, logged, and enforced.
-    Enforced,
-}
-
 static TREESTORE_FLUSH_COUNT: Counter = Counter::new_counter("scmstore.tree.flush");
 const ACL_CHECK_CACHE_TTL: Duration = Duration::from_secs(60);
 const ACL_CHECK_CACHE_MAX_ENTRIES: u64 = 4096;
@@ -228,8 +217,6 @@ pub struct TreeStore {
 
     pub(crate) verify_hash: bool,
 
-    pub restricted_tree_mode: RestrictedTreeMode,
-
     pub(crate) acl_check_cache: AclCheckCache,
 
     pub(crate) permission_denied_paths: Option<::types::errors::PermissionDeniedPaths>,
@@ -327,13 +314,9 @@ impl TreeStore {
     }
 
     /// Create a deferred ACL checker closure that captures the edenapi client.
-    /// Returns None if no edenapi client is configured or mode is Disabled.
+    /// Returns None if no edenapi client is configured.
     fn create_acl_checker(&self) -> Option<AclChecker> {
-        if self.restricted_tree_mode == RestrictedTreeMode::Disabled {
-            return None;
-        }
         let edenapi = self.edenapi.clone()?;
-        let mode = self.restricted_tree_mode;
         let acl_check_cache = self.acl_check_cache.clone();
         Some(Arc::new(
             move |children_with_acl: Vec<(PathComponentBuf, HgId)>| {
@@ -372,20 +355,6 @@ impl TreeStore {
                     }
                 }
 
-                if mode == RestrictedTreeMode::Logged {
-                    for (path, hgid) in &children_with_acl {
-                        if let Some(denial) = denied_map.get(hgid) {
-                            tracing::info!(
-                                %path, %hgid, acl = %denial.request_acl,
-                                "restricted tree detected (logged mode, not enforcing)"
-                            );
-                        }
-                    }
-                    return Ok(Box::new(std::iter::empty())
-                        as BoxIterator<
-                            anyhow::Result<(PathComponentBuf, HgId, PermissionDenial)>,
-                        >);
-                }
                 let iter = children_with_acl
                     .into_iter()
                     .filter_map(move |(path, hgid)| {
@@ -732,7 +701,6 @@ impl TreeStore {
             format: SerializationFormat::Hg,
             progress_bar: AggregatingProgressBar::new("", ""),
             verify_hash: true,
-            restricted_tree_mode: RestrictedTreeMode::Disabled,
             acl_check_cache: new_acl_check_cache(),
             permission_denied_paths: Default::default(),
             max_fetch_count: Default::default(),
@@ -814,7 +782,6 @@ impl TreeStore {
             format: self.format(),
             progress_bar: self.progress_bar.clone(),
             verify_hash: self.verify_hash,
-            restricted_tree_mode: self.restricted_tree_mode,
             acl_check_cache: self.acl_check_cache.clone(),
             permission_denied_paths: self.permission_denied_paths.clone(),
             max_fetch_count: self.max_fetch_count.clone(),

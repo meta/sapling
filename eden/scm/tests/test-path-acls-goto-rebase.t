@@ -10,7 +10,6 @@
 
   $ setconfig scmstore.fetch-tree-aux-data=true
   $ setconfig scmstore.tree-metadata-mode=always
-  $ setconfig experimental.restricted-tree-mode=enforced
   $ setconfig slacl.server-acl-enforcement=true
 
   $ enable rebase

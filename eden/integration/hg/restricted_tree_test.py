@@ -43,10 +43,8 @@ class _RestrictedTreeTestBase(EdenHgTestCase, metaclass=abc.ABCMeta):
     swapped_commit: str = ""
     added_restricted_commit: str = ""
     ignored_file_restricted_commit: str = ""
-    # Subclasses flip this to False to disable client-side enforcement.
-    enable_restricted_tree_mode: bool = True
-    # Subclasses flip this to True to enable server-side PermissionDenied.
-    enable_server_acl_enforcement: bool = False
+    # Subclasses flip this to False to have the server allow every tree.
+    enable_server_acl_enforcement: bool = True
     # Subclasses flip this to True when they exercise backing-store path ACLs.
     enable_path_acl_lookup: bool = False
 
@@ -55,15 +53,10 @@ class _RestrictedTreeTestBase(EdenHgTestCase, metaclass=abc.ABCMeta):
         # scmstore reads these from the backing repo's .hg/hgrc. EdenHgTestCase
         # writes this hgrc before eden.clone(), so the config is in place by
         # the time the backing store reads it.
-        if self.enable_restricted_tree_mode:
-            if not hgrc.has_section("experimental"):
-                hgrc.add_section("experimental")
-            hgrc["experimental"]["restricted-tree-mode"] = "enforced"
-            # Companion: ACL data rides on tree child metadata, so without
-            # tree-metadata-mode=always the acl_checker has nothing to enforce on.
-            if not hgrc.has_section("scmstore"):
-                hgrc.add_section("scmstore")
-            hgrc["scmstore"]["tree-metadata-mode"] = "always"
+        # ACL data rides on tree child metadata.
+        if not hgrc.has_section("scmstore"):
+            hgrc.add_section("scmstore")
+        hgrc["scmstore"]["tree-metadata-mode"] = "always"
         if self.enable_path_acl_lookup:
             if not hgrc.has_section("backingstore"):
                 hgrc.add_section("backingstore")
@@ -714,24 +707,10 @@ class _RestrictedTreeTestMethods(_MethodsBase, metaclass=abc.ABCMeta):
             self.assertNotEqual(st.st_mode & 0o777, 0)
 
 
-class _RestrictedTreeConfigOffBase(_RestrictedTreeTestBase, metaclass=abc.ABCMeta):
-    """Base for tests with restricted tree mode disabled."""
-
-    enable_restricted_tree_mode: bool = False
-
-
-class _RestrictedTreeServerOnlyBase(
-    _RestrictedTreeConfigOffBase, metaclass=abc.ABCMeta
-):
-    """Base for tests that isolate server-side PermissionDenied enforcement."""
-
-    enable_server_acl_enforcement: bool = True
-
-
 @hg_test
 # pyre-ignore[13]: T62487924
 class RestrictedTreeTest(_RestrictedTreeTestMethods, _RestrictedTreeTestBase):
-    """Client-side enforcement via has_acl metadata."""
+    """The server denies restricted trees."""
 
     def test_checkout_restricted_tree_over_ignored_file(self) -> None:
         """Ignored files are discarded when their parent becomes restricted."""
@@ -763,29 +742,10 @@ class RestrictedTreeAclAttributesTest(
 
 @hg_test
 # pyre-ignore[13]: T62487924
-class RestrictedTreeEnforcementTest(
-    _RestrictedTreeTestMethods, _RestrictedTreeServerOnlyBase
-):
-    """Server-side enforcement via PermissionDenied only."""
+class RestrictedTreeConfigOffTest(_RestrictedTreeTestMethods, _RestrictedTreeTestBase):
+    """The server enforces nothing — all directories accessible."""
 
-
-@hg_test
-# pyre-ignore[13]: T62487924
-class RestrictedTreeCombinedEnforcementTest(
-    _RestrictedTreeTestMethods, _RestrictedTreeTestBase
-):
-    """Client-side and server-side enforcement enabled together."""
-
-    enable_server_acl_enforcement: bool = True
-
-
-@hg_test
-# pyre-ignore[13]: T62487924
-class RestrictedTreeConfigOffTest(
-    _RestrictedTreeTestMethods, _RestrictedTreeConfigOffBase
-):
-    """Feature disabled — all directories accessible."""
-
+    enable_server_acl_enforcement: bool = False
     expect_restricted: bool = False
 
 

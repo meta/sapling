@@ -3,7 +3,6 @@
 
   $ setconfig scmstore.fetch-tree-aux-data=true
   $ setconfig scmstore.tree-metadata-mode=always
-  $ setconfig experimental.restricted-tree-mode=enforced
   $ setconfig slacl.server-acl-enforcement=true
   $ enable rebase histedit
 
@@ -142,7 +141,6 @@ Copy/move with .slacl paths:
 Current behavior: users with access can copy and move restricted files to
 unrestricted paths without warning.
   $ cd
-  $ setconfig experimental.restricted-tree-mode=disabled
   $ setconfig slacl.server-acl-enforcement=false
   $ newclientrepo client_path_acl_access server_path_acl_copy_move
   $ sl go -q $A
@@ -159,7 +157,6 @@ unrestricted paths without warning.
 
 Users with access can copy and move restricted files within the restricted tree.
   $ cd
-  $ setconfig experimental.restricted-tree-mode=disabled
   $ setconfig slacl.server-acl-enforcement=false
   $ newclientrepo client_path_acl_access_self server_path_acl_copy_move
   $ sl go -q $A
@@ -176,7 +173,6 @@ Users with access can copy and move restricted files within the restricted tree.
 
 People without access cannot copy or move a restricted file to an unrestricted path.
   $ cd
-  $ setconfig experimental.restricted-tree-mode=enforced
   $ setconfig slacl.server-acl-enforcement=true
   $ newclientrepo client_path_acl_no_access server_path_acl_copy_move
   $ sl go -q $A
@@ -202,7 +198,6 @@ People without access cannot copy or move a restricted file to an unrestricted p
 
 People without access can copy or move the unrestricted files under a parent that contains restricted paths.
   $ cd
-  $ setconfig experimental.restricted-tree-mode=enforced
   $ setconfig slacl.server-acl-enforcement=true
   $ newclientrepo client_path_acl_parent_no_access server_path_acl_copy_move
   $ sl go -q $A
@@ -245,7 +240,6 @@ Graft and backout of commits that also touch restricted .slacl paths:
 People without access can graft the visible changes after dropping the
 restricted side.
   $ cd
-  $ setconfig experimental.restricted-tree-mode=enforced
   $ setconfig slacl.server-acl-enforcement=true
   $ newclientrepo client_path_acl_graft_no_access server_path_acl_graft_backout
   $ sl go -q $C
@@ -266,7 +260,6 @@ restricted side.
 People without access can back out the visible changes without materializing
 restricted files.
   $ cd
-  $ setconfig experimental.restricted-tree-mode=enforced
   $ setconfig slacl.server-acl-enforcement=true
   $ newclientrepo client_path_acl_backout_no_access server_path_acl_graft_backout
   $ sl go -q $B
@@ -304,7 +297,6 @@ Subtree copy/merge with .slacl paths:
 Current behavior: users with access can use subtree copy and merge to copy
 restricted data to unrestricted paths without warning.
   $ cd
-  $ setconfig experimental.restricted-tree-mode=disabled
   $ setconfig slacl.server-acl-enforcement=false
   $ newclientrepo client_subtree_acl_access server_subtree_acl
   $ sl go -q $A
@@ -324,7 +316,6 @@ restricted data to unrestricted paths without warning.
 
 Users with access can use subtree copy within the restricted tree.
   $ cd
-  $ setconfig experimental.restricted-tree-mode=disabled
   $ setconfig slacl.server-acl-enforcement=false
   $ newclientrepo client_subtree_acl_access_self server_subtree_acl
   $ sl go -q $A
@@ -336,7 +327,6 @@ Users with access can use subtree copy within the restricted tree.
 Current behavior: subtree copy and merge can copy restricted .slacl data to
 unrestricted paths for users without access.
   $ cd
-  $ setconfig experimental.restricted-tree-mode=enforced
   $ setconfig slacl.server-acl-enforcement=true
   $ newclientrepo client_subtree_acl_no_access server_subtree_acl
   $ sl go -q $A
@@ -373,7 +363,6 @@ but aborts when the source is a restricted file.
   >    # B/parent/restricted/secret.txt = secret v2
   > EOS
   $ cd
-  $ setconfig experimental.restricted-tree-mode=enforced
   $ setconfig slacl.server-acl-enforcement=true
   $ newclientrepo client_subtree_acl_restricted_child_no_access server_subtree_acl_restricted_child
   $ sl go -q $A
@@ -388,7 +377,6 @@ but aborts when the source is a restricted file.
   $ test ! -e public/copied-restricted-child/secret.txt || echo BUG: restricted path leaked
 
   $ cd
-  $ setconfig experimental.restricted-tree-mode=enforced
   $ setconfig slacl.server-acl-enforcement=true
   $ newclientrepo client_subtree_acl_restricted_file_no_access server_subtree_acl_restricted_child
   $ sl go -q $A
@@ -405,7 +393,6 @@ but aborts when the source is a restricted file.
   $ test ! -e public/copied-secret.txt || echo BUG: restricted path leaked
 
   $ cd
-  $ setconfig experimental.restricted-tree-mode=enforced
   $ setconfig slacl.server-acl-enforcement=true
   $ newclientrepo client_subtree_acl_parent_no_access server_subtree_acl_restricted_child
   $ sl go -q $A
@@ -435,7 +422,6 @@ but aborts when the source is a restricted file.
   $ test ! -e public/copied-parent/restricted/secret.txt || echo BUG: restricted merge leaked
 
   $ cd
-  $ setconfig experimental.restricted-tree-mode=enforced
   $ setconfig slacl.server-acl-enforcement=true
   $ newclientrepo client_subtree_acl_parent_graft_no_access server_subtree_acl_restricted_child
   $ sl go -q $A
@@ -469,7 +455,6 @@ Subtree merge filters a restricted file source from an unrestricted path.
   >    # B/parent/restricted/secret.txt = secret v2
   > EOS
   $ cd
-  $ setconfig experimental.restricted-tree-mode=enforced
   $ setconfig slacl.server-acl-enforcement=true
   $ newclientrepo client_subtree_acl_restricted_file_merge_no_access server_subtree_acl_restricted_file_merge
   $ sl go -q $A

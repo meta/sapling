@@ -115,27 +115,6 @@ pub(crate) struct Inner {
     pub(crate) generation: u64,
 
     pub(crate) walk: WalkConfig,
-    restricted_tree_mode: RestrictedTreeMode,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq)]
-enum RestrictedTreeMode {
-    Disabled,
-    Logged,
-    Enforced,
-}
-
-impl RestrictedTreeMode {
-    fn from_config(config: &dyn Config) -> Self {
-        match config
-            .get("experimental", "restricted-tree-mode")
-            .as_deref()
-        {
-            Some("logged") => Self::Logged,
-            Some("enforced") => Self::Enforced,
-            _ => Self::Disabled,
-        }
-    }
 }
 
 impl BackingStore {
@@ -236,7 +215,6 @@ impl BackingStore {
         }
 
         let walk = WalkConfig::from_config(config.as_ref())?;
-        let restricted_tree_mode = RestrictedTreeMode::from_config(config.as_ref());
 
         let repo = Arc::new(repo);
 
@@ -257,7 +235,6 @@ impl BackingStore {
                 .unwrap_or(Duration::from_mins(5)),
             generation,
             walk,
-            restricted_tree_mode,
         })
     }
 
@@ -368,9 +345,6 @@ impl BackingStore {
         use edenapi::types::CheckManifestPermissionRequest;
 
         let inner = self.maybe_reload();
-        if inner.restricted_tree_mode == RestrictedTreeMode::Disabled {
-            return Ok(true);
-        }
 
         let id = HgId::from_slice(manifest_id)?;
         let request = CheckManifestPermissionRequest {
@@ -385,16 +359,6 @@ impl BackingStore {
         )?;
         for entry in response.entries {
             if entry.manifest_id == id {
-                if inner.restricted_tree_mode == RestrictedTreeMode::Logged {
-                    if !entry.has_access {
-                        tracing::info!(
-                            hgid = %id,
-                            acl = entry.request_acl.as_deref().unwrap_or("unknown-acl"),
-                            "restricted tree detected (logged mode, not enforcing)"
-                        );
-                    }
-                    return Ok(true);
-                }
                 return Ok(entry.has_access);
             }
         }
@@ -610,7 +574,6 @@ impl Inner {
             generation: self.generation,
 
             walk: self.walk.clone(),
-            restricted_tree_mode: self.restricted_tree_mode,
         }
     }
 

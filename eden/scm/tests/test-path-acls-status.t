@@ -16,7 +16,6 @@ Status across a commit with both ACL'd and non-ACL'd files:
   $ cd
   $ setconfig scmstore.fetch-tree-aux-data=true
   $ setconfig scmstore.tree-metadata-mode=always
-  $ setconfig experimental.restricted-tree-mode=enforced
   $ setconfig slacl.server-acl-enforcement=true
   $ newclientrepo client1 server1
   $ sl go -q $B
@@ -45,7 +44,6 @@ Status across a commit with only ACL'd files:
   $ cd
   $ setconfig scmstore.fetch-tree-aux-data=true
   $ setconfig scmstore.tree-metadata-mode=always
-  $ setconfig experimental.restricted-tree-mode=enforced
   $ setconfig slacl.server-acl-enforcement=true
   $ newclientrepo client2 server2
   $ sl go -q $B
@@ -72,7 +70,6 @@ Status across a commit that adds an ACL to an existing directory:
   $ cd
   $ setconfig scmstore.fetch-tree-aux-data=true
   $ setconfig scmstore.tree-metadata-mode=always
-  $ setconfig experimental.restricted-tree-mode=enforced
   $ setconfig slacl.server-acl-enforcement=true
   $ newclientrepo client3 server3
   $ sl go -q $B
@@ -99,7 +96,6 @@ Status across a commit that removes an ACL from a directory:
   $ cd
   $ setconfig scmstore.fetch-tree-aux-data=true
   $ setconfig scmstore.tree-metadata-mode=always
-  $ setconfig experimental.restricted-tree-mode=enforced
   $ setconfig slacl.server-acl-enforcement=true
   $ newclientrepo client4 server4
   $ sl go -q $B

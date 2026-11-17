@@ -10,7 +10,6 @@ Give Sapling a short config reload interval.
   > EOF
   $ setconfig backingstore.reload-check-interval-secs=0
   $ setconfig backingstore.reload-interval-secs=1
-  $ setconfig experimental.restricted-tree-mode=disabled
   $ setconfig slacl.server-acl-enforcement=false
 
 Create two commits where the same ACL-protected directory changes.
