@@ -3352,6 +3352,44 @@ TEST(CheckoutTest, checkoutToRestrictedTreeConflictsOnUntrackedFile) {
   EXPECT_TRUE(restrictedInode->getContentsUnchecked().rlock()->entries.empty());
 }
 
+// A checkout that restricts a directory removes the untracked files in its
+// tracked subdirectories, as it does those directly in it, and leaves an empty
+// placeholder.
+TEST(CheckoutTest, checkoutToRestrictedTreeRemovesNestedUntrackedFiles) {
+  for (auto mode : {CheckoutMode::NORMAL, CheckoutMode::FORCE}) {
+    auto builder = FakeTreeBuilder{};
+    builder.setFile("dir/sub/tracked.txt", "v1\n");
+    builder.setFile("dir/sub/deep/tracked.txt", "v1\n");
+    TestMount testMount{RootId{"1"}, builder};
+    testMount.addFile("dir/sub/untracked.pyc", "local\n");
+    testMount.mkdir("dir/sub/__pycache__");
+    testMount.addFile("dir/sub/__pycache__/a.pyc", "local\n");
+    testMount.mkdir("dir/sub/deep/__pycache__");
+    testMount.addFile("dir/sub/deep/__pycache__/b.pyc", "local\n");
+
+    auto restricted = builder.clone();
+    restricted.replaceFile("dir/sub/tracked.txt", "v2\n");
+    restricted.setDirIsRestricted("dir");
+    restricted.finalize(testMount.getBackingStore(), true);
+    testMount.getBackingStore()->putCommit(RootId{"2"}, restricted)->setReady();
+
+    for (auto checkoutMode : {CheckoutMode::DRY_RUN, mode}) {
+      auto result = testMount
+                        .checkout(
+                            RootId{"2"},
+                            ObjectFetchContext::getNullContext(),
+                            __func__,
+                            checkoutMode)
+                        .waitVia(testMount.getServerExecutor().get());
+      ASSERT_TRUE(result.isReady());
+      EXPECT_TRUE(std::move(result).get().conflicts.empty());
+    }
+    auto dir = testMount.getTreeInode("dir"_relpath);
+    EXPECT_TRUE(dir->isRestricted());
+    EXPECT_TRUE(dir->getContentsUnchecked().rlock()->entries.empty());
+  }
+}
+
 #endif
 
 /*

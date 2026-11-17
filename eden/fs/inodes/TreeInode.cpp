@@ -6023,7 +6023,8 @@ folly::coro::now_task<CheckoutActionResult> TreeInode::co_checkoutUpdateEntry(
           ctx,
           std::move(oldTree),
           std::move(checkoutToTree),
-          /*reportLocalOnlyAsConflicts=*/newRestricted);
+          /*reportLocalOnlyAsConflicts=*/newRestricted,
+          /*removeLocalOnly=*/newRestricted && !ctx->isDryRun());
 
       co_return finalizeRestrictionTransition(
           ctx, treeInode, currentName.piece(), newRestricted, result);
