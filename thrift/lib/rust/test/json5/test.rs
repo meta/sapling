@@ -32,8 +32,6 @@ use json5_test::consts::testCases;
 
 /// Cases of `testCases` that Rust does not pass yet.
 const KNOWN_FAILURES: &[&str] = &[
-    // Rejects nonzero trailing bits in base64.
-    "BinaryBareBase64OneByte",
     // Lays out floating-point values as serde_json does.
     "DoubleFormatting",
     "FloatAsKeyFromInteger",

@@ -65,11 +65,15 @@ const MAXIMUM_NESTING_DEPTH: usize = 64;
 const MAXIMUM_INDENT_WIDTH: usize = 16;
 const STANDARD_NO_PAD_INDIFFERENT: GeneralPurpose = GeneralPurpose::new(
     &STANDARD,
-    NO_PAD.with_decode_padding_mode(DecodePaddingMode::Indifferent),
+    NO_PAD
+        .with_decode_padding_mode(DecodePaddingMode::Indifferent)
+        .with_decode_allow_trailing_bits(true),
 );
 const URL_SAFE_NO_PAD_INDIFFERENT: GeneralPurpose = GeneralPurpose::new(
     &URL_SAFE,
-    NO_PAD.with_decode_padding_mode(DecodePaddingMode::Indifferent),
+    NO_PAD
+        .with_decode_padding_mode(DecodePaddingMode::Indifferent)
+        .with_decode_allow_trailing_bits(true),
 );
 
 #[derive(Clone, Debug, Error)]
