@@ -52,8 +52,6 @@ const KNOWN_ACCEPTED: &[&str] = &[
     // Reads a union field after an unknown one.
     "EmptyUnionMultipleFields",
     "UnionUnknownThenKnownField",
-    // Reads `"."` as `0.0`.
-    "FloatTrailingDotOnlyQuoted",
 ];
 
 fn write(value: &Example, options: Json5WriterOptions) -> String {

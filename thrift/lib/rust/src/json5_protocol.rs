@@ -1303,6 +1303,13 @@ fn normalize_float_token(token: &str) -> Result<String> {
     if has_leading_zero(token) {
         bail!("JSON5 numbers do not permit leading zeros");
     }
+    let mantissa = token
+        .split_once(['e', 'E'])
+        .map_or(token, |(mantissa, _)| mantissa);
+    ensure!(
+        mantissa.contains(|ch: char| ch.is_ascii_digit()),
+        "JSON5 numbers need a digit before the exponent"
+    );
     Ok(match token {
         token if token.starts_with("+.") => format!("+0{}", &token[1..]),
         token if token.starts_with("-.") => format!("-0{}", &token[1..]),
