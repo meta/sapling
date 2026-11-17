@@ -295,6 +295,7 @@ fn construct_memory_health_check(
 fn main(fb: FacebookInit) -> Result<(), Error> {
     let cachelib_settings = CachelibSettings {
         expected_item_size_bytes: Some(CACHE_OBJECT_SIZE),
+        empty_pool_recovery: true,
         ..Default::default()
     };
 
