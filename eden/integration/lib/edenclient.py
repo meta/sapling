@@ -46,6 +46,9 @@ from fb303_core.thrift_types import fb303_status
 
 from .find_executables import FindExe
 
+if sys.platform != "win32":
+    import resource
+
 # Two minutes is very generous, but 30 seconds is not enough CI hosts
 # and many-core machines under load.
 EDENFS_START_TIMEOUT = 120
@@ -84,10 +87,27 @@ def assert_fuse_transport(
         f"expected {expected!r}, got {actual!r}"
     )
     if expected == "io_uring" and actual == "devfuse":
-        raise unittest.SkipTest(
-            f"{message}; io_uring unavailable, using devfuse fallback"
-        )
+        skip_message = f"{message}; io_uring unavailable, using devfuse fallback"
+        if sys.platform != "win32":
+            skip_message += f"; {_io_uring_memlock_context()}"
+        raise unittest.SkipTest(skip_message)
     raise AssertionError(message)
+
+
+def _format_rlimit(value: int) -> str:
+    if value == resource.RLIM_INFINITY:
+        return "unlimited"
+    return f"{value // 1024} KiB"
+
+
+def _io_uring_memlock_context() -> str:
+    """Return the `RLIMIT_MEMLOCK` limits of this process and the configured CPU count."""
+    soft, hard = resource.getrlimit(resource.RLIMIT_MEMLOCK)
+    cpus = os.sysconf("SC_NPROCESSORS_CONF")
+    return (
+        f"RLIMIT_MEMLOCK soft={_format_rlimit(soft)} hard={_format_rlimit(hard)}, "
+        f"configured CPUs={cpus}"
+    )
 
 
 def assert_fuse_transports(mounts: Iterable[MountInfo], expected: str) -> None:

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import sys
 import tomllib
 import unittest
 import warnings
@@ -53,6 +54,25 @@ class FuseTransportPolicyTest(unittest.TestCase):
 
     def test_devfuse_fallback_skips_io_uring(self) -> None:
         with self.assertRaisesRegex(unittest.SkipTest, "/mount.*devfuse fallback"):
+            edenclient.assert_fuse_transport(b"/mount", "io_uring", "devfuse")
+
+    @unittest.skipIf(
+        sys.platform == "win32", "the resource module is not available on Windows"
+    )
+    def test_devfuse_fallback_reports_memlock_limits(self) -> None:
+        with (
+            mock.patch.object(
+                edenclient.resource,
+                "getrlimit",
+                return_value=(64 * 1024, edenclient.resource.RLIM_INFINITY),
+            ),
+            mock.patch.object(edenclient.os, "sysconf", return_value=316),
+            self.assertRaisesRegex(
+                unittest.SkipTest,
+                "devfuse fallback; RLIMIT_MEMLOCK soft=64 KiB hard=unlimited, "
+                "configured CPUs=316",
+            ),
+        ):
             edenclient.assert_fuse_transport(b"/mount", "io_uring", "devfuse")
 
     def test_other_mismatches_fail(self) -> None:
