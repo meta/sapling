@@ -607,7 +607,10 @@ class FuseIoUringMountTest(testcase.IoUringTestMixin, testcase.EdenRepoTest):
             self.assertIsNotNone(mount)
             self.assertEqual("io_uring", mount.fuseTransport)
 
-        connection_id = os.lstat(self.mount).st_dev
+        dev = os.lstat(self.mount).st_dev
+        # The name of the FUSE connection directory is the kernel device number.
+        # That number is different from `st_dev` when the minor number is 256 or more.
+        connection_id = (os.major(dev) << 20) | os.minor(dev)
         abort_path = Path("/sys/fs/fuse/connections") / str(connection_id) / "abort"
         if not abort_path.exists():
             self.skipTest(f"FUSE abort file does not exist: {abort_path}")
