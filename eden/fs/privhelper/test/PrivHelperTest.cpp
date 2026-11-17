@@ -2488,10 +2488,9 @@ TEST_F(PrivHelperFdUnmountTest, bindUnmountAllowsAlreadyUnmountedTarget) {
 #endif
 }
 
+// The macOS build does not include `PrivHelperServer::umountBindMountByFd()`.
+#ifndef __APPLE__
 TEST_F(PrivHelperFdUnmountTest, bindUnmountErrorsDoNotRestorePathAuthority) {
-#ifdef __APPLE__
-  GTEST_SKIP() << "Linux-specific procfd bind unmount validation";
-#else
   auto root = makeTempDir();
   folly::fs::create_directory(root.path() / "child");
   const auto path = root.path().string();
@@ -2509,8 +2508,8 @@ TEST_F(PrivHelperFdUnmountTest, bindUnmountErrorsDoNotRestorePathAuthority) {
   EXPECT_NO_THROW(client_->bindUnMount(path + "/child").get(1s));
   EXPECT_EQ(4, server_.fdUnmountCalls());
   EXPECT_FALSE(server_.insecureBindUnmountCalled());
-#endif
 }
+#endif
 
 #ifdef __linux__
 class PrivHelperRegisteredUnmountTestServer : public PrivHelperServer {
