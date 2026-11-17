@@ -23,11 +23,14 @@ from typing import Dict, List, Optional, Set, Tuple, Type, Union
 from . import hostname, version
 
 try:
-    from eden.fs.cli.facebook.hostcaps import get_fb_info
+    from eden.fs.cli.facebook.hostcaps import get_fb_info, get_telemetry_user
 except ImportError:
     # in OSS define a stub
     def get_fb_info() -> Optional[Dict[str, str]]:
         return None
+
+    def get_telemetry_user() -> str:
+        return getpass.getuser()
 
 
 log: logging.Logger = logging.getLogger(__name__)
@@ -144,7 +147,7 @@ class TelemetryLogger(abc.ABC):
     def __init__(self) -> None:
         self.session_id = get_session_id()
         try:
-            self.user = getpass.getuser()
+            self.user = get_telemetry_user()
         except Exception as ex:
             log.warning(f"error determining username for telemetry logging: {ex}")
             self.user = ""
