@@ -1872,12 +1872,6 @@ impl RepoFactory {
                     repo_identity.clone(),
                     repo_event_publisher.clone(),
                     warmer_requirement,
-                )
-                .with_event_router_coordinator_enabled(
-                    repo_config
-                        .metadata_cache_config
-                        .as_ref()
-                        .is_some_and(|config| config.wbc_process_bookmark_notifications),
                 );
 
                 match effective_derived_data {

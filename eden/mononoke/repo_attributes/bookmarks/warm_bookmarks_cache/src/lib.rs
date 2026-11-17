@@ -15,6 +15,10 @@ mod bookmark_notifications;
 #[path = "facebook/event_router_batching.rs"]
 mod event_router_batching;
 #[cfg(fbcode_build)]
+use event_router_batching::BatchSettings;
+#[cfg(fbcode_build)]
+use event_router_batching::SyncSignals;
+#[cfg(fbcode_build)]
 #[path = "facebook/event_router_coordinator_stats.rs"]
 mod event_router_coordinator_stats;
 #[cfg(test)]
@@ -117,6 +121,8 @@ use skeleton_manifest::RootSkeletonManifestId;
 use skeleton_manifest_v2::RootSkeletonManifestV2Id;
 use stats::prelude::*;
 use tokio::sync::Notify;
+#[cfg(fbcode_build)]
+use tokio::sync::broadcast;
 use tokio_util::task::AbortOnDropHandle;
 use tracing::Instrument;
 use unodes::RootUnodeManifestId;
@@ -384,7 +390,6 @@ pub struct WarmBookmarksCacheBuilder {
     bookmark_update_log: ArcBookmarkUpdateLog,
     repo_identity: ArcRepoIdentity,
     repo_event_publisher: ArcRepoEventPublisher,
-    event_router_coordinator_enabled: bool,
     warmers: Vec<Warmer>,
     init_mode: InitMode,
     default_warmer_requirement: WarmerRequirement,
@@ -413,17 +418,10 @@ impl WarmBookmarksCacheBuilder {
             bookmark_update_log,
             repo_identity,
             repo_event_publisher,
-            event_router_coordinator_enabled: false,
             warmers: vec![],
             init_mode: InitMode::Rewind,
             default_warmer_requirement: warmer_requirement,
         }
-    }
-
-    /// Selects EventRouter notifications as the WBC coordinator input.
-    pub fn with_event_router_coordinator_enabled(mut self, enabled: bool) -> Self {
-        self.event_router_coordinator_enabled = enabled;
-        self
     }
 
     pub fn add_all_warmers(
@@ -752,7 +750,6 @@ impl WarmBookmarksCache {
         bookmark_update_log: &ArcBookmarkUpdateLog,
         repo_identity: &ArcRepoIdentity,
         repo_event_publisher: &ArcRepoEventPublisher,
-        event_router_coordinator_enabled: bool,
         warmers: Vec<Warmer>,
         init_mode: InitMode,
         default_warmer_requirement: WarmerRequirement,
@@ -763,7 +760,6 @@ impl WarmBookmarksCache {
             bookmark_update_log: bookmark_update_log.clone(),
             repo_identity: repo_identity.clone(),
             repo_event_publisher: repo_event_publisher.clone(),
-            event_router_coordinator_enabled,
             warmers,
             init_mode,
             default_warmer_requirement,
@@ -779,7 +775,6 @@ impl WarmBookmarksCache {
             bookmark_update_log,
             repo_identity,
             repo_event_publisher,
-            event_router_coordinator_enabled,
             warmers,
             init_mode,
             default_warmer_requirement,
@@ -836,22 +831,38 @@ impl WarmBookmarksCache {
             repo_event_publisher.clone(),
             warmers.clone(),
         );
-        #[cfg(not(fbcode_build))]
-        let _ = event_router_coordinator_enabled;
+        // A repo with an EventRouter bookmark stream is warmed from its notifications; a repo
+        // without one keeps the legacy coordinator. If subscribing fails, the EventRouter
+        // coordinator starts without a subscription and retries it.
         #[cfg(fbcode_build)]
-        if event_router_coordinator_enabled {
-            coordinator.spawn_event_router(
-                ctx.clone(),
-                receiver,
-                (notify_sync_start.clone(), notify_sync_complete.clone()),
-            );
-        } else {
-            coordinator.spawn(
-                ctx.clone(),
-                receiver,
-                notify_sync_start.clone(),
-                notify_sync_complete.clone(),
-            );
+        {
+            let sync = SyncSignals {
+                start: notify_sync_start.clone(),
+                complete: notify_sync_complete.clone(),
+            };
+            match repo_event_publisher
+                .subscribe_for_bookmark_event_notifications(&repo_identity.name().to_owned())
+            {
+                Ok(Some(subscriber)) => {
+                    coordinator.spawn_event_router(ctx.clone(), receiver, sync, Some(subscriber))
+                }
+                Ok(None) => coordinator.spawn(
+                    ctx.clone(),
+                    receiver,
+                    notify_sync_start.clone(),
+                    notify_sync_complete.clone(),
+                ),
+                Err(error) => {
+                    STATS::event_router_subscription_failure_count
+                        .add_value(1, (repo_identity.name().to_owned(), "subscribe".to_owned()));
+                    tracing::warn!(
+                        repo = %repo_identity.name(),
+                        ?error,
+                        "failed to subscribe to EventRouter bookmark notifications; the coordinator retries"
+                    );
+                    coordinator.spawn_event_router(ctx.clone(), receiver, sync, None)
+                }
+            }
         }
         #[cfg(not(fbcode_build))]
         coordinator.spawn(
@@ -1810,23 +1821,11 @@ impl BookmarksCoordinator {
         self,
         ctx: CoreContext,
         terminate: oneshot::Receiver<()>,
-        (notify_sync_start, notify_sync_complete): (Arc<Notify>, Arc<Notify>),
+        sync: SyncSignals,
+        subscriber: Option<broadcast::Receiver<BookmarkEventNotification>>,
     ) {
         let repo_name = self.repo.repo_identity().name().to_owned();
-        let concurrency = justknobs::get(
-            "scm/mononoke:wbc_event_router_batch_concurrency",
-            Some(&repo_name),
-        )
-        .clamp(1, 1024) as usize;
-        let max_pending_bookmarks = justknobs::get(
-            "scm/mononoke:wbc_event_router_max_pending_bookmarks",
-            Some(&repo_name),
-        )
-        .max(1) as usize;
-        let retry_delay = Duration::from_millis(justknobs::get_as::<u64>(
-            "scm/mononoke:warm_bookmark_cache_poll_interval_ms",
-            None,
-        ));
+        let settings = BatchSettings::from_justknobs(&repo_name);
         let span = tracing::info_span!("wbc", repo = %repo_name, source = "event_router");
         let fut = async move {
             tracing::info!("Started EventRouter warm bookmark cache updater");
@@ -1835,11 +1834,7 @@ impl BookmarksCoordinator {
                 repo_name.clone(),
             );
             let batches = self
-                .run_event_router_batches(
-                    &ctx,
-                    (&notify_sync_start, &notify_sync_complete),
-                    (concurrency, max_pending_bookmarks, retry_delay),
-                )
+                .run_event_router_batches(&ctx, &sync, settings, subscriber)
                 .boxed();
             let _ = select(batches, terminate).await;
             STATS::max_staleness_secs.set_value(ctx.fb, 0, (repo_name.clone(),));

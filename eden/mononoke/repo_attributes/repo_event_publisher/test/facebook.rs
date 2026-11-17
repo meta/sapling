@@ -47,12 +47,29 @@ async fn subscribes_to_eventrouter_bookmark_notifications(fb: FacebookInit) -> a
     let publisher =
         ScribeRepoEventPublisher::new(fb, mononoke_configs(), Some(&metadata_cache_config))?;
 
-    publisher.subscribe_for_bookmark_event_notifications(&"test_repo".to_owned())?;
+    assert!(
+        publisher
+            .subscribe_for_bookmark_event_notifications(&"test_repo".to_owned())?
+            .is_some(),
+        "a configured EventRouter stream can be subscribed to"
+    );
     assert!(
         publisher
             .subscribe_for_bookmark_updates(&"test_repo".to_owned())
             .is_err(),
         "EventRouter configuration should not enable legacy bookmark notifications"
+    );
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn missing_eventrouter_stream_returns_none(fb: FacebookInit) -> anyhow::Result<()> {
+    let publisher = ScribeRepoEventPublisher::new(fb, mononoke_configs(), None)?;
+    assert!(
+        publisher
+            .subscribe_for_bookmark_event_notifications(&"test_repo".to_owned())?
+            .is_none(),
+        "a publisher without an EventRouter stream has nothing to subscribe to"
     );
     Ok(())
 }

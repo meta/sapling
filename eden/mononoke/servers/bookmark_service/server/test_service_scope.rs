@@ -98,7 +98,6 @@ async fn test_service_uses_scope_parameter(fb: FacebookInit) -> Result<()> {
         &repo.bookmark_update_log_arc(),
         &repo.repo_identity_arc(),
         &repo.repo_event_publisher_arc(),
-        false,
         warmers,
         InitMode::Warm, // Wait for warming to complete
         bookmarks_cache::WarmerRequirement::AllKinds,
