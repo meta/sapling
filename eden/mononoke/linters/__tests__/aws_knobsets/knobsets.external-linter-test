@@ -1,0 +1,95 @@
+code = "MONONOKEAWSJK"
+oncall = "scm_server_infra"
+command = [
+  "{{AWS_JK_LINTER}}",
+  "--sg-bundle",
+  "{{SG_BUNDLE}}",
+  "@{{PATHSFILE}}",
+]
+~~~~~~~~~~
+fbcode/eden/mononoke/linters/__tests__/aws_knobsets/fixtures/knobsets.rs
+~~~~~~~~~~
+{
+  "path": "fbcode/eden/mononoke/linters/__tests__/aws_knobsets/fixtures/knobsets.rs",
+  "line": 8,
+  "char": 32,
+  "code": "MONONOKEAWSJK",
+  "severity": "error",
+  "name": "jk-knobset-not-on-aws",
+  "description": "Knobset 'scm/new_service' does not ship to the AWS Mononoke server, which gets only scm/mononoke* knobsets, so reading 'scm/new_service:through_const' there is an error. Put the knob in an scm/mononoke* knobset. If the AWS server never runs this code, add the knobset to NOT_ON_AWS_KNOBSETS in this linter; if it must stay in this knobset, import it in configerator source/cloud/helm/mononoke/server/configs/justknobs/justknobs.json.raw.cconf and add it to OTHER_AWS_KNOBSETS.",
+  "original": null,
+  "replacement": null,
+  "bypassChangedLineFiltering": null
+}
+{
+  "path": "fbcode/eden/mononoke/linters/__tests__/aws_knobsets/fixtures/knobsets.rs",
+  "line": 27,
+  "char": 21,
+  "code": "MONONOKEAWSJK",
+  "severity": "error",
+  "name": "jk-knobset-not-on-aws",
+  "description": "Knobset 'scm/new_service' does not ship to the AWS Mononoke server, which gets only scm/mononoke* knobsets, so reading 'scm/new_service:enabled' there is an error. Put the knob in an scm/mononoke* knobset. If the AWS server never runs this code, add the knobset to NOT_ON_AWS_KNOBSETS in this linter; if it must stay in this knobset, import it in configerator source/cloud/helm/mononoke/server/configs/justknobs/justknobs.json.raw.cconf and add it to OTHER_AWS_KNOBSETS.",
+  "original": null,
+  "replacement": null,
+  "bypassChangedLineFiltering": null
+}
+{
+  "path": "fbcode/eden/mononoke/linters/__tests__/aws_knobsets/fixtures/knobsets.rs",
+  "line": 31,
+  "char": 21,
+  "code": "MONONOKEAWSJK",
+  "severity": "error",
+  "name": "jk-knobset-not-on-aws",
+  "description": "Knobset 'scm/mononoke/nested' does not ship to the AWS Mononoke server, which gets only scm/mononoke* knobsets, so reading 'scm/mononoke/nested:enabled' there is an error. Put the knob in an scm/mononoke* knobset. If the AWS server never runs this code, add the knobset to NOT_ON_AWS_KNOBSETS in this linter; if it must stay in this knobset, import it in configerator source/cloud/helm/mononoke/server/configs/justknobs/justknobs.json.raw.cconf and add it to OTHER_AWS_KNOBSETS.",
+  "original": null,
+  "replacement": null,
+  "bypassChangedLineFiltering": null
+}
+{
+  "path": "fbcode/eden/mononoke/linters/__tests__/aws_knobsets/fixtures/knobsets.rs",
+  "line": 36,
+  "char": 17,
+  "code": "MONONOKEAWSJK",
+  "severity": "error",
+  "name": "jk-knobset-not-on-aws",
+  "description": "Knobset 'scm/new_service' does not ship to the AWS Mononoke server, which gets only scm/mononoke* knobsets, so reading 'scm/new_service:multi' there is an error. Put the knob in an scm/mononoke* knobset. If the AWS server never runs this code, add the knobset to NOT_ON_AWS_KNOBSETS in this linter; if it must stay in this knobset, import it in configerator source/cloud/helm/mononoke/server/configs/justknobs/justknobs.json.raw.cconf and add it to OTHER_AWS_KNOBSETS.",
+  "original": null,
+  "replacement": null,
+  "bypassChangedLineFiltering": null
+}
+{
+  "path": "fbcode/eden/mononoke/linters/__tests__/aws_knobsets/fixtures/knobsets.rs",
+  "line": 37,
+  "char": 18,
+  "code": "MONONOKEAWSJK",
+  "severity": "error",
+  "name": "jk-knobset-not-on-aws",
+  "description": "Knobset 'scm/new_service' does not ship to the AWS Mononoke server, which gets only scm/mononoke* knobsets, so reading 'scm/new_service:single' there is an error. Put the knob in an scm/mononoke* knobset. If the AWS server never runs this code, add the knobset to NOT_ON_AWS_KNOBSETS in this linter; if it must stay in this knobset, import it in configerator source/cloud/helm/mononoke/server/configs/justknobs/justknobs.json.raw.cconf and add it to OTHER_AWS_KNOBSETS.",
+  "original": null,
+  "replacement": null,
+  "bypassChangedLineFiltering": null
+}
+{
+  "path": "fbcode/eden/mononoke/linters/__tests__/aws_knobsets/fixtures/knobsets.rs",
+  "line": 44,
+  "char": 41,
+  "code": "MONONOKEAWSJK",
+  "severity": "error",
+  "name": "jk-knobset-not-on-aws",
+  "description": "Knobset 'scm/new_service' does not ship to the AWS Mononoke server, which gets only scm/mononoke* knobsets, so reading 'scm/new_service:in_macro' there is an error. Put the knob in an scm/mononoke* knobset. If the AWS server never runs this code, add the knobset to NOT_ON_AWS_KNOBSETS in this linter; if it must stay in this knobset, import it in configerator source/cloud/helm/mononoke/server/configs/justknobs/justknobs.json.raw.cconf and add it to OTHER_AWS_KNOBSETS.",
+  "original": null,
+  "replacement": null,
+  "bypassChangedLineFiltering": null
+}
+{
+  "path": "fbcode/eden/mononoke/linters/__tests__/aws_knobsets/fixtures/knobsets.rs",
+  "line": 62,
+  "char": 21,
+  "code": "MONONOKEAWSJK",
+  "severity": "disabled",
+  "name": "jk-knobset-not-on-aws",
+  "description": "Knobset 'scm/new_service' does not ship to the AWS Mononoke server, which gets only scm/mononoke* knobsets, so reading 'scm/new_service:suppressed' there is an error. Put the knob in an scm/mononoke* knobset. If the AWS server never runs this code, add the knobset to NOT_ON_AWS_KNOBSETS in this linter; if it must stay in this knobset, import it in configerator source/cloud/helm/mononoke/server/configs/justknobs/justknobs.json.raw.cconf and add it to OTHER_AWS_KNOBSETS.",
+  "original": null,
+  "replacement": null,
+  "bypassChangedLineFiltering": null
+}

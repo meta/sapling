@@ -1,0 +1,12 @@
+code = "MONONOKEAWSJK"
+oncall = "scm_server_infra"
+command = [
+  "{{AWS_JK_LINTER}}",
+  "--sg-bundle",
+  "{{SG_BUNDLE}}",
+  "@{{PATHSFILE}}",
+]
+~~~~~~~~~~
+fbcode/eden/mononoke/linters/__tests__/fixtures/no_jk_refs.rs
+~~~~~~~~~~
+No lint messages.

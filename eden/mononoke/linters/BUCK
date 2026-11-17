@@ -26,3 +26,21 @@ external_linter_test(
         "MOCK_JK": ":mock_jk",
     },
 )
+
+python_binary_through_command_alias(
+    name = "aws_jk_knobsets_linter",
+    main_src = "aws_jk_knobsets_linter.py",
+    package_style = "outplace" if is_fbcode_mode_win() else None,
+    visibility = [],
+)
+
+external_linter_test(
+    name = "aws_jk_knobsets_linter_tests",
+    srcs = glob(["__tests__/aws_knobsets/*.external-linter-test"]),
+    compatible_with = ["ovr_config//os:linux"],
+    test_fixtures = glob(["__tests__/**"]),
+    tools = {
+        "AWS_JK_LINTER": ":aws_jk_knobsets_linter",
+        "SG_BUNDLE": "fbsource//tools/third-party/ast-grep:ast-grep-bundle",
+    },
+)
