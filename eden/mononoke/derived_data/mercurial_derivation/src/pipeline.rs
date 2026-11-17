@@ -45,6 +45,7 @@ use mononoke_types::PipelineDerivableVariant;
 use mononoke_types::ThriftConvert;
 use mononoke_types::path::MPath;
 
+use crate::access_labels;
 use crate::derive_hg_changeset::generate_hg_changeset;
 use crate::derive_hg_changeset::get_manifest_entry_from_bonsai;
 use crate::derive_hg_manifest::ParentIndex;
@@ -319,6 +320,7 @@ impl PipelineDerivable for MappedHgChangesetId {
         parents: HashMap<ChangesetId, Self::StageOutput>,
         dependency_outputs: HashMap<ChangesetId, HashMap<MPath, Self::StageOutput>>,
     ) -> Result<HashMap<ChangesetId, Self::StageOutput>> {
+        let ctx = &ctx.with_access_label(access_labels::HG_CHANGESET_PIPELINE);
         let blobstore = derivation.blobstore();
 
         let payload = match payload {
@@ -394,6 +396,7 @@ impl PipelineDerivable for MappedHgChangesetId {
         derived: &MappedHgChangesetId,
         stage: &StageId,
     ) -> Result<Self::StageOutput> {
+        let ctx = &ctx.with_access_label(access_labels::HG_CHANGESET_PIPELINE);
         let hg_cs_id = derived.hg_changeset_id();
         let envelope = hg_cs_id.load(ctx, derivation.blobstore()).await?;
         let root_mfid = envelope.manifestid();
@@ -474,6 +477,7 @@ impl PipelineDerivable for MappedHgChangesetId {
         stage: &StageId,
         cs_ids: Vec<ChangesetId>,
     ) -> Result<HashMap<ChangesetId, Self::StageOutput>> {
+        let ctx = &ctx.with_access_label(access_labels::HG_CHANGESET_PIPELINE);
         if matches!(stage, StageId::Finalize)
             && justknobs::eval(
                 "scm/mononoke:derived_data_pipeline_terminal_stage_prod_mapping",

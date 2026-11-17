@@ -19,6 +19,17 @@ mod mapping;
 pub mod pipeline;
 pub mod upload_augmented_manifest;
 
+/// Access labels for the components allowed to read Hg manifests in a repo
+/// that reads augmented manifests. See `CoreContext::with_access_label`.
+pub mod access_labels {
+    /// Hg changeset derivation through the derived data manager.
+    pub const HG_CHANGESET_DERIVATION: &str = "hg_changeset_derivation";
+    /// The stages of the Hg changeset derivation pipeline.
+    pub const HG_CHANGESET_PIPELINE: &str = "hg_changeset_pipeline";
+    /// The backfill of augmented manifests from Hg manifests.
+    pub const AUGMENTED_BACKFILL_FROM_HG: &str = "augmented_backfill_from_hg";
+}
+
 pub use derive_hg_changeset::DeriveHgChangeset;
 pub use derive_hg_changeset::derive_hg_augmented_manifest_at_creation;
 pub use derive_hg_changeset::derive_hg_changeset;

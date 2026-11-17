@@ -516,7 +516,8 @@ impl RepoFactory {
             redacted_blobs,
             repo_identity.id(),
             censored_scuba_builder,
-        );
+        )
+        .with_hg_manifest_read_check(repo_identity.name());
 
         Ok(repo_blobstore)
     }

@@ -39,6 +39,7 @@ use mononoke_types::DerivableUntopologicallyVariant;
 use mononoke_types::sharded_map_v2::ShardedMapV2Node;
 use mononoke_types::typed_hash::AclManifestId;
 
+use crate::access_labels;
 use crate::acl_overlay_manifest::AclOverlayHgManifestId;
 use crate::derive_hg_augmented_manifest::assert_root_acl_pointer_invariant;
 use crate::mapping::MappedHgChangesetId;
@@ -55,6 +56,7 @@ impl DerivableUntopologically for RootHgAugmentedManifestId {
         derivation_ctx: &DerivationContext,
         bonsai: BonsaiChangeset,
     ) -> Result<Self> {
+        let ctx = &ctx.with_access_label(access_labels::AUGMENTED_BACKFILL_FROM_HG);
         let csid = bonsai.get_changeset_id();
         let (hg_changeset_id, acl_root) = future::try_join(
             async {

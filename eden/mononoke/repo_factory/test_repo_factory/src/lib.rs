@@ -788,7 +788,8 @@ impl TestRepoFactory {
             self.redacted.clone(),
             repo_identity.id(),
             MononokeScubaSampleBuilder::with_discard(),
-        );
+        )
+        .with_hg_manifest_read_check(repo_identity.name());
         Arc::new(repo_blobstore)
     }
 

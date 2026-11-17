@@ -36,6 +36,8 @@ use mononoke_types::ChangesetId;
 use stats::prelude::*;
 use tracing::debug;
 
+use crate::access_labels;
+
 define_stats! {
     prefix = "mononoke.derived_data.hgchangesets";
     new_parallel: timeseries(Rate, Sum),
@@ -98,6 +100,7 @@ impl BonsaiDerivable for MappedHgChangesetId {
         derivation_ctx: &DerivationContext,
         bonsais: Vec<BonsaiChangeset>,
     ) -> Result<HashMap<ChangesetId, Self>> {
+        let ctx = &ctx.with_access_label(access_labels::HG_CHANGESET_DERIVATION);
         if bonsais.is_empty() {
             return Ok(HashMap::new());
         }

@@ -5,13 +5,23 @@ oncall("scm_server_infra")
 rust_library(
     name = "repo_blobstore",
     srcs = glob(["src/**/*.rs"]),
+    test_deps = [
+        "fbsource//third-party/rust:serde_json",
+        "fbsource//third-party/rust:tempfile",
+        "//common/rust/shed/fbinit:fbinit",
+        "//common/rust/shed/fbinit:fbinit-tokio",
+        "//eden/mononoke/blobstore:memblob",
+        "//eden/mononoke/common/mononoke_macros:mononoke_macros",
+    ],
     deps = [
         "fbsource//third-party/rust:anyhow",
         "fbsource//third-party/rust:async-trait",
         "//common/rust/shed/facet:facet",
+        "//common/rust/shed/stats:stats",
         "//eden/mononoke/blobstore:blobstore",
         "//eden/mononoke/blobstore:prefixblob",
         "//eden/mononoke/blobstore:redactedblobstore",
+        "//eden/mononoke/common/rust/justknobs_ext:justknobs",
         "//eden/mononoke/common/scuba_ext:scuba_ext",
         "//eden/mononoke/mononoke_types:mononoke_types",
         "//eden/mononoke/servers/slapi/slapi_server/context:context",

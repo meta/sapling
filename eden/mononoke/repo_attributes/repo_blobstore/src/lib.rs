@@ -24,6 +24,10 @@ use redactedblobstore::RedactedBlobstore;
 use redactedblobstore::RedactedBlobstoreConfig;
 use scuba_ext::MononokeScubaSampleBuilder;
 
+use crate::hg_manifest_read_check::HgManifestReadCheck;
+
+mod hg_manifest_read_check;
+
 /// RedactedBlobstore should be part of every blobstore since it is a layer
 /// which adds security by preventing users to access sensitive content.
 ///
@@ -51,11 +55,26 @@ impl<T: Blobstore + Clone> AbstractRepoBlobstore<T> {
 
 #[facet::facet]
 #[derive(Clone, Debug)]
-pub struct RepoBlobstore(AbstractRepoBlobstore<Arc<dyn Blobstore>>);
+pub struct RepoBlobstore {
+    blobstore: AbstractRepoBlobstore<Arc<dyn Blobstore>>,
+    hg_manifest_read_check: Option<Arc<HgManifestReadCheck>>,
+}
 
 impl RepoBlobstore {
     pub fn boxed(&self) -> Arc<dyn KeyedBlobstore> {
         Arc::new(self.clone())
+    }
+
+    /// In a repo whose `scm/mononoke:hgmanifest_read_from_augmented` is on,
+    /// count reads of Hg manifests by access label (see
+    /// `CoreContext::with_access_label`), and log a sample of unlabelled ones.
+    /// Copies made by `new_with_wrapped_inner_blobstore`, such as a bubble's
+    /// view of the repo, and by `with_log_only_redaction` keep the check.
+    pub fn with_hg_manifest_read_check(self, repo_name: &str) -> Self {
+        Self {
+            hg_manifest_read_check: Some(Arc::new(HgManifestReadCheck::new(repo_name.to_string()))),
+            ..self
+        }
     }
 
     pub fn new(
@@ -72,12 +91,13 @@ impl RepoBlobstore {
     where
         F: FnOnce(Arc<dyn Blobstore>) -> Arc<dyn Blobstore>,
     {
-        let (blobstore, redacted_blobstore_config, prefix) = blobstore.0.as_parts();
-        let new_inner_blobstore = wrapper(blobstore);
-        Self::build(new_inner_blobstore, prefix, redacted_blobstore_config)
+        let (inner, redacted_blobstore_config, prefix) = blobstore.blobstore.as_parts();
+        Self {
+            hg_manifest_read_check: blobstore.hg_manifest_read_check,
+            ..Self::build(wrapper(inner), prefix, redacted_blobstore_config)
+        }
     }
 
-    #[allow(clippy::let_and_return)]
     pub fn build(
         blobstore: Arc<dyn Blobstore>,
         prefix: String,
@@ -85,19 +105,23 @@ impl RepoBlobstore {
     ) -> Self {
         let blobstore = PrefixBlobstore::new(blobstore, prefix);
         let blobstore = RedactedBlobstore::new(blobstore, redacted_blobstore_config);
-        let blobstore = RepoBlobstore(AbstractRepoBlobstore(blobstore));
-
-        blobstore
+        RepoBlobstore {
+            blobstore: AbstractRepoBlobstore(blobstore),
+            hg_manifest_read_check: None,
+        }
     }
 
     /// Return a view that logs redacted accesses without enforcing them.
     pub fn with_log_only_redaction(&self) -> Self {
-        let (blobstore, redacted_blobstore_config) = self.0.0.as_parts();
+        let (blobstore, redacted_blobstore_config) = self.blobstore.0.as_parts();
         let blobstore = RedactedBlobstore::new(
             blobstore,
             redacted_blobstore_config.with_log_only_redaction(),
         );
-        Self(AbstractRepoBlobstore(blobstore))
+        Self {
+            blobstore: AbstractRepoBlobstore(blobstore),
+            hg_manifest_read_check: self.hg_manifest_read_check.clone(),
+        }
     }
 
     pub fn copier_to<'a>(&'a self, other: &'a RepoBlobstore) -> RepoBlobstoreCopier<'a> {
@@ -107,7 +131,7 @@ impl RepoBlobstore {
 
 impl std::fmt::Display for RepoBlobstore {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "RepoBlobstore<{}>", self.0.0)
+        write!(f, "RepoBlobstore<{}>", self.blobstore.0)
     }
 }
 
@@ -118,7 +142,10 @@ impl KeyedBlobstore for RepoBlobstore {
         ctx: &'a CoreContext,
         key: &'a str,
     ) -> Result<Option<BlobstoreGetData>> {
-        Blobstore::get(&self.0.0, ctx, key).await
+        if let Some(check) = &self.hg_manifest_read_check {
+            check.check_read(ctx, key, "get");
+        }
+        Blobstore::get(&self.blobstore.0, ctx, key).await
     }
     async fn put<'a>(
         &'a self,
@@ -126,14 +153,17 @@ impl KeyedBlobstore for RepoBlobstore {
         key: String,
         value: BlobstoreBytes,
     ) -> Result<()> {
-        Blobstore::put(&self.0.0, ctx, key, value).await
+        Blobstore::put(&self.blobstore.0, ctx, key, value).await
     }
     async fn is_present<'a>(
         &'a self,
         ctx: &'a CoreContext,
         key: &'a str,
     ) -> Result<BlobstoreIsPresent> {
-        Blobstore::is_present(&self.0.0, ctx, key).await
+        if let Some(check) = &self.hg_manifest_read_check {
+            check.check_read(ctx, key, "is_present");
+        }
+        Blobstore::is_present(&self.blobstore.0, ctx, key).await
     }
     async fn copy<'a>(
         &'a self,
@@ -141,10 +171,10 @@ impl KeyedBlobstore for RepoBlobstore {
         old_key: &'a str,
         new_key: String,
     ) -> Result<()> {
-        Blobstore::copy(&self.0.0, ctx, old_key, new_key).await
+        Blobstore::copy(&self.blobstore.0, ctx, old_key, new_key).await
     }
     async fn unlink<'a>(&'a self, ctx: &'a CoreContext, key: &'a str) -> Result<()> {
-        Blobstore::unlink(&self.0.0, ctx, key).await
+        Blobstore::unlink(&self.blobstore.0, ctx, key).await
     }
 }
 
@@ -160,8 +190,8 @@ pub enum RepoBlobstoreCopier<'a> {
 
 impl<'a> RepoBlobstoreCopier<'a> {
     fn new(source: &'a RepoBlobstore, target: &'a RepoBlobstore) -> Self {
-        let inner_source = source.0.0.as_inner_unredacted();
-        let inner_target = target.0.0.as_inner_unredacted();
+        let inner_source = source.blobstore.0.as_inner_unredacted();
+        let inner_target = target.blobstore.0.as_inner_unredacted();
         #[allow(ambiguous_wide_pointer_comparisons)]
         if Arc::ptr_eq(inner_source.as_inner(), inner_target.as_inner()) {
             Self::Optimized {
