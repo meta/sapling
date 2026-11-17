@@ -162,10 +162,11 @@ class SOCKADDR_UN(ctypes.Structure):
     _fields_ = [("sun_family", ctypes.c_ushort), ("sun_path", ctypes.c_char * 108)]
 
 
-class WindowsSocketException(Exception):
+class WindowsSocketException(OSError):
     def __init__(self, code: int) -> None:
+        # errno is the Winsock code, as on a real Windows socket.
         super(WindowsSocketException, self).__init__(
-            "Windows Socket Error: {}".format(code)
+            code, "Windows Socket Error: {}".format(code)
         )
 
 
