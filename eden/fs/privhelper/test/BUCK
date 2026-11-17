@@ -15,7 +15,10 @@ cpp_unittest(
         "ovr_config//os:linux",
         "ovr_config//os:macos",
     ],
-    network_access = network_access_utils.none(),
+    # The tests create their own user and mount namespaces. On Linux, with a restricted
+    # network_access value, local runs put the tests in a user namespace without a uid
+    # map. In that namespace, the kernel refuses a nested user namespace.
+    network_access = network_access_utils.all(),
     deps = [
         "fbsource//third-party/googletest:gmock",
         "fbsource//third-party/googletest:gtest",
