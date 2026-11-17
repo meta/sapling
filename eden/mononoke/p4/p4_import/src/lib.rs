@@ -44,6 +44,7 @@ use futures::StreamExt;
 use futures::TryStreamExt;
 use futures::channel::mpsc;
 use futures::future;
+use futures::future::Either;
 use futures::stream;
 use futures_stats::TimedTryFutureExt;
 pub use import_common::BackfillDerivation;
@@ -173,6 +174,12 @@ pub struct ImportOptions {
     pub file_concurrency: usize,
     /// Changelists fetched at once, while an earlier one is built. At least 1.
     pub changelist_lookahead: usize,
+    /// How long a batch builds before it stops taking changelists. Checked between
+    /// changelists: the one the build is waiting for or building when the time runs out is
+    /// finished and is the batch's last, so a batch always has one, and the rest are left
+    /// for the next import. A batch dropped before it commits, as a job restart does, loses
+    /// about this much work plus one changelist at most.
+    pub max_build_time: Duration,
 }
 
 impl Default for ImportOptions {
@@ -181,6 +188,7 @@ impl Default for ImportOptions {
             backfill_derivation: BackfillDerivation::AllConfiguredTypes,
             file_concurrency: 16,
             changelist_lookahead: 2,
+            max_build_time: Duration::from_mins(10),
         }
     }
 }
@@ -520,7 +528,8 @@ struct BuildingChangelist(u64);
 /// The changesets for `changes`, in order, each on top of the one before and the first on
 /// top of `base`, each recording the source's commit server's id (see `commit_server_id`).
 /// Their contents are stored; the changesets themselves are not. Changelists are fetched ahead while earlier ones are
-/// built, but built one at a time, in order.
+/// built, but built one at a time, in order. Once `options.max_build_time` has passed, the
+/// changesets built so far are returned, at least one, and the fetches in flight are dropped.
 pub async fn build_changesets(
     ctx: &CoreContext,
     repo: &(impl RepoBlobstoreRef + RepoDerivedDataRef + FilestoreConfigRef),
@@ -530,6 +539,8 @@ pub async fn build_changesets(
     changes: &[u64],
     options: &ImportOptions,
 ) -> Result<Vec<BuiltChangeset>> {
+    // Tokio's clock, which tests can pause.
+    let started = tokio::time::Instant::now();
     let commit_server_id = commit_server_id(source).await?;
     let commit_server_id = commit_server_id.as_str();
     let concurrency = options.file_concurrency.max(1);
@@ -554,7 +565,10 @@ pub async fn build_changesets(
     };
     let build = async move {
         let mut built = Vec::with_capacity(changes.len());
-        while let Some(fetched) = receiver.next().await {
+        // Always the first changelist, then more for as long as `max_build_time` allows.
+        while (built.is_empty() || started.elapsed() < options.max_build_time)
+            && let Some(fetched) = receiver.next().await
+        {
             let fetched: FetchedChangelist = fetched?;
             let change = fetched.changelist.number;
             let changeset = build_changeset(
@@ -573,8 +587,13 @@ pub async fn build_changesets(
         }
         anyhow::Ok(built)
     };
-    let ((), built) = future::join(fetch, build).await;
-    built
+    // The build ends first when it fails or `max_build_time` has passed: returning then
+    // drops the fetches in flight, however long they still have to run.
+    let (build, fetch) = (pin!(build), pin!(fetch));
+    match future::select(build, fetch).await {
+        Either::Left((built, _fetch)) => built,
+        Either::Right(((), build)) => build.await,
+    }
 }
 
 /// The first `limit` changelists of the depot after `after`, up to the server's latest, in one
@@ -778,7 +797,8 @@ pub async fn resume_point(
 }
 
 /// Imports `changes`, in order, onto `bookmark` (created by the first import) as
-/// `options` say, and returns their changesets. The batch must start after the
+/// `options` say, and returns their changesets: of the first of them only, if
+/// `options.max_build_time` ends the batch early. The batch must start after the
 /// `resume_point`, so nothing is imported twice. `depot_root` must pass `check_depot_root`
 /// and the bookmark `check_resume_continuity`, as `import_next` makes sure. Logs a row
 /// per changelist to the context's Scuba table and, once the bookmark has moved, the
@@ -854,6 +874,23 @@ pub async fn import_changelists(
         .try_timed()
         .await
         .map_err(|error| batch.failed(ctx, Stage::Build, error))?;
+    // `max_build_time` can end the batch early: from here on it is the changelists built.
+    let (last, new) = built
+        .last()
+        .map(|built| (built.change, built.changeset.get_changeset_id()))
+        .context("built no changesets")?;
+    if built.len() < changes.len() {
+        tracing::info!(
+            "batch cut after changelist {last} ({} of {}): build took {:?}, over max_build_time {:?}; session {}",
+            built.len(),
+            changes.len(),
+            build.completion_time,
+            options.max_build_time,
+            ctx.metadata().session_id(),
+        );
+    }
+    let changes = &changes[..built.len()];
+    let batch = Batch { changes, ..batch };
     let (imported, changesets): (Vec<_>, Vec<_>) = built
         .into_iter()
         .map(|built| {
@@ -893,7 +930,6 @@ pub async fn import_changelists(
         .with_context(|| format!("saving changelists {}..={last}", changes[0]))
         .map_err(|error| batch.failed(ctx, Stage::SaveAndDerive, error))?;
 
-    let new = imported.last().context("built no changesets")?.cs_id;
     let (commit, ()) = async {
         let mut txn = repo.bookmarks().create_transaction(ctx.clone());
         match old {

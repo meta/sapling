@@ -334,6 +334,8 @@ struct FakeSource {
     integrations: HashMap<String, Vec<Integration>>,
     /// The server's latest changelist, if not its newest one here.
     latest: Option<u64>,
+    /// How long the `describe` of each of these changelists takes, on tokio's clock.
+    slow_describes: HashMap<u64, Duration>,
     /// Each call's method, in order.
     calls: Mutex<Vec<&'static str>>,
     /// Each listing's `(after, upto, limit)`.
@@ -463,6 +465,9 @@ impl ChangeSource for FakeSource {
     async fn describe(&self, change: u64) -> Result<Changelist> {
         self.record("describe");
         self.describes.call().await;
+        if let Some(delay) = self.slow_describes.get(&change) {
+            tokio::time::sleep(*delay).await;
+        }
         self.changelists
             .get(&change)
             .cloned()
@@ -2177,4 +2182,166 @@ async fn yield_once() {
         Poll::Pending
     })
     .await
+}
+
+/// Changelists 3, 5, 7 and 9, each a revision of one file.
+fn four_changelists() -> FakeSource {
+    [3, 5, 7, 9]
+        .into_iter()
+        .zip(1..)
+        .fold(FakeSource::default(), |source, (number, rev)| {
+            let action = if rev == 1 { Action::Add } else { Action::Edit };
+            source.with_changelist(number, &[("//test1/a.txt", rev, action, Some(b"text\n"))])
+        })
+}
+
+fn changes_and_ids(batch: &ImportedBatch) -> Vec<(u64, ChangesetId)> {
+    batch
+        .changelists
+        .iter()
+        .map(|imported| (imported.change, imported.cs_id))
+        .collect()
+}
+
+/// Even with no time to build, a batch imports one changelist, and the next batch starts
+/// after it.
+#[mononoke::fbinit_test]
+async fn test_zero_max_build_time_imports_one_changelist_per_batch(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+    let master = BookmarkKey::new("master")?;
+    let source = four_changelists();
+    let options = ImportOptions {
+        max_build_time: Duration::ZERO,
+        ..Default::default()
+    };
+
+    let mut batches = Vec::new();
+    for _ in 0..5 {
+        let batch = import_next(&ctx, &repo, &source, DEPOT, &master, 10, &options).await?;
+        batches.push(changes_and_ids(&batch));
+    }
+
+    let changes: Vec<Vec<_>> = batches
+        .iter()
+        .map(|batch| batch.iter().map(|(change, _)| *change).collect())
+        .collect();
+    assert_eq!(vec![vec![3], vec![5], vec![7], vec![9], vec![]], changes);
+    for (change, cs_id) in batches.into_iter().flatten() {
+        assert_eq!(Some(cs_id), mapped(&ctx, &repo, change).await?);
+    }
+    assert_eq!(Some(9), resume_point(&ctx, &repo, &master).await?);
+    Ok(())
+}
+
+/// The changelist whose fetch outlasts `max_build_time` is the batch's last, and the batch
+/// doesn't wait for the fetch of the next one, already in flight.
+#[mononoke::fbinit_test]
+async fn test_batch_ends_with_the_changelist_that_outlasts_max_build_time(
+    fb: FacebookInit,
+) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+    tokio::time::pause();
+    let day = Duration::from_secs(24 * 60 * 60);
+    let source = FakeSource {
+        slow_describes: HashMap::from([(5, Duration::from_secs(601)), (7, day)]),
+        ..four_changelists()
+    };
+    let options = ImportOptions {
+        max_build_time: Duration::from_secs(600),
+        changelist_lookahead: 2,
+        ..Default::default()
+    };
+
+    let started = tokio::time::Instant::now();
+    let built =
+        build_changesets(&ctx, &repo, &source, DEPOT, None, &[3, 5, 7, 9], &options).await?;
+
+    let changes: Vec<_> = built.iter().map(|built| built.change).collect();
+    assert_eq!(vec![3, 5], changes);
+    assert!(
+        started.elapsed() < Duration::from_secs(700),
+        "waited for 7's fetch: {:?}",
+        started.elapsed()
+    );
+    Ok(())
+}
+
+/// Where batches end doesn't change the commits: a batch cut by `max_build_time` and the
+/// one after it import the same changesets as one batch under the default, which a small
+/// batch is nowhere near.
+#[mononoke::fbinit_test]
+async fn test_cut_batches_import_the_same_changesets_as_one_batch(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let master = BookmarkKey::new("master")?;
+    let uncut = {
+        let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+        let source = four_changelists();
+        let options = ImportOptions::default();
+        changes_and_ids(&import_next(&ctx, &repo, &source, DEPOT, &master, 10, &options).await?)
+    };
+    let changes: Vec<_> = uncut.iter().map(|(change, _)| *change).collect();
+    assert_eq!(vec![3, 5, 7, 9], changes);
+
+    let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+    tokio::time::pause();
+    let source = FakeSource {
+        slow_describes: HashMap::from([(5, Duration::from_secs(601))]),
+        ..four_changelists()
+    };
+    let options = ImportOptions {
+        max_build_time: Duration::from_secs(600),
+        ..Default::default()
+    };
+    let first = import_next(&ctx, &repo, &source, DEPOT, &master, 10, &options).await?;
+    let second = import_next(&ctx, &repo, &source, DEPOT, &master, 10, &options).await?;
+
+    assert_eq!(uncut[..2], changes_and_ids(&first));
+    assert_eq!(uncut[2..], changes_and_ids(&second));
+    assert_eq!(
+        Some(uncut[3].1),
+        bookmark_target(&ctx, &repo, &master).await?
+    );
+    Ok(())
+}
+
+/// A cut batch that fails after its build reports the changelists it built, not the ones
+/// it was given.
+#[mononoke::fbinit_test]
+async fn test_cut_batch_that_fails_to_commit_logs_what_it_built(fb: FacebookInit) -> Result<()> {
+    let (ctx, dir) = scuba_logging_context(fb)?;
+    let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+    let master = BookmarkKey::new("master")?;
+    let elsewhere = BonsaiP4MappingEntry::new(ONES_CSID, P4ChangelistId::new(3));
+    repo.bonsai_p4_mapping
+        .bulk_import(&ctx, &[elsewhere])
+        .await?;
+    let options = ImportOptions {
+        max_build_time: Duration::ZERO,
+        ..Default::default()
+    };
+
+    import_changelists(
+        &ctx,
+        &repo,
+        &four_changelists(),
+        DEPOT,
+        &master,
+        &[3, 5, 7, 9],
+        &options,
+    )
+    .await
+    .unwrap_err();
+
+    let rows = scuba_rows(&dir, "P4 batch failed")?;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let row = &rows[0];
+    assert_eq!(row["stage"], "commit");
+    assert_eq!(row["batch_changelists"], 1);
+    assert_eq!(row["first_change"], 3);
+    assert_eq!(row["last_change"], 3);
+    let error = row["error"].as_str().unwrap();
+    assert!(error.contains("committing changelists 3..=3"), "{error}");
+    Ok(())
 }
