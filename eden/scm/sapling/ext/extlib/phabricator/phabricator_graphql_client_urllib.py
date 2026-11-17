@@ -10,6 +10,19 @@ from sapling import httpclient, json, util
 
 urlreq = util.urlreq
 
+
+def _authproxyerrors():
+    """Errors that mean the auth proxy cannot mint CATs."""
+    errors = (OSError, ValueError, httplib.HTTPException)
+    if util.iswindows:
+        # The Windows Unix socket raises this, not OSError, for most connection
+        # failures. The module only imports on Windows.
+        from sapling.windows_socket import WindowsSocketException
+
+        errors += (WindowsSocketException,)
+    return errors
+
+
 # helper class so phabricator_graphql_client can talk using the requests
 # third-party library
 
@@ -81,7 +94,7 @@ class PhabricatorGraphQLClientRequests:
             if res.status == 200:
                 return body
             ui.debug("auth proxy cannot mint CATs: HTTP %s %s\n" % (res.status, body))
-        except (OSError, ValueError, httplib.HTTPException) as ex:
+        except _authproxyerrors() as ex:
             ui.debug("auth proxy cannot mint CATs: %r\n" % ex)
         finally:
             conn.close()
