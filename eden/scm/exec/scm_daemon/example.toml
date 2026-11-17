@@ -6,4 +6,6 @@ title = "Scm Daemon configuration example"
 authors = ["Source Control Team"]
 
 [commitcloud]
+# Legacy endpoint, used when a subscribed repository's config does not
+# enable SLAPI polling via commitcloud.use_slapi.
 polling_update_url = "https://example-endpoint.com/commit_cloud/updates/poll"

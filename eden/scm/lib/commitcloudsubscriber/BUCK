@@ -33,6 +33,7 @@ sl_rust_library(
         "fbsource//third-party/rust:tokio",
         "//common/rust/shed/hostcaps:hostcaps",
         "//eden/scm/lib/config/loader:configloader",
+        "//eden/scm/lib/config/model:configmodel",
         "//eden/scm/lib/config/set:configset",
         "//eden/scm/lib/edenapi:edenapi",
         "//eden/scm/lib/identity:identity",

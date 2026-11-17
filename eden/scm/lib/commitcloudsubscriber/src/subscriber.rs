@@ -76,7 +76,8 @@ pub struct Subscription {
 ///
 /// The serve function starts the service
 pub struct WorkspaceSubscriberService {
-    /// Legacy notification endpoint, or None to poll workspace versions via SLAPI.
+    /// Legacy notification endpoint, used when a subscription's repositories
+    /// do not enable SLAPI polling in their config.
     pub(crate) polling_update_url: Option<String>,
 
     /// OAuth token path (optional) for access to Commit Cloud SSE endpoint
@@ -98,18 +99,7 @@ pub struct WorkspaceSubscriberService {
 impl WorkspaceSubscriberService {
     pub fn new(config: &CommitCloudConfig) -> Result<WorkspaceSubscriberService> {
         Ok(WorkspaceSubscriberService {
-            polling_update_url: if config.use_slapi {
-                None
-            } else {
-                Some(
-                    config
-                        .polling_update_url
-                        .clone()
-                        .ok_or(ErrorKind::CommitCloudConfigError(
-                            "undefined 'polling_update_url'",
-                        ))?,
-                )
-            },
+            polling_update_url: config.polling_update_url.clone(),
             user_token_path: config.user_token_path.clone(),
             connected_subscribers_path: config.connected_subscribers_path.clone().ok_or(
                 ErrorKind::CommitCloudConfigError("undefined 'connected_subscribers_path'"),
@@ -217,6 +207,27 @@ impl WorkspaceSubscriberService {
                 }
             }
         }))
+    }
+
+    /// Build the legacy polling client, or None when there is no legacy
+    /// endpoint or the client cannot be built. The caller retries on the
+    /// next backend decision refresh.
+    fn build_legacy_client(
+        polling_update_url: &Option<String>,
+        sid: &str,
+    ) -> Option<(String, Client)> {
+        let url = polling_update_url.clone()?;
+        match Client::builder()
+            .http2_keep_alive_while_idle(true)
+            .http2_keep_alive_interval(Duration::from_secs(POLLING_CONNECTION_KEEP_ALIVE_SEC))
+            .build()
+        {
+            Ok(client) => Some((url, client)),
+            Err(err) => {
+                error!("{sid} Cannot build polling client: {err}");
+                None
+            }
+        }
     }
 
     /// This helper function builds the URL for the notification polling endpoint
@@ -358,11 +369,11 @@ impl WorkspaceSubscriberService {
         match response.status() {
             reqwest::StatusCode::OK => Self::parse_polling_update_response(response, &sid).await,
             reqwest::StatusCode::UNAUTHORIZED => {
-                error!("{} Need to grab a new token", &sid);
+                error!("{sid} Need to grab a new token");
                 Err(ErrorKind::PollingUpdatesUnauthorizedError.into())
             }
             status => {
-                error!("{} Unexpected error: {:?}", &sid, response);
+                error!("{sid} Unexpected error: {response:?}");
                 Err(ErrorKind::PollingUpdatesHttpError(status).into())
             }
         }
@@ -393,7 +404,7 @@ impl WorkspaceSubscriberService {
         let interrupt = self.interrupt.clone();
 
         Ok(tokio::spawn(async move {
-            let sync_me = |reason: &'static str, version: Option<u64>| {
+            let sync_me = |reason: &str, version: Option<u64>| {
                 for repo_root in repo_roots.iter() {
                     info!(
                         "{} Fire CloudSyncTrigger in '{}' {}",
@@ -405,6 +416,7 @@ impl WorkspaceSubscriberService {
                         let workspace = subscription.workspace.clone();
                         let sid = sid.clone();
                         let repo_root = repo_root.clone();
+                        let reason = format!("scm_daemon: {reason}");
                         tokio::spawn(async move {
                             // log outputs, results and continue even if unsuccessful
                             let _res = CloudSyncTrigger::fire(
@@ -413,7 +425,7 @@ impl WorkspaceSubscriberService {
                                 cloudsync_retries,
                                 version,
                                 workspace,
-                                format!("scm_daemon: {reason}"),
+                                reason,
                             );
                         });
                     }
@@ -425,36 +437,26 @@ impl WorkspaceSubscriberService {
             }
             info!("{sid} Start polling updates...");
 
-            let interngraph = match polling_update_url {
-                Some(url) => {
-                    let client = match Client::builder()
-                        .http2_keep_alive_while_idle(true)
-                        .http2_keep_alive_interval(Duration::from_secs(
-                            POLLING_CONNECTION_KEEP_ALIVE_SEC,
-                        ))
-                        .build()
-                    {
-                        Ok(client) => client,
-                        Err(err) => {
-                            error!(
-                                "{sid} Cancelling subscription: cannot build polling client: {err}"
-                            );
-                            interrupt.store(true, Ordering::Relaxed);
-                            return;
-                        }
-                    };
-                    Some((url, client))
-                }
-                None => None,
-            };
-
             let mut slapi = SlapiPoller::default();
+            let mut interngraph: Option<(String, Client)> = None;
             let mut cursor = None;
             let mut access_token = None;
             let mut long_sleep_after_fail = false;
 
             while !interrupt.load(Ordering::Relaxed) {
-                let result = if let Some((url, client)) = &interngraph {
+                let poll_slapi = slapi.is_enabled(&repo_roots).await;
+                if poll_slapi {
+                    interngraph = None;
+                } else if interngraph.is_none() {
+                    interngraph = Self::build_legacy_client(&polling_update_url, &sid);
+                }
+
+                let result = if poll_slapi {
+                    slapi
+                        .poll(&subscription, &repo_roots)
+                        .await
+                        .map(|update| (update, None))
+                } else if let Some((url, client)) = &interngraph {
                     if access_token.as_ref().is_none() {
                         match util::read_or_generate_access_token(&user_token_path) {
                             Err(err) => {
@@ -478,26 +480,31 @@ impl WorkspaceSubscriberService {
                     )
                     .await
                 } else {
-                    slapi
-                        .poll(&subscription, &repo_roots)
-                        .await
-                        .map(|update| (update, None))
+                    error!(
+                        "{sid} No polling backend: legacy polling has no \
+                         polling_update_url and SLAPI polling is not enabled \
+                         for the selected repository"
+                    );
+                    tokio::time::sleep(Duration::from_secs(POLLING_ERROR_DELAY_SEC)).await;
+                    continue;
                 };
                 match result {
                     Ok((maybe_update, maybe_new_cursor)) => {
                         if maybe_new_cursor.is_some() {
                             cursor = maybe_new_cursor;
                         }
-                        match maybe_update {
+                        let sync = match maybe_update {
                             Some(new_update) => {
-                                sync_me("on new version update", Some(new_update.version));
+                                Some(("on new version update", Some(new_update.version)))
                             }
-                            None => {
-                                // sync since we had probably missed updates
-                                if long_sleep_after_fail {
-                                    sync_me("after recovering from errors", None);
-                                }
+                            // Sync since we may have missed updates while polling failed.
+                            None if long_sleep_after_fail => {
+                                Some(("after recovering from errors", None))
                             }
+                            None => None,
+                        };
+                        if let Some((reason, version)) = sync {
+                            sync_me(&slapi.take_sync_reason(reason, poll_slapi), version);
                         }
                         long_sleep_after_fail = false;
                         tokio::time::sleep(Duration::from_secs(POLLING_INTERVAL_SEC)).await;
