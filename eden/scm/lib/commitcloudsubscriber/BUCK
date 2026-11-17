@@ -13,7 +13,11 @@ sl_rust_library(
         },
     },
     crate_root = "src/lib.rs",
-    test_deps = ["fbsource//third-party/rust:tempfile"],
+    test_deps = [
+        "fbsource//third-party/rust:async-trait",
+        "fbsource//third-party/rust:tempfile",
+        "fbsource//third-party/rust:toml",
+    ],
     deps = [
         "fbsource//third-party/rust:anyhow",
         "fbsource//third-party/rust:base64",
@@ -28,7 +32,10 @@ sl_rust_library(
         "fbsource//third-party/rust:thiserror",
         "fbsource//third-party/rust:tokio",
         "//common/rust/shed/hostcaps:hostcaps",
+        "//eden/scm/lib/config/loader:configloader",
         "//eden/scm/lib/config/set:configset",
+        "//eden/scm/lib/edenapi:edenapi",
         "//eden/scm/lib/identity:identity",
+        "//eden/scm/lib/repo:repo",
     ],
 )

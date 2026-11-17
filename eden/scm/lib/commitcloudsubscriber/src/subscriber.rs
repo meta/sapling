@@ -34,6 +34,7 @@ use crate::receiver::CommandName;
 use crate::receiver::CommandName::CommitCloudCancelSubscriptions;
 use crate::receiver::CommandName::CommitCloudRestartSubscriptions;
 use crate::receiver::CommandName::CommitCloudStartSubscriptions;
+use crate::slapi::SlapiPoller;
 use crate::util;
 
 const POLLING_INTERVAL_SEC: u64 = 3;
@@ -75,8 +76,8 @@ pub struct Subscription {
 ///
 /// The serve function starts the service
 pub struct WorkspaceSubscriberService {
-    /// Endpoint for real-time polling of Commit Cloud Notifications
-    pub(crate) polling_update_url: String,
+    /// Legacy notification endpoint, or None to poll workspace versions via SLAPI.
+    pub(crate) polling_update_url: Option<String>,
 
     /// OAuth token path (optional) for access to Commit Cloud SSE endpoint
     pub(crate) user_token_path: Option<PathBuf>,
@@ -97,9 +98,18 @@ pub struct WorkspaceSubscriberService {
 impl WorkspaceSubscriberService {
     pub fn new(config: &CommitCloudConfig) -> Result<WorkspaceSubscriberService> {
         Ok(WorkspaceSubscriberService {
-            polling_update_url: config.polling_update_url.clone().ok_or(
-                ErrorKind::CommitCloudConfigError("undefined 'polling_update_url'"),
-            )?,
+            polling_update_url: if config.use_slapi {
+                None
+            } else {
+                Some(
+                    config
+                        .polling_update_url
+                        .clone()
+                        .ok_or(ErrorKind::CommitCloudConfigError(
+                            "undefined 'polling_update_url'",
+                        ))?,
+                )
+            },
             user_token_path: config.user_token_path.clone(),
             connected_subscribers_path: config.connected_subscribers_path.clone().ok_or(
                 ErrorKind::CommitCloudConfigError("undefined 'connected_subscribers_path'"),
@@ -415,49 +425,65 @@ impl WorkspaceSubscriberService {
             }
             info!("{sid} Start polling updates...");
 
-            let client = match Client::builder()
-                .http2_keep_alive_while_idle(true)
-                .http2_keep_alive_interval(Duration::from_secs(POLLING_CONNECTION_KEEP_ALIVE_SEC))
-                .build()
-            {
-                Ok(client) => client,
-                Err(err) => {
-                    error!(
-                        "{sid} Cancelling this task due to unexpected error with connection builder that should never happen (we just configure few options): {err}..."
-                    );
-                    interrupt.store(true, Ordering::Relaxed);
-                    return;
+            let interngraph = match polling_update_url {
+                Some(url) => {
+                    let client = match Client::builder()
+                        .http2_keep_alive_while_idle(true)
+                        .http2_keep_alive_interval(Duration::from_secs(
+                            POLLING_CONNECTION_KEEP_ALIVE_SEC,
+                        ))
+                        .build()
+                    {
+                        Ok(client) => client,
+                        Err(err) => {
+                            error!(
+                                "{sid} Cancelling subscription: cannot build polling client: {err}"
+                            );
+                            interrupt.store(true, Ordering::Relaxed);
+                            return;
+                        }
+                    };
+                    Some((url, client))
                 }
+                None => None,
             };
 
+            let mut slapi = SlapiPoller::default();
             let mut cursor = None;
             let mut access_token = None;
             let mut long_sleep_after_fail = false;
 
             while !interrupt.load(Ordering::Relaxed) {
-                if access_token.as_ref().is_none() {
-                    match util::read_or_generate_access_token(&user_token_path) {
-                        Err(err) => {
-                            error!(
-                                "{sid} Cancelling this task due to unexpected error with token creation: {err}..."
-                            );
-                            interrupt.store(true, Ordering::Relaxed);
-                            return;
-                        }
-                        Ok(token) => {
-                            access_token = Some(token);
+                let result = if let Some((url, client)) = &interngraph {
+                    if access_token.as_ref().is_none() {
+                        match util::read_or_generate_access_token(&user_token_path) {
+                            Err(err) => {
+                                error!(
+                                    "{sid} Cancelling this task due to unexpected error with token creation: {err}..."
+                                );
+                                interrupt.store(true, Ordering::Relaxed);
+                                return;
+                            }
+                            Ok(token) => {
+                                access_token = Some(token);
+                            }
                         }
                     }
-                }
-                match Self::poll_single_update(
-                    &client,
-                    &subscription,
-                    &polling_update_url,
-                    access_token.as_ref().unwrap(),
-                    &cursor,
-                )
-                .await
-                {
+                    Self::poll_single_update(
+                        client,
+                        &subscription,
+                        url,
+                        access_token.as_ref().unwrap(),
+                        &cursor,
+                    )
+                    .await
+                } else {
+                    slapi
+                        .poll(&subscription, &repo_roots)
+                        .await
+                        .map(|update| (update, None))
+                };
+                match result {
                     Ok((maybe_update, maybe_new_cursor)) => {
                         if maybe_new_cursor.is_some() {
                             cursor = maybe_new_cursor;
@@ -469,11 +495,11 @@ impl WorkspaceSubscriberService {
                             None => {
                                 // sync since we had probably missed updates
                                 if long_sleep_after_fail {
-                                    long_sleep_after_fail = false;
                                     sync_me("after recovering from errors", None);
                                 }
                             }
                         }
+                        long_sleep_after_fail = false;
                         tokio::time::sleep(Duration::from_secs(POLLING_INTERVAL_SEC)).await;
                     }
                     Err(err)
@@ -488,7 +514,7 @@ impl WorkspaceSubscriberService {
                         continue;
                     }
                     Err(err) => {
-                        error!("{sid} Polling updates failed with {err}");
+                        error!("{sid} Polling updates failed with {err:#}");
                         long_sleep_after_fail = true;
                         // sleep longer before trying again
                         tokio::time::sleep(Duration::from_secs(POLLING_ERROR_DELAY_SEC)).await;

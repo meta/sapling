@@ -9,6 +9,7 @@ pub(crate) mod action;
 pub mod config;
 pub mod error;
 pub mod receiver;
+mod slapi;
 pub mod subscriber;
 pub(crate) mod util;
 

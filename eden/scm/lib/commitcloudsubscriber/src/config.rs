@@ -59,7 +59,12 @@ mod defaults {
 
 #[derive(Debug, Deserialize)]
 pub struct CommitCloudConfig {
-    /// Endpoint for real-time polling of Commit Cloud Notifications
+    /// Poll workspace versions using each repository's Sapling Remote API client.
+    /// Disable to use the legacy polling_update_url and user_token_path instead.
+    #[serde(default)]
+    pub use_slapi: bool,
+
+    /// Endpoint for legacy Commit Cloud notification polling; unused with use_slapi.
     #[serde(default)]
     pub polling_update_url: Option<String>,
 
@@ -89,4 +94,41 @@ pub struct CommitCloudConfig {
     /// This is a simple receiver working on tcp socket
     #[serde(default = "defaults::tcp_receiver_port")]
     pub tcp_receiver_port: u16,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::subscriber::WorkspaceSubscriberService;
+
+    #[test]
+    fn slapi_does_not_require_legacy_endpoint() -> anyhow::Result<()> {
+        let mut config: CommitCloudConfig = toml::from_str("use_slapi = true")?;
+        config.connected_subscribers_path = Some(PathBuf::from("unused"));
+        let service = WorkspaceSubscriberService::new(&config)?;
+        assert!(service.polling_update_url.is_none());
+
+        config.polling_update_url = Some("https://legacy.example/poll".to_owned());
+        assert!(
+            WorkspaceSubscriberService::new(&config)?
+                .polling_update_url
+                .is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_backend_remains_explicitly_available() -> anyhow::Result<()> {
+        let mut config: CommitCloudConfig = toml::from_str("")?;
+        config.connected_subscribers_path = Some(PathBuf::from("unused"));
+        assert!(!config.use_slapi);
+        assert!(WorkspaceSubscriberService::new(&config).is_err());
+
+        config.polling_update_url = Some("https://legacy.example/poll".to_owned());
+        assert_eq!(
+            WorkspaceSubscriberService::new(&config)?.polling_update_url,
+            config.polling_update_url,
+        );
+        Ok(())
+    }
 }
