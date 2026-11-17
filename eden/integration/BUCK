@@ -446,6 +446,7 @@ python_unittest(
 python_unittest(
     name = "mount_health_check",
     srcs = ["mount_health_check_test.py"],
+    compatible_with = ["ovr_config//os:linux"],
     env = artifacts["env"],
     network_access = network_access_utils.all(),
     supports_static_listing = False,
@@ -780,6 +781,7 @@ python_unittest(
 python_unittest(
     name = "unmount_recovery",
     srcs = ["unmount_recovery_test.py"],
+    compatible_with = ["ovr_config//os:linux"],
     env = artifacts["env"],
     network_access = network_access_utils.all(),
     supports_static_listing = False,
