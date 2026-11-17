@@ -47,6 +47,16 @@ class _RestrictedTreeTestBase(EdenHgTestCase, metaclass=abc.ABCMeta):
     enable_server_acl_enforcement: bool = True
     # Subclasses flip this to True when they exercise backing-store path ACLs.
     enable_path_acl_lookup: bool = False
+    restricted_content_mode: str = "restricted"
+
+    def edenfs_extra_config(self) -> dict[str, list[str]] | None:
+        configs = super().edenfs_extra_config() or {}
+        # Snapshotted onto ServerState at daemon startup, which is when this
+        # config file is read.
+        configs.setdefault("acl", []).append(
+            f'restricted-content-mode = "{self.restricted_content_mode}"'
+        )
+        return configs
 
     def apply_hg_config_variant(self, hgrc: configparser.ConfigParser) -> None:
         super().apply_hg_config_variant(hgrc)
@@ -759,14 +769,7 @@ class RestrictedTreeOmittedModeTest(_RestrictedTreeTestBase):
     like restricted mode (mode-000 placeholder); only enumeration changes.
     """
 
-    def edenfs_extra_config(self) -> dict[str, list[str]] | None:
-        configs = super().edenfs_extra_config()
-        if configs is None:
-            configs = {}
-        # Snapshotted onto ServerState at daemon startup, which is when this
-        # config file is read.
-        configs.setdefault("acl", []).append('restricted-content-mode = "omitted"')
-        return configs
+    restricted_content_mode: str = "omitted"
 
     def test_listdir_omits_restricted_roots(self) -> None:
         root_entries = os.listdir(self.mount)

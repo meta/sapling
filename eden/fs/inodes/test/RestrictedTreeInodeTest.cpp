@@ -95,6 +95,11 @@ void setOmittedMode(EdenConfig& config) {
       RestrictedContentMode::Omitted, ConfigSourceType::CommandLine);
 }
 
+void setRestrictedMode(EdenConfig& config) {
+  config.restrictedContentMode.setValue(
+      RestrictedContentMode::Restricted, ConfigSourceType::CommandLine);
+}
+
 // Mount the given tree with acl:restricted-content-mode = omitted.
 std::unique_ptr<TestMount> makeOmittedModeTestMount(FakeTreeBuilder& builder) {
   return std::make_unique<TestMount>(
@@ -607,7 +612,13 @@ CO_TEST(
   builder.setFile("parent/normal/file.txt", "ok");
   builder.setFile("parent/restricted_child/secret.txt", "secret");
   builder.setDirIsRestricted("parent/restricted_child");
-  TestMount testMount{builder};
+  TestMount testMount{
+      builder,
+      /*startReady=*/true,
+      /*enableActivityBuffer=*/true,
+      kPathMapDefaultCaseSensitive,
+      /*errorLogger=*/nullptr,
+      setRestrictedMode};
 
   auto edenMount = testMount.getEdenMount();
   auto vi = testMount.getVirtualInode("parent"_relpath);
@@ -772,7 +783,13 @@ CO_TEST(
   builder.setFile("parent/leaf.txt", "leaf");
   builder.setFile("parent/restricted_child/secret.txt", "secret");
   builder.setDirIsRestricted("parent/restricted_child");
-  TestMount testMount{builder};
+  TestMount testMount{
+      builder,
+      /*startReady=*/true,
+      /*enableActivityBuffer=*/true,
+      kPathMapDefaultCaseSensitive,
+      /*errorLogger=*/nullptr,
+      setRestrictedMode};
 
   auto edenMount = testMount.getEdenMount();
   auto vi = testMount.getVirtualInode("parent"_relpath);

@@ -2818,7 +2818,7 @@ class EdenConfig : private ConfigSettingManager {
    */
   ConfigSetting<std::chrono::nanoseconds> restrictedRootRefreshInterval{
       "acl:restricted-root-refresh-interval",
-      std::chrono::seconds(0),
+      std::chrono::minutes(1),
       this};
 
   /**
@@ -2831,14 +2831,14 @@ class EdenConfig : private ConfigSettingManager {
       this};
 
   /**
-   * Controls how restricted ACL roots are presented. "restricted" (the
-   * default) shows them in directory listings with mode 000; "omitted" hides
-   * them from enumeration entirely. Read once at daemon startup; runtime
+   * Controls how restricted ACL roots are presented. "omitted" (the default)
+   * hides them from enumeration entirely; "restricted" shows them in
+   * directory listings with mode 000. Read once at daemon startup; runtime
    * config reloads do not change the running mode.
    */
   ConfigSetting<RestrictedContentMode> restrictedContentMode{
       "acl:restricted-content-mode",
-      RestrictedContentMode::Restricted,
+      RestrictedContentMode::Omitted,
       this};
 };
 

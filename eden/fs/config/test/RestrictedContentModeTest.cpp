@@ -27,9 +27,9 @@ TEST(RestrictedContentModeTest, fromString) {
   EXPECT_TRUE(converter.fromString("bogus", convData).hasError());
 }
 
-TEST(RestrictedContentModeTest, defaultIsRestricted) {
+TEST(RestrictedContentModeTest, defaultIsOmitted) {
   auto edenConfig = EdenConfig::createTestEdenConfig();
   EXPECT_EQ(
-      RestrictedContentMode::Restricted,
+      RestrictedContentMode::Omitted,
       edenConfig->restrictedContentMode.getValue());
 }
