@@ -25,10 +25,12 @@ metaconfig_parser = { version = "0.1.0", path = "../../metaconfig/parser" }
 metaconfig_types = { version = "0.1.0", path = "../../metaconfig/types" }
 mononoke_configs = { version = "0.1.0", path = "../../common/mononoke_configs" }
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
+mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
 repo_update_logger = { version = "0.1.0", path = "../../features/repo_update_logger" }
 serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 stats = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
+tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [dev-dependencies]
 fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }

@@ -7,6 +7,7 @@ oncall("scm_server_infra")
 rust_library(
     name = "repo_event_publisher",
     srcs = glob(["src/**/*.rs"]),
+    test_deps = ([] if rust_oss.is_oss_build() else ["//common/rust/shed/fbinit:fbinit-tokio"]),
     deps = [
         "fbsource//third-party/rust:anyhow",
         "fbsource//third-party/rust:tokio",
@@ -17,6 +18,7 @@ rust_library(
         []
         if rust_oss.is_oss_build()
         else [
+            "//eden/mononoke/mononoke_types:mononoke_types",
             "//configerator/structs/serverless/event_router/catalog/events/schemas:mononoke_bookmark_event_notification-rust",
             "//eden/mononoke/metaconfig:metaconfig_parser",
             "//eden/mononoke/metaconfig:metaconfig_types",
@@ -32,6 +34,7 @@ rust_library(
             "fbsource//third-party/rust:dashmap",
             "fbsource//third-party/rust:hex",
             "fbsource//third-party/rust:serde_json",
+            "fbsource//third-party/rust:tracing",
             "fbcode//dsi/logger/thrift_schemas/mononoke_git_content_ref:mononoke_git_content_ref_logger_schema-rust",
             "fbcode//dsi/logger/thrift_schemas/mononoke_bookmark:mononoke_bookmark_logger_schema-rust",
             "fbcode//dsi/logger/rust/deserializer:deserializer",
