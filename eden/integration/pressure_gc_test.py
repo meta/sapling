@@ -197,6 +197,7 @@ class ActiveFuseInvalidationTest(testcase.EdenRepoTest):
         path: str = "",
         seconds: int = 0,
         before_invalidate: Callable[[], None] | None = None,
+        after_first_invalidation: Callable[[], None] | None = None,
         timeout: float = 10.0,
     ) -> tuple[int, int]:
         deadline = time.monotonic() + timeout
@@ -207,6 +208,12 @@ class ActiveFuseInvalidationTest(testcase.EdenRepoTest):
                 before_invalidate()
 
             invalidated = await self.invalidate(path, seconds=seconds)
+            if (
+                after_first_invalidation is not None
+                and total_invalidated == 0
+                and invalidated > 0
+            ):
+                after_first_invalidation()
             total_invalidated += invalidated
             loaded_after = await self.get_loaded_count()
             if total_invalidated > 0 and loaded_after < loaded_before:
@@ -268,7 +275,11 @@ class ActiveFuseInvalidationTest(testcase.EdenRepoTest):
         self.assertEqual("0\n", self.read_file("a/0"))
         return os.stat(os.path.join(self.mount, "a/0")).st_ino
 
-    async def assert_file_inode_forgotten(self, inode_number: int) -> None:
+    async def assert_file_inode_forgotten(
+        self,
+        inode_number: int,
+        before_first_invalidation: Callable[[], None] | None = None,
+    ) -> None:
         if sys.platform != "linux":
             self.skipTest("active FUSE invalidation is Linux-only")
 
@@ -276,6 +287,8 @@ class ActiveFuseInvalidationTest(testcase.EdenRepoTest):
             info = await client.debugGetInodePath(self.mount_path_bytes, inode_number)
             self.assertEqual(b"a/0", info.path)
             self.assertTrue(info.linked)
+            if before_first_invalidation is not None:
+                before_first_invalidation()
 
             deadline = time.monotonic() + 10
             forgotten = False
@@ -308,50 +321,67 @@ class ActiveFuseInvalidationTest(testcase.EdenRepoTest):
         if self.use_io_uring():
             self.skipTest("io_uring takeover can strand in-flight requests")
 
-        inode_number = self.load_file_inode()
-        device = os.stat(self.mount).st_dev
-        with self.get_thrift_client() as client:
-            transport = client.listMounts()[0].fuseTransport
-        self.eden.graceful_restart()
-        self.assertEqual(device, os.stat(self.mount).st_dev)
-        with self.get_thrift_client() as client:
-            self.assertEqual(transport, client.listMounts()[0].fuseTransport)
-        await self.assert_file_inode_forgotten(inode_number)
+        # The kernel can free an unused dentry under memory pressure. The open
+        # file keeps the inode in the takeover data. The kernel can forget the
+        # inode only after the file closes.
+        with open(os.path.join(self.mount, "a/0"), "rb") as file:
+            self.assertEqual(b"0\n", file.read())
+            inode_number = os.fstat(file.fileno()).st_ino
+            device = os.stat(self.mount).st_dev
+            with self.get_thrift_client() as client:
+                transport = client.listMounts()[0].fuseTransport
+            self.eden.graceful_restart()
+            self.assertEqual(device, os.stat(self.mount).st_dev)
+            with self.get_thrift_client() as client:
+                self.assertEqual(transport, client.listMounts()[0].fuseTransport)
+            await self.assert_file_inode_forgotten(
+                inode_number, before_first_invalidation=file.close
+            )
 
     async def test_active_invalidation_respects_age(self) -> None:
         """Active invalidation should only affect inodes older than the
         specified age."""
-        # Read directory "a" first
-        for i in range(self.num_files):
-            self.read_file(f"a/{i}")
 
-        time.sleep(3)
-
-        # Read directory "b" now (so "a" is old, "b" is fresh)
         def read_b() -> None:
             for i in range(self.num_files):
                 self.read_file(f"b/{i}")
 
-        read_b()
+        with contextlib.ExitStack() as a_files:
+            # Read directory "a" first
+            for i in range(self.num_files):
+                self.read_file(f"a/{i}")
+                if sys.platform == "linux":
+                    # The kernel can free an unused dentry under memory pressure.
+                    # An open file keeps its dentry. The kernel sends FORGET for
+                    # an invalidated entry when the file closes.
+                    a_files.enter_context(
+                        open(os.path.join(self.mount, f"a/{i}"), "rb")
+                    )
 
-        loaded_before = await self.get_loaded_count()
+            time.sleep(3)
 
-        # Invalidate with 2s age: "a" is stale and "b" is fresh, so GC should
-        # invalidate stale entries.
-        if sys.platform == "linux":
-            invalidated, loaded_after = await self.invalidate_until_unloaded(
-                loaded_before=loaded_before,
-                seconds=2,
-                before_invalidate=read_b,
-            )
-            self.assertGreater(invalidated, 0)
-            # Some inodes from "a" should have been unloaded
-            self.assertLess(loaded_after, loaded_before)
-        else:
-            invalidated = await self.invalidate("", seconds=2)
-            if sys.platform == "darwin":
-                self.assertGreaterEqual(invalidated, self.num_files)
-            await self.assert_reclaimed(loaded_before, seconds=2)
+            # Read directory "b" now (so "a" is old, "b" is fresh)
+            read_b()
+
+            loaded_before = await self.get_loaded_count()
+
+            # Invalidate with 2s age: "a" is stale and "b" is fresh, so GC should
+            # invalidate stale entries.
+            if sys.platform == "linux":
+                invalidated, loaded_after = await self.invalidate_until_unloaded(
+                    loaded_before=loaded_before,
+                    seconds=2,
+                    before_invalidate=read_b,
+                    after_first_invalidation=a_files.close,
+                )
+                self.assertGreater(invalidated, 0)
+                # Some inodes from "a" should have been unloaded
+                self.assertLess(loaded_after, loaded_before)
+            else:
+                invalidated = await self.invalidate("", seconds=2)
+                if sys.platform == "darwin":
+                    self.assertGreaterEqual(invalidated, self.num_files)
+                await self.assert_reclaimed(loaded_before, seconds=2)
 
         # Everything should still be readable
         self.read_all()
@@ -464,6 +494,9 @@ class ActiveFuseInvalidationTest(testcase.EdenRepoTest):
         async def invalidate_until_gc_runs() -> None:
             deadline = time.monotonic() + 5
             while True:
+                # The kernel can free the dentry of `a/0` under memory
+                # pressure. Then GC has no entry to invalidate.
+                load_gc_candidate()
                 invalidated = await self.invalidate("a")
                 if invalidated > 0:
                     return
@@ -472,7 +505,6 @@ class ActiveFuseInvalidationTest(testcase.EdenRepoTest):
                 await asyncio.sleep(0.1)
 
         assert_bind_mounted()
-        load_gc_candidate()
         await invalidate_until_gc_runs()
         # This is the test: redirection is still on a separate device.
         self.assertNotEqual(mount_stat.st_dev, os.stat(redirection_path).st_dev)
@@ -484,7 +516,6 @@ class ActiveFuseInvalidationTest(testcase.EdenRepoTest):
             self.eden.graceful_restart()
             assert_bind_mounted()
 
-        load_gc_candidate()
         await invalidate_until_gc_runs()
         assert_bind_mounted()
 
