@@ -442,7 +442,7 @@ pub async fn sync(
             for grouped_entry in grouped_entries {
                 let entry = &grouped_entry.upload_entry;
                 let now = std::time::Instant::now();
-                process_bookmark_update_log_entry(
+                let result = process_bookmark_update_log_entry(
                     &ctx,
                     &config,
                     &repo,
@@ -456,19 +456,36 @@ pub async fn sync(
                     mc.clone(),
                     counter_names.clone(),
                 )
-                .await
-                .inspect(|_| {
-                    stat::log_bookmark_update_entry_done(&ctx, &repo_name, entry, now.elapsed());
-                })
-                .inspect_err(|e| {
-                    stat::log_bookmark_update_entry_error(
-                        &ctx,
-                        &repo_name,
-                        entry,
-                        e,
-                        now.elapsed(),
-                    );
-                })?;
+                .await;
+                match result {
+                    Ok(()) => {
+                        stat::log_bookmark_update_entry_done(
+                            &ctx,
+                            &repo_name,
+                            entry,
+                            now.elapsed(),
+                        );
+                    }
+                    // A requested stop makes the managers exit, so the entry
+                    // fails on a closed channel. That is the stop, not an error.
+                    Err(e) if cancellation_requested.load(Ordering::Relaxed) => {
+                        tracing::info!(
+                            "sync stopping due to cancellation request during entry {}: {e:#}",
+                            entry.id
+                        );
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        stat::log_bookmark_update_entry_error(
+                            &ctx,
+                            &repo_name,
+                            entry,
+                            &e,
+                            now.elapsed(),
+                        );
+                        return Err(e);
+                    }
+                }
                 last_entry = entry.to_changeset_id;
             }
         }

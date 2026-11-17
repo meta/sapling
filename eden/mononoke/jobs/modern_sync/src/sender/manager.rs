@@ -102,6 +102,17 @@ impl FirstFailure {
     }
 }
 
+/// Tells the managers to stop when the last `SendManager` handle is dropped:
+/// the sync that fed them returned, failed or was aborted, so the messages
+/// still queued are abandoned rather than uploaded by a sync nobody owns.
+struct StopManagersOnDrop(Arc<AtomicBool>);
+
+impl Drop for StopManagersOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
 /// Runs each manager as its own task, with the arguments every manager
 /// shares, and records the error a manager stops with.
 struct ManagerSpawner {
@@ -138,6 +149,9 @@ impl ManagerSpawner {
 
 #[derive(Clone)]
 pub struct SendManager {
+    // Declared first so the managers see the stop request before their
+    // channels close and they would otherwise drain the queue.
+    _stop_on_drop: Arc<StopManagersOnDrop>,
     content_sender: mpsc::Sender<ContentMessage>,
     files_sender: mpsc::Sender<FileMessage>,
     trees_sender: mpsc::Sender<TreeMessage>,
@@ -285,10 +299,14 @@ impl SendManager {
             ChangesetManager::new(config.changesets_channel_config.clone(), changeset_recv, mc),
         );
 
+        let stop_on_drop = Arc::new(StopManagersOnDrop(cancellation_requested.clone()));
         mononoke::spawn_task(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(5));
             loop {
                 interval.tick().await;
+                if cancellation_requested.load(Ordering::Relaxed) {
+                    break;
+                }
                 if fs::metadata(exit_file.clone()).is_ok() {
                     tracing::warn!("Exit file detected, stopping sync");
                     cancellation_requested.store(true, Ordering::Relaxed);
@@ -298,6 +316,7 @@ impl SendManager {
         });
 
         Self {
+            _stop_on_drop: stop_on_drop,
             content_sender,
             files_sender,
             trees_sender,
@@ -455,6 +474,7 @@ mod tests {
         };
         let (trees_sender, trees_recv) = mpsc::channel(1);
         let send_manager = SendManager {
+            _stop_on_drop: Arc::new(StopManagersOnDrop(Arc::new(AtomicBool::new(false)))),
             content_sender: mpsc::channel(1).0,
             files_sender: mpsc::channel(1).0,
             trees_sender,
@@ -498,6 +518,65 @@ mod tests {
             "trees channel closed",
             "a manager that returns Ok must not record a failure"
         );
+    }
+
+    /// Runs until cancellation is requested, like the real manager loops,
+    /// whether or not its channel is still open.
+    struct LoopingManager<T> {
+        _recv: mpsc::Receiver<T>,
+    }
+
+    impl<T: Send> Manager for LoopingManager<T> {
+        async fn run(
+            &mut self,
+            _ctx: CoreContext,
+            _reponame: String,
+            _external_sender: Arc<dyn EdenapiSender + Send + Sync>,
+            cancellation_requested: Arc<AtomicBool>,
+        ) -> Result<()> {
+            while !cancellation_requested.load(Ordering::Relaxed) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Ok(())
+        }
+    }
+
+    #[mononoke::fbinit_test]
+    async fn dropping_the_last_send_manager_stops_the_managers(fb: FacebookInit) {
+        let cancellation_requested = Arc::new(AtomicBool::new(false));
+        let managers = ManagerSpawner {
+            ctx: CoreContext::test_mock(fb),
+            reponame: "testrepo".to_string(),
+            external_sender: Arc::new(NoopEdenapiSender::default()),
+            cancellation_requested: cancellation_requested.clone(),
+            first_failure: FirstFailure::default(),
+        };
+        let (trees_sender, trees_recv) = mpsc::channel(1);
+        // Stays open after the SendManager handles are gone, so the manager
+        // can only stop because it was told to, not because its channel closed.
+        let other_trees_sender = trees_sender.clone();
+        let send_manager = SendManager {
+            _stop_on_drop: Arc::new(StopManagersOnDrop(cancellation_requested.clone())),
+            content_sender: mpsc::channel(1).0,
+            files_sender: mpsc::channel(1).0,
+            trees_sender,
+            changeset_sender: mpsc::channel(1).0,
+            first_failure: FirstFailure::default(),
+        };
+        managers.spawn("trees", LoopingManager { _recv: trees_recv });
+
+        let clone = send_manager.clone();
+        drop(send_manager);
+        assert!(
+            !cancellation_requested.load(Ordering::Relaxed),
+            "a remaining handle can still send, so the managers keep running"
+        );
+
+        drop(clone);
+        assert!(cancellation_requested.load(Ordering::Relaxed));
+        tokio::time::timeout(Duration::from_secs(10), other_trees_sender.closed())
+            .await
+            .expect("the manager must stop once the last handle is dropped");
     }
 
     #[mononoke::test]
