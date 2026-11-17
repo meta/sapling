@@ -37,7 +37,7 @@ use blake2::Digest;
 use configmodel::Config;
 use fs_err as fs;
 use repolock::LockError;
-use repolock::LockHandle;
+pub use repolock::LockHandle;
 use serde::Deserialize;
 use serde::Serialize;
 use util::lock::PathLock;
@@ -417,6 +417,23 @@ pub fn lock_worktree_path_op(
             err => err.into(),
         }
     })
+}
+
+/// Like [`lock_worktree_path_op`], but returns `None` instead of waiting when
+/// another process holds the lock.
+pub fn try_lock_worktree_path_op(
+    shared_store_path: &Path,
+    worktree_path: &Path,
+) -> Result<Option<LockHandle>> {
+    if REGISTRY_LOCK_DEPTH.with(|depth| depth.get() > 0) {
+        anyhow::bail!("cannot acquire worktree path operation lock while holding registry lock");
+    }
+    let name = worktree_path_lockfile_name(worktree_path);
+    match repolock::try_lock_with_contents(shared_store_path, &name) {
+        Ok(lock) => Ok(Some(lock)),
+        Err(LockError::Contended(_)) => Ok(None),
+        Err(err) => Err(err.into()),
+    }
 }
 
 /// Hold the per-worktree operation lock for `worktree_path` while running `f`;
@@ -1088,6 +1105,25 @@ mod tests {
 
         let _lock = lock_worktree_path_op(&config, dir.path(), &path).unwrap();
         releaser.join().unwrap();
+    }
+
+    #[test]
+    fn test_try_lock_worktree_path_op_returns_none_while_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worktree");
+        let held =
+            lock_worktree_path_op(&BTreeMap::<String, String>::new(), dir.path(), &path).unwrap();
+        assert!(
+            try_lock_worktree_path_op(dir.path(), &path)
+                .unwrap()
+                .is_none()
+        );
+        drop(held);
+        assert!(
+            try_lock_worktree_path_op(dir.path(), &path)
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]

@@ -85,3 +85,39 @@ Adding from a linked checkout inherits its sparse patterns and worktree configur
   linked
   $ git -C $TESTTMP/sparse-child config --worktree --get core.sparseCheckout
   true
+
+Without PATH or a generator, worktrees go next to the main checkout, skipping
+names that exist on disk or that Git still has registered.
+
+  $ sl worktree add
+  created linked worktree at \$TESTTMP/addrepo\.worktrees/[a-z0-9]{8} (re)
+  $ sl worktree add --label "Review X"
+  created linked worktree at $TESTTMP/addrepo.worktrees/review-x
+  $ sl worktree add --label review-x
+  created linked worktree at $TESTTMP/addrepo.worktrees/review-x-2
+  $ rm -rf $TESTTMP/addrepo.worktrees/review-x-2
+  $ sl worktree add --label review-x
+  created linked worktree at $TESTTMP/addrepo.worktrees/review-x-3
+
+Long labels are cut to 32 characters, without a trailing `-`.
+
+  $ sl worktree add --label "Fix a slow test in the worktree add command when the label is too long"
+  created linked worktree at $TESTTMP/addrepo.worktrees/fix-a-slow-test-in-the-worktree
+
+Another add with the same label can run while this add holds its chosen
+name; the pre-add hook stands in for it. That add skips to the next name, and
+the hook already sees this add's final path. With `worktree.max-count` set, this
+add also reserves its slot while it holds the name.
+
+  $ sl worktree add --label race --config worktree.max-count=20 --config 'hooks.pre-worktree-add=echo $HG_PATH; sl worktree add --label race'
+  $TESTTMP/addrepo.worktrees/race
+  created linked worktree at $TESTTMP/addrepo.worktrees/race-2
+  created linked worktree at $TESTTMP/addrepo.worktrees/race
+
+An explicit PATH doesn't skip ahead: it aborts if another add created the path
+first.
+
+  $ sl worktree add $TESTTMP/taken --config 'hooks.pre-worktree-add=sl worktree add "$HG_PATH"'
+  created linked worktree at $TESTTMP/taken
+  abort: destination path '$TESTTMP/taken' already exists
+  [255]

@@ -6,6 +6,7 @@
  */
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::path::Path;
@@ -25,6 +26,9 @@ use cmdutil::Result;
 use configmodel::convert::ByteCount;
 use encoding::shell_output_bytes_to_path;
 use fs_err as fs;
+use rand::RngExt as _;
+use rand::distr::Alphanumeric;
+use rand::rng;
 use repo::repo::Repo;
 use repo::repo::ResolveResult;
 use slex::Items;
@@ -32,11 +36,14 @@ use slex::Work as SlexWork;
 use slex::WorkOptions;
 use spawn_ext::CommandExt;
 use types::HgId;
+use worktree::LockHandle;
 use worktree::Reservation;
 use worktree::Worktrees;
 use worktree::check_dest_not_in_repo;
 use worktree::check_disk_space;
+use worktree::lock_worktree_path_op;
 use worktree::new_reservation_id;
+use worktree::try_lock_worktree_path_op;
 use worktree::with_reservations;
 use worktree::with_worktree_path_op_lock;
 
@@ -222,7 +229,7 @@ pub(crate) fn run(ctx: &ReqCtx<WorktreeOpts>, repo: &Repo, worktrees: &Worktrees
         .map(util::path::strip_unc_prefix)
         .unwrap_or_else(|_| repo.path().to_path_buf());
 
-    let dest = match ctx.opts.args.get(1) {
+    let (dest, dest_lock) = match ctx.opts.args.get(1) {
         Some(value) => {
             if require_generated {
                 abort!(
@@ -230,17 +237,27 @@ pub(crate) fn run(ctx: &ReqCtx<WorktreeOpts>, repo: &Repo, worktrees: &Worktrees
                      run without a path argument to use the configured path generator"
                 );
             }
-            util::path::strip_unc_prefix(util::path::canonical_path_allow_missing(value)?)
+            (
+                util::path::strip_unc_prefix(util::path::canonical_path_allow_missing(value)?),
+                None,
+            )
         }
-        None => run_path_generator(
-            repo,
-            &ctx.opts.label,
-            &canonical_repo_path,
-            require_generated,
-        )?,
+        None => match repo.config().get_nonempty("worktree", "path-generator") {
+            Some(generator_cmd) => (
+                run_path_generator(repo, &generator_cmd, &ctx.opts.label, &canonical_repo_path)?,
+                None,
+            ),
+            None if require_generated => abort!(
+                "worktree.path-generator is required when worktree.require-generated-path=true"
+            ),
+            None => {
+                let (path, lock) = default_path(worktrees, &canonical_repo_path, &ctx.opts.label)?;
+                (path, Some(lock))
+            }
+        },
     };
 
-    // Fast-fail before locking (re-checked inside lock).
+    // Fast-fail; explicit and generated paths are re-checked under the lock below.
     if dest.exists() {
         abort!("destination path '{}' already exists", dest.display());
     }
@@ -379,21 +396,25 @@ pub(crate) fn run(ctx: &ReqCtx<WorktreeOpts>, repo: &Repo, worktrees: &Worktrees
     };
 
     // Lock the destination path while creating and initializing that checkout.
+    // `default_path` returns its path already locked.
     let cleanup_command = checkouts.cleanup_command(&dest);
-    with_worktree_path_op_lock(repo.config().as_ref(), &shared_store_path, &dest, || {
-        if dest.exists() {
-            abort!("destination path '{}' already exists", dest.display());
-        }
-        check_dest_not_in_repo(&dest)?;
+    let dest_lock = match dest_lock {
+        Some(lock) => lock,
+        None => lock_worktree_path_op(repo.config().as_ref(), &shared_store_path, &dest)?,
+    };
+    if dest.exists() {
+        abort!("destination path '{}' already exists", dest.display());
+    }
+    check_dest_not_in_repo(&dest)?;
 
-        prepared.create(&dest).inspect_err(|_| {
-            if let Some(command) = &cleanup_command {
-                ctx.logger().warn(format!(
-                    "worktree add may have left a partial checkout; try running `{command}` to recover"
-                ));
-            }
-        })
+    prepared.create(&dest).inspect_err(|_| {
+        if let Some(command) = &cleanup_command {
+            ctx.logger().warn(format!(
+                "worktree add may have left a partial checkout; try running `{command}` to recover"
+            ));
+        }
     })?;
+    drop(dest_lock);
 
     let label = (!ctx.opts.label.is_empty()).then_some(ctx.opts.label.as_str());
     let marker_error = worktrees
@@ -579,32 +600,101 @@ fn restore_snapshot_legacy(
     Ok(())
 }
 
+/// Picks `<main>.worktrees/<label slug or random name>` next to the group's
+/// main checkout, appending `-2`, `-3`, ... to skip paths that exist, are
+/// registered, or are locked by another worktree command. Returns the path with
+/// its operation lock held, so concurrent adds with one label get different paths.
+fn default_path(
+    worktrees: &Worktrees,
+    canonical_repo_path: &Path,
+    label: &str,
+) -> Result<(PathBuf, LockHandle)> {
+    let listed = worktrees.list()?;
+    let main = match listed.iter().find(|w| w.is_main) {
+        Some(main) => {
+            util::path::strip_unc_prefix(util::path::canonicalize_best_effort(&main.path)?)
+        }
+        None => canonical_repo_path.to_owned(),
+    };
+    let mut dir = main.into_os_string();
+    dir.push(".worktrees");
+    let dir = util::path::strip_unc_prefix(util::path::canonical_path_allow_missing(dir)?);
+
+    let registered: HashSet<&Path> = listed.iter().map(|w| w.path.as_path()).collect();
+    let name = match slug(label) {
+        slug if slug.is_empty() => random_name(),
+        slug => slug,
+    };
+    let shared_store_path = worktrees.shared_store_path();
+    let candidates = std::iter::once(dir.join(&name))
+        .chain((2..).map(|n| dir.join(format!("{name}-{n}"))))
+        .filter(|path| !path.exists() && !registered.contains(path.as_path()));
+    for path in candidates {
+        // An add creating this path holds its lock until the path exists.
+        if let Some(lock) = try_lock_worktree_path_op(&shared_store_path, &path)?
+            && !path.exists()
+        {
+            return Ok((path, lock));
+        }
+    }
+    bail!("cannot find an unused worktree path")
+}
+
+/// Lowercases `label`, joins its runs of ASCII letters and digits with `-`, and
+/// keeps at most the first `MAX_SLUG_LEN` characters. On Windows, where that
+/// leaves a prefix agent labels share (`claude-c`), a longer or reserved slug is
+/// empty so the worktree gets a random name instead.
+fn slug(label: &str) -> String {
+    // EdenFS on macOS puts a socket at `~/local/.eden/clients/<name>/edenfs-nfsd.socket`,
+    // which must fit in 103 bytes. On Windows, build tools without long path support
+    // fail on deep buck-out paths, so names stay as short as random ones.
+    const MAX_SLUG_LEN: usize = if cfg!(windows) { 8 } else { 32 };
+
+    let mut slug = label
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+        .to_ascii_lowercase();
+    #[cfg(windows)]
+    if slug.len() > MAX_SLUG_LEN || is_reserved_windows_name(&slug) {
+        return String::new();
+    }
+    slug.truncate(MAX_SLUG_LEN);
+    slug.trim_end_matches('-').to_owned()
+}
+
+#[cfg(windows)]
+fn is_reserved_windows_name(name: &str) -> bool {
+    matches!(name, "con" | "prn" | "aux" | "nul")
+        || matches!(
+            name.as_bytes(),
+            [b'c', b'o', b'm', b'1'..=b'9'] | [b'l', b'p', b't', b'1'..=b'9']
+        )
+}
+
+fn random_name() -> String {
+    rng()
+        .sample_iter(Alphanumeric)
+        .take(8)
+        .map(|c| char::from(c.to_ascii_lowercase()))
+        .collect()
+}
+
 /// Runs the `worktree.path-generator` command and returns the generated path.
 fn run_path_generator(
     repo: &Repo,
+    generator_cmd: &str,
     label: &str,
     canonical_source: &Path,
-    require_generated: bool,
 ) -> Result<PathBuf> {
-    let generator_cmd = repo
-        .config()
-        .get("worktree", "path-generator")
-        .with_context(|| {
-            if require_generated {
-                "worktree.path-generator is required when \
-                 worktree.require-generated-path=true"
-            } else {
-                "worktree.path-generator is not configured; pass a PATH argument"
-            }
-        })?;
-
     let current_exe = std::env::current_exe().ok();
     let exe_str = current_exe
         .as_ref()
         .and_then(|p| p.to_str())
         .unwrap_or_else(|| identity::cli_name());
 
-    let mut cmd = Command::new_shell(generator_cmd.as_ref());
+    let mut cmd = Command::new_shell(generator_cmd);
     cmd.current_dir(repo.path());
     cmd.env("HG_SOURCE", canonical_source.as_os_str());
     cmd.env("SL_SOURCE", canonical_source.as_os_str());

@@ -65,11 +65,50 @@ test worktree add - from a subdirectory of the repo
   created linked worktree at $TESTTMP/linked_from_subdir
   $ cd $TESTTMP/myrepo
 
-test worktree add - missing PATH argument and no path-generator
+test worktree add - missing PATH argument and no path-generator uses a random name
 
   $ sl worktree add
-  abort: worktree.path-generator is not configured; pass a PATH argument
-  [255]
+  created linked worktree at \$TESTTMP/myrepo\.worktrees/[a-z0-9]{8} (re)
+
+test worktree add - default path is named after the label and skips taken names
+
+  $ sl worktree add --label "Feat X!"
+  created linked worktree at $TESTTMP/myrepo.worktrees/feat-x
+  $ sl worktree add --label feat-x
+  created linked worktree at $TESTTMP/myrepo.worktrees/feat-x-2
+
+test worktree add - concurrent adds with the same label pick different names
+
+  $ sl worktree add --label race --config 'hooks.pre-worktree-add=sl worktree add --label race'
+  created linked worktree at $TESTTMP/myrepo.worktrees/race-2
+  created linked worktree at $TESTTMP/myrepo.worktrees/race
+
+test worktree add - on Windows, a label longer than 8 characters gets a random name
+
+#if windows
+  $ sl worktree add --label claude-code
+  created linked worktree at \$TESTTMP/myrepo\.worktrees/[a-z0-9]{8} (re)
+#else
+  $ sl worktree add --label claude-code
+  created linked worktree at $TESTTMP/myrepo.worktrees/claude-code
+#endif
+
+test worktree add - reserved Windows names get a random name only on Windows
+
+#if windows
+  $ sl worktree add --label AUX
+  created linked worktree at \$TESTTMP/myrepo\.worktrees/[a-z0-9]{8} (re)
+#else
+  $ sl worktree add --label AUX
+  created linked worktree at $TESTTMP/myrepo.worktrees/aux
+#endif
+
+test worktree add - default path from a linked checkout is next to the main checkout
+
+  $ cd $TESTTMP/linked1
+  $ sl worktree add --label nested
+  created linked worktree at $TESTTMP/myrepo.worktrees/nested
+  $ cd $TESTTMP/myrepo
 
 test worktree --rev is rejected for other subcommands
 
@@ -477,12 +516,11 @@ test worktree add - path-generator empty output aborts command
   [255]
 #endif
 
-test worktree add - path-generator empty output aborts command (empty config)
+test worktree add - empty path-generator config uses the default path
 
   $ setconfig worktree.path-generator=
   $ sl worktree add
-  abort: worktree.path-generator returned empty output
-  [255]
+  created linked worktree at \$TESTTMP/gen_repo\.worktrees/[a-z0-9]{8} (re)
 
 test worktree add - path-generator extra stdout aborts command
 

@@ -99,7 +99,9 @@ pub fn doc() -> &'static str {
       label [PATH] TEXT [--remove]                      Set or remove a worktree label
 
     If PATH is omitted from `add`, `worktree.path-generator` is used to
-    choose the destination path.
+    choose the destination path. Without a generator, the worktree is created
+    in `NAME.worktrees` next to the main worktree `NAME`, named after `--label`
+    or given a random name.
 
     Config options::
 

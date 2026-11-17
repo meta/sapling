@@ -41,6 +41,7 @@ sl_rust_library(
     deps = [
         "fbsource//third-party/rust:anyhow",
         "fbsource//third-party/rust:fs-err",
+        "fbsource//third-party/rust:rand",
         "fbsource//third-party/rust:serde",
         "fbsource//third-party/rust:tracing",
         "//eden/scm/lib/agentdetect:agentdetect",
