@@ -269,6 +269,10 @@ def getfiles(repo, ctx, revcache):
 
 
 def getrenamedfn(repo: Sized, endrev: Optional[int] = None):
+    if git.isgitformat(repo):
+        # Git does not record copies in file headers.
+        return lambda fn, rev: None
+
     rcache = {}
     if endrev is None:
         endrev = len(repo)
@@ -500,7 +504,8 @@ def showfileadds(**args) -> _hybrid:
 @templatekeyword("file_copies")
 def showfilecopies(**args) -> _hybrid:
     """List of strings. Files copied in this changeset with
-    their sources.
+    their sources. Empty in a Git repo, which does not record
+    copies.
     """
     args = args
     cache, ctx = args["cache"], args["ctx"]

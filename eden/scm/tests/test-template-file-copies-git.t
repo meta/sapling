@@ -1,6 +1,6 @@
 #require git no-windows no-eden
 
-Test {file_copies} in a git repo, whose filelog cannot be iterated
+Test {file_copies} in a git repo
 
   $ eagerepo
   $ . $RUNTESTDIR/git.sh
@@ -13,15 +13,16 @@ Test {file_copies} in a git repo, whose filelog cannot be iterated
   $ sl mv a b
   $ sl ci -qm 'mv a -> b'
 
-BUG: {file_copies} and --copies crash with a Python traceback:
+{file_copies} is not supported in a Git repo: Git does not record copies, so
+the list is empty.
 
-  $ sl log -r . -T 'x{file_copies}x\n' 2>&1 | grep -E '^TypeError'
-  TypeError: 'gitfilelog' object is not iterable
-  $ sl log -r . --copies -T 'x{file_copies_switch}x\n' 2>&1 | grep -E '^TypeError'
-  TypeError: 'gitfilelog' object is not iterable
+  $ sl log -r . -T 'x{file_copies}x\n'
+  xx
+  $ sl log -r . --copies -T 'x{file_copies_switch}x\n'
+  xx
 
-BUG: the working copy crashes too, although the dirstate has the copy:
+The same holds for the working copy:
 
   $ sl mv b c
-  $ sl log -r 'wdir()' -T '{file_copies}\n' 2>&1 | grep -E '^TypeError'
-  TypeError: 'gitfilelog' object is not iterable
+  $ sl log -r 'wdir()' -T 'x{file_copies}x\n'
+  xx
