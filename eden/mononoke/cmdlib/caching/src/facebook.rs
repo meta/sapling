@@ -120,6 +120,8 @@ pub fn init_cachelib_from_settings(
         };
     }
 
+    cache_config = cache_config.set_empty_pool_recovery(settings.empty_pool_recovery);
+
     if enable_cacheadmin {
         cachelib::init_cache_with_cacheadmin(fb, cache_config, "scm_server_infra")?;
     } else {

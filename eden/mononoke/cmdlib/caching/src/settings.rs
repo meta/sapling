@@ -19,6 +19,8 @@ pub struct CachelibSettings {
     pub min_process_size_gib: Option<u32>,
     pub buckets_power: Option<u32>,
     pub use_tupperware_shrinker: bool,
+    /// Let the manual process-size shrinker grow back pools it has emptied.
+    pub empty_pool_recovery: bool,
     pub presence_cache_size: Option<usize>,
     pub commit_graph_cache_size: Option<usize>,
     pub commit_derived_data_mapping_cache_size: Option<usize>,
@@ -221,6 +223,7 @@ impl Default for CachelibSettings {
             min_process_size_gib: None,
             buckets_power: None,
             use_tupperware_shrinker: false,
+            empty_pool_recovery: false,
             presence_cache_size: None,
             commit_graph_cache_size: None,
             commit_derived_data_mapping_cache_size: None,
