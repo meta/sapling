@@ -29,7 +29,7 @@ use dbbookmarks::transaction::NextBookmarkLogId;
 use dbbookmarks::transaction::SelectBookmarksForUpdate;
 use dbbookmarks::transaction::UpdateBookmark;
 use dbbookmarks::transaction::bookmark_log_guard_enabled;
-use dbbookmarks::transaction::bookmark_log_guard_enabled_for_allocation;
+use dbbookmarks::transaction::bookmark_log_guard_required;
 use dbbookmarks::transaction::bookmark_log_ids_by_name;
 use dbbookmarks::transaction::find_next_bookmark_log_ids;
 use dbbookmarks::transaction::find_next_bookmark_log_lock_id;
@@ -500,8 +500,12 @@ async fn attempt_commit(
     let mut next_lock_ids = HashMap::new();
     for (&repo_id, (by_name, _)) in &repo_names {
         let enabled = bookmark_log_guard_enabled(repo_id, BookmarkLogWriter::MultiRepo);
-        let next_lock_id = if bookmark_log_guard_enabled_for_allocation(repo_id, *by_name, enabled)?
-        {
+        let next_lock_id = if bookmark_log_guard_required(
+            repo_id,
+            BookmarkLogWriter::MultiRepo,
+            *by_name,
+            enabled,
+        )? {
             let (next_txn, id) = find_next_bookmark_log_lock_id(txn, repo_id).await?;
             txn = next_txn;
             Some(id)

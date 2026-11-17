@@ -38,8 +38,10 @@ use sql_construct::SqlConstruct;
 use sql_ext::Connection;
 
 mod guard_chunks;
+mod guard_retirement;
 mod log_allocation;
 mod log_lock;
+mod partial_retirement;
 mod writer_allocation_interop;
 mod writer_interop;
 
