@@ -15,6 +15,9 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use artillery_http_ext::ArtilleryTraceGuard;
+use artillery_http_ext::current_trace_id;
+use artillery_http_ext::start_trace;
 use async_requests::AsyncMethodRequestQueue;
 use cloned::cloned;
 use environment::RemoteDiffOptions;
@@ -1009,6 +1012,51 @@ fn check_memory_usage(
     Ok(())
 }
 
+/// Operation name for SCS traces rooted here rather than continued, so that a
+/// root is distinguishable from a continuation in Tracery.
+const ROOT_OPERATION_NAME: &str = "scs_method_root";
+
+/// Endpoint labels bound to the `mononoke_endpoint` Luna sample key of the
+/// `mononoke_scm` policy. SCS method names are normalised onto the labels SLAPI
+/// already emits so that one policy branch rates a land identically whichever
+/// transport it arrived on.
+const LAND_ENDPOINT_LABEL: &str = "land_stack";
+const BOOKMARK_ENDPOINT_LABEL: &str = "set_bookmark";
+const OTHER_ENDPOINT_LABEL: &str = "other";
+
+fn root_trace_endpoint(method: &str) -> &'static str {
+    match method {
+        "repo_land_stack" => LAND_ENDPOINT_LABEL,
+        "repo_create_bookmark" | "repo_move_bookmark" | "repo_delete_bookmark" => {
+            BOOKMARK_ENDPOINT_LABEL
+        }
+        _ => OTHER_ENDPOINT_LABEL,
+    }
+}
+
+fn tw_job_name() -> Option<&'static str> {
+    static TW_JOB_NAME: OnceLock<Option<String>> = OnceLock::new();
+    TW_JOB_NAME
+        .get_or_init(|| std::env::var("TW_JOB_NAME").ok())
+        .as_deref()
+}
+
+/// Root an Artillery trace for a request that arrived without one.
+///
+/// Inbound traces are continued further up by `ContextPropModule`, so a request
+/// that already has one is left alone: re-rooting would sever it from its
+/// caller. Whether a root is actually sampled is the `mononoke_scm` policy's
+/// decision, so `None` here is the normal case rather than a failure.
+fn maybe_root_trace(fb: FacebookInit, method: &str) -> Option<ArtilleryTraceGuard> {
+    if !justknobs::eval("scm/artillery:root_scs_traces", None, tw_job_name()) {
+        return None;
+    }
+    if current_trace_id().is_some() {
+        return None;
+    }
+    start_trace(fb, ROOT_OPERATION_NAME, root_trace_endpoint(method))
+}
+
 // Define a macro to construct a CoreContext based on the thrift parameters.
 macro_rules! create_ctx {
     ( $service_impl:expr, $method_name:ident, $req_ctxt:ident, $params_name:ident ) => {
@@ -1046,6 +1094,7 @@ macro_rules! impl_thrift_methods {
                     let svc = self.0.clone();
                     let watchdog_max_poll = self.0.watchdog_max_poll;
                     let (ctx, session_uuid, repo_name) = create_ctx!(svc, $method_name, req_ctxt, $( $param_name ),*).await?;
+                    let _artillery_trace = maybe_root_trace(ctx.fb, stringify!($method_name));
                     let handler = {
                         cloned!(ctx, repo_name);
                         let span = tracing::info_span!("scs method", repo = tracing::field::Empty, client_correlator = tracing::field::Empty);
@@ -1111,6 +1160,7 @@ macro_rules! impl_thrift_stream_methods {
                 let fut = async move {
                     let svc = self.0.clone();
                     let (ctx, session_uuid, repo_name) = create_ctx!(svc, $method_name, req_ctxt, $( $param_name ),*).await?;
+                    let _artillery_trace = maybe_root_trace(ctx.fb, stringify!($method_name));
                     let handler = {
                         cloned!(ctx, repo_name);
                         let span = tracing::info_span!("scs method", repo = tracing::field::Empty, client_correlator = tracing::field::Empty);
@@ -1970,6 +2020,127 @@ mod tests {
                     );
                 }
                 result => panic!("expected NOT_AVAILABLE request error, got {result:?}"),
+            },
+        );
+    }
+
+    // ---- Tests for Artillery root-trace endpoint labelling ----
+
+    #[mononoke::test]
+    fn land_stack_is_labelled_as_a_land() {
+        assert_eq!(root_trace_endpoint("repo_land_stack"), LAND_ENDPOINT_LABEL);
+    }
+
+    #[mononoke::test]
+    fn every_bookmark_move_is_labelled_as_a_bookmark_set() {
+        // All three move a bookmark, so all three are lands for policy purposes.
+        for method in [
+            "repo_create_bookmark",
+            "repo_move_bookmark",
+            "repo_delete_bookmark",
+        ] {
+            assert_eq!(
+                root_trace_endpoint(method),
+                BOOKMARK_ENDPOINT_LABEL,
+                "{method} should be labelled as a bookmark move"
+            );
+        }
+    }
+
+    #[mononoke::test]
+    fn reads_fall_through_to_the_catch_all_label() {
+        for method in [
+            "repo_resolve_bookmark",
+            "commit_info",
+            "repo_list_bookmarks",
+        ] {
+            assert_eq!(
+                root_trace_endpoint(method),
+                OTHER_ENDPOINT_LABEL,
+                "{method} is a read and should not be labelled as a land"
+            );
+        }
+    }
+
+    /// The `mononoke_scm` Luna expression selects its 1:1 land branch by
+    /// matching these labels against the prefixes `land` and `set_bookmark`. A
+    /// label that stops matching silently demotes lands to the thin catch-all
+    /// sample rate, which is why the prefixes are asserted here rather than
+    /// left to the policy.
+    #[mononoke::test]
+    fn land_labels_match_the_policy_prefixes() {
+        assert!(LAND_ENDPOINT_LABEL.starts_with("land"));
+        assert!(BOOKMARK_ENDPOINT_LABEL.starts_with("set_bookmark"));
+        assert!(!OTHER_ENDPOINT_LABEL.starts_with("land"));
+        assert!(!OTHER_ENDPOINT_LABEL.starts_with("set_bookmark"));
+    }
+
+    #[mononoke::fbinit_test]
+    fn rooting_does_nothing_while_the_killswitch_is_off(fb: FacebookInit) {
+        with_just_knobs(
+            JustKnobsInMemory::new(hashmap![
+                "scm/artillery:root_scs_traces".to_string() => KnobVal::Bool(false)
+            ]),
+            || {
+                assert!(
+                    maybe_root_trace(fb, "repo_land_stack").is_none(),
+                    "no trace should be rooted while the knob is off"
+                );
+            },
+        );
+    }
+
+    /// With the knob on, the start path runs for real through the cxx bridge.
+    /// Asserts nothing about the outcome: sampling is the `mononoke_scm`
+    /// policy's decision and the policy lives in configerator, out of reach of
+    /// a unit test. What is checked is that the path cannot be made to panic.
+    #[mononoke::fbinit_test]
+    fn rooting_a_land_is_infallible_when_enabled(fb: FacebookInit) {
+        with_just_knobs(
+            JustKnobsInMemory::new(hashmap![
+                "scm/artillery:root_scs_traces".to_string() => KnobVal::Bool(true)
+            ]),
+            || {
+                let _ = maybe_root_trace(fb, "repo_land_stack");
+            },
+        );
+    }
+
+    /// End-to-end over the real Artillery cxx bridge: synthesise the inbound
+    /// context a traced caller would send, continue it, and check that a trace
+    /// genuinely becomes current and that SCS then declines to root over it.
+    ///
+    /// Continuation is what makes this assertable without the `mononoke_scm`
+    /// policy existing — `continue_managed_trace` bypasses sampling and rate
+    /// limiting, where `start_managed_trace` does not. Re-rooting here would
+    /// sever the trace from its caller, which is the failure this guards.
+    #[cfg(fbcode_build)]
+    #[mononoke::fbinit_test]
+    fn an_inbound_trace_is_continued_and_never_re_rooted(fb: FacebookInit) {
+        // W3C traceparent: version-traceid-spanid-sampled.
+        const TRACEPARENT: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+
+        with_just_knobs(
+            JustKnobsInMemory::new(hashmap![
+                "scm/artillery:root_scs_traces".to_string() => KnobVal::Bool(true)
+            ]),
+            || {
+                let mut inbound = tracer::parse_traceparent_to_context(TRACEPARENT)
+                    .expect("a well-formed traceparent should parse");
+                tracer::add_policy_to_context(inbound.pin_mut(), "mononoke_scm");
+
+                let _continued = tracer::Tracer::new(fb, "mononoke_scm")
+                    .continue_managed_trace(&inbound)
+                    .expect("continuation bypasses sampling, so it must succeed");
+
+                assert!(
+                    current_trace_id().is_some(),
+                    "continuing an inbound context should make a trace current"
+                );
+                assert!(
+                    maybe_root_trace(fb, "repo_land_stack").is_none(),
+                    "a request that already carries a trace must not be re-rooted"
+                );
             },
         );
     }

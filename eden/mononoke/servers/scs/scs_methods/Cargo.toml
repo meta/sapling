@@ -9,6 +9,7 @@ license = "GPLv2+"
 
 [dependencies]
 anyhow = "1.0.104"
+artillery_http_ext = { version = "0.1.0", path = "../../../common/rust/artillery_http_ext" }
 async-stream = "0.3"
 async-trait = "0.1.92"
 async_requests = { version = "0.1.0", path = "../../../features/async_requests" }

@@ -25,7 +25,15 @@ rust_library(
         "//eden/mononoke/repo_factory:test_repo_factory",
         "//eden/mononoke/servers/slapi/slapi_server/context:context",
         "//eden/mononoke/tests/utils:tests_utils",
-    ],
+    ]
+    + (
+        []
+        if rust_oss.is_oss_build()
+        # Lets the trace-rooting test synthesise an inbound Artillery context
+        # and continue it, which is the only way to get a live trace without
+        # the mononoke_scm policy.
+        else ["//artillery/artillery2/api/rust:tracer"]
+    ),
     deps = [
         "fbsource//third-party/rust:anyhow",
         "fbsource//third-party/rust:async-stream",
@@ -59,6 +67,7 @@ rust_library(
         "//eden/mononoke/common/mononoke_configs:mononoke_configs",
         "//eden/mononoke/common/mononoke_macros:mononoke_macros",
         "//eden/mononoke/common/permission_checker:permission_checker",
+        "//eden/mononoke/common/rust/artillery_http_ext:artillery_http_ext",
         "//eden/mononoke/common/rust/justknobs_ext:justknobs",
         "//eden/mononoke/common/rust/sql_ext:sql_ext",
         "//eden/mononoke/common/scribe_ext:scribe_ext",
