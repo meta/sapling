@@ -270,6 +270,39 @@ pub fn bookmark_log_guard_enabled_for_allocation(
     Ok(enabled)
 }
 
+/// Retire tickets only when both producers are activated in name mode.
+/// The caller supplies its latched flags; only the other producer is read here.
+///
+/// Configured flags do not prove deployed-writer coverage. Only request retirement
+/// for a repo after every binary writing its log uses name-local allocation and
+/// all in-flight legacy allocation attempts have drained.
+pub fn bookmark_log_guard_required(
+    repo_id: RepositoryId,
+    writer: BookmarkLogWriter,
+    by_name: bool,
+    enabled: bool,
+) -> Result<bool> {
+    bookmark_log_guard_enabled_for_allocation(repo_id, by_name, enabled)?;
+    if !enabled || !by_name {
+        return Ok(enabled);
+    }
+    let repo_key = repo_id.to_string();
+    if !justknobs::eval(
+        "scm/mononoke_bookmark_log_migration:bookmark_log_guard_retired",
+        Some(&repo_key),
+        Some(&repo_key),
+    ) {
+        return Ok(true);
+    }
+    let other_writer = match writer {
+        BookmarkLogWriter::SingleRepo => BookmarkLogWriter::MultiRepo,
+        BookmarkLogWriter::MultiRepo => BookmarkLogWriter::SingleRepo,
+    };
+    let other_by_name = bookmark_log_ids_by_name(repo_id, other_writer);
+    let other_enabled = bookmark_log_guard_enabled(repo_id, other_writer);
+    Ok(!(other_by_name && other_enabled))
+}
+
 /// Read allocation state after capturing any required migration guard ticket.
 pub async fn find_next_bookmark_log_ids(
     txn: SqlTransaction,
@@ -861,13 +894,17 @@ impl SqlBookmarksTransactionPayload {
         let by_name = bookmark_log_ids_by_name(self.repo_id, BookmarkLogWriter::SingleRepo);
         let enabled = bookmark_log_guard_enabled(self.repo_id, BookmarkLogWriter::SingleRepo);
         let names = self.logged_bookmark_names();
-        let (txn, next_lock_id) =
-            if bookmark_log_guard_enabled_for_allocation(self.repo_id, by_name, enabled)? {
-                let (txn, id) = find_next_bookmark_log_lock_id(txn, self.repo_id).await?;
-                (txn, Some(id))
-            } else {
-                (txn, None)
-            };
+        let (txn, next_lock_id) = if bookmark_log_guard_required(
+            self.repo_id,
+            BookmarkLogWriter::SingleRepo,
+            by_name,
+            enabled,
+        )? {
+            let (txn, id) = find_next_bookmark_log_lock_id(txn, self.repo_id).await?;
+            (txn, Some(id))
+        } else {
+            (txn, None)
+        };
         let (mut txn, next_id) =
             find_next_bookmark_log_ids(txn, self.repo_id, &names, by_name).await?;
         let mut log = TransactionLogUpdates::new(next_id);

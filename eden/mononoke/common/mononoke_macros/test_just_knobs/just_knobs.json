@@ -2,6 +2,7 @@
   "bools": {
     "scm/mononoke_bookmark_log_migration:bookmark_log_guard_enabled": false,
     "scm/mononoke_bookmark_log_migration:bookmark_log_ids_by_name": false,
+    "scm/mononoke_bookmark_log_migration:bookmark_log_guard_retired": false,
     "scm/mononoke_bookmark_log_migration:mrls_bookmark_log_guard_enabled": false,
     "scm/mononoke_bookmark_log_migration:mrls_bookmark_log_ids_by_name": false,
     "scm/mononoke:load_shed_client_groups_from_identities": false,

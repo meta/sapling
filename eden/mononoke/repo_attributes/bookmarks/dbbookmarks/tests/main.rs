@@ -7,10 +7,12 @@
 
 //! Tests for the Bookmarks store.
 
+mod guard_retirement;
 mod log_allocation;
 mod log_lock;
 mod migration_controls;
 mod migration_primitives;
+mod partial_retirement;
 
 use std::collections::HashMap;
 
