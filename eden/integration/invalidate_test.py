@@ -6,10 +6,11 @@
 
 # pyre-strict
 
+import contextlib
 import os
 import sys
 import time
-from typing import Dict, List
+from typing import Dict, Iterator, List
 
 from eden.fs.service.eden.thrift_types import (
     DebugInvalidateRequest,
@@ -124,6 +125,20 @@ class InvalidateTest(testcase.EdenRepoTest):
         for directory in self.directories:
             self.read_directory(directory)
 
+    @contextlib.contextmanager
+    def keep_open_on_linux(
+        self, directory: str, start: int = 0, stop: int = num_files
+    ) -> Iterator[None]:
+        """Keep files `start` to `stop - 1` of `directory` open on Linux."""
+        with contextlib.ExitStack() as stack:
+            if sys.platform == "linux":
+                # The kernel can forget an inode that has no open file.
+                # Then EdenFS GC can unload the inode.
+                # A recent read of the file does not prevent the unload.
+                for i in range(start, stop):
+                    stack.enter_context(open(self.get_path(f"{directory}/{i}")))
+            yield
+
     async def test_invalidate_all(self) -> None:
         initial_loaded = await self.get_loaded_count()
         self.read_all()
@@ -160,10 +175,11 @@ class InvalidateTest(testcase.EdenRepoTest):
     async def test_no_invalidation_with_age(self) -> None:
         initial_loaded = await self.get_loaded_count()
         self.read_all()
-        self.assertEqual(await self.get_loaded_count(), initial_loaded + 33)
-        invalidated = await self.invalidate("a", seconds=3600)
-        self.assertEqual(invalidated, 0)
-        self.assertEqual(await self.get_loaded_count(), initial_loaded + 33)
+        with self.keep_open_on_linux("a"):
+            self.assertEqual(await self.get_loaded_count(), initial_loaded + 33)
+            invalidated = await self.invalidate("a", seconds=3600)
+            self.assertEqual(invalidated, 0)
+            self.assertEqual(await self.get_loaded_count(), initial_loaded + 33)
 
     async def test_invalidate_with_age(self) -> None:
         initial_loaded = await self.get_loaded_count()
@@ -188,20 +204,21 @@ class InvalidateTest(testcase.EdenRepoTest):
         self.assertEqual(await self.get_loaded_count(), initial_loaded + 11)
         time.sleep(10)
         self.read_directory("b")
-        self.assertEqual(await self.get_loaded_count(), initial_loaded + 22)
-        invalidated = await self.invalidate("", seconds=5)
-        await self.assert_invalidation(
-            invalidated,
-            expected_invalidated_darwin=10,
-            expected_invalidated_windows=11,
-            expected_invalidated_linux=0,
-            expected_loaded_darwin=initial_loaded + 11,
-            expected_loaded_windows=initial_loaded + 10,
-            expected_loaded_linux=initial_loaded + 5,
-            # different test flavors can have different initial_loaded.
-            # We use delta=1 to cover all the test flavors.
-            delta=1,
-        )
+        with self.keep_open_on_linux("b"):
+            self.assertEqual(await self.get_loaded_count(), initial_loaded + 22)
+            invalidated = await self.invalidate("", seconds=5)
+            await self.assert_invalidation(
+                invalidated,
+                expected_invalidated_darwin=10,
+                expected_invalidated_windows=11,
+                expected_invalidated_linux=0,
+                expected_loaded_darwin=initial_loaded + 11,
+                expected_loaded_windows=initial_loaded + 10,
+                expected_loaded_linux=initial_loaded + 5,
+                # different test flavors can have different initial_loaded.
+                # We use delta=1 to cover all the test flavors.
+                delta=1,
+            )
         self.read_all()
 
     async def test_partial_directory_invalidate(self) -> None:
@@ -210,20 +227,21 @@ class InvalidateTest(testcase.EdenRepoTest):
         self.assertEqual(await self.get_loaded_count(), initial_loaded + 7)
         time.sleep(10)
         self.read_directory("a", 6)
-        self.assertEqual(await self.get_loaded_count(), initial_loaded + 11)
-        invalidated = await self.invalidate("a", seconds=5)
-        # On macOS, the lastAccessedTime of the directory is the latest lastAccessedTime
-        # of its children. Therefore, as one of the children is accessed after the cutoff,
-        # the whole directory is not invalidated.
-        await self.assert_invalidation(
-            invalidated,
-            expected_invalidated_darwin=0,
-            expected_invalidated_windows=6,
-            expected_invalidated_linux=0,
-            expected_loaded_darwin=initial_loaded + 11,
-            expected_loaded_windows=initial_loaded + 5,
-            expected_loaded_linux=initial_loaded + 5,
-        )
+        with self.keep_open_on_linux("a", 6):
+            self.assertEqual(await self.get_loaded_count(), initial_loaded + 11)
+            invalidated = await self.invalidate("a", seconds=5)
+            # On macOS, the lastAccessedTime of the directory is the latest lastAccessedTime
+            # of its children. Therefore, as one of the children is accessed after the cutoff,
+            # the whole directory is not invalidated.
+            await self.assert_invalidation(
+                invalidated,
+                expected_invalidated_darwin=0,
+                expected_invalidated_windows=6,
+                expected_invalidated_linux=0,
+                expected_loaded_darwin=initial_loaded + 11,
+                expected_loaded_windows=initial_loaded + 5,
+                expected_loaded_linux=initial_loaded + 5,
+            )
         self.read_all()
 
     async def test_invalidate_background(self) -> None:
