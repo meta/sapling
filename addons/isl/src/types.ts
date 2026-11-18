@@ -815,6 +815,7 @@ export type PlatformSpecificClientToServerMessages =
       /** Other folders to offer, from hosts that know them, such as the VS Code Agents Window. */
       cwds?: Array<AbsolutePath>;
     }
+  | {type: 'platform/requestNativeComparison'; requestId: string; comparison: Comparison}
   | {type: 'platform/subscribeToUnsavedFiles'}
   | {type: 'platform/saveAllUnsavedFiles'}
   | {type: 'platform/setPersistedState'; key: string; data?: string}
@@ -899,7 +900,21 @@ export type PlatformSpecificClientToServerMessages =
  * messages returned by platform-specific (browser, vscode, electron) server implementation,
  * usually in response to a platform-specific ClientToServer message
  */
+export type NativeComparisonFile = {
+  path: RepoRelativePath;
+  beforePath?: RepoRelativePath;
+  before?: string;
+  /** Historical content. Omitted for a live working-copy side. */
+  after?: string;
+  removed: boolean;
+};
+
 export type PlatformSpecificServerToClientMessages =
+  | {
+      type: 'platform/nativeComparison';
+      requestId: string;
+      files: Result<Array<NativeComparisonFile>>;
+    }
   | {
       type: 'platform/confirmResult';
       result: boolean;

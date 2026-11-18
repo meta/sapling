@@ -10,7 +10,7 @@ buck_genrule(
         ["isl/**", "isl-server/**", "shared/**", "components/**"],
         exclude = ["**/node_modules/**", "isl/build/**", "isl-server/dist/**"],
     )
-    + ["LICENSE", "package.json", "prettier.config.cjs"],
+    + ["LICENSE", "package.json", "prettier.config.cjs", "vscode/webview/state.tsx"],
     out = "isl-sources",
     cmd = 'mkdir -p "$OUT" && cp -RL "$SRCDIR/." "$OUT/"',
     visibility = ["PUBLIC"],
@@ -46,6 +46,7 @@ buck_genrule(
         ".oxlintrc.json",
         "package.json",
         "prettier.config.cjs",
+        "vscode/webview/state.tsx",
         "yarn.lock",
     ],
     out = "isl-dist.tar.xz",
