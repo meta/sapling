@@ -37,7 +37,9 @@ use mononoke_types::sharded_map_v2::ShardedMapV2Node;
 use crate::mapping::RootCaseConflictSkeletonManifestId;
 use crate::path::CcsmPath;
 
-async fn get_ccsm_path_changes(bcs: &BonsaiChangeset) -> Vec<(NonRootMPath, Option<()>)> {
+pub(crate) async fn get_ccsm_path_changes(
+    bcs: &BonsaiChangeset,
+) -> Vec<(NonRootMPath, Option<()>)> {
     bcs.file_changes()
         .flat_map(|(path, file_change)| {
             CcsmPath::transform(path.clone())
@@ -61,7 +63,7 @@ fn mf_entry_to_ccsm_entry(entry: Entry<CaseConflictSkeletonManifest, ()>) -> Ccs
     }
 }
 
-async fn create_case_conflict_skeleton_manifest(
+pub(crate) async fn create_case_conflict_skeleton_manifest(
     ctx: CoreContext,
     blobstore: Arc<dyn KeyedBlobstore>,
     subentries: TreeInfoSubentries<

@@ -540,6 +540,10 @@ pub async fn derive_stage_batch(
             ddm.derive_stage_batch::<RootSkeletonManifestV2Id>(ctx, csids, payload)
                 .await
         }
+        PipelineDerivableVariant::Ccsm => {
+            ddm.derive_stage_batch::<RootCaseConflictSkeletonManifestId>(ctx, csids, payload)
+                .await
+        }
         PipelineDerivableVariant::SkeletonManifests => {
             ddm.derive_stage_batch::<RootSkeletonManifestId>(ctx, csids, payload)
                 .await
@@ -592,6 +596,10 @@ pub async fn is_stage_derived(
         }
         PipelineDerivableVariant::SkeletonManifestsV2 => {
             ddm.is_stage_derived::<RootSkeletonManifestV2Id>(ctx, csid, stage)
+                .await
+        }
+        PipelineDerivableVariant::Ccsm => {
+            ddm.is_stage_derived::<RootCaseConflictSkeletonManifestId>(ctx, csid, stage)
                 .await
         }
         PipelineDerivableVariant::SkeletonManifests => {
@@ -647,6 +655,10 @@ pub async fn verify_stage_output(
             ddm.verify_stage_output::<RootSkeletonManifestV2Id>(ctx, csid, stage)
                 .await
         }
+        PipelineDerivableVariant::Ccsm => {
+            ddm.verify_stage_output::<RootCaseConflictSkeletonManifestId>(ctx, csid, stage)
+                .await
+        }
         PipelineDerivableVariant::SkeletonManifests => {
             ddm.verify_stage_output::<RootSkeletonManifestId>(ctx, csid, stage)
                 .await
@@ -686,6 +698,7 @@ pub async fn verify_stage_output(
 /// its terminal manifest stage). Currently only HgChangesets does.
 pub fn pipeline_has_finalize(variant: PipelineDerivableVariant) -> bool {
     match variant {
+        PipelineDerivableVariant::Ccsm => RootCaseConflictSkeletonManifestId::HAS_FINALIZE,
         PipelineDerivableVariant::Fsnodes => RootFsnodeId::HAS_FINALIZE,
         PipelineDerivableVariant::Unodes => RootUnodeManifestId::HAS_FINALIZE,
         PipelineDerivableVariant::SkeletonManifestsV2 => RootSkeletonManifestV2Id::HAS_FINALIZE,

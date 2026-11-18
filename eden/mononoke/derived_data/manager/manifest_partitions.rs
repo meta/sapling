@@ -306,6 +306,33 @@ impl<TreeId, Leaf, TrieMapType: Clone + Send + Sync + 'static>
         }
     }
 
+    /// Translate repository paths into the manifest's coordinates.
+    pub(crate) fn map_paths(self, map: impl Fn(&MPath) -> Option<MPath>) -> Option<Self> {
+        Some(match self {
+            Self::Entry {
+                path,
+                parents,
+                known_entries,
+            } => Self::Entry {
+                path: map(&path)?,
+                parents,
+                known_entries: known_entries
+                    .into_iter()
+                    .filter_map(|(path, entry)| Some((map(&path)?, entry)))
+                    .collect(),
+            },
+            Self::Partition {
+                path,
+                range,
+                parents,
+            } => Self::Partition {
+                path: map(&path)?,
+                range,
+                parents,
+            },
+        })
+    }
+
     pub fn path(&self) -> &MPath {
         match self {
             Self::Entry { path, .. } | Self::Partition { path, .. } => path,

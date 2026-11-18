@@ -86,6 +86,7 @@ pub enum DerivableUntopologicallyVariant {
 /// multi-stage derivation via the PipelineDerivable trait.
 #[derive(Clone, Copy, Debug, EnumIter, Eq, PartialEq)]
 pub enum PipelineDerivableVariant {
+    Ccsm,
     Fsnodes,
     Unodes,
     SkeletonManifests,
@@ -259,6 +260,7 @@ impl DerivableType {
     }
     pub fn into_pipeline_derivable_variant(self) -> Result<PipelineDerivableVariant> {
         match self {
+            DerivableType::Ccsm => Ok(PipelineDerivableVariant::Ccsm),
             DerivableType::Fsnodes => Ok(PipelineDerivableVariant::Fsnodes),
             DerivableType::Unodes => Ok(PipelineDerivableVariant::Unodes),
             DerivableType::SkeletonManifests => Ok(PipelineDerivableVariant::SkeletonManifests),
@@ -280,6 +282,7 @@ impl DerivableType {
 impl PipelineDerivableVariant {
     pub fn into_derivable_type(self) -> DerivableType {
         match self {
+            PipelineDerivableVariant::Ccsm => DerivableType::Ccsm,
             PipelineDerivableVariant::Fsnodes => DerivableType::Fsnodes,
             PipelineDerivableVariant::Unodes => DerivableType::Unodes,
             PipelineDerivableVariant::SkeletonManifests => DerivableType::SkeletonManifests,

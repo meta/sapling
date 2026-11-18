@@ -63,6 +63,13 @@ pub trait ManifestDerivable: BonsaiDerivable {
 
     const PIPELINE_VARIANT: PipelineDerivableVariant;
 
+    /// An injective, prefix-preserving translation that keeps the root unchanged.
+    /// None excludes a path and its descendants.
+    /// Partition ranges select the first byte of names in the translated manifest.
+    fn manifest_path(path: &MPath) -> Option<MPath> {
+        Some(path.clone())
+    }
+
     async fn load_root_manifest(
         &self,
         ctx: &CoreContext,
@@ -105,7 +112,22 @@ pub trait ManifestDerivable: BonsaiDerivable {
             |bonsai, parents, dependencies| {
                 let input =
                     ManifestDerivationInput::from_stage_outputs(stage, parents, dependencies);
-                async move { Self::derive_manifest(ctx, derivation, bonsai, input?).await }
+                async move {
+                    match input?.map_paths(Self::manifest_path) {
+                        Some(input) => Self::derive_manifest(ctx, derivation, bonsai, input).await,
+                        None => {
+                            if matches!(stage, StageId::Subentries(..)) {
+                                Ok(ManifestStageOutput::Subentries(
+                                    Self::create_subentries(ctx, derivation, Default::default())
+                                        .await?
+                                        .into(),
+                                ))
+                            } else {
+                                Ok(ManifestStageOutput::Entry(None))
+                            }
+                        }
+                    }
+                }
             },
         )
         .await
@@ -182,11 +204,12 @@ where
         let Some(Entry::Tree(root)) = root.into_entry()? else {
             anyhow::bail!("completed manifest root must be a tree");
         };
-        let entry = root
-            .find_entry(ctx.clone(), blobstore.clone(), path.clone())
-            .await?;
+        let entry = match T::manifest_path(path) {
+            Some(path) => root.find_entry(ctx.clone(), blobstore, path).await?,
+            None => None,
+        };
         if let StageId::Subentries(_, range) = stage {
-            let subentries = select_subentries(ctx, &blobstore, entry, *range).await?;
+            let subentries = select_subentries(ctx, derivation.blobstore(), entry, *range).await?;
             let entries = T::create_subentries(ctx, derivation, subentries).await?;
             Ok(ManifestStageOutput::Subentries(entries.into()))
         } else {

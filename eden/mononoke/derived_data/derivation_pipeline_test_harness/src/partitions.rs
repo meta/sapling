@@ -385,6 +385,89 @@ async fn verify_byte_boundaries(fb: FacebookInit, cuts: Vec<u8>) -> Result<()> {
 }
 
 #[mononoke::fbinit_test]
+async fn partitions_preserve_case_conflicts(fb: FacebookInit) -> Result<()> {
+    for nested in [false, true] {
+        let ctx = &CoreContext::test_mock(fb);
+        let (repo, _, _) = AugmentedManifestV2NoHgMapping::get_repo_and_dag::<TestRepo>(fb).await;
+        let manager = &repo
+            .repo_derived_data()
+            .manager()
+            .with_pipeline_mode(derived_data_manager::PipelineMode::Shadow);
+        let first = CreateCommitContext::new_root(ctx, &repo)
+            .add_files([
+                ("Dir/Apple/leaf", "a"),
+                ("Dir/apple", "b"),
+                ("Dir/Zebra", "c"),
+                ("Dir/zebra", "d"),
+                ("Dir/İ/leaf", "e"),
+                ("Dir/i̇/leaf", "f"),
+                ("dir/other", "g"),
+                ("K/leaf", "h"),
+                ("k/leaf", "i"),
+            ])
+            .add_file(NonRootMPath::new(b"\xff/leaf")?, "ignored by CCSM")
+            .commit()
+            .await?;
+        let deleted = CreateCommitContext::new(ctx, &repo, vec![first])
+            .delete_file("Dir/apple")
+            .delete_file("Dir/İ/leaf")
+            .commit()
+            .await?;
+        let replaced = CreateCommitContext::new(ctx, &repo, vec![deleted])
+            .add_file("Dir", "replace directory")
+            .commit()
+            .await?;
+        let restored = CreateCommitContext::new(ctx, &repo, vec![replaced])
+            .delete_file("Dir")
+            .add_file("Dir/APPLE", "recreate")
+            .add_file("Dir/apple", "conflict")
+            .commit()
+            .await?;
+        let mut config = if nested {
+            pipeline_config_from_stages(vec![
+                ("", vec!["Dir", "dir", "K", "k"]),
+                ("Dir", vec![]),
+                ("dir", vec![]),
+                ("K", vec![]),
+                ("k", vec![]),
+            ])?
+        } else {
+            pipeline_config_from_stages(vec![("", vec![])])?
+        };
+        if nested {
+            let invalid = MPath::new(b"\xff")?;
+            config
+                .stages
+                .get_mut(&MPath::ROOT)
+                .unwrap()
+                .dependencies
+                .push(invalid.clone());
+            config
+                .stages
+                .insert(invalid, DerivationPipelineStageConfig::new(vec![]));
+        }
+        for stage in config
+            .stages
+            .values_mut()
+            .filter(|stage| stage.dependencies.is_empty())
+        {
+            stage.partition_cut_points = b"AMamz".to_vec();
+        }
+        run_pipeline_first_then_canonical::<AugmentedManifestV2NoHgMapping>(
+            ctx,
+            &repo,
+            manager,
+            &config,
+            &PIPELINE_TYPES,
+            &[first, deleted, replaced, restored],
+            restored,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
 async fn partitions_require_all_dependencies_and_allow_retry(fb: FacebookInit) -> Result<()> {
     let ctx = &CoreContext::test_mock(fb);
     let (repo, _, _) = AugmentedManifestV2NoHgMapping::get_repo_and_dag::<TestRepo>(fb).await;

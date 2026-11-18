@@ -63,3 +63,8 @@ struct CcsmRollupCounts {
   2: i64 odd_depth_conflicts;
   3: i64 even_depth_conflicts;
 }
+
+@rust.Exhaustive
+struct CcsmStageOutput {
+  1: optional CcsmEntry entry;
+}

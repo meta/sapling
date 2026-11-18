@@ -9,6 +9,7 @@ mod derive;
 mod derive_from_predecessor;
 mod mapping;
 mod path;
+mod pipeline;
 #[cfg(test)]
 mod test_find_conflict;
 #[cfg(test)]
