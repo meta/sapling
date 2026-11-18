@@ -39,7 +39,8 @@ metadata:
 ### Crash workflow Python typing
 
 - In `scripts/facebook/crash/`, annotate positional parameters (except `self` and `cls`), keyword-only parameters, and return values, including nested test helpers and mocks. Match the API being mocked; do not use `Any` merely to silence the checker. Generic forwarding `*args` and `**kwargs` are outside this missing-annotation check.
-- Before submitting a diff, inspect added or changed function signatures for missing annotations and run `arc pyrefly check-owning-targets` on every changed Python file, including tests. A successful type check alone does not establish annotation completeness: unannotated functions can escape checking.
+- Annotate class and instance data attributes initialized from parameters, calls, `None`, or empty containers, including test fixtures. Annotate once at the first assignment, or in the class body for tuple assignments; reuse existing dataclass field declarations. Preserve an already typed callback's inferred signature rather than erasing keyword-only arguments with a positional `Callable` annotation.
+- Before submitting a diff, inspect added or changed function signatures and data attributes for missing annotations and run `arc pyrefly check-owning-targets` on every changed Python file, including tests. A successful type check alone does not establish annotation completeness: unannotated functions can escape checking.
 
 ## Duplication
 
