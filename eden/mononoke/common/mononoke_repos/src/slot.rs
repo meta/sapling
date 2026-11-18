@@ -7,6 +7,9 @@
 
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
+use std::sync::LazyLock;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -18,7 +21,7 @@ use futures::FutureExt;
 use futures::channel::oneshot;
 use futures::future::Shared;
 use mononoke_macros::mononoke;
-use parking_lot::Mutex;
+use parking_lot::RwLock;
 
 use crate::RepoLoader;
 
@@ -29,6 +32,9 @@ use crate::RepoLoader;
 /// arriving. The window bounds that to one build per slot, while staying short
 /// enough that a transient failure does not strand a repo for long.
 const FAILED_BUILD_TTL: Duration = Duration::from_secs(10);
+
+/// What every slot's last-used stamp is measured from.
+static BASE: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 /// The result of one build, handed to every caller waiting on it.
 ///
@@ -62,8 +68,12 @@ pub struct RepoSlot<R> {
     /// to do it.
     state: ArcSwap<SlotState<R>>,
     /// Serializes writers: deciding who starts a build is a read-decide-write,
-    /// which no atomic load expresses. Readers never take it.
-    transition: Mutex<()>,
+    /// which no atomic load expresses. Readers take it shared only to load the
+    /// state and clone the repo out of it, so an unload can't race a lookup.
+    transition: RwLock<()>,
+    /// When the repo was last handed to a caller or built, in nanoseconds
+    /// since `BASE`. An atomic so lookups can stamp it without the lock.
+    last_used_nanos: AtomicU64,
 }
 
 enum SlotState<R> {
@@ -107,11 +117,14 @@ impl<R> RepoSlot<R> {
     }
 
     fn in_state(name: String, state: SlotState<R>) -> Self {
-        Self {
+        let repo_slot = Self {
             name,
             state: ArcSwap::from_pointee(state),
-            transition: Mutex::new(()),
-        }
+            transition: RwLock::new(()),
+            last_used_nanos: AtomicU64::new(0),
+        };
+        repo_slot.record_use();
+        repo_slot
     }
 
     /// Which repo this slot is for. A slot outlives any one map snapshot, so it
@@ -121,19 +134,52 @@ impl<R> RepoSlot<R> {
         &self.name
     }
 
-    /// The built repo, or `None` if this slot has not been built.
+    /// The built repo, or `None` if this slot has not been built. Counts as a
+    /// use of the repo, so it stops it from being unloaded as idle.
     pub fn loaded(&self) -> Option<Arc<R>> {
+        self.record_use();
+        self.peek_loaded()
+    }
+
+    /// Like [`Self::loaded`], but not a use: for listing repos and for
+    /// checks, which would otherwise keep every repo loaded.
+    pub(crate) fn peek_loaded(&self) -> Option<Arc<R>> {
+        let _transition = self.transition.read();
         match &**self.state.load() {
             SlotState::Empty | SlotState::Building(_) | SlotState::Failed { .. } => None,
             SlotState::Ready(repo) => Some(Arc::clone(repo)),
         }
     }
 
+    /// Records that the repo was just used, so it does not count as idle.
+    pub(crate) fn record_use(&self) {
+        let elapsed_nanos = BASE.elapsed().as_nanos() as u64;
+        self.last_used_nanos.store(elapsed_nanos, Ordering::Relaxed);
+    }
+
+    /// Resets a built repo to unbuilt if nobody has used it for `window` and
+    /// the slot holds the only reference to it. Returns whether it did.
+    pub(crate) fn unload_if_idle(&self, window: Duration, now: Instant) -> bool {
+        let _transition = self.transition.write();
+        let state = self.state.load();
+        let SlotState::Ready(repo) = &**state else {
+            return false;
+        };
+        let last_used = *BASE + Duration::from_nanos(self.last_used_nanos.load(Ordering::Relaxed));
+        // A repo still held elsewhere would stay in memory and be built
+        // again next to it, so keep it until it is ours alone.
+        if now.saturating_duration_since(last_used) < window || Arc::strong_count(repo) != 1 {
+            return false;
+        }
+        self.state.store(Arc::new(SlotState::Empty));
+        true
+    }
+
     /// Swaps in a newly built repo for the one this slot serves. `false`,
     /// without swapping, if the slot is not built: a build in flight would
     /// overwrite the swap with its own outcome.
     pub(crate) fn replace(&self, repo: Arc<R>) -> bool {
-        let _transition = self.transition.lock();
+        let _transition = self.transition.write();
         if !matches!(**self.state.load(), SlotState::Ready(_)) {
             return false;
         }
@@ -141,8 +187,8 @@ impl<R> RepoSlot<R> {
         true
     }
 
-    /// The claim this slot can answer without taking the lock. `None` when it
-    /// is `Empty`, the one case that needs a writer.
+    /// The claim this slot can answer without taking the lock exclusively.
+    /// `None` when it is `Empty`, the one case that needs a writer.
     fn peek(&self) -> Option<Claim<R>> {
         match &**self.state.load() {
             SlotState::Ready(repo) => Some(Claim::Ready(Arc::clone(repo))),
@@ -171,11 +217,15 @@ impl<R> RepoSlot<R> {
     /// an on-demand repo when its last request finishes, holds each request's
     /// reference until that request has seen the build complete.
     fn claim_build(&self) -> Claim<R> {
-        if let Some(claim) = self.peek() {
+        let claim = {
+            let _transition = self.transition.read();
+            self.peek()
+        };
+        if let Some(claim) = claim {
             return claim;
         }
 
-        let transition = self.transition.lock();
+        let transition = self.transition.write();
 
         // Another writer may have started or finished a build since the peek
         // above.
@@ -211,15 +261,16 @@ impl<R> RepoSlot<R> {
                 retry_after: Instant::now() + FAILED_BUILD_TTL,
             },
         };
-        let _transition = self.transition.lock();
+        let _transition = self.transition.write();
         self.state.store(Arc::new(next));
+        self.record_use();
     }
 
     /// Brings a cached failure's retry window forward to now, so a test can
     /// observe the retry without sleeping out the real one.
     #[cfg(test)]
     fn expire_cached_failure(&self) {
-        let _transition = self.transition.lock();
+        let _transition = self.transition.write();
         let SlotState::Failed { error, .. } = &**self.state.load() else {
             return;
         };
@@ -238,7 +289,10 @@ impl<R> RepoSlot<R> {
         R: Send + Sync + 'static,
     {
         let pending = match self.claim_build() {
-            Claim::Ready(repo) => return Ok(repo),
+            Claim::Ready(repo) => {
+                self.record_use();
+                return Ok(repo);
+            }
             Claim::Failed(error) => {
                 return Err(anyhow!(
                     "Not retrying build of repo {} yet, it failed within the last {}s: {error:#}",

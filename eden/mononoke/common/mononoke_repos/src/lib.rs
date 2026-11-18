@@ -7,6 +7,8 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
 
 use anyhow::Ok;
 use anyhow::Result;
@@ -86,7 +88,7 @@ impl<R> MononokeRepos<R> {
             .name_to_repo_map
             .load()
             .values()
-            .filter_map(|repo_slot| repo_slot.loaded())
+            .filter_map(|repo_slot| repo_slot.peek_loaded())
             .collect();
         result.into_iter()
     }
@@ -112,7 +114,7 @@ impl<R> MononokeRepos<R> {
             .name_to_repo_map
             .load()
             .iter()
-            .filter(|(_, repo_slot)| repo_slot.loaded().is_some())
+            .filter(|(_, repo_slot)| repo_slot.peek_loaded().is_some())
             .map(|(name, _)| name.to_string())
             .collect();
         result.into_iter()
@@ -381,6 +383,22 @@ impl<R> MononokeRepos<R> {
         repo_slot.get_or_build(loader).await.map(Some)
     }
 
+    /// Resets a built repo to unbuilt if nothing has read it for `window`
+    /// before `now` and nothing outside this collection holds it. The next
+    /// `get` builds it again; until then `get_by_name` and `get_by_id` return
+    /// `None`, as for a placeholder. Listing and rebuild checks do not count
+    /// as reads. Never unloads without a loader, which nothing could rebuild.
+    /// Returns whether the repo was unloaded.
+    pub fn unload_if_idle(&self, repo_name: &str, window: Duration, now: Instant) -> bool {
+        if self.loader.is_none() {
+            return false;
+        }
+        let Some(repo_slot) = self.name_to_repo_map.load().get(repo_name).cloned() else {
+            return false;
+        };
+        repo_slot.unload_if_idle(window, now)
+    }
+
     /// Registers the repo if it is absent and builds it now with `loader`,
     /// through its slot, so eager builds share single-flight and the
     /// failed-build hold with lazy ones. A repo that is already built is
@@ -417,7 +435,7 @@ impl<R> MononokeRepos<R> {
         let Some(repo_slot) = self.name_to_repo_map.load().get(repo_name).cloned() else {
             return Ok(None);
         };
-        if repo_slot.loaded().is_none() {
+        if repo_slot.peek_loaded().is_none() {
             return Ok(None);
         }
 
