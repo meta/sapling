@@ -5,6 +5,7 @@
  * GNU General Public License version 2.
  */
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicI64;
 
@@ -18,6 +19,9 @@ use fbinit::FacebookInit;
 use filenodes::FilenodeInfo;
 use filenodes::FilenodeRange;
 use filenodes::PreparedFilenode;
+use justknobs::test_helpers::JustKnobsInMemory;
+use justknobs::test_helpers::KnobVal;
+use justknobs::test_helpers::override_just_knobs;
 use mercurial_types::HgFileNodeId;
 use mercurial_types_mocks::nodehash::ONES_CSID;
 use mercurial_types_mocks::nodehash::ONES_FNID;
@@ -277,6 +281,63 @@ fn setup_fallback_test() -> Result<(
         (master, replica),
         (master_counter, replica_counter),
     ))
+}
+
+#[mononoke::fbinit_test]
+async fn test_primary_fallback_without_consistent_reads(fb: FacebookInit) -> Result<()> {
+    override_just_knobs(JustKnobsInMemory::new(HashMap::from([(
+        "scm/mononoke:retry_query_from_replica_with_consistency_check".to_owned(),
+        KnobVal::Bool(false),
+    )])));
+    let ctx = CoreContext::test_mock(fb);
+    let master = build_shard()?;
+    let replica = build_shard()?;
+    let (_, master_writer) = build_reader_writer(vec1![master.clone()]);
+    let (_, replica_writer) = build_reader_writer(vec1![replica.clone()]);
+    let reader = Arc::new(FilenodesReader::new(vec1![replica.clone()], vec1![master])?);
+    let records = vec![
+        root_first_filenode(),
+        copied_from_filenode(),
+        copied_filenode(),
+    ];
+    do_add_filenodes(&ctx, &master_writer, records.clone(), REPO_ZERO).await?;
+    for record in &records {
+        assert_filenode(
+            &ctx,
+            reader.clone(),
+            &record.path,
+            record.info.filenode,
+            REPO_ZERO,
+            record.info.clone(),
+        )
+        .await?;
+    }
+
+    do_add_filenodes(&ctx, &replica_writer, records, REPO_ZERO).await?;
+    DeleteCopyInfo::query(&replica, ctx.sql_query_telemetry()).await?;
+    let copied = copied_filenode();
+    assert_filenode(
+        &ctx,
+        reader.clone(),
+        &copied.path,
+        copied.info.filenode,
+        REPO_ZERO,
+        copied.info.clone(),
+    )
+    .await?;
+
+    do_add_filenode(&ctx, &replica_writer, copied.clone(), REPO_ZERO).await?;
+    DeletePaths::query(&replica, ctx.sql_query_telemetry()).await?;
+    assert_filenode(
+        &ctx,
+        reader,
+        &copied.path,
+        copied.info.filenode,
+        REPO_ZERO,
+        copied.info,
+    )
+    .await?;
+    Ok(())
 }
 
 #[mononoke::fbinit_test]

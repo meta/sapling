@@ -241,7 +241,8 @@ impl FilenodesReader {
                     let read_result = select_filenode_from_sql(
                         &ctx,
                         cache_filler,
-                        &self.connections,
+                        &self.connections.read_connections,
+                        &self.connections.read_master_connections,
                         repo_id,
                         &pwh,
                         filenode,
@@ -272,7 +273,8 @@ impl FilenodesReader {
                                 Ok(select_filenode_from_sql(
                                     &ctx,
                                     cache_filler,
-                                    &self.connections,
+                                    &self.connections.read_master_connections,
+                                    &self.connections.read_master_connections,
                                     repo_id,
                                     &pwh,
                                     filenode,
@@ -390,7 +392,8 @@ struct PartialFilenode {
 async fn select_filenode_from_sql(
     ctx: &CoreContext,
     filler: FilenodeCacheFiller<'_>,
-    connections: &ReadConnections,
+    read_connections: &Connections,
+    read_master_connections: &Connections,
     repo_id: RepositoryId,
     pwh: &PathWithHash<'_>,
     filenode: HgFileNodeId,
@@ -399,7 +402,8 @@ async fn select_filenode_from_sql(
 ) -> Result<FilenodeResult<Option<FilenodeInfo>>, FilenodeReaderError> {
     let partial = select_partial_filenode(
         ctx,
-        connections,
+        read_connections,
+        read_master_connections,
         repo_id,
         pwh,
         filenode,
@@ -415,17 +419,10 @@ async fn select_filenode_from_sql(
         }
     };
 
-    let ret = match fill_paths(
-        ctx,
-        &connections.read_connections,
-        pwh,
-        repo_id,
-        vec![partial],
-        recorder,
-    )
-    .await?
-    .into_iter()
-    .next()
+    let ret = match fill_paths(ctx, read_connections, pwh, repo_id, vec![partial], recorder)
+        .await?
+        .into_iter()
+        .next()
     {
         Some(ret) => ret,
         None => {
@@ -440,25 +437,23 @@ async fn select_filenode_from_sql(
 
 async fn select_partial_filenode(
     ctx: &CoreContext,
-    connections: &ReadConnections,
+    read_connections: &Connections,
+    read_master_connections: &Connections,
     repo_id: RepositoryId,
     pwh: &PathWithHash<'_>,
     filenode: HgFileNodeId,
     recorder: &PerfCounterRecorder<'_>,
     cons_read_opts: Option<ConsistentReadOptions>,
 ) -> Result<Option<PartialFilenode>, FilenodeReaderError> {
-    let connection = connections
-        .read_connections
-        .checkout(pwh, AcquireReason::Filenodes);
+    let connection = read_connections.checkout(pwh, AcquireReason::Filenodes);
 
     recorder.increment();
 
     let rows = if let Some(cons_read_opts) = cons_read_opts {
         // Create SqlConnections where write_connection has the read connection
         // to ensure writes would never succeed if somebody tries to use it later
-        let read_master_connection = connections
-            .read_master_connections
-            .checkout(pwh, AcquireReason::Filenodes);
+        let read_master_connection =
+            read_master_connections.checkout(pwh, AcquireReason::Filenodes);
         let sql_connections = SqlConnections {
             // The write connections won't be used, but pass the read-only
             // connection to ensure that it can't be used by accident in the future.
