@@ -170,6 +170,30 @@ impl<Value: ShardedMapV2Value> LoadableShardedMapV2Node<Value> {
         }
     }
 
+    /// Look up keys together, sharing shard loads. Missing keys are omitted.
+    pub async fn lookup_many(
+        self,
+        ctx: &CoreContext,
+        blobstore: &impl KeyedBlobstore,
+        names: Vec<SmallBinary>,
+    ) -> Result<Vec<(SmallBinary, Value)>> {
+        if names.is_empty() {
+            return Ok(Vec::new());
+        }
+        let keys = names
+            .into_iter()
+            .map(|name| (name, LookupKind::Entry))
+            .collect();
+        Ok(self
+            .load(ctx, blobstore)
+            .await?
+            .get_entries_and_partial_maps(ctx, blobstore, keys, 100)
+            .await?
+            .into_iter()
+            .filter_map(|(name, entry)| entry.left().map(|entry| (name, entry)))
+            .collect())
+    }
+
     /// Returns an inlined variant of self.
     pub async fn inlined(
         self,
@@ -249,6 +273,11 @@ impl<Value: ShardedMapV2Value> LoadableShardedMapV2Node<Value> {
             Self::Stored(stored) => stored.rollup_data.clone(),
         }
     }
+}
+
+impl<Value: ShardedMapV2Value> ThriftConvert for LoadableShardedMapV2Node<Value> {
+    type Thrift = thrift::sharded_map::LoadableShardedMapV2Node;
+    const NAME: &'static str = "LoadableShardedMapV2Node";
 
     fn from_thrift(t: thrift::sharded_map::LoadableShardedMapV2Node) -> Result<Self> {
         Ok(match t {

@@ -293,6 +293,44 @@ pub(crate) async fn derive_acl_manifest_entry(
 // create_tree callback
 // ---------------------------------------------------------------------------
 
+pub(crate) async fn create_acl_manifest_subentries(
+    ctx: CoreContext,
+    blobstore: Arc<dyn KeyedBlobstore>,
+    subentries: TreeInfoSubentries<
+        AclManifestId,
+        AclManifestRestriction,
+        AclManifestNodeInfo,
+        LoadableShardedMapV2Node<AclManifestEntry>,
+    >,
+) -> Result<ShardedMapV2Node<AclManifestEntry>> {
+    // Convert subentries, loading child manifests for boundary-reuse entries.
+    let acl_subentries: TrieMap<
+        Either<AclManifestEntry, LoadableShardedMapV2Node<AclManifestEntry>>,
+    > = stream::iter(subentries)
+        .then(|(prefix, entry_or_map)| {
+            cloned!(ctx, blobstore);
+            async move {
+                let converted = match entry_or_map {
+                    Either::Left((maybe_info, entry)) => {
+                        let acl_entry =
+                            convert_manifest_entry(&ctx, &blobstore, maybe_info, entry).await?;
+                        Either::Left(acl_entry)
+                    }
+                    Either::Right(map) => Either::Right(map),
+                };
+                Ok::<_, anyhow::Error>((prefix, converted))
+            }
+        })
+        .try_collect()
+        .await?;
+
+    // Build the ShardedMapV2.
+    let subentries =
+        ShardedMapV2Node::from_entries_and_partial_maps(&ctx, &blobstore, acl_subentries).await?;
+
+    Ok(subentries)
+}
+
 /// Build an `AclManifest` node from `derive_manifest`'s subentries.
 ///
 /// 1. Convert each subentry from `Entry<AclManifestId, AclManifestRestriction>`
@@ -323,30 +361,8 @@ pub(crate) async fn create_acl_manifest(
         Either::Right(reused_map) => reused_map.rollup_data().has_restricted,
     });
 
-    // Convert subentries, loading child manifests for boundary-reuse entries.
-    let acl_subentries: TrieMap<
-        Either<AclManifestEntry, LoadableShardedMapV2Node<AclManifestEntry>>,
-    > = stream::iter(subentries)
-        .then(|(prefix, entry_or_map)| {
-            cloned!(ctx, blobstore);
-            async move {
-                let converted = match entry_or_map {
-                    Either::Left((maybe_info, entry)) => {
-                        let acl_entry =
-                            convert_manifest_entry(&ctx, &blobstore, maybe_info, entry).await?;
-                        Either::Left(acl_entry)
-                    }
-                    Either::Right(map) => Either::Right(map),
-                };
-                Ok::<_, anyhow::Error>((prefix, converted))
-            }
-        })
-        .try_collect()
-        .await?;
-
-    // Build the ShardedMapV2.
     let subentries =
-        ShardedMapV2Node::from_entries_and_partial_maps(&ctx, &blobstore, acl_subentries).await?;
+        create_acl_manifest_subentries(ctx.clone(), blobstore.clone(), subentries).await?;
 
     // Look up the ACL file to determine this directory's restriction.
     let restriction = match subentries.lookup(&ctx, &blobstore, acl_file_name).await? {

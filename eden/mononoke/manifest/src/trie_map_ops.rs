@@ -56,6 +56,17 @@ pub trait TrieMapOps<Store, Value>: Sized {
         blobstore: &Store,
     ) -> Result<BoxStream<'async_trait, Result<(SmallVec<[u8; 24]>, Value)>>>;
 
+    /// Look up names relative to this trie map, omitting missing entries.
+    async fn lookup_many(
+        self,
+        ctx: &CoreContext,
+        blobstore: &Store,
+        names: Vec<SmallVec<[u8; 24]>>,
+    ) -> Result<Vec<(SmallVec<[u8; 24]>, Value)>>
+    where
+        Store: Sync,
+        Value: Clone + Send;
+
     fn is_empty(&self) -> bool;
 }
 
@@ -75,6 +86,22 @@ impl<Store, V: Send> TrieMapOps<Store, V> for TrieMap<V> {
         _blobstore: &Store,
     ) -> Result<BoxStream<'async_trait, Result<(SmallVec<[u8; 24]>, V)>>> {
         Ok(stream::iter(self).map(Ok).boxed())
+    }
+
+    async fn lookup_many(
+        self,
+        _ctx: &CoreContext,
+        _blobstore: &Store,
+        names: Vec<SmallVec<[u8; 24]>>,
+    ) -> Result<Vec<(SmallVec<[u8; 24]>, V)>>
+    where
+        Store: Sync,
+        V: Clone + Send,
+    {
+        Ok(names
+            .into_iter()
+            .filter_map(|name| self.get(&name).cloned().map(|entry| (name, entry)))
+            .collect())
     }
 
     fn is_empty(&self) -> bool {
@@ -98,6 +125,22 @@ impl<Store, V: Clone + Send + Sync> TrieMapOps<Store, V> for SortedVectorTrieMap
         _blobstore: &Store,
     ) -> Result<BoxStream<'async_trait, Result<(SmallVec<[u8; 24]>, V)>>> {
         Ok(stream::iter(self).map(Ok).boxed())
+    }
+
+    async fn lookup_many(
+        self,
+        _ctx: &CoreContext,
+        _blobstore: &Store,
+        names: Vec<SmallVec<[u8; 24]>>,
+    ) -> Result<Vec<(SmallVec<[u8; 24]>, V)>>
+    where
+        Store: Sync,
+        V: Clone + Send,
+    {
+        Ok(names
+            .into_iter()
+            .filter_map(|name| self.get(&name).cloned().map(|entry| (name, entry)))
+            .collect())
     }
 
     fn is_empty(&self) -> bool {
@@ -142,6 +185,21 @@ impl<Store: KeyedBlobstore> TrieMapOps<Store, Entry<TestShardedManifestDirectory
             .boxed())
     }
 
+    async fn lookup_many(
+        self,
+        ctx: &CoreContext,
+        blobstore: &Store,
+        names: Vec<SmallVec<[u8; 24]>>,
+    ) -> Result<Vec<(SmallVec<[u8; 24]>, Entry<TestShardedManifestDirectory, ()>)>> {
+        Ok(
+            LoadableShardedMapV2Node::lookup_many(self, ctx, blobstore, names)
+                .await?
+                .into_iter()
+                .map(|(name, entry)| (name, crate::types::convert_test_sharded_manifest(entry)))
+                .collect(),
+        )
+    }
+
     fn is_empty(&self) -> bool {
         self.size() == 0
     }
@@ -172,6 +230,21 @@ impl<Store: KeyedBlobstore> TrieMapOps<Store, Entry<BssmV3Directory, ()>>
             .into_entries(ctx, blobstore)
             .map_ok(|(k, v)| (k, crate::types::bssm_v3_to_mf_entry(v)))
             .boxed())
+    }
+
+    async fn lookup_many(
+        self,
+        ctx: &CoreContext,
+        blobstore: &Store,
+        names: Vec<SmallVec<[u8; 24]>>,
+    ) -> Result<Vec<(SmallVec<[u8; 24]>, Entry<BssmV3Directory, ()>)>> {
+        Ok(
+            LoadableShardedMapV2Node::lookup_many(self, ctx, blobstore, names)
+                .await?
+                .into_iter()
+                .map(|(name, entry)| (name, crate::types::bssm_v3_to_mf_entry(entry)))
+                .collect(),
+        )
     }
 
     fn is_empty(&self) -> bool {
@@ -207,6 +280,21 @@ impl<Store: KeyedBlobstore> TrieMapOps<Store, Entry<SkeletonManifestV2, ()>>
             .into_entries(ctx, blobstore)
             .map_ok(|(k, v)| (k, crate::types::skeleton_manifest_v2_to_mf_entry(v)))
             .boxed())
+    }
+
+    async fn lookup_many(
+        self,
+        ctx: &CoreContext,
+        blobstore: &Store,
+        names: Vec<SmallVec<[u8; 24]>>,
+    ) -> Result<Vec<(SmallVec<[u8; 24]>, Entry<SkeletonManifestV2, ()>)>> {
+        Ok(
+            LoadableShardedMapV2Node::lookup_many(self, ctx, blobstore, names)
+                .await?
+                .into_iter()
+                .map(|(name, entry)| (name, crate::types::skeleton_manifest_v2_to_mf_entry(entry)))
+                .collect(),
+        )
     }
 
     fn is_empty(&self) -> bool {
@@ -246,6 +334,21 @@ impl<Store: KeyedBlobstore> TrieMapOps<Store, Entry<CaseConflictSkeletonManifest
             .into_entries(ctx, blobstore)
             .map_ok(|(k, v)| (k, crate::types::ccsm_to_mf_entry(v)))
             .boxed())
+    }
+
+    async fn lookup_many(
+        self,
+        ctx: &CoreContext,
+        blobstore: &Store,
+        names: Vec<SmallVec<[u8; 24]>>,
+    ) -> Result<Vec<(SmallVec<[u8; 24]>, Entry<CaseConflictSkeletonManifest, ()>)>> {
+        Ok(
+            LoadableShardedMapV2Node::lookup_many(self, ctx, blobstore, names)
+                .await?
+                .into_iter()
+                .map(|(name, entry)| (name, crate::types::ccsm_to_mf_entry(entry)))
+                .collect(),
+        )
     }
 
     fn is_empty(&self) -> bool {
@@ -290,6 +393,26 @@ impl<Store: KeyedBlobstore> TrieMapOps<Store, Entry<ContentManifestId, ContentMa
             .boxed())
     }
 
+    async fn lookup_many(
+        self,
+        ctx: &CoreContext,
+        blobstore: &Store,
+        names: Vec<SmallVec<[u8; 24]>>,
+    ) -> Result<
+        Vec<(
+            SmallVec<[u8; 24]>,
+            Entry<ContentManifestId, ContentManifestFile>,
+        )>,
+    > {
+        Ok(
+            LoadableShardedMapV2Node::lookup_many(self, ctx, blobstore, names)
+                .await?
+                .into_iter()
+                .map(|(name, entry)| (name, crate::types::convert_content_manifest(entry)))
+                .collect(),
+        )
+    }
+
     fn is_empty(&self) -> bool {
         self.size() == 0
     }
@@ -331,6 +454,26 @@ impl<Store: KeyedBlobstore>
             .into_entries(ctx, blobstore)
             .map_ok(|(k, v)| (k, crate::types::dbcm_to_mf_entry(v)))
             .boxed())
+    }
+
+    async fn lookup_many(
+        self,
+        ctx: &CoreContext,
+        blobstore: &Store,
+        names: Vec<SmallVec<[u8; 24]>>,
+    ) -> Result<
+        Vec<(
+            SmallVec<[u8; 24]>,
+            Entry<DirectoryBranchClusterManifest, DirectoryBranchClusterManifestFile>,
+        )>,
+    > {
+        Ok(
+            LoadableShardedMapV2Node::lookup_many(self, ctx, blobstore, names)
+                .await?
+                .into_iter()
+                .map(|(name, entry)| (name, crate::types::dbcm_to_mf_entry(entry)))
+                .collect(),
+        )
     }
 
     fn is_empty(&self) -> bool {
@@ -378,6 +521,28 @@ impl<Store: KeyedBlobstore>
             .boxed())
     }
 
+    async fn lookup_many(
+        self,
+        ctx: &CoreContext,
+        blobstore: &Store,
+        names: Vec<SmallVec<[u8; 24]>>,
+    ) -> Result<
+        Vec<(
+            SmallVec<[u8; 24]>,
+            Entry<HistoryManifestDirectoryId, HistoryManifestFileId>,
+        )>,
+    > {
+        Ok(
+            LoadableShardedMapV2Node::lookup_many(self, ctx, blobstore, names)
+                .await?
+                .into_iter()
+                .filter_map(|(name, entry)| {
+                    history_manifest_to_mf_entry(entry).map(|entry| (name, entry))
+                })
+                .collect(),
+        )
+    }
+
     fn is_empty(&self) -> bool {
         // A nonempty shard may contain only deleted entries. Checking that
         // requires loading it, so only prune shards known to be empty here.
@@ -420,6 +585,26 @@ impl<Store: KeyedBlobstore> TrieMapOps<Store, Entry<AclManifestId, AclManifestRe
             .into_entries(ctx, blobstore)
             .map_ok(|(k, v)| (k, crate::types::convert_acl_manifest(v)))
             .boxed())
+    }
+
+    async fn lookup_many(
+        self,
+        ctx: &CoreContext,
+        blobstore: &Store,
+        names: Vec<SmallVec<[u8; 24]>>,
+    ) -> Result<
+        Vec<(
+            SmallVec<[u8; 24]>,
+            Entry<AclManifestId, AclManifestRestriction>,
+        )>,
+    > {
+        Ok(
+            LoadableShardedMapV2Node::lookup_many(self, ctx, blobstore, names)
+                .await?
+                .into_iter()
+                .map(|(name, entry)| (name, crate::types::convert_acl_manifest(entry)))
+                .collect(),
+        )
     }
 
     fn is_empty(&self) -> bool {
@@ -466,6 +651,28 @@ impl<Store: KeyedBlobstore> TrieMapOps<Store, Entry<(Weight, BssmV3Directory), (
                 )
             })
             .boxed())
+    }
+
+    async fn lookup_many(
+        self,
+        ctx: &CoreContext,
+        blobstore: &Store,
+        names: Vec<SmallVec<[u8; 24]>>,
+    ) -> Result<Vec<(SmallVec<[u8; 24]>, Entry<(Weight, BssmV3Directory), ()>)>> {
+        Ok(
+            LoadableShardedMapV2Node::lookup_many(self, ctx, blobstore, names)
+                .await?
+                .into_iter()
+                .map(|(name, entry)| {
+                    (
+                        name,
+                        crate::types::convert_bssm_v3_to_weighted(
+                            crate::types::bssm_v3_to_mf_entry(entry),
+                        ),
+                    )
+                })
+                .collect(),
+        )
     }
 
     fn is_empty(&self) -> bool {
@@ -518,6 +725,33 @@ impl<Store: KeyedBlobstore> TrieMapOps<Store, Entry<(Weight, CaseConflictSkeleto
                 )
             })
             .boxed())
+    }
+
+    async fn lookup_many(
+        self,
+        ctx: &CoreContext,
+        blobstore: &Store,
+        names: Vec<SmallVec<[u8; 24]>>,
+    ) -> Result<
+        Vec<(
+            SmallVec<[u8; 24]>,
+            Entry<(Weight, CaseConflictSkeletonManifest), ()>,
+        )>,
+    > {
+        Ok(
+            LoadableShardedMapV2Node::lookup_many(self, ctx, blobstore, names)
+                .await?
+                .into_iter()
+                .map(|(name, entry)| {
+                    (
+                        name,
+                        crate::types::convert_ccsm_to_weighted(crate::types::ccsm_to_mf_entry(
+                            entry,
+                        )),
+                    )
+                })
+                .collect(),
+        )
     }
 
     fn is_empty(&self) -> bool {
@@ -573,6 +807,28 @@ impl<Store: KeyedBlobstore> TrieMapOps<Store, Entry<(Weight, SkeletonManifestV2)
             .boxed())
     }
 
+    async fn lookup_many(
+        self,
+        ctx: &CoreContext,
+        blobstore: &Store,
+        names: Vec<SmallVec<[u8; 24]>>,
+    ) -> Result<Vec<(SmallVec<[u8; 24]>, Entry<(Weight, SkeletonManifestV2), ()>)>> {
+        Ok(
+            LoadableShardedMapV2Node::lookup_many(self, ctx, blobstore, names)
+                .await?
+                .into_iter()
+                .map(|(name, entry)| {
+                    (
+                        name,
+                        crate::types::convert_skeleton_manifest_v2_to_weighted(
+                            crate::types::skeleton_manifest_v2_to_mf_entry(entry),
+                        ),
+                    )
+                })
+                .collect(),
+        )
+    }
+
     fn is_empty(&self) -> bool {
         self.size() == 0
     }
@@ -617,6 +873,26 @@ impl<Store: KeyedBlobstore>
             .into_entries(ctx, blobstore)
             .map_ok(|(k, v)| (k, crate::types::convert_content_manifest_weighted(v)))
             .boxed())
+    }
+
+    async fn lookup_many(
+        self,
+        ctx: &CoreContext,
+        blobstore: &Store,
+        names: Vec<SmallVec<[u8; 24]>>,
+    ) -> Result<
+        Vec<(
+            SmallVec<[u8; 24]>,
+            Entry<(Weight, ContentManifestId), ContentManifestFile>,
+        )>,
+    > {
+        Ok(
+            LoadableShardedMapV2Node::lookup_many(self, ctx, blobstore, names)
+                .await?
+                .into_iter()
+                .map(|(name, entry)| (name, crate::types::convert_content_manifest_weighted(entry)))
+                .collect(),
+        )
     }
 
     fn is_empty(&self) -> bool {

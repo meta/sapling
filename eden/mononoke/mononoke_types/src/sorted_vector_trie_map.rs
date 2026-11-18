@@ -36,6 +36,14 @@ impl<V> SortedVectorTrieMap<V> {
         }
     }
 
+    pub fn get(&self, name: &[u8]) -> Option<&V> {
+        let entries = &self.entries[self.start..self.end];
+        let index = entries
+            .binary_search_by(|(key, _)| key[self.prefix..].cmp(name))
+            .ok()?;
+        Some(&entries[index].1)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.start == self.end
     }
@@ -192,6 +200,11 @@ mod tests {
             let mut expansions = vec![(trie_map, sv_trie_map)];
 
             while let Some((trie_map, sv_trie_map)) = expansions.pop() {
+                for (name, value) in trie_map.clone() {
+                    check_eq!(sv_trie_map.get(&name), Some(&value));
+                }
+                check_eq!(sv_trie_map.get(b""), trie_map.get(b""));
+                check_eq!(sv_trie_map.get(b"missing"), trie_map.get(b"missing"));
                 let (sv_value, sv_subtries) = sv_trie_map.expand().unwrap();
                 let (value, subtries) = trie_map.expand();
 

@@ -100,18 +100,16 @@ pub(crate) async fn resolve_entry(
     }
 }
 
-pub(crate) async fn create_content_manifest_directory(
+pub(crate) async fn create_content_manifest_subentries(
     ctx: CoreContext,
     blobstore: Arc<dyn KeyedBlobstore>,
-    path: &MPath,
-    restricted_paths: &Arc<RestrictedPathsConfigBased>,
     subentries: TreeInfoSubentries<
         ContentManifestId,
         ContentManifestFile,
         ContentManifestRollupData,
         LoadableShardedMapV2Node<ContentManifestEntry>,
     >,
-) -> Result<(ContentManifestRollupData, ContentManifestId)> {
+) -> Result<ShardedMapV2Node<ContentManifestEntry>> {
     // Resolve entries, loading rollup data from blobstore for reused entries
     let subentries: Vec<_> = stream::iter(subentries)
         .map(|(prefix, entry_or_map)| {
@@ -133,6 +131,24 @@ pub(crate) async fn create_content_manifest_directory(
     let subentries: TrieMap<_> = subentries.into_iter().collect();
     let subentries =
         ShardedMapV2Node::from_entries_and_partial_maps(&ctx, &blobstore, subentries).await?;
+
+    Ok(subentries)
+}
+
+pub(crate) async fn create_content_manifest_directory(
+    ctx: CoreContext,
+    blobstore: Arc<dyn KeyedBlobstore>,
+    path: &MPath,
+    restricted_paths: &Arc<RestrictedPathsConfigBased>,
+    subentries: TreeInfoSubentries<
+        ContentManifestId,
+        ContentManifestFile,
+        ContentManifestRollupData,
+        LoadableShardedMapV2Node<ContentManifestEntry>,
+    >,
+) -> Result<(ContentManifestRollupData, ContentManifestId)> {
+    let subentries =
+        create_content_manifest_subentries(ctx.clone(), blobstore.clone(), subentries).await?;
 
     let rollup = subentries.rollup_data();
 

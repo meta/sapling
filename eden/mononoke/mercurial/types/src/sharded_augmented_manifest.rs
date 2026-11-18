@@ -1124,6 +1124,26 @@ impl<Store: KeyedBlobstore> TrieMapOps<Store, Entry<HgAugmentedManifestId, HgAug
             .boxed())
     }
 
+    async fn lookup_many(
+        self,
+        ctx: &CoreContext,
+        blobstore: &Store,
+        names: Vec<SmallVec<[u8; 24]>>,
+    ) -> Result<
+        Vec<(
+            SmallVec<[u8; 24]>,
+            Entry<HgAugmentedManifestId, HgAugmentedFileLeafNode>,
+        )>,
+    > {
+        Ok(self
+            .0
+            .lookup_many(ctx, blobstore, names)
+            .await?
+            .into_iter()
+            .map(|(name, entry)| (name, convert_hg_augmented_manifest_entry(entry)))
+            .collect())
+    }
+
     fn is_empty(&self) -> bool {
         self.0.size() == 0
     }

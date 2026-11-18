@@ -224,6 +224,10 @@ impl ManifestUnode {
         &self.subentries
     }
 
+    pub fn into_subentries(self) -> SortedVectorMap<MPathElement, UnodeEntry> {
+        self.subentries
+    }
+
     pub fn parents(&self) -> &Vec<ManifestUnodeId> {
         &self.parents
     }

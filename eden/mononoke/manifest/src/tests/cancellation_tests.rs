@@ -22,12 +22,19 @@ use futures::TryStreamExt;
 use memblob::KeyedMemblob;
 use mononoke_macros::mononoke;
 use mononoke_types::BlobstoreBytes;
+use mononoke_types::FileType;
+use mononoke_types::MPath;
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
+use super::test_manifest::TestLeaf;
 use super::test_manifest::TestManifest;
+use crate::Entry;
+use crate::Manifest;
 use crate::ManifestOps;
+use crate::PathOrPrefix;
+use crate::find_entries_from_subentries;
 
 const EVENT_TIMEOUT: Duration = Duration::from_secs(5);
 const CANCELLATION_TIMEOUT: Duration = Duration::from_secs(1);
@@ -159,5 +166,50 @@ async fn cancelling_manifest_traversal_drops_inflight_read(fb: FacebookInit) -> 
         dropped_on_cancel && !retained_on_cancel,
         "dropping the traversal must drop its in-flight manifest read before its gate is released"
     );
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn partition_lookup_starts_sibling_reads_before_either_finishes(
+    fb: FacebookInit,
+) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let inner = KeyedMemblob::default();
+    let leaf = TestLeaf::new("content").store(&ctx, &inner).await?;
+    let left = TestManifest::new()
+        .insert("left", Entry::Leaf((FileType::Regular, leaf)))
+        .store(&ctx, &inner)
+        .await?;
+    let right = TestManifest::new()
+        .insert("right", Entry::Leaf((FileType::Regular, leaf)))
+        .store(&ctx, &inner)
+        .await?;
+    let map = TestManifest::new()
+        .insert("a", Entry::Tree(left))
+        .insert("b", Entry::Tree(right))
+        .into_trie_map(&ctx, &inner)
+        .await?;
+    let (started, mut started_rx) = mpsc::unbounded_channel();
+    let (dropped, _dropped_rx) = mpsc::unbounded_channel();
+    let store = Arc::new(GatedBlobstore {
+        inner,
+        release: Semaphore::new(0),
+        started,
+        dropped,
+    });
+    let _cleanup = ReleaseOnDrop(&store.release);
+    let entries =
+        find_entries_from_subentries(ctx, store.clone(), map, [PathOrPrefix::Prefix(MPath::ROOT)]);
+    let caller = tokio_util::task::AbortOnDropHandle::new(mononoke::spawn_task(async move {
+        entries.try_collect::<Vec<_>>().await
+    }));
+    for _ in 0..2 {
+        timeout(EVENT_TIMEOUT, started_rx.recv())
+            .await?
+            .expect("both sibling directory reads must start while blocked");
+    }
+    store.release.add_permits(2);
+    let entries = timeout(EVENT_TIMEOUT, caller).await???;
+    assert_eq!(entries.len(), 4);
     Ok(())
 }

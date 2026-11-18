@@ -22,6 +22,7 @@ use futures::StreamExt;
 use futures::TryStreamExt;
 use futures::stream;
 use manifest::Entry;
+use manifest::KnownEntry;
 use manifest::LeafInfo;
 use manifest::Manifest;
 use manifest::ManifestOps;
@@ -92,7 +93,10 @@ impl<TreeId, Leaf> ManifestDerivation<TreeId, Leaf> {
             store,
             self.parents,
             changes,
-            self.known_entries,
+            self.known_entries
+                .into_iter()
+                .map(|(path, entry)| (path, KnownEntry::Entry(entry)))
+                .collect(),
             self.path,
             create_tree,
             create_leaf,

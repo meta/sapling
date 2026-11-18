@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 
 use anyhow::Error;
+use anyhow::Result;
 use anyhow::anyhow;
 use borrowed::borrowed;
 use cloned::cloned;
@@ -23,6 +24,7 @@ use futures::stream;
 use futures::stream::BoxStream;
 use futures::stream::Stream;
 use mononoke_macros::mononoke;
+use mononoke_types::MPathElement;
 use mononoke_types::NonRootMPath;
 use mononoke_types::path::MPath;
 use tokio_util::task::AbortOnDropHandle;
@@ -33,7 +35,10 @@ use crate::PathOrPrefix;
 use crate::PathTree;
 use crate::StoreLoadable;
 use crate::TrieMapOps;
+use crate::comparison::classify_child;
 use crate::comparison::diff_manifest_node;
+use crate::comparison::diff_trie_children;
+use crate::select::Select;
 use crate::select::select_path_tree;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,79 +86,17 @@ where
         PathOrPrefix: From<P>,
         F: Fn(&MPath, Self) -> bool + Clone + Send + Sync + 'static,
     {
-        let selector = select_path_tree(paths_or_prefixes);
-
-        let init = Some((self.clone(), selector, MPath::ROOT, false));
-        (async_stream::stream! {
-            let store = &store;
-            borrowed!(ctx, store, filter);
-            let s = bounded_traversal::bounded_traversal_stream(
-                256,
-                init,
-                move |(manifest_id, selector, path, recursive)| {
-                    let (select, subentries) = selector.deconstruct();
-                    cloned!(ctx, store, filter);
-                    async move {
-                        if !filter(&path, manifest_id.clone()) {
-                            return Ok((Vec::new(), Vec::new()));
-                        }
-                        // DO NOT REMOVE THIS SPAWN: Git boundary filtering has a downstream
-                        // async buffer that can stop polling this traversal while full.
-                        // Its metadata lookups may depend on in-flight directory reads;
-                        // those reads must keep progressing to avoid a subexecutor deadlock.
-                        AbortOnDropHandle::new(mononoke::spawn_task(async move {
-                            let manifest = manifest_id.load(&ctx, &store).await?;
-                            let mut output = Vec::new();
-                            let mut recurse = Vec::new();
-                            if recursive || select.is_recursive() {
-                                output.push((path.clone(), Entry::Tree(manifest_id)));
-                                let mut stream = manifest.list(&ctx, &store).await?;
-                                while let Some((name, entry)) = stream.try_next().await? {
-                                    let path = path.join(&name);
-                                    match entry {
-                                        Entry::Leaf(_) => {
-                                            output.push((path.clone(), entry));
-                                        }
-                                        Entry::Tree(manifest_id) => {
-                                            recurse.push((manifest_id, Default::default(), path, true));
-                                        }
-                                    }
-                                }
-                            } else {
-                                if select.is_selected() {
-                                    output.push((path.clone(), Entry::Tree(manifest_id)));
-                                }
-                                for (name, selector) in subentries {
-                                    if let Some(entry) = manifest.lookup(&ctx, &store, &name).await? {
-                                        let path = path.join(&name);
-                                        match entry {
-                                            Entry::Leaf(_) => {
-                                                if selector.value.is_selected() {
-                                                    output.push((path.clone(), entry));
-                                                }
-                                            }
-                                            Entry::Tree(manifest_id) => {
-                                                recurse.push((manifest_id, selector, path, false));
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            Ok::<_, Error>((output, recurse))
-                        })).await?
-                    }.boxed()
-                },
-            )
-            .map_ok(|entries| stream::iter(entries.into_iter().map(Ok)))
-            .try_flatten();
-
-            pin_mut!(s);
-            while let Some(value) = s.next().await {
-                yield value;
-            }
-        })
-        .boxed()
+        find_entries_from_roots(
+            ctx,
+            store,
+            vec![(
+                self.clone(),
+                select_path_tree(paths_or_prefixes),
+                MPath::ROOT,
+                false,
+            )],
+            filter,
+        )
     }
 
     fn find_entries<I, P>(
@@ -424,6 +367,147 @@ where
     }
 }
 
+fn find_entries_from_roots<TreeId, Store, F>(
+    ctx: CoreContext,
+    store: Store,
+    roots: Vec<(TreeId, PathTree<Select>, MPath, bool)>,
+    filter: F,
+) -> BoxStream<
+    'static,
+    Result<(
+        MPath,
+        Entry<TreeId, <TreeId::Value as Manifest<Store>>::Leaf>,
+    )>,
+>
+where
+    Store: Clone + Send + Sync + 'static,
+    TreeId: StoreLoadable<Store> + Clone + Send + Sync + Eq + Unpin + 'static,
+    TreeId::Value: Manifest<Store, TreeId = TreeId> + Send + Sync,
+    <TreeId::Value as Manifest<Store>>::Leaf: Clone + Send + Eq + Unpin,
+    F: Fn(&MPath, TreeId) -> bool + Clone + Send + Sync + 'static,
+{
+    (async_stream::stream! {
+        let store = &store;
+        borrowed!(ctx, store, filter);
+        let s = bounded_traversal::bounded_traversal_stream(
+            256,
+            roots,
+            move |(manifest_id, selector, path, recursive)| {
+                let (select, subentries) = selector.deconstruct();
+                cloned!(ctx, store, filter);
+                async move {
+                    if !filter(&path, manifest_id.clone()) {
+                        return Ok((Vec::new(), Vec::new()));
+                    }
+                    // DO NOT REMOVE THIS SPAWN: Git boundary filtering has a downstream
+                    // async buffer that can stop polling this traversal while full.
+                    // Its metadata lookups may depend on in-flight directory reads;
+                    // those reads must keep progressing to avoid a subexecutor deadlock.
+                    AbortOnDropHandle::new(mononoke::spawn_task(async move {
+                        let manifest = manifest_id.load(&ctx, &store).await?;
+                        let mut output = Vec::new();
+                        let mut recurse = Vec::new();
+                        if recursive || select.is_recursive() {
+                            output.push((path.clone(), Entry::Tree(manifest_id)));
+                            let mut stream = manifest.list(&ctx, &store).await?;
+                            while let Some((name, entry)) = stream.try_next().await? {
+                                let path = path.join(&name);
+                                match entry {
+                                    Entry::Leaf(_) => {
+                                        output.push((path.clone(), entry));
+                                    }
+                                    Entry::Tree(manifest_id) => {
+                                        recurse.push((manifest_id, Default::default(), path, true));
+                                    }
+                                }
+                            }
+                        } else {
+                            if select.is_selected() {
+                                output.push((path.clone(), Entry::Tree(manifest_id)));
+                            }
+                            for (name, selector) in subentries {
+                                if let Some(entry) = manifest.lookup(&ctx, &store, &name).await? {
+                                    let path = path.join(&name);
+                                    match entry {
+                                        Entry::Leaf(_) => {
+                                            if selector.value.is_selected() {
+                                                output.push((path.clone(), entry));
+                                            }
+                                        }
+                                        Entry::Tree(manifest_id) => {
+                                            recurse.push((manifest_id, selector, path, false));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Ok::<_, Error>((output, recurse))
+                    })).await?
+                }.boxed()
+            },
+        )
+        .map_ok(|entries| stream::iter(entries.into_iter().map(Ok)))
+        .try_flatten();
+
+        pin_mut!(s);
+        while let Some(value) = s.next().await {
+            yield value;
+        }
+    })
+    .boxed()
+}
+
+/// Find entries below a directory from its supplied child map. Paths are relative
+/// to that directory; the directory itself has no entry in this view.
+pub fn find_entries_from_subentries<TreeId, Leaf, Store, Map>(
+    ctx: CoreContext,
+    store: Store,
+    map: Map,
+    paths: impl IntoIterator<Item = PathOrPrefix>,
+) -> BoxStream<'static, Result<(MPath, Entry<TreeId, Leaf>)>>
+where
+    Store: Clone + Send + Sync + 'static,
+    TreeId: StoreLoadable<Store> + Clone + Send + Sync + Eq + Unpin + 'static,
+    TreeId::Value: Manifest<Store, TreeId = TreeId, Leaf = Leaf> + Send + Sync,
+    Leaf: Clone + Send + Sync + Eq + Unpin + 'static,
+    Map: TrieMapOps<Store, Entry<TreeId, Leaf>> + Clone + Send + Sync + 'static,
+{
+    let (selection, children) = select_path_tree(paths).deconstruct();
+    async_stream::try_stream! {
+        let mut children: BoxStream<'_, Result<_>> = if selection.is_recursive() {
+            map.into_stream(&ctx, &store).await?
+                .map_ok(|(name, entry)| {
+                    Ok((MPathElement::from_smallvec(name)?, entry,
+                        PathTree { value: Select::Recursive, ..Default::default() }))
+                })
+                .and_then(future::ready)
+                .boxed()
+        } else {
+            let names = children.iter().map(|(name, _)| name.clone().to_smallvec()).collect();
+            let mut entries: HashMap<_, _> = map.lookup_many(&ctx, &store, names).await?.into_iter().collect();
+            stream::iter(children.into_iter().filter_map(move |(name, selector)| {
+                entries.remove(name.as_ref()).map(|entry| Ok((name, entry, selector)))
+            })).boxed()
+        };
+        let mut roots = Vec::new();
+        while let Some((name, entry, selector)) = children.try_next().await? {
+            let path = MPath::ROOT.join(&name);
+            match entry {
+                Entry::Tree(tree) => roots.push((tree, selector, path, false)),
+                Entry::Leaf(_) if selector.value.is_selected() => yield (path, entry),
+                Entry::Leaf(_) => {},
+            }
+        }
+        drop(children);
+        let mut entries = find_entries_from_roots(ctx, store, roots, |_, _| true);
+        while let Some(entry) = entries.try_next().await? {
+            yield entry;
+        }
+    }
+    .boxed()
+}
+
 /// Finds subentries in mf_id manifest that are different from entries with the same name in
 /// every manifest in `diff_against`. Note that removed entries ARE NOT INCLUDED!
 /// F. e. if file 'A' hash HASH_1 in mf_if, HASH_2 and HASH_3 in diff_against, then it will
@@ -586,6 +670,104 @@ where
                 .left_stream()
         }
     }
+}
+
+/// Entries in a child map that differ from every parent, including descendants.
+/// `keep` applies to both emitted entries and traversal into directories.
+pub fn find_intersection_of_subentry_diffs<TreeId, Leaf, Store, M, Map, Keep>(
+    ctx: CoreContext,
+    store: Store,
+    current: Map,
+    parents: Vec<Map>,
+    keep: Keep,
+) -> BoxStream<'static, Result<(MPath, Entry<TreeId, Leaf>)>>
+where
+    Store: Clone + Send + Sync + 'static,
+    TreeId: StoreLoadable<Store, Value = M> + Clone + Send + Sync + Eq + Unpin + 'static,
+    M: Manifest<Store, TreeId = TreeId, Leaf = Leaf, TrieMapType = Map> + Send + Sync,
+    Leaf: Clone + Send + Sync + Eq + Unpin + 'static,
+    Map: TrieMapOps<Store, Entry<TreeId, Leaf>> + Clone + Eq + Send + Sync + 'static,
+    Keep: Fn(&MPath) -> bool + Clone + Send + Sync + 'static,
+{
+    async move {
+        mononoke::spawn_task(async move {
+            let children = diff_trie_children(
+                &ctx,
+                &store,
+                Some(current),
+                &store,
+                parents.first().cloned(),
+                Default::default(),
+            )
+            .await?;
+            let mut leaves = Vec::new();
+            let mut trees = Vec::new();
+            for (name, old, new) in children {
+                let path = MPath::ROOT.join_element(Some(&name));
+                if !keep(&path) {
+                    continue;
+                }
+                let (leaf, tree) = classify_child(path, old, new);
+                leaves.extend(leaf);
+                trees.extend(tree.filter(|diff| !matches!(diff, Diff::Removed(..))));
+            }
+            let traversal = bounded_traversal::bounded_traversal_stream(256, trees, {
+                cloned!(ctx, store, keep);
+                move |work| {
+                    cloned!(ctx, store, keep);
+                    async move {
+                        let (outputs, children) = diff_manifest_node(
+                            &ctx,
+                            &store,
+                            &store,
+                            work,
+                            Default::default(),
+                            |diff| !matches!(diff, Diff::Removed(..)) && keep(diff.path()),
+                        )
+                        .await?;
+                        Ok::<_, Error>((outputs, children.into_iter().map(|(work, _)| work)))
+                    }
+                    .boxed()
+                }
+            })
+            .map_ok(|outputs| stream::iter(outputs.into_iter().map(Ok::<_, Error>)))
+            .try_flatten();
+            let entries: Vec<_> = stream::iter(leaves.into_iter().map(Ok))
+                .chain(traversal)
+                .try_filter_map(|diff| {
+                    future::ready(Ok(match diff {
+                        Diff::Added(path, entry) | Diff::Changed(path, _, entry) if keep(&path) => {
+                            Some((path, entry))
+                        }
+                        _ => None,
+                    }))
+                })
+                .try_collect()
+                .await?;
+            let paths: Vec<_> = entries
+                .iter()
+                .map(|(path, _)| PathOrPrefix::Path(path.clone()))
+                .collect();
+            let other_parents = future::try_join_all(parents.into_iter().skip(1).map(|parent| {
+                find_entries_from_subentries(ctx.clone(), store.clone(), parent, paths.clone())
+                    .try_collect::<HashMap<_, _>>()
+            }))
+            .await?;
+            Ok::<_, Error>(stream::iter(
+                entries
+                    .into_iter()
+                    .filter(move |(path, entry)| {
+                        other_parents
+                            .iter()
+                            .all(|parent| parent.get(path) != Some(entry))
+                    })
+                    .map(Ok),
+            ))
+        })
+        .await?
+    }
+    .try_flatten_stream()
+    .boxed()
 }
 
 impl<TreeId, Store> ManifestOps<Store> for TreeId

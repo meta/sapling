@@ -22,6 +22,7 @@ use blobstore::Storable;
 use borrowed::borrowed;
 use context::CoreContext;
 use fbinit::FacebookInit;
+use futures::future;
 use futures::stream::StreamExt;
 use futures::stream::TryStreamExt;
 use maplit::btreemap;
@@ -37,7 +38,11 @@ use mononoke_types::content_manifest::ContentManifest;
 use mononoke_types::content_manifest::ContentManifestEntry;
 use mononoke_types::content_manifest::ContentManifestFile;
 use mononoke_types::path::MPath;
+use mononoke_types::sharded_map_v2::LoadableShardedMapV2Node;
 use mononoke_types::sharded_map_v2::ShardedMapV2Node;
+use mononoke_types::test_sharded_manifest::TestShardedManifestDirectory;
+use mononoke_types::test_sharded_manifest::TestShardedManifestEntry;
+use mononoke_types::test_sharded_manifest::TestShardedManifestFile;
 use mononoke_types_mocks::changesetid::ONES_CSID;
 use mononoke_types_mocks::changesetid::THREES_CSID;
 use mononoke_types_mocks::changesetid::TWOS_CSID;
@@ -1283,6 +1288,52 @@ async fn test_find_intersection_of_diffs(fb: FacebookInit) -> Result<()> {
         ])?,
     );
 
+    for current in [mf0, mf1, mf2] {
+        for parents in [vec![], vec![mf0], vec![mf0, mf2], vec![mf2, mf0, mf1]] {
+            for prune in [false, true] {
+                let keep = move |path: &MPath| {
+                    !prune || !MPath::new("dir/added_dir").unwrap().is_prefix_of(path)
+                };
+                let expected = crate::find_intersection_of_diffs_pruned(
+                    ctx.clone(),
+                    blobstore.clone(),
+                    current,
+                    parents.clone(),
+                    move |diff| keep(diff.path()),
+                )
+                .try_filter_map(|(path, entry)| async move {
+                    Ok((!path.is_root() && keep(&path)).then_some((path, entry)))
+                })
+                .try_collect::<BTreeMap<_, _>>()
+                .await?;
+                let current = current
+                    .load(ctx, blobstore)
+                    .await?
+                    .into_trie_map(ctx, blobstore)
+                    .await?;
+                let parents =
+                    future::try_join_all(parents.iter().copied().map(|parent| async move {
+                        parent
+                            .load(ctx, blobstore)
+                            .await?
+                            .into_trie_map(ctx, blobstore)
+                            .await
+                    }))
+                    .await?;
+                let actual = crate::find_intersection_of_subentry_diffs(
+                    ctx.clone(),
+                    blobstore.clone(),
+                    current,
+                    parents,
+                    keep,
+                )
+                .try_collect::<BTreeMap<_, _>>()
+                .await?;
+                assert_eq!(actual, expected);
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -1585,6 +1636,78 @@ impl KeyedBlobstore for RecordingBlobstore {
     async fn unlink<'a>(&'a self, ctx: &'a CoreContext, key: &'a str) -> Result<()> {
         self.inner.unlink(ctx, key).await
     }
+}
+
+#[mononoke::fbinit_test]
+async fn test_subentry_lookup_shares_shard_reads(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let store = Arc::new(RecordingBlobstore::default());
+    let entries = (0..128).map(|i| {
+        let prefix = if i < 64 { 'a' } else { 'z' };
+        (
+            format!("{prefix}{:03}", i % 64),
+            TestShardedManifestEntry::File(TestShardedManifestFile { basename_length: i }),
+        )
+    });
+    let root = ShardedMapV2Node::from_entries(&ctx, &store, entries).await?;
+    let partition = root.get_partial_map(&ctx, &store, b"a").await?.unwrap();
+    for (map, prefix) in [
+        (LoadableShardedMapV2Node::Inlined(root), "a"),
+        (partition, ""),
+    ] {
+        let names = ["000", "001", "002", "010", "011", "012", "999", "001"]
+            .map(|name| MPath::new(format!("{prefix}{name}")))
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
+        let stored = map.clone().stored(&ctx, &store).await?;
+        for map in [map, stored] {
+            store.gets.lock().unwrap().clear();
+            let loaded = map.clone().load(&ctx, &store).await?;
+            let mut expected: HashMap<MPath, Entry<TestShardedManifestDirectory, ()>> =
+                HashMap::new();
+            for name in &names {
+                let name_bytes = name.iter().next().unwrap();
+                if loaded
+                    .lookup(&ctx, &store, name_bytes.as_ref())
+                    .await?
+                    .is_some()
+                {
+                    expected.insert(name.clone(), Entry::Leaf(()));
+                }
+            }
+            let point_reads = std::mem::take(&mut *store.gets.lock().unwrap());
+            assert!(point_reads.len() > point_reads.iter().collect::<HashSet<_>>().len());
+
+            let actual = crate::find_entries_from_subentries(
+                ctx.clone(),
+                store.clone(),
+                map.clone(),
+                names.iter().cloned().map(PathOrPrefix::Path),
+            )
+            .try_collect::<HashMap<_, _>>()
+            .await?;
+            assert_eq!(actual, expected);
+            let batch_reads = std::mem::take(&mut *store.gets.lock().unwrap());
+            let expected_reads: HashSet<_> = point_reads.into_iter().collect();
+            assert_eq!(batch_reads.len(), expected_reads.len());
+            assert_eq!(
+                batch_reads.into_iter().collect::<HashSet<_>>(),
+                expected_reads
+            );
+
+            let empty = crate::find_entries_from_subentries(
+                ctx.clone(),
+                store.clone(),
+                map,
+                Vec::<PathOrPrefix>::new(),
+            )
+            .try_collect::<Vec<_>>()
+            .await?;
+            assert!(empty.is_empty());
+            assert!(store.gets.lock().unwrap().is_empty());
+        }
+    }
+    Ok(())
 }
 
 #[mononoke::fbinit_test]

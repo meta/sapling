@@ -404,7 +404,10 @@ pub(crate) async fn derive_test_manifest_with_known_entries(
         blobstore.clone(),
         parents,
         changes,
-        known_entries,
+        known_entries
+            .into_iter()
+            .map(|(path, entry)| (path, crate::KnownEntry::Entry(entry)))
+            .collect(),
         prefix,
         {
             cloned!(ctx, blobstore);

@@ -237,6 +237,21 @@ impl<Store: KeyedBlobstore> TrieMapOps<Store, IndexedAugmentedEntry> for Indexed
             .boxed())
     }
 
+    async fn lookup_many(
+        self,
+        ctx: &CoreContext,
+        blobstore: &Store,
+        names: Vec<SmallVec<[u8; 24]>>,
+    ) -> Result<Vec<(SmallVec<[u8; 24]>, IndexedAugmentedEntry)>> {
+        Ok(self
+            .inner
+            .lookup_many(ctx, blobstore, names)
+            .await?
+            .into_iter()
+            .map(|(name, entry)| (name, indexed_augmented_entry(entry, self.index)))
+            .collect())
+    }
+
     fn is_empty(&self) -> bool {
         self.inner.size() == 0
     }
