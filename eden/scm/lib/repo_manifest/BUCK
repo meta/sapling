@@ -1,0 +1,40 @@
+load("@fbsource//tools/build_defs:rust_unittest.bzl", "rust_unittest")
+load("//eden/scm:targets.bzl", "sl_rust_library")
+
+oncall("scm_server_infra")
+
+sl_rust_library(
+    name = "repo_manifest",
+    srcs = glob(["src/**/*.rs"]),
+    autocargo = {
+        "cargo_toml_config": {
+            "package": {
+                "description": "Parser for git-repo XML manifest files",
+            },
+        },
+    },
+    crate_root = "src/lib.rs",
+    test_deps = [
+        "fbsource//third-party/rust:tempfile",
+    ],
+    tests = [
+        ":repo_manifest_test",
+    ],
+    unittests = True,
+    deps = [
+        "fbsource//third-party/rust:anyhow",
+        "fbsource//third-party/rust:quick-xml",
+        "fbsource//third-party/rust:serde",
+    ],
+)
+
+rust_unittest(
+    name = "repo_manifest_test",
+    srcs = glob(["test/**/*.rs"]),
+    crate = "repo_manifest_test",
+    crate_root = "test/main.rs",
+    deps = [
+        "fbsource//third-party/rust:anyhow",
+        ":repo_manifest",
+    ],
+)

@@ -177,6 +177,7 @@ members = [
   "lib/repo",
   "lib/repo/repo-minimal-info",
   "lib/repo/url",
+  "lib/repo_manifest",
   "lib/repolock",
   "lib/revisionstore",
   "lib/revisionstore/types",
