@@ -76,6 +76,7 @@ function mockRealpath(impl: (p: string) => string) {
 }
 
 const ctx: RepositoryContext = {
+  agentSessionMetadata: undefined,
   cmd: 'sl',
   logger: mockLogger,
   tracker: mockTracker,

@@ -46,6 +46,8 @@ export async function activate(
       cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd(),
       logger,
       tracker: extensionTracker,
+      // The extension host outlives any one conversation, so it cannot name one.
+      agentSessionMetadata: undefined,
     };
     const [, enabledSCMApiFeatures] = await Promise.all([
       ensureTranslationsLoaded(context),

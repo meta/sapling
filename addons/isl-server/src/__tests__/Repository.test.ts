@@ -105,6 +105,7 @@ describe('Repository', () => {
   let ctx: RepositoryContext;
   beforeEach(() => {
     ctx = {
+      agentSessionMetadata: undefined,
       cmd: 'sl',
       cwd: '/path/to/cwd',
       logger: mockLogger,
@@ -1384,6 +1385,7 @@ describe('absolutePathForFileInRepo', () => {
   let ctx: RepositoryContext;
   beforeEach(() => {
     ctx = {
+      agentSessionMetadata: undefined,
       cmd: 'sl',
       cwd: '/path/to/cwd',
       logger: mockLogger,
@@ -1447,6 +1449,7 @@ describe('getCwdInfo', () => {
         cb(null, p)) as unknown as typeof fs.realpath);
     await expect(
       Repository.getCwdInfo({
+        agentSessionMetadata: undefined,
         cmd: 'sl',
         cwd: '/path/to/myRepo/some/subdir',
         logger: mockLogger,
@@ -1468,6 +1471,7 @@ describe('getCwdInfo', () => {
         cb(null, toRealPath(p))) as unknown as typeof fs.realpath);
     await expect(
       Repository.getCwdInfo({
+        agentSessionMetadata: undefined,
         cmd: 'sl',
         cwd: '/home/name/myRepo/some/subdir',
         logger: mockLogger,
@@ -1488,6 +1492,7 @@ describe('getCwdInfo', () => {
         cb(new Error('ENOENT'))) as unknown as typeof fs.realpath);
     await expect(
       Repository.getCwdInfo({
+        agentSessionMetadata: undefined,
         cmd: 'sl',
         cwd: '/path/to/myRepo/some/subdir',
         logger: mockLogger,
@@ -1504,6 +1509,7 @@ describe('getCwdInfo', () => {
     mockEjeca([[/^sl root/, new Error('not a repository')]]);
     await expect(
       Repository.getCwdInfo({
+        agentSessionMetadata: undefined,
         cmd: 'sl',
         cwd: '/path/ro/myRepo/some/subdir',
         logger: mockLogger,
@@ -1521,6 +1527,7 @@ describe('fetchSubmoduleMap', () => {
   beforeEach(() => {
     myRepoRoot = '/data/users/name/myRepo';
     ctx = {
+      agentSessionMetadata: undefined,
       cmd: 'sl',
       cwd: myRepoRoot,
       logger: mockLogger,

@@ -159,6 +159,7 @@ export async function initRepo(options?: InitRepoOptions) {
   process.chdir(repoDir);
 
   const ctx: RepositoryContext = {
+    agentSessionMetadata: undefined,
     cmd,
     cwd: repoDir,
     logger: testLogger,

@@ -98,6 +98,7 @@ describe('DiffContentProvider', () => {
   let ctx: RepositoryContext;
   beforeEach(() => {
     ctx = {
+      agentSessionMetadata: undefined,
       cwd: 'cwd',
       cmd: 'sl',
       logger: mockLogger,

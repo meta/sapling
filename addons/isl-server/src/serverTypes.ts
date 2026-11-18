@@ -29,8 +29,10 @@ export type RepositoryContext = {
    * `id=<agent>,session_id=<id>`. Overrides the `CODING_AGENT_METADATA`
    * environment variable, which cannot name a session in a host that serves
    * several from one server process.
+   *
+   * Required, not optional: a host that cannot name a session has to say so.
    */
-  agentSessionMetadata?: string;
+  agentSessionMetadata: string | undefined;
   /** Whether we pass --debug to sl commands */
   debug?: boolean;
   /** Whether we pass --verbose to sl commands */

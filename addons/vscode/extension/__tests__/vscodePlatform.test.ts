@@ -34,6 +34,7 @@ jest.mock('isl-server/src/Repository', () => ({
 const {Repository} = require('isl-server/src/Repository');
 
 const mockCtx: RepositoryContext = {
+  agentSessionMetadata: undefined,
   cwd: '/test/cwd',
   cmd: 'sl',
   logger: {log: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn()} as never,

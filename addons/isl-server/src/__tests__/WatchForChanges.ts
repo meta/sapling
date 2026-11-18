@@ -58,6 +58,7 @@ describe('WatchForChanges - watchman', () => {
 
   beforeEach(() => {
     const ctx = {
+      agentSessionMetadata: undefined,
       cmd: 'sl',
       cwd: '/path/to/cwd',
       logger: mockLogger,
@@ -217,6 +218,7 @@ describe('WatchForChanges - watchman', () => {
     //            watchman result
 
     const ctx = {
+      agentSessionMetadata: undefined,
       cmd: 'sl',
       cwd: '/path/to/cwd',
       logger: mockLogger,
@@ -280,6 +282,7 @@ describe('WatchForChanges - edenfs', () => {
 
   beforeEach(async () => {
     const ctx = {
+      agentSessionMetadata: undefined,
       cmd: 'sl',
       cwd: '/path/to/cwd',
       logger: mockLogger,

@@ -28,6 +28,7 @@ const mockTracker = makeServerSideTracker(
 );
 
 const mockCtx: RepositoryContext = {
+  agentSessionMetadata: undefined,
   logger: mockLogger,
   tracker: mockTracker,
   cwd: '/test',

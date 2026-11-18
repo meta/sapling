@@ -189,6 +189,8 @@ export default class ServerToClientAPI {
       cmd: command,
       logger: this.logger,
       tracker: this.tracker,
+      // No connection names its session yet; falls back to `CODING_AGENT_METADATA`.
+      agentSessionMetadata: undefined,
     };
     this.activeRepoRef = repositoryCache.getOrCreate(ctx);
     this.activeRepoRef.promise.then(repoOrError => {
@@ -254,6 +256,7 @@ export default class ServerToClientAPI {
               cmd: this.connection.command ?? 'sl',
               logger: this.logger,
               tracker: this.tracker,
+              agentSessionMetadata: undefined,
             },
             data as PlatformSpecificClientToServerMessages,
             message => this.postMessage(message),
@@ -333,6 +336,7 @@ export default class ServerToClientAPI {
                 cmd: this.connection.command ?? 'sl',
                 logger: this.logger,
                 tracker: this.tracker,
+                agentSessionMetadata: undefined,
               };
         Internal.fileABug?.(
           ctx,

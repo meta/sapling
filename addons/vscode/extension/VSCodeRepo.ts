@@ -82,6 +82,8 @@ export class VSCodeReposList {
         cmd: getCLICommand(),
         logger: this.logger,
         tracker: this.tracker,
+        // A workspace folder is not a conversation, so nothing here names one.
+        agentSessionMetadata: undefined,
       });
       this.knownRepos.set(fsPath, repoReference);
       repoReference.promise.then(repo => {
