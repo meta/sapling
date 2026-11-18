@@ -13,6 +13,7 @@ path = "test/main.rs"
 
 [dependencies]
 anyhow = "1.0.104"
+bookmarks = { version = "0.1.0", path = "../bookmarks" }
 bytes = { version = "1.12.1", features = ["serde"] }
 cloned = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 dashmap = { version = "6.2.1", features = ["rayon", "serde"] }

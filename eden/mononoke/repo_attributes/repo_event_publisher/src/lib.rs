@@ -29,6 +29,8 @@ pub use facebook::fanout_listener::FanoutListener;
 #[cfg(fbcode_build)]
 pub use facebook::from_scribe::FromScribe;
 #[cfg(fbcode_build)]
+pub use facebook::parsed_bookmark_event::ParsedBookmarkEventNotification;
+#[cfg(fbcode_build)]
 pub use facebook::repo_id_provider::RepoIdProvider;
 #[cfg(fbcode_build)]
 pub use facebook::scribe_listener::ScribeListener;

@@ -65,8 +65,6 @@ use bookmarks_cache::ScopedBookmarksCache;
 use bookmarks_cache::WarmerRequirement;
 use bookmarks_types::Bookmark;
 use bookmarks_types::BookmarkKind;
-#[cfg(fbcode_build)]
-use bookmarks_types::BookmarkName;
 use bookmarks_types::BookmarkPagination;
 use bookmarks_types::BookmarkPrefix;
 use case_conflict_skeleton_manifest::RootCaseConflictSkeletonManifestId;
@@ -109,10 +107,12 @@ use mononoke_types::Timestamp;
 use phases::ArcPhases;
 use repo_derived_data::ArcRepoDerivedData;
 use repo_event_publisher::ArcRepoEventPublisher;
-#[cfg(fbcode_build)]
+#[cfg(all(fbcode_build, test))]
 use repo_event_publisher::BookmarkCategory as EventRouterBookmarkCategory;
 #[cfg(fbcode_build)]
 use repo_event_publisher::BookmarkEventNotification;
+#[cfg(fbcode_build)]
+use repo_event_publisher::ParsedBookmarkEventNotification;
 use repo_event_publisher::RepoEventPublisher;
 use repo_identity::ArcRepoIdentity;
 use repo_identity::RepoIdentity;
@@ -134,57 +134,6 @@ pub use warmers::create_public_phase_warmer;
 #[cfg(fbcode_build)]
 static WBC_INSTRUMENT: LazyLock<Instrument_MononokeWarmBookmarkCacheStats> =
     LazyLock::new(Instrument_MononokeWarmBookmarkCacheStats::new);
-
-#[cfg(fbcode_build)]
-struct ParsedBookmarkEventNotification {
-    key: BookmarkKey,
-    log_id: BookmarkUpdateLogId,
-    from_changeset_id: Option<ChangesetId>,
-    to_changeset_id: Option<ChangesetId>,
-}
-
-#[cfg(fbcode_build)]
-impl TryFrom<BookmarkEventNotification> for ParsedBookmarkEventNotification {
-    type Error = Error;
-
-    fn try_from(notification: BookmarkEventNotification) -> Result<Self, Self::Error> {
-        let category = if notification.bookmark_category == EventRouterBookmarkCategory::BRANCH {
-            BookmarkCategory::Branch
-        } else if notification.bookmark_category == EventRouterBookmarkCategory::TAG {
-            BookmarkCategory::Tag
-        } else if notification.bookmark_category == EventRouterBookmarkCategory::NOTE {
-            BookmarkCategory::Note
-        } else {
-            return Err(anyhow!(
-                "unknown EventRouter bookmark category {:?}",
-                notification.bookmark_category,
-            ));
-        };
-        let bookmark_name = BookmarkName::new(notification.bookmark_name)?;
-        let key = BookmarkKey::with_name_and_category(bookmark_name, category);
-        let log_id = BookmarkUpdateLogId::try_from(notification.log_id)
-            .context("bookmark notification has invalid log ID")?;
-        let from_changeset_id = notification
-            .from_changeset_id
-            .as_deref()
-            .map(ChangesetId::from_bytes)
-            .transpose()
-            .context("bookmark notification has invalid from-changeset ID")?;
-        let to_changeset_id = notification
-            .to_changeset_id
-            .as_deref()
-            .map(ChangesetId::from_bytes)
-            .transpose()
-            .context("bookmark notification has invalid to-changeset ID")?;
-
-        Ok(Self {
-            key,
-            log_id,
-            from_changeset_id,
-            to_changeset_id,
-        })
-    }
-}
 
 define_stats! {
     prefix = "mononoke.warm_bookmarks_cache";

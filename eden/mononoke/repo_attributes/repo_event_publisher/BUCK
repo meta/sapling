@@ -19,6 +19,7 @@ rust_library(
         if rust_oss.is_oss_build()
         else [
             "//eden/mononoke/mononoke_types:mononoke_types",
+            "//eden/mononoke/repo_attributes/bookmarks:bookmarks",
             "//configerator/structs/serverless/event_router/catalog/events/schemas:mononoke_bookmark_event_notification-rust",
             "//eden/mononoke/metaconfig:metaconfig_parser",
             "//eden/mononoke/metaconfig:metaconfig_types",
