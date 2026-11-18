@@ -83,6 +83,37 @@ impl StageOutputs {
     }
 }
 
+/// Encoded edits for one stage, produced before that stage derives its batch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparedStageInputs {
+    pub stage: StageId,
+    pub changes: BTreeMap<ChangesetId, Bytes>,
+}
+
+impl PreparedStageInputs {
+    pub fn from_thrift(inputs: derivation_queue_thrift::PreparedStageInputs) -> Result<Self> {
+        Ok(Self {
+            stage: StageId::from_thrift(inputs.stage)?,
+            changes: inputs
+                .changes
+                .into_iter()
+                .map(|(csid, bytes)| Ok((ChangesetId::from_thrift(csid)?, bytes)))
+                .collect::<Result<_>>()?,
+        })
+    }
+
+    pub fn to_thrift(&self) -> derivation_queue_thrift::PreparedStageInputs {
+        derivation_queue_thrift::PreparedStageInputs {
+            stage: self.stage.to_thrift(),
+            changes: self
+                .changes
+                .iter()
+                .map(|(csid, bytes)| (csid.into_thrift(), bytes.clone()))
+                .collect(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct StageBatchResult {
     pub duration: Duration,

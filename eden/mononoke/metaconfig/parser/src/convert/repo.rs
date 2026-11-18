@@ -1052,7 +1052,22 @@ impl Convert for RawDerivationPipelineConfig {
                     self.batch_size,
                 )
             })?;
+        let stages_by_type = self
+            .stages_by_type
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(name, stages)| {
+                Ok((
+                    DerivableType::from_name(&name)?,
+                    stages
+                        .into_iter()
+                        .map(|(path, config)| Ok((MPath::new(path.as_bytes())?, config.convert()?)))
+                        .collect::<Result<HashMap<_, _>>>()?,
+                ))
+            })
+            .collect::<Result<HashMap<_, _>>>()?;
         let config = DerivationPipelineConfig {
+            stages_by_type,
             types,
             bookmarks,
             stages,
@@ -1859,6 +1874,7 @@ mod tests {
 
     fn raw_pipeline_config_with_batch_size(batch_size: i64) -> RawDerivationPipelineConfig {
         RawDerivationPipelineConfig {
+            stages_by_type: Default::default(),
             types: Default::default(),
             bookmarks: Default::default(),
             stages: Default::default(),

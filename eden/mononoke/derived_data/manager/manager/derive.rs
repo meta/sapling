@@ -964,6 +964,33 @@ impl DerivedDataManager {
         .await
     }
 
+    /// Prepare each stage's inputs once for this batch.
+    pub async fn prepare_stage_batch<Derivable: PipelineDerivable>(
+        &self,
+        ctx: &CoreContext,
+        csids: Vec<ChangesetId>,
+        stages: &[crate::DerivationStagePayload],
+    ) -> Result<Vec<crate::PreparedStageInputs>, DerivationError> {
+        self.check_enabled::<Derivable>()?;
+        let ctx = self.set_derivation_session_class(ctx.clone_and_reset())?;
+        let derivation = self.derivation_context(None);
+        let bonsais = stream::iter(csids)
+            .map(async |csid| csid.load(&ctx, derivation.blobstore()).await)
+            .buffered(100)
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(anyhow::Error::from)?;
+        let mut scuba = self.derived_data_scuba::<Derivable>(&ctx);
+        scuba.add_stage_id("prepare");
+        scuba.add_changesets(&bonsais);
+        scuba.log_batch_derivation_start(&ctx);
+        let (stats, result) = Derivable::prepare_batch(&ctx, &derivation, bonsais, stages)
+            .timed()
+            .await;
+        scuba.log_batch_derivation_end(&ctx, &stats, result.as_ref().err());
+        Ok(result?)
+    }
+
     /// Derive data for a specific stage of a batch of changesets.
     ///
     /// This method orchestrates derivation pipeline, where a derived data type

@@ -16,6 +16,7 @@
 //! ------------
 
 include "eden/mononoke/mononoke_types/serialization/sharded_map.thrift"
+include "eden/mononoke/mononoke_types/serialization/path.thrift"
 include "thrift/annotation/rust.thrift"
 include "thrift/annotation/thrift.thrift"
 
@@ -47,4 +48,20 @@ struct BssmV3Directory {
 union BssmV3Entry {
   1: BssmV3File file;
   2: BssmV3Directory directory;
+}
+
+@rust.Exhaustive
+struct BssmStageOutput {
+  1: optional BssmV3Entry entry;
+}
+
+@rust.Exhaustive
+struct BssmPathChange {
+  1: path.NonRootMPath path;
+  2: bool is_added;
+}
+
+@rust.Exhaustive
+struct BssmPreparedChanges {
+  1: list<BssmPathChange> changes;
 }

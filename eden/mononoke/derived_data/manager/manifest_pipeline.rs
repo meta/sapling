@@ -63,6 +63,18 @@ pub trait ManifestDerivable: BonsaiDerivable {
 
     const PIPELINE_VARIANT: PipelineDerivableVariant;
 
+    /// Preparation depends on complete roots of this type's dependencies.
+    const HAS_PREPARE: bool = false;
+
+    async fn prepare_batch(
+        _ctx: &CoreContext,
+        _derivation: &DerivationContext,
+        _bonsais: Vec<BonsaiChangeset>,
+        _stages: &[crate::DerivationStagePayload],
+    ) -> Result<Vec<crate::PreparedStageInputs>> {
+        anyhow::bail!("{} does not have a preparation step", Self::NAME)
+    }
+
     /// An injective, prefix-preserving translation that keeps the root unchanged.
     /// None excludes a path and its descendants.
     /// Partition ranges select the first byte of names in the translated manifest.
@@ -155,6 +167,16 @@ where
 {
     const PIPELINE_DERIVABLE_VARIANT: PipelineDerivableVariant = T::PIPELINE_VARIANT;
     const HAS_FINALIZE: bool = false;
+    const HAS_PREPARE: bool = T::HAS_PREPARE;
+
+    async fn prepare_batch(
+        ctx: &CoreContext,
+        derivation: &DerivationContext,
+        bonsais: Vec<BonsaiChangeset>,
+        stages: &[DerivationStagePayload],
+    ) -> Result<Vec<crate::PreparedStageInputs>> {
+        T::prepare_batch(ctx, derivation, bonsais, stages).await
+    }
 
     type StageOutput = ManifestStageOutput<T::TreeId, T::Leaf, T::TrieMapType>;
 

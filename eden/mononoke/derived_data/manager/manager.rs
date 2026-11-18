@@ -151,6 +151,14 @@ impl DerivedDataManager {
         }
     }
 
+    pub fn with_prepared_inputs(&self, inputs: Arc<crate::PreparedStageInputs>) -> Self {
+        let mut inner = self.inner.as_ref().clone();
+        inner.derivation_context.prepared_inputs = Some(inputs);
+        Self {
+            inner: Arc::new(inner),
+        }
+    }
+
     pub fn with_mutated_scuba(
         &self,
         mutator: impl FnOnce(MononokeScubaSampleBuilder) -> MononokeScubaSampleBuilder + Clone,

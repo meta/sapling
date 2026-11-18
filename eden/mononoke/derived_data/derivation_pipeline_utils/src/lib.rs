@@ -13,6 +13,7 @@ use std::collections::HashSet;
 
 use anyhow::Result;
 use anyhow::ensure;
+use derived_data_manager::ManifestStagePayload;
 use derived_data_manager::StageId;
 use derived_data_manager::StageKey;
 use derived_data_manager::partition_ranges;
@@ -21,6 +22,25 @@ use mononoke_types::BonsaiChangeset;
 use mononoke_types::ChangesetId;
 use mononoke_types::DerivableType;
 use mononoke_types::NonRootMPath;
+
+/// Manifest stages in dependency order, deepest paths first.
+pub fn ordered_stage_payloads(
+    config: &DerivationPipelineConfig,
+    ty: DerivableType,
+) -> Vec<ManifestStagePayload> {
+    let mut stages = config
+        .stages_for(ty)
+        .iter()
+        .map(|(path, stage)| ManifestStagePayload::from_config(path.clone(), stage))
+        .collect::<Vec<_>>();
+    stages.sort_by(|a, b| {
+        b.path
+            .num_components()
+            .cmp(&a.path.num_components())
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    stages
+}
 
 /// Order selected types with dependencies first, ignoring dependencies outside the set.
 pub fn topo_sort_types(

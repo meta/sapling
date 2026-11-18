@@ -254,6 +254,18 @@ pub trait PipelineDerivable: BonsaiDerivable {
     /// sets this `true` must implement the `Finalize` arms of the stage methods.
     const HAS_FINALIZE: bool;
 
+    /// Preparation depends on complete roots of this type's dependencies.
+    const HAS_PREPARE: bool = false;
+
+    async fn prepare_batch(
+        _ctx: &CoreContext,
+        _derivation: &DerivationContext,
+        _bonsais: Vec<BonsaiChangeset>,
+        _stages: &[crate::DerivationStagePayload],
+    ) -> Result<Vec<crate::PreparedStageInputs>> {
+        anyhow::bail!("{} does not have a preparation step", Self::NAME)
+    }
+
     type StageOutput: StageOutput;
 
     /// Derive a batch of changesets for a specific stage.

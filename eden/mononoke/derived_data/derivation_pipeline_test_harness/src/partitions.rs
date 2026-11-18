@@ -6,12 +6,13 @@
  */
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
+use blobstore::KeyedBlobstore;
 use deleted_manifest::RootDeletedManifestIdCommon;
 use deleted_manifest::RootDeletedManifestV2Id;
 use derived_data_manager::DerivationStagePayload;
 use derived_data_manager::ManifestStagePayload;
-use derived_data_manager::PipelineDerivable;
 use derived_data_manager::StageId;
 use derived_data_manager::StageInputs;
 use fixtures::AncestorDirectoryReplacement;
@@ -25,11 +26,11 @@ use fixtures::CrossStageFileCopy;
 use fixtures::NestedDirectories;
 use fixtures::NestedSubtreeCopy;
 use fixtures::PartitionFileCopies;
-use fsnodes::RootFsnodeId;
 use mononoke_macros::mononoke;
 use mononoke_types::FileType;
 use mononoke_types::NonRootMPath;
 use mononoke_types::deleted_manifest_common::DeletedManifestCommon;
+use mononoke_types::hash::Blake2;
 use tests_utils::CreateCommitContext;
 
 use super::*;
@@ -469,75 +470,203 @@ async fn partitions_preserve_case_conflicts(fb: FacebookInit) -> Result<()> {
 
 #[mononoke::fbinit_test]
 async fn partitions_require_all_dependencies_and_allow_retry(fb: FacebookInit) -> Result<()> {
+    verify_missing_stage_inputs(fb, &PIPELINE_TYPES).await
+}
+
+pub(super) async fn verify_missing_stage_inputs(
+    fb: FacebookInit,
+    types: &[DerivableType],
+) -> Result<()> {
     let ctx = &CoreContext::test_mock(fb);
     let (repo, _, _) = AugmentedManifestV2NoHgMapping::get_repo_and_dag::<TestRepo>(fb).await;
     let manager = &repo
         .repo_derived_data()
         .manager()
         .with_pipeline_mode(derived_data_manager::PipelineMode::Shadow);
-    let csid = CreateCommitContext::new_root(ctx, &repo)
+    let first = CreateCommitContext::new_root(ctx, &repo)
         .add_file("a", "left")
         .add_file("z", "right")
         .commit()
         .await?;
-    let stage = StageId::Manifest(MPath::ROOT);
-    let config = DerivationPipelineStageConfig {
-        dependencies: vec![],
-        partition_cut_points: vec![b'm'],
-    };
-    let payload = ManifestStagePayload::from_config(MPath::ROOT, &config);
-    let partitions = payload
-        .partitions()
-        .into_iter()
-        .map(|range| DerivationStagePayload::Subentries {
-            path: MPath::ROOT,
-            range,
-        })
-        .collect::<Vec<_>>();
-    let assembly = DerivationStagePayload::Manifest(payload);
-    let first = manager
-        .derive_stage_batch::<RootFsnodeId>(ctx, vec![csid], &partitions[0])
+    let second = CreateCommitContext::new(ctx, &repo, vec![first])
+        .add_file("a", "changed")
+        .commit()
         .await?;
-    let mut references: Vec<_> = first.outputs.into_iter().collect();
-    let inputs = StageInputs::new(&references)?;
-    let manager = manager.with_stage_inputs(inputs);
-    let error = manager
-        .derive_stage_batch::<RootFsnodeId>(ctx, vec![csid], &assembly)
+    let mut config = pipeline_config_from_stages(vec![("", vec![])])?;
+    config.types = types.iter().copied().collect();
+    config.batch_size = NonZeroU64::new(1).unwrap();
+    config
+        .stages
+        .get_mut(&MPath::ROOT)
+        .unwrap()
+        .partition_cut_points = vec![b'm'];
+    let payload = ManifestStagePayload::from_config(MPath::ROOT, &config.stages[&MPath::ROOT]);
+    let partition = DerivationStagePayload::Subentries {
+        path: MPath::ROOT,
+        range: payload.partitions()[0],
+    };
+    let assembly = DerivationStagePayload::Manifest(payload);
+    let order = derivation_pipeline_driver::plan_stages_and_types(manager, &config, types)?;
+    let batches = derivation_pipeline_driver::plan_batches(
+        ctx,
+        repo.repo_blobstore(),
+        &config,
+        vec![first, second],
+    )
+    .await?;
+    let mut references = Vec::new();
+    derivation_pipeline_driver::run_pipeline_batches(
+        manager,
+        ctx,
+        &config,
+        &order.sorted_stages,
+        &order.sorted_types,
+        &batches,
+        |outputs| references.extend_from_slice(outputs),
+    )
+    .await?;
+
+    for &ty in types {
+        let variant = ty.into_pipeline_derivable_variant()?;
+        let prepared = if bulk_derivation::pipeline_has_prepare(variant) {
+            bulk_derivation::prepare_stage_batch(
+                &manager.with_stage_inputs(StageInputs::new(&references)?),
+                ctx,
+                vec![first, second],
+                &[partition.clone(), assembly.clone()],
+                variant,
+            )
+            .await?
+        } else {
+            Vec::new()
+        };
+        let request = |references: Vec<derived_data_manager::StageOutputs>,
+                       csid,
+                       payload: DerivationStagePayload| {
+            let prepared = prepared
+                .iter()
+                .find(|inputs| inputs.stage == payload.stage_id())
+                .cloned();
+            async move {
+                let mut supplied = manager.with_stage_inputs(StageInputs::new(&references)?);
+                if let Some(prepared) = prepared {
+                    supplied = supplied.with_prepared_inputs(Arc::new(prepared));
+                }
+                Ok::<_, anyhow::Error>(
+                    bulk_derivation::derive_stage_batch(
+                        &supplied,
+                        ctx,
+                        vec![csid],
+                        &payload,
+                        variant,
+                    )
+                    .await?
+                    .outputs,
+                )
+            }
+        };
+        let without = |csid, stage: Option<StageId>| {
+            references
+                .iter()
+                .cloned()
+                .map(|mut output| {
+                    if output.derived_data_type == ty
+                        && stage.as_ref().is_none_or(|stage| *stage == output.stage)
+                    {
+                        Arc::make_mut(&mut output.outputs).remove(&csid);
+                    }
+                    output
+                })
+                .collect::<Vec<_>>()
+        };
+        let expected = |csid, stage: StageId| {
+            references
+                .iter()
+                .find(|output| {
+                    output.derived_data_type == ty
+                        && output.stage == stage
+                        && output.outputs.contains_key(&csid)
+                })
+                .cloned()
+        };
+
+        let error = request(
+            without(first, Some(partition.stage_id())),
+            first,
+            assembly.clone(),
+        )
         .await
         .unwrap_err();
-    assert!(format!("{error:#}").contains("missing dependency stage output"));
-    assert!(
-        !manager
-            .is_stage_derived::<RootFsnodeId>(ctx, csid, &stage)
-            .await?
-    );
+        assert!(
+            format!("{error:#}").contains("missing dependency stage output"),
+            "{ty:?}: {error:#}"
+        );
+        assert_eq!(
+            request(references.clone(), first, assembly.clone()).await?,
+            expected(first, assembly.stage_id())
+        );
 
-    let second = manager
-        .derive_stage_batch::<RootFsnodeId>(ctx, vec![csid], &partitions[1])
-        .await?;
-    references.extend(second.outputs);
-    let inputs = StageInputs::new(&references)?;
-    let manager = manager.with_stage_inputs(inputs);
-    let initial = manager
-        .derive_stage_batch::<RootFsnodeId>(ctx, vec![csid], &assembly)
-        .await?
-        .outputs;
-    let mut replayed = None;
-    for payload in partitions.iter().chain(std::iter::once(&assembly)) {
-        replayed = manager
-            .derive_stage_batch::<RootFsnodeId>(ctx, vec![csid], payload)
-            .await?
-            .outputs;
+        let error = request(without(first, None), second, partition.clone())
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("was not already derived"),
+            "{ty:?}: {error:#}"
+        );
+        assert_eq!(
+            request(references.clone(), second, partition.clone()).await?,
+            expected(second, partition.stage_id())
+        );
+        // A completed parent root can recover a missing partition.
+        assert_eq!(
+            request(
+                without(first, Some(partition.stage_id())),
+                second,
+                partition.clone()
+            )
+            .await?,
+            expected(second, partition.stage_id()),
+        );
+
+        if matches!(
+            ty,
+            DerivableType::Fsnodes
+                | DerivableType::Unodes
+                | DerivableType::SkeletonManifests
+                | DerivableType::HgChangesets
+        ) {
+            let output = expected(first, partition.stage_id()).unwrap();
+            let id = Blake2::from_bytes(&output.outputs[&first])?;
+            let key = format!("derivation_pipeline.children.v1.{id}");
+            let store = repo.repo_blobstore();
+            let blob = store.get(ctx, &key).await?.unwrap();
+            store.unlink(ctx, &key).await?;
+            for (csid, payload) in [(first, assembly.clone()), (second, partition.clone())] {
+                let error = request(references.clone(), csid, payload)
+                    .await
+                    .unwrap_err();
+                assert!(
+                    format!("{error:#}").contains("missing partition snapshot"),
+                    "{ty:?}: {error:#}"
+                );
+            }
+            store.put(ctx, key, blob.into_bytes()).await?;
+            assert_eq!(
+                request(references.clone(), first, assembly.clone()).await?,
+                expected(first, assembly.stage_id())
+            );
+            assert_eq!(
+                request(references.clone(), second, partition.clone()).await?,
+                expected(second, partition.stage_id())
+            );
+        }
+        assert!(
+            BulkDerivation::fetch_derived_batch(manager, ctx, &[first, second], None, ty)
+                .await?
+                .is_empty(),
+            "{ty:?} published a canonical mapping"
+        );
     }
-    assert_eq!(initial, replayed);
-    references.extend(replayed);
-    let manager = manager.with_stage_inputs(StageInputs::new(&references)?);
-    manager
-        .derive_bulk_locally(ctx, &[csid], None, &[DerivableType::Fsnodes], None, None)
-        .await?;
-    assert!(
-        RootFsnodeId::verify_stage(ctx, &manager.derivation_context(None), csid, &stage).await?
-    );
     Ok(())
 }
 

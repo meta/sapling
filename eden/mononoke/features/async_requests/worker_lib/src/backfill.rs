@@ -1240,6 +1240,7 @@ mod tests {
         batch_size: u64,
     ) -> DerivationPipelineConfig {
         DerivationPipelineConfig {
+            stages_by_type: Default::default(),
             types: types.into_iter().collect(),
             bookmarks: vec![],
             stages: HashMap::from([(MPath::ROOT, DerivationPipelineStageConfig::new(vec![]))]),
@@ -1283,6 +1284,7 @@ mod tests {
             (dir2, DerivationPipelineStageConfig::new(vec![])),
         ]);
         Ok(DerivationPipelineConfig {
+            stages_by_type: Default::default(),
             types: types.into_iter().collect(),
             bookmarks: vec![],
             stages,

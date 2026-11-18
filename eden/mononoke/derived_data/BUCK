@@ -80,6 +80,7 @@ rust_library(
         "//eden/mononoke/derived_data/history_manifest:history_manifest",
         "//eden/mononoke/derived_data/mercurial_derivation:mercurial_derivation",
         "//eden/mononoke/git/git_types:git_types",
+        "//eden/mononoke/metaconfig:metaconfig_types",
         "//eden/mononoke/mononoke_types:mononoke_types",
         "//eden/mononoke/repo_attributes/repo_derivation_queues/if:derivation_queue_thrift-rust",
         "//eden/mononoke/servers/slapi/slapi_server/context:context",
@@ -519,6 +520,7 @@ rust_library(
         "//eden/mononoke/manifest:manifest",
         "//eden/mononoke/mononoke_types:mononoke_types",
         "//eden/mononoke/servers/slapi/slapi_server/context:context",
+        "//thrift/lib/rust:fbthrift",
     ],
 )
 

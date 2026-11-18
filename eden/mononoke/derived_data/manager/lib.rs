@@ -31,6 +31,7 @@ pub use self::manager::derive::Rederivation;
 pub use self::manager::derive::VisitedDerivableTypesMap;
 pub use self::manager::derive::VisitedDerivableTypesMapStatic;
 pub use self::manifest_pipeline::ManifestDerivable;
+pub use self::stage_outputs::PreparedStageInputs;
 pub use self::stage_outputs::StageBatchResult;
 pub use self::stage_outputs::StageInputs;
 pub use self::stage_outputs::StageOutputs;

@@ -53,6 +53,7 @@ pub struct DerivationContext {
     pub(crate) bonsai_git_mapping: Option<Arc<dyn BonsaiGitMapping>>,
     pub(crate) filenodes: Option<Arc<dyn Filenodes>>,
     pub(crate) stage_inputs: Arc<StageInputs>,
+    pub(crate) prepared_inputs: Option<Arc<crate::PreparedStageInputs>>,
     pub(crate) pipeline_mode: PipelineMode,
     config_name: String,
     config: DerivedDataTypesConfig,
@@ -75,6 +76,18 @@ pub struct DerivationContext {
 }
 
 impl DerivationContext {
+    pub fn prepared_input(
+        &self,
+        stage: &crate::StageId,
+        csid: ChangesetId,
+    ) -> Result<&bytes::Bytes> {
+        self.prepared_inputs
+            .as_ref()
+            .filter(|inputs| &inputs.stage == stage)
+            .and_then(|inputs| inputs.changes.get(&csid))
+            .with_context(|| format!("missing prepared input for {stage:?}, {csid}"))
+    }
+
     pub(crate) fn new(
         bonsai_hg_mapping: Arc<dyn BonsaiHgMapping>,
         bonsai_git_mapping: Arc<dyn BonsaiGitMapping>,
@@ -98,6 +111,7 @@ impl DerivationContext {
             repo_id,
             repo_name,
             stage_inputs: Arc::default(),
+            prepared_inputs: None,
             pipeline_mode: PipelineMode::Production,
             config_name,
             config,

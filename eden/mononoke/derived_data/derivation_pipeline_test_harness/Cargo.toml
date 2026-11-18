@@ -33,7 +33,6 @@ repo_identity = { version = "0.1.0", path = "../../repo_attributes/repo_identity
 [dev-dependencies]
 deleted_manifest = { version = "0.1.0", path = "../deleted_manifest" }
 fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
-fsnodes = { version = "0.1.0", path = "../fsnodes" }
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
 tests_utils = { version = "0.1.0", path = "../../tests/utils" }
 

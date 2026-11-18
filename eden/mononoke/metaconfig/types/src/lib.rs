@@ -600,18 +600,37 @@ pub struct DerivationPipelineConfig {
     pub bookmarks: Vec<BookmarkKey>,
     /// Stage DAG keyed by absolute path.
     pub stages: HashMap<MPath, DerivationPipelineStageConfig>,
+    /// Complete layouts in each type's manifest namespace.
+    pub stages_by_type: HashMap<DerivableType, HashMap<MPath, DerivationPipelineStageConfig>>,
     /// Maximum commits per batch.
     pub batch_size: NonZeroU64,
 }
 
 impl DerivationPipelineConfig {
+    /// Return the complete layout for a type, falling back to the shared layout.
+    pub fn stages_for(&self, ty: DerivableType) -> &HashMap<MPath, DerivationPipelineStageConfig> {
+        self.stages_by_type.get(&ty).unwrap_or(&self.stages)
+    }
+
     /// Validate the pipeline configuration.
     pub fn validate(&self) -> Result<()> {
         if self.types.is_empty() {
             bail!("Derivation pipeline config must have at least one derivable type");
         }
 
-        for (stage_path, config) in &self.stages {
+        for ty in self.stages_by_type.keys() {
+            if !self.types.contains(ty) {
+                bail!("Stage override for disabled pipeline type {ty:?}");
+            }
+        }
+        for stages in std::iter::once(&self.stages).chain(self.stages_by_type.values()) {
+            Self::validate_stages(stages)?;
+        }
+        Ok(())
+    }
+
+    fn validate_stages(stages: &HashMap<MPath, DerivationPipelineStageConfig>) -> Result<()> {
+        for (stage_path, config) in stages {
             if !config.partition_cut_points.is_empty() {
                 if !config.dependencies.is_empty() {
                     bail!("Partitioned stage {stage_path} must not have child stages");
@@ -628,17 +647,17 @@ impl DerivationPipelineConfig {
                 }
             }
             for dep in &config.dependencies {
-                if !self.stages.contains_key(dep) {
+                if !stages.contains_key(dep) {
                     bail!("Stage {stage_path:?} depends on {dep:?}, which does not exist",);
                 }
             }
         }
 
-        if !self.stages.contains_key(&MPath::ROOT) {
+        if !stages.contains_key(&MPath::ROOT) {
             bail!("Derivation pipeline config must have a stage at root");
         }
 
-        for (stage_path, stage) in &self.stages {
+        for (stage_path, stage) in stages {
             for dep_path in &stage.dependencies {
                 if !stage_path.is_prefix_of(dep_path)
                     || dep_path.num_components() != stage_path.num_components() + 1
@@ -650,8 +669,8 @@ impl DerivationPipelineConfig {
             }
         }
 
-        let mut in_degree: HashMap<&MPath, usize> = self.stages.keys().map(|p| (p, 0)).collect();
-        for config in self.stages.values() {
+        let mut in_degree: HashMap<&MPath, usize> = stages.keys().map(|p| (p, 0)).collect();
+        for config in stages.values() {
             for dep in &config.dependencies {
                 if let Some(count) = in_degree.get_mut(dep) {
                     *count += 1;
@@ -3130,6 +3149,7 @@ mod tests {
         stages: Vec<(&str, DerivationPipelineStageConfig)>,
     ) -> DerivationPipelineConfig {
         DerivationPipelineConfig {
+            stages_by_type: Default::default(),
             types: BTreeSet::from([DerivableType::Fsnodes]),
             bookmarks: vec![],
             stages: stages.into_iter().map(|(p, s)| (mp(p), s)).collect(),
@@ -3160,6 +3180,7 @@ mod tests {
     #[mononoke::test]
     fn test_pipeline_config_rejects_empty_types() {
         let config = DerivationPipelineConfig {
+            stages_by_type: Default::default(),
             types: BTreeSet::new(),
             ..pipeline_config(vec![("", stage(vec![]))])
         };

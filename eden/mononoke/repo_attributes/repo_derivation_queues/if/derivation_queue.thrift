@@ -26,6 +26,12 @@ union DerivationStagePayload {
   1: ManifestStagePayload manifest;
   2: FinalizeStagePayload finalize;
   3: SubentriesStagePayload subentries;
+  4: PrepareStagePayload prepare;
+}
+
+@rust.Exhaustive
+struct PrepareStagePayload {
+  1: list<DerivationStagePayload> stages;
 }
 
 /// Derive `path` using the outputs of its child stages in `deps`.
@@ -58,6 +64,13 @@ struct StageOutputs {
   2: DerivationStageId stage;
   // @lint-ignore THRIFTCHECKS bad-key-type
   3: map<id.ChangesetId, StageOutputBytes> outputs;
+}
+
+@rust.Exhaustive
+struct PreparedStageInputs {
+  1: DerivationStageId stage;
+  // @lint-ignore THRIFTCHECKS bad-key-type
+  2: map<id.ChangesetId, StageOutputBytes> changes;
 }
 
 /// Each entry uses its derived type's existing stage-entry encoding.

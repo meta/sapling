@@ -20,24 +20,27 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use anyhow::Result;
 use blobstore::Loadable;
 use bulk_derivation::BulkDerivation;
+use bulk_derivation::validate_stage_overrides;
 use context::CoreContext;
 use derivation_pipeline_utils::Batch;
+use derivation_pipeline_utils::ordered_stage_payloads;
 use derivation_pipeline_utils::topo_sort_types;
 use derived_data_manager::DerivationError;
 use derived_data_manager::DerivationStagePayload;
 use derived_data_manager::DerivedDataManager;
 use derived_data_manager::ManifestStagePayload;
+use derived_data_manager::PreparedStageInputs;
 use derived_data_manager::StageInputs;
 use derived_data_manager::StageOutputs;
 use futures::stream;
 use futures::stream::StreamExt;
 use futures::stream::TryStreamExt;
 use metaconfig_types::DerivationPipelineConfig;
-use metaconfig_types::DerivationPipelineStageConfig;
 use mononoke_types::ChangesetId;
 use mononoke_types::DerivableType;
 use mononoke_types::MPath;
@@ -64,6 +67,7 @@ pub fn plan_stages_and_types(
     config: &DerivationPipelineConfig,
     types: &[DerivableType],
 ) -> Result<PipelineOrder> {
+    validate_stage_overrides(config)?;
     let mut sorted_stages: Vec<MPath> = config.stages.keys().cloned().collect();
     sorted_stages.sort_by(|a, b| {
         b.num_components()
@@ -113,22 +117,17 @@ pub async fn plan_batches(
 /// slices cannot be fanned out vertically.
 const STAGE_PHASE_CONCURRENCY: usize = 16;
 
-/// Derive a single stage for every type. Types are derived in dependency order
-/// so that a type depending on another at the same stage (e.g. blame on unodes)
-/// sees its dependency's stage output already available. Takes owned inputs so the
-/// returned future is `Send + 'static` and can run concurrently within a phase
-/// (a borrowed `&CoreContext` is not `Send`-general-enough for the worker's
-/// `tokio::spawn`).
+/// Derive a stage and its partitions using the supplied dependency outputs.
 async fn derive_stage(
     manager: DerivedDataManager,
     ctx: CoreContext,
-    stage: (MPath, DerivationPipelineStageConfig),
-    sorted_types: Vec<DerivableType>,
+    payload: ManifestStagePayload,
+    types: Vec<DerivableType>,
     commits: Vec<ChangesetId>,
     mut references: Vec<StageOutputs>,
+    prepared: Arc<HashMap<derived_data_manager::StageId, Arc<PreparedStageInputs>>>,
 ) -> Result<Vec<StageOutputs>, DerivationError> {
     let inherited = references.len();
-    let payload = ManifestStagePayload::from_config(stage.0, &stage.1);
     let partitions = payload
         .partitions()
         .into_iter()
@@ -138,24 +137,37 @@ async fn derive_stage(
         })
         .collect::<Vec<_>>();
     let payload = DerivationStagePayload::Manifest(payload);
-    for derivable_type in sorted_types {
+    for derivable_type in types {
         let variant = derivable_type.into_pipeline_derivable_variant()?;
         let inputs = StageInputs::new(&references)?;
         let supplied = manager.with_stage_inputs(inputs);
         let results = futures::future::try_join_all(partitions.iter().map(|partition| {
-            bulk_derivation::derive_stage_batch(
-                &supplied,
-                &ctx,
-                commits.clone(),
-                partition,
-                variant,
-            )
+            let supplied = prepared
+                .get(&partition.stage_id())
+                .map(|inputs| supplied.with_prepared_inputs(inputs.clone()))
+                .unwrap_or_else(|| supplied.clone());
+            let ctx = &ctx;
+            let commits = &commits;
+            async move {
+                bulk_derivation::derive_stage_batch(
+                    &supplied,
+                    ctx,
+                    commits.clone(),
+                    partition,
+                    variant,
+                )
+                .await
+            }
         }))
         .await?;
         references.extend(results.into_iter().filter_map(|result| result.outputs));
         let inputs = StageInputs::new(&references)?;
+        let mut supplied = manager.with_stage_inputs(inputs);
+        if let Some(inputs) = prepared.get(&payload.stage_id()) {
+            supplied = supplied.with_prepared_inputs(inputs.clone());
+        }
         let result = bulk_derivation::derive_stage_batch(
-            &manager.with_stage_inputs(inputs),
+            &supplied,
             &ctx,
             commits.clone(),
             &payload,
@@ -184,6 +196,42 @@ pub async fn run_pipeline_batches(
     batches: &[Batch],
     mut completed: impl FnMut(&[StageOutputs]) + Send,
 ) -> Result<(), DerivationError> {
+    let variants = sorted_types
+        .iter()
+        .map(|&ty| Ok((ty, ty.into_pipeline_derivable_variant()?)))
+        .collect::<Result<HashMap<_, _>, DerivationError>>()?;
+    let has_prepare = |ty: &DerivableType| bulk_derivation::pipeline_has_prepare(variants[ty]);
+    let common_stages = sorted_stages
+        .iter()
+        .map(|path| ManifestStagePayload::from_config(path.clone(), &config.stages[path]))
+        .collect::<Vec<_>>();
+    let layouts: HashMap<_, _> = sorted_types
+        .iter()
+        .filter(|ty| config.stages_by_type.contains_key(ty))
+        .map(|&ty| (ty, ordered_stage_payloads(config, ty)))
+        .collect();
+    // Ordinary types share per-path execution. Only types waiting on a
+    // prepared type need to move to a later group.
+    let mut remaining = sorted_types.to_vec();
+    let mut type_groups = Vec::new();
+    while !remaining.is_empty() {
+        let mut group = Vec::new();
+        for &ty in &remaining {
+            if !has_prepare(&ty)
+                && manager
+                    .dependency_types(ty)
+                    .iter()
+                    .all(|dep| !remaining.contains(dep) || group.contains(dep))
+            {
+                group.push(ty);
+            }
+        }
+        if group.is_empty() {
+            group.push(remaining[0]);
+        }
+        remaining.retain(|ty| !group.contains(ty));
+        type_groups.push(group);
+    }
     let batch_ids: HashMap<_, _> = batches
         .iter()
         .enumerate()
@@ -225,49 +273,79 @@ pub async fn run_pipeline_batches(
             }
         }
         let inherited = references.len();
-        // `sorted_stages` is deepest-first, so equal-depth stages are contiguous;
-        // each chunk is one phase of mutually-independent stages. Build each
-        // stage's payload synchronously (borrowing `config`), then hand
-        // fully-owned inputs to the concurrent futures so the buffered stream is
-        // `Send + 'static`.
-        for phase in sorted_stages.chunk_by(|a, b| a.num_components() == b.num_components()) {
-            let stage_futures = phase
-                .iter()
-                .map(|stage_path| {
-                    let stage = (stage_path.clone(), config.stages[stage_path].clone());
-                    derive_stage(
-                        manager.clone(),
-                        ctx.clone(),
-                        stage,
-                        sorted_types.to_vec(),
-                        batch.commits.clone(),
-                        references.clone(),
-                    )
-                })
-                .collect::<Vec<_>>();
-            let phase_outputs = stream::iter(stage_futures)
-                .buffer_unordered(STAGE_PHASE_CONCURRENCY)
-                .try_collect::<Vec<_>>()
-                .await?;
-            references.extend(phase_outputs.into_iter().flatten());
-        }
-
-        // Finalize after every manifest stage of the batch completes.
-        for &derivable_type in sorted_types {
-            let variant = derivable_type.into_pipeline_derivable_variant()?;
-            if !bulk_derivation::pipeline_has_finalize(variant) {
-                continue;
+        for types in &type_groups {
+            let first = types[0];
+            let stages = layouts.get(&first).unwrap_or(&common_stages);
+            let prepared = if has_prepare(&first) {
+                let payloads = stages
+                    .iter()
+                    .flat_map(|payload| {
+                        payload
+                            .partitions()
+                            .into_iter()
+                            .map(|range| DerivationStagePayload::Subentries {
+                                path: payload.path.clone(),
+                                range,
+                            })
+                            .chain([DerivationStagePayload::Manifest(payload.clone())])
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>();
+                bulk_derivation::prepare_stage_batch(
+                    &manager.with_stage_inputs(StageInputs::new(&references)?),
+                    ctx,
+                    batch.commits.clone(),
+                    &payloads,
+                    variants[&first],
+                )
+                .await?
+                .into_iter()
+                .map(|inputs| (inputs.stage.clone(), Arc::new(inputs)))
+                .collect()
+            } else {
+                HashMap::new()
+            };
+            let prepared = Arc::new(prepared);
+            // Equal-depth stages are independent.
+            for phase in stages.chunk_by(|a, b| a.path.num_components() == b.path.num_components())
+            {
+                let stage_futures = phase
+                    .iter()
+                    .map(|stage| {
+                        derive_stage(
+                            manager.clone(),
+                            ctx.clone(),
+                            stage.clone(),
+                            types.to_vec(),
+                            batch.commits.clone(),
+                            references.clone(),
+                            prepared.clone(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let phase_outputs = stream::iter(stage_futures)
+                    .buffer_unordered(STAGE_PHASE_CONCURRENCY)
+                    .try_collect::<Vec<_>>()
+                    .await?;
+                references.extend(phase_outputs.into_iter().flatten());
             }
-            let inputs = StageInputs::new(&references)?;
-            let result = bulk_derivation::derive_stage_batch(
-                &manager.with_stage_inputs(inputs),
-                ctx,
-                batch.commits.clone(),
-                &DerivationStagePayload::Finalize,
-                variant,
-            )
-            .await?;
-            references.extend(result.outputs);
+
+            for derivable_type in types {
+                let variant = variants[derivable_type];
+                if !bulk_derivation::pipeline_has_finalize(variant) {
+                    continue;
+                }
+                let inputs = StageInputs::new(&references)?;
+                let result = bulk_derivation::derive_stage_batch(
+                    &manager.with_stage_inputs(inputs),
+                    ctx,
+                    batch.commits.clone(),
+                    &DerivationStagePayload::Finalize,
+                    variant,
+                )
+                .await?;
+                references.extend(result.outputs);
+            }
         }
         let batch_outputs = references.split_off(inherited);
         completed(&batch_outputs);

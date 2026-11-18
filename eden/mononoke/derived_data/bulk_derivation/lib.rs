@@ -540,6 +540,10 @@ pub async fn derive_stage_batch(
             ddm.derive_stage_batch::<RootSkeletonManifestV2Id>(ctx, csids, payload)
                 .await
         }
+        PipelineDerivableVariant::BssmV3 => {
+            ddm.derive_stage_batch::<RootBssmV3DirectoryId>(ctx, csids, payload)
+                .await
+        }
         PipelineDerivableVariant::Ccsm => {
             ddm.derive_stage_batch::<RootCaseConflictSkeletonManifestId>(ctx, csids, payload)
                 .await
@@ -596,6 +600,10 @@ pub async fn is_stage_derived(
         }
         PipelineDerivableVariant::SkeletonManifestsV2 => {
             ddm.is_stage_derived::<RootSkeletonManifestV2Id>(ctx, csid, stage)
+                .await
+        }
+        PipelineDerivableVariant::BssmV3 => {
+            ddm.is_stage_derived::<RootBssmV3DirectoryId>(ctx, csid, stage)
                 .await
         }
         PipelineDerivableVariant::Ccsm => {
@@ -655,6 +663,10 @@ pub async fn verify_stage_output(
             ddm.verify_stage_output::<RootSkeletonManifestV2Id>(ctx, csid, stage)
                 .await
         }
+        PipelineDerivableVariant::BssmV3 => {
+            ddm.verify_stage_output::<RootBssmV3DirectoryId>(ctx, csid, stage)
+                .await
+        }
         PipelineDerivableVariant::Ccsm => {
             ddm.verify_stage_output::<RootCaseConflictSkeletonManifestId>(ctx, csid, stage)
                 .await
@@ -698,6 +710,7 @@ pub async fn verify_stage_output(
 /// its terminal manifest stage). Currently only HgChangesets does.
 pub fn pipeline_has_finalize(variant: PipelineDerivableVariant) -> bool {
     match variant {
+        PipelineDerivableVariant::BssmV3 => RootBssmV3DirectoryId::HAS_FINALIZE,
         PipelineDerivableVariant::Ccsm => RootCaseConflictSkeletonManifestId::HAS_FINALIZE,
         PipelineDerivableVariant::Fsnodes => RootFsnodeId::HAS_FINALIZE,
         PipelineDerivableVariant::Unodes => RootUnodeManifestId::HAS_FINALIZE,
@@ -710,6 +723,87 @@ pub fn pipeline_has_finalize(variant: PipelineDerivableVariant) -> bool {
         PipelineDerivableVariant::HgAugmentedManifests => RootHgAugmentedManifestId::HAS_FINALIZE,
         PipelineDerivableVariant::ContentManifests => RootContentManifestId::HAS_FINALIZE,
         PipelineDerivableVariant::DeletedManifests => RootDeletedManifestV2Id::HAS_FINALIZE,
+    }
+}
+
+pub fn pipeline_has_prepare(variant: PipelineDerivableVariant) -> bool {
+    match variant {
+        PipelineDerivableVariant::BssmV3 => RootBssmV3DirectoryId::HAS_PREPARE,
+        PipelineDerivableVariant::Ccsm => RootCaseConflictSkeletonManifestId::HAS_PREPARE,
+        PipelineDerivableVariant::Fsnodes => RootFsnodeId::HAS_PREPARE,
+        PipelineDerivableVariant::Unodes => RootUnodeManifestId::HAS_PREPARE,
+        PipelineDerivableVariant::SkeletonManifestsV2 => RootSkeletonManifestV2Id::HAS_PREPARE,
+        PipelineDerivableVariant::SkeletonManifests => RootSkeletonManifestId::HAS_PREPARE,
+        PipelineDerivableVariant::BlameV2 => RootBlameV2::HAS_PREPARE,
+        PipelineDerivableVariant::Fastlog => RootFastlog::HAS_PREPARE,
+        PipelineDerivableVariant::AclManifests => RootAclManifestId::HAS_PREPARE,
+        PipelineDerivableVariant::HgChangesets => MappedHgChangesetId::HAS_PREPARE,
+        PipelineDerivableVariant::HgAugmentedManifests => RootHgAugmentedManifestId::HAS_PREPARE,
+        PipelineDerivableVariant::ContentManifests => RootContentManifestId::HAS_PREPARE,
+        PipelineDerivableVariant::DeletedManifests => RootDeletedManifestV2Id::HAS_PREPARE,
+    }
+}
+
+pub async fn prepare_stage_batch(
+    ddm: &DerivedDataManager,
+    ctx: &CoreContext,
+    csids: Vec<ChangesetId>,
+    stages: &[derived_data_manager::DerivationStagePayload],
+    variant: PipelineDerivableVariant,
+) -> Result<Vec<derived_data_manager::PreparedStageInputs>, DerivationError> {
+    match variant {
+        PipelineDerivableVariant::BssmV3 => {
+            ddm.prepare_stage_batch::<RootBssmV3DirectoryId>(ctx, csids, stages)
+                .await
+        }
+        PipelineDerivableVariant::Ccsm => {
+            ddm.prepare_stage_batch::<RootCaseConflictSkeletonManifestId>(ctx, csids, stages)
+                .await
+        }
+        PipelineDerivableVariant::Fsnodes => {
+            ddm.prepare_stage_batch::<RootFsnodeId>(ctx, csids, stages)
+                .await
+        }
+        PipelineDerivableVariant::Unodes => {
+            ddm.prepare_stage_batch::<RootUnodeManifestId>(ctx, csids, stages)
+                .await
+        }
+        PipelineDerivableVariant::SkeletonManifestsV2 => {
+            ddm.prepare_stage_batch::<RootSkeletonManifestV2Id>(ctx, csids, stages)
+                .await
+        }
+        PipelineDerivableVariant::SkeletonManifests => {
+            ddm.prepare_stage_batch::<RootSkeletonManifestId>(ctx, csids, stages)
+                .await
+        }
+        PipelineDerivableVariant::BlameV2 => {
+            ddm.prepare_stage_batch::<RootBlameV2>(ctx, csids, stages)
+                .await
+        }
+        PipelineDerivableVariant::Fastlog => {
+            ddm.prepare_stage_batch::<RootFastlog>(ctx, csids, stages)
+                .await
+        }
+        PipelineDerivableVariant::AclManifests => {
+            ddm.prepare_stage_batch::<RootAclManifestId>(ctx, csids, stages)
+                .await
+        }
+        PipelineDerivableVariant::HgChangesets => {
+            ddm.prepare_stage_batch::<MappedHgChangesetId>(ctx, csids, stages)
+                .await
+        }
+        PipelineDerivableVariant::HgAugmentedManifests => {
+            ddm.prepare_stage_batch::<RootHgAugmentedManifestId>(ctx, csids, stages)
+                .await
+        }
+        PipelineDerivableVariant::ContentManifests => {
+            ddm.prepare_stage_batch::<RootContentManifestId>(ctx, csids, stages)
+                .await
+        }
+        PipelineDerivableVariant::DeletedManifests => {
+            ddm.prepare_stage_batch::<RootDeletedManifestV2Id>(ctx, csids, stages)
+                .await
+        }
     }
 }
 
@@ -886,4 +980,16 @@ impl BulkDerivation for DerivedDataManager {
     fn dependency_types(&self, derived_data_type: DerivableType) -> Vec<DerivableType> {
         manager_for_type(self, derived_data_type).dependency_types()
     }
+}
+
+pub fn validate_stage_overrides(
+    config: &metaconfig_types::DerivationPipelineConfig,
+) -> anyhow::Result<()> {
+    for ty in config.stages_by_type.keys() {
+        anyhow::ensure!(
+            pipeline_has_prepare(ty.into_pipeline_derivable_variant()?),
+            "{ty:?} needs the shared stage layout; only prepared types support an independent layout"
+        );
+    }
+    Ok(())
 }

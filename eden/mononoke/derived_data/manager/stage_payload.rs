@@ -258,6 +258,9 @@ impl DerivationStagePayload {
             derivation_queue_thrift::DerivationStagePayload::finalize(_) => {
                 Ok(DerivationStagePayload::Finalize)
             }
+            derivation_queue_thrift::DerivationStagePayload::prepare(_) => {
+                Err(anyhow!("preparation is not a derivation stage"))
+            }
             derivation_queue_thrift::DerivationStagePayload::UnknownField(x) => {
                 Err(anyhow!("Unknown DerivationStagePayload variant: {x}"))
             }

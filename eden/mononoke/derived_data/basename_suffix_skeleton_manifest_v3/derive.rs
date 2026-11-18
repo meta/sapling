@@ -45,7 +45,7 @@ use crate::path::BssmPath;
 /// Returns the changes that need to be applied to BSSM during derivation,
 /// by getting the file changes from a bonsai changeset, expanding implicit
 /// deletes, then applying the bssm transform to the paths.
-async fn get_bssm_path_changes(
+pub(crate) async fn get_bssm_path_changes(
     ctx: &CoreContext,
     blobstore: Arc<dyn KeyedBlobstore>,
     bcs: &BonsaiChangeset,
@@ -111,7 +111,7 @@ fn mf_entry_to_bssm_v3_entry(entry: Entry<BssmV3Directory, ()>) -> BssmV3Entry {
     }
 }
 
-async fn create_bssm_v3_directory(
+pub(crate) async fn create_bssm_v3_directory(
     ctx: CoreContext,
     blobstore: Arc<dyn KeyedBlobstore>,
     subentries: TreeInfoSubentries<BssmV3Directory, (), (), LoadableShardedMapV2Node<BssmV3Entry>>,

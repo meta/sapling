@@ -34,6 +34,7 @@ history_manifest = { version = "0.1.0", path = "../history_manifest" }
 inferred_copy_from = { version = "0.1.0", path = "../inferred_copy_from" }
 itertools = "0.15.0"
 mercurial_derivation = { version = "0.1.0", path = "../mercurial_derivation" }
+metaconfig_types = { version = "0.1.0", path = "../../metaconfig/types" }
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
 mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
 skeleton_manifest = { version = "0.1.0", path = "../skeleton_manifest" }

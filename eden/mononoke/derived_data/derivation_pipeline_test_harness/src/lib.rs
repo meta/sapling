@@ -134,6 +134,7 @@ pub fn pipeline_config_from_stages(
         .collect::<Result<HashMap<_, _>>>()?;
 
     let config = DerivationPipelineConfig {
+        stages_by_type: Default::default(),
         types: BTreeSet::from(PIPELINE_TYPES),
         bookmarks: vec![BookmarkKey::new("master")?],
         stages: stages_map,
@@ -489,11 +490,11 @@ async fn verify_pipeline_output<F: PipelineTestFixture>(
         if !plan.pipeline_commits.contains(&cs_id) {
             continue;
         }
-        for stage_path in &plan.sorted_stages {
-            for &derivable_type in &plan.sorted_types {
+        for &derivable_type in &plan.sorted_types {
+            for (stage_path, stage_config) in config.stages_for(derivable_type) {
                 let payload = derived_data_manager::ManifestStagePayload::from_config(
                     stage_path.clone(),
-                    &config.stages[stage_path],
+                    stage_config,
                 );
                 for range in payload.partitions() {
                     let stage =
@@ -1163,3 +1164,6 @@ mod tests {
 
 #[cfg(test)]
 mod partitions;
+
+#[cfg(test)]
+mod bssm;
