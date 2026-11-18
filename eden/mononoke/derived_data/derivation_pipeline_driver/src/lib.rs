@@ -210,18 +210,19 @@ pub async fn run_pipeline_batches(
         .filter(|ty| config.stages_by_type.contains_key(ty))
         .map(|&ty| (ty, ordered_stage_payloads(config, ty)))
         .collect();
-    // Ordinary types share per-path execution. Only types waiting on a
-    // prepared type need to move to a later group.
+    // Types share per-path execution unless they need prepared inputs or
+    // a complete dependency result.
     let mut remaining = sorted_types.to_vec();
     let mut type_groups = Vec::new();
     while !remaining.is_empty() {
         let mut group = Vec::new();
         for &ty in &remaining {
+            let full_dependencies = bulk_derivation::pipeline_full_dependencies(variants[&ty]);
             if !has_prepare(&ty)
-                && manager
-                    .dependency_types(ty)
-                    .iter()
-                    .all(|dep| !remaining.contains(dep) || group.contains(dep))
+                && manager.dependency_types(ty).iter().all(|dep| {
+                    !remaining.contains(dep)
+                        || (group.contains(dep) && !full_dependencies.contains(dep))
+                })
             {
                 group.push(ty);
             }

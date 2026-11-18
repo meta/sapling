@@ -972,6 +972,9 @@ async fn copies_within_a_partition_advance_before_assembly(fb: FacebookInit) -> 
             let mut references = Vec::new();
             for derived_type in &plan.sorted_types {
                 let variant = derived_type.into_pipeline_derivable_variant()?;
+                if !bulk_derivation::pipeline_full_dependencies(variant).is_empty() {
+                    continue;
+                }
                 for range in manifest.partitions() {
                     let payload = DerivationStagePayload::Subentries {
                         path: path.clone(),
@@ -1069,10 +1072,12 @@ async fn verify_batch_outputs<F: PipelineTestFixture + Send>(fb: FacebookInit) -
                 let mut verification_refs = Vec::new();
                 for batch in &plan.batches {
                     let mut work = Vec::new();
-                    for path in &plan.sorted_stages {
-                        let manifest =
-                            ManifestStagePayload::from_config(path.clone(), &config.stages[path]);
-                        for &ty in &plan.sorted_types {
+                    for &ty in &plan.sorted_types {
+                        for path in &plan.sorted_stages {
+                            let manifest = ManifestStagePayload::from_config(
+                                path.clone(),
+                                &config.stages[path],
+                            );
                             for range in manifest.partitions() {
                                 work.push((
                                     ty,
@@ -1082,10 +1087,8 @@ async fn verify_batch_outputs<F: PipelineTestFixture + Send>(fb: FacebookInit) -
                                     },
                                 ));
                             }
-                            work.push((ty, DerivationStagePayload::Manifest(manifest.clone())));
+                            work.push((ty, DerivationStagePayload::Manifest(manifest)));
                         }
-                    }
-                    for &ty in &plan.sorted_types {
                         if bulk_derivation::pipeline_has_finalize(
                             ty.into_pipeline_derivable_variant()?,
                         ) {

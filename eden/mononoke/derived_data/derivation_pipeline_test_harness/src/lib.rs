@@ -81,7 +81,8 @@ pub struct TestRepo(
 );
 
 /// The pipeline-derivable types verified by the harness.
-pub const PIPELINE_TYPES: [DerivableType; 12] = [
+pub const PIPELINE_TYPES: [DerivableType; 13] = [
+    DerivableType::FileNodes,
     DerivableType::Ccsm,
     DerivableType::Fsnodes,
     DerivableType::Unodes,
@@ -776,6 +777,15 @@ mod tests {
         DerivableType::AclManifests,
         DerivableType::HgAugmentedManifests,
     ];
+
+    #[mononoke::fbinit_test]
+    async fn test_pipeline_first_filenodes(fb: FacebookInit) -> Result<()> {
+        verify_pipeline_first_then_canonical::<NestedDirectories>(
+            fb,
+            &[DerivableType::HgChangesets, DerivableType::FileNodes],
+        )
+        .await
+    }
 
     #[mononoke::fbinit_test]
     async fn test_pipeline_matches_canonical(fb: FacebookInit) -> Result<()> {

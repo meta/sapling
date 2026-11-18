@@ -54,6 +54,7 @@ use mercurial_derivation::RootHgAugmentedManifestId;
 use mononoke_macros::mononoke;
 use mononoke_types::ChangesetId;
 use mononoke_types::DerivableUntopologicallyVariant;
+use mononoke_types::MPath;
 use mononoke_types::PipelineDerivableVariant;
 use skeleton_manifest::RootSkeletonManifestId;
 use skeleton_manifest_v2::RootSkeletonManifestV2Id;
@@ -540,6 +541,10 @@ pub async fn derive_stage_batch(
             ddm.derive_stage_batch::<RootSkeletonManifestV2Id>(ctx, csids, payload)
                 .await
         }
+        PipelineDerivableVariant::FileNodes => {
+            ddm.derive_stage_batch::<FilenodesOnlyPublic>(ctx, csids, payload)
+                .await
+        }
         PipelineDerivableVariant::BssmV3 => {
             ddm.derive_stage_batch::<RootBssmV3DirectoryId>(ctx, csids, payload)
                 .await
@@ -600,6 +605,10 @@ pub async fn is_stage_derived(
         }
         PipelineDerivableVariant::SkeletonManifestsV2 => {
             ddm.is_stage_derived::<RootSkeletonManifestV2Id>(ctx, csid, stage)
+                .await
+        }
+        PipelineDerivableVariant::FileNodes => {
+            ddm.is_stage_derived::<FilenodesOnlyPublic>(ctx, csid, stage)
                 .await
         }
         PipelineDerivableVariant::BssmV3 => {
@@ -663,6 +672,10 @@ pub async fn verify_stage_output(
             ddm.verify_stage_output::<RootSkeletonManifestV2Id>(ctx, csid, stage)
                 .await
         }
+        PipelineDerivableVariant::FileNodes => {
+            ddm.verify_stage_output::<FilenodesOnlyPublic>(ctx, csid, stage)
+                .await
+        }
         PipelineDerivableVariant::BssmV3 => {
             ddm.verify_stage_output::<RootBssmV3DirectoryId>(ctx, csid, stage)
                 .await
@@ -710,6 +723,7 @@ pub async fn verify_stage_output(
 /// its terminal manifest stage). Currently only HgChangesets does.
 pub fn pipeline_has_finalize(variant: PipelineDerivableVariant) -> bool {
     match variant {
+        PipelineDerivableVariant::FileNodes => FilenodesOnlyPublic::HAS_FINALIZE,
         PipelineDerivableVariant::BssmV3 => RootBssmV3DirectoryId::HAS_FINALIZE,
         PipelineDerivableVariant::Ccsm => RootCaseConflictSkeletonManifestId::HAS_FINALIZE,
         PipelineDerivableVariant::Fsnodes => RootFsnodeId::HAS_FINALIZE,
@@ -726,8 +740,44 @@ pub fn pipeline_has_finalize(variant: PipelineDerivableVariant) -> bool {
     }
 }
 
+pub fn pipeline_terminal_stage(ty: DerivableType) -> StageId {
+    if ty
+        .into_pipeline_derivable_variant()
+        .map(pipeline_has_finalize)
+        .unwrap_or(false)
+    {
+        StageId::Finalize
+    } else {
+        StageId::Manifest(MPath::ROOT)
+    }
+}
+
+pub fn pipeline_full_dependencies(variant: PipelineDerivableVariant) -> &'static [DerivableType] {
+    match variant {
+        PipelineDerivableVariant::FileNodes => FilenodesOnlyPublic::FULL_DEPENDENCIES,
+        PipelineDerivableVariant::BssmV3 => RootBssmV3DirectoryId::FULL_DEPENDENCIES,
+        PipelineDerivableVariant::Ccsm => RootCaseConflictSkeletonManifestId::FULL_DEPENDENCIES,
+        PipelineDerivableVariant::Fsnodes => RootFsnodeId::FULL_DEPENDENCIES,
+        PipelineDerivableVariant::Unodes => RootUnodeManifestId::FULL_DEPENDENCIES,
+        PipelineDerivableVariant::SkeletonManifestsV2 => {
+            RootSkeletonManifestV2Id::FULL_DEPENDENCIES
+        }
+        PipelineDerivableVariant::SkeletonManifests => RootSkeletonManifestId::FULL_DEPENDENCIES,
+        PipelineDerivableVariant::BlameV2 => RootBlameV2::FULL_DEPENDENCIES,
+        PipelineDerivableVariant::Fastlog => RootFastlog::FULL_DEPENDENCIES,
+        PipelineDerivableVariant::AclManifests => RootAclManifestId::FULL_DEPENDENCIES,
+        PipelineDerivableVariant::HgChangesets => MappedHgChangesetId::FULL_DEPENDENCIES,
+        PipelineDerivableVariant::HgAugmentedManifests => {
+            RootHgAugmentedManifestId::FULL_DEPENDENCIES
+        }
+        PipelineDerivableVariant::ContentManifests => RootContentManifestId::FULL_DEPENDENCIES,
+        PipelineDerivableVariant::DeletedManifests => RootDeletedManifestV2Id::FULL_DEPENDENCIES,
+    }
+}
+
 pub fn pipeline_has_prepare(variant: PipelineDerivableVariant) -> bool {
     match variant {
+        PipelineDerivableVariant::FileNodes => FilenodesOnlyPublic::HAS_PREPARE,
         PipelineDerivableVariant::BssmV3 => RootBssmV3DirectoryId::HAS_PREPARE,
         PipelineDerivableVariant::Ccsm => RootCaseConflictSkeletonManifestId::HAS_PREPARE,
         PipelineDerivableVariant::Fsnodes => RootFsnodeId::HAS_PREPARE,
@@ -752,6 +802,10 @@ pub async fn prepare_stage_batch(
     variant: PipelineDerivableVariant,
 ) -> Result<Vec<derived_data_manager::PreparedStageInputs>, DerivationError> {
     match variant {
+        PipelineDerivableVariant::FileNodes => {
+            ddm.prepare_stage_batch::<FilenodesOnlyPublic>(ctx, csids, stages)
+                .await
+        }
         PipelineDerivableVariant::BssmV3 => {
             ddm.prepare_stage_batch::<RootBssmV3DirectoryId>(ctx, csids, stages)
                 .await

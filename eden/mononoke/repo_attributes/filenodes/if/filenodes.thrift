@@ -41,3 +41,15 @@ struct FilenodeCopyFrom {
   1: path.RepoPath path;
   2: mercurial_thrift.HgNodeHash filenode;
 }
+
+@rust.Exhaustive
+struct PreparedFilenode {
+  1: path.RepoPath path;
+  2: FilenodeInfo info;
+}
+
+@rust.Exhaustive
+struct FilenodesStageOutput {
+  // An absent list means filenodes were disabled.
+  1: optional list<PreparedFilenode> records;
+}

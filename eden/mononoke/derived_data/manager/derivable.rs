@@ -254,6 +254,10 @@ pub trait PipelineDerivable: BonsaiDerivable {
     /// sets this `true` must implement the `Finalize` arms of the stage methods.
     const HAS_FINALIZE: bool;
 
+    /// Subset of `BonsaiDerivable::Dependencies` whose terminal outputs are needed by every stage.
+    /// Other dependencies use the corresponding path or partition stage.
+    const FULL_DEPENDENCIES: &'static [DerivableType] = &[];
+
     /// Preparation depends on complete roots of this type's dependencies.
     const HAS_PREPARE: bool = false;
 

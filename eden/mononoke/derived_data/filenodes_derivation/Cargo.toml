@@ -15,6 +15,7 @@ blobstore = { version = "0.1.0", path = "../../blobstore" }
 context = { version = "0.1.0", path = "../../servers/slapi/slapi_server/context" }
 derived_data_manager = { version = "0.1.0", path = "../manager" }
 derived_data_service_if = { version = "0.1.0", path = "../remote/if" }
+fbthrift = { version = "0.0.1", git = "https://github.com/facebook/fbthrift.git", branch = "main" }
 filenodes = { version = "0.1.0", path = "../../repo_attributes/filenodes" }
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
 itertools = "0.15.0"
