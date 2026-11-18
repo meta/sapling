@@ -14,7 +14,7 @@ use coarsetime as _; // silence "unused dependency" warning
 #[cfg(not(test))]
 use coarsetime::Instant;
 #[cfg(test)]
-use mock_instant::Instant;
+use mock_instant::global::Instant;
 use types::PathComponentBuf;
 use types::RepoPath;
 use types::RepoPathBuf;

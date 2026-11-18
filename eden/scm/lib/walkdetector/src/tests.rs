@@ -8,7 +8,7 @@
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use mock_instant::MockClock;
+use mock_instant::global::MockClock;
 use types::RepoPath;
 use types::RepoPathBuf;
 
