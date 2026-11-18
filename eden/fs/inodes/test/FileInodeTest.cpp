@@ -442,6 +442,33 @@ TEST_F(FileInodeTest, setattrTruncateAllMaterialized) {
   testSetattrTruncateAll(mount_);
 }
 
+TEST_F(FileInodeTest, failedSetattrTruncateInvalidatesCachedSizeAndSha1) {
+  mount_.addFile("dir/failed-setattr", "old payload");
+  auto inode = mount_.getFileInode("dir/failed-setattr");
+  const auto oldSha1 =
+      inode->getSha1(ObjectFetchContext::getNullContext()).get(0ms);
+  EXPECT_EQ(11, getFileAttr(mount_, inode).st_size);
+  mount_.getServerState()->getFaultInjector().injectError(
+      "overlay-truncate-complete",
+      fmt::format("{}", inode->getNodeId()),
+      std::runtime_error("failure after truncate effect"),
+      1);
+  DesiredMetadata desired;
+  desired.size = 0;
+
+  EXPECT_THROW_RE(
+      setFileAttr(mount_, inode, desired),
+      std::runtime_error,
+      "failure after truncate effect");
+
+  EXPECT_EQ("", inode->readAll(ObjectFetchContext::getNullContext()).get());
+  // FIXME: FileInode keeps the SHA-1 and size it cached before the truncate.
+  // These should be kEmptySha1 and 0.
+  EXPECT_EQ(
+      oldSha1, inode->getSha1(ObjectFetchContext::getNullContext()).get(0ms));
+  EXPECT_EQ(11, getFileAttr(mount_, inode).st_size);
+}
+
 TEST_F(FileInodeTest, setattrTruncatePartial) {
   auto inode = mount_.getFileInode("dir/a.txt");
   DesiredMetadata desired;
