@@ -428,6 +428,7 @@ fn main(fb: FacebookInit) -> Result<(), Error> {
                 justknobs::get_as::<u64>("scm/mononoke:git_server_perf_log_sampling", None);
             git_scuba.sampled(perf_sampling.try_into()?);
             let handler = MononokeHttpHandler::builder()
+                .with_root_trace_selector(crate::service::select_root_trace_endpoint)
                 .add(TlsSessionDataMiddleware::new(tls_session_data_log)?)
                 .add(ServerIdentityMiddleware::new(HeaderValue::from_static(
                     "mononoke_git_server",

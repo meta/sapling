@@ -27,6 +27,8 @@ use gotham_ext::response::BytesBody;
 use gotham_ext::response::build_error_response;
 use gotham_ext::response::build_response;
 use http::HeaderMap;
+use http::Method;
+use http::Uri;
 use slapi_service::handlers::JsonErrorFormatter;
 use slapi_service::handlers::handler::BasicPathExtractor;
 use slapi_service::handlers::handler::PathExtractorWithRepo;
@@ -176,6 +178,32 @@ fn slapi_capabilities_handler(mut state: State) -> Pin<Box<HandlerFuture>> {
     .boxed()
 }
 
+/// Endpoint labels bound to the `mononoke_endpoint` Luna sample key of the
+/// `mononoke_scm` policy. `land_git_push` matches the policy's `land` prefix, so
+/// a push roots at the same rate as a land arriving over SLAPI or SCS.
+const LAND_GIT_PUSH_ENDPOINT: &str = "land_git_push";
+const OTHER_ENDPOINT: &str = "other";
+
+/// Kept beside the route table below, which the two have to agree on.
+const RECEIVE_PACK_SUFFIX: &str = "/git-receive-pack";
+
+/// Labels a request for the Artillery root-trace policy. Runs before routing, so
+/// it matches the raw URI rather than `GitMethodInfo`, which the handlers only
+/// put into state afterwards.
+pub fn select_root_trace_endpoint(state: &State) -> Option<&'static str> {
+    let method = Method::try_borrow_from(state)?;
+    let path = Uri::try_borrow_from(state)?.path();
+    Some(root_trace_endpoint_for(method, path))
+}
+
+fn root_trace_endpoint_for(method: &Method, path: &str) -> &'static str {
+    if method == Method::POST && path.ends_with(RECEIVE_PACK_SUFFIX) {
+        LAND_GIT_PUSH_ENDPOINT
+    } else {
+        OTHER_ENDPOINT
+    }
+}
+
 pub fn build_router(context: GitServerContext) -> Router {
     let pipeline = new_pipeline().add(StateMiddleware::new(context)).build();
 
@@ -269,5 +297,71 @@ mod tests {
         let mut headers = HeaderMap::new();
         add_healthcheck_load_header(fb, &mut headers, 123_002);
         assert!(!headers.contains_key("X-FB-Load"));
+    }
+
+    // ---- Tests for Artillery root-trace endpoint labelling ----
+
+    const PUSH_PATH: &str = "/repos/git/ro/fbsource.git/git-receive-pack";
+
+    #[mononoke::test]
+    fn a_push_is_labelled_as_a_land() {
+        assert_eq!(
+            root_trace_endpoint_for(&Method::POST, PUSH_PATH),
+            LAND_GIT_PUSH_ENDPOINT
+        );
+    }
+
+    #[mononoke::test]
+    fn reads_fall_through_to_the_catch_all_label() {
+        for path in [
+            "/repos/git/ro/fbsource.git/info/refs",
+            "/repos/git/ro/fbsource.git/git-upload-pack",
+            "/repos/git/ro/fbsource.git/clone.bundle",
+            "/repos/git/ro/fbsource.git/info/lfs/objects/batch",
+            "/health_check",
+        ] {
+            assert_eq!(
+                root_trace_endpoint_for(&Method::POST, path),
+                OTHER_ENDPOINT,
+                "{path} is not a push and should not be labelled as a land"
+            );
+        }
+    }
+
+    #[mononoke::test]
+    fn the_push_path_on_the_wrong_method_is_not_a_land() {
+        // Only POST reaches `receive_pack_handler`; a GET on the same path 404s
+        // and must not spend the policy's 1:1 land budget.
+        for method in [Method::GET, Method::HEAD, Method::PUT] {
+            assert_eq!(
+                root_trace_endpoint_for(&method, PUSH_PATH),
+                OTHER_ENDPOINT,
+                "{method} on the push path should not be labelled as a land"
+            );
+        }
+    }
+
+    #[mononoke::test]
+    fn does_not_match_on_a_bare_substring() {
+        // Suffix match, so a path that merely contains the route is not a push.
+        assert_eq!(
+            root_trace_endpoint_for(&Method::POST, "/repos/git/ro/git-receive-pack/info/refs"),
+            OTHER_ENDPOINT
+        );
+    }
+
+    #[mononoke::test]
+    fn the_push_label_matches_the_policy_prefix() {
+        // The `mononoke_scm` Luna expression selects its 1:1 land branch on the
+        // prefix `land`; drifting off it silently demotes pushes to the thin
+        // catch-all rate.
+        assert!(LAND_GIT_PUSH_ENDPOINT.starts_with("land"));
+        assert!(!OTHER_ENDPOINT.starts_with("land"));
+    }
+
+    #[mononoke::test]
+    fn the_matched_suffix_is_the_registered_push_route() {
+        // Guards against the route table and the label drifting apart.
+        assert!(PUSH_PATH.ends_with(RECEIVE_PACK_SUFFIX));
     }
 }

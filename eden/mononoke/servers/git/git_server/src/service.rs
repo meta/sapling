@@ -18,5 +18,6 @@ pub use bookmark_mover::set_refs;
 pub use reader::GitMappingsStore;
 pub use reader::GitObjectStore;
 pub use router::build_router;
+pub use router::select_root_trace_endpoint;
 pub use uploader::UploadedObjects;
 pub use uploader::upload_objects;
