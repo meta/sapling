@@ -9,8 +9,10 @@
 import logging
 import os
 import sys
+import threading
 import time
 import typing
+import unittest
 from pathlib import Path, PurePath
 
 from eden.fs.service.eden.thrift_types import (
@@ -602,3 +604,32 @@ class CountersTest(testcase.EdenRepoTest):
         self.eden.unmount(Path(mount2))
         counters2 = self.get_nonthrift_set(self.get_counters().keys())
         self.assertEqual(counters, counters2)
+
+
+@testcase.eden_repo_test(run_on_nfs=False, run_coroutines=False)
+@unittest.skipIf(sys.platform != "linux", "/sys/fs/fuse/connections is Linux-only")
+class FusePendingRequestsStatsTest(testcase.EdenRepoTest):
+    enable_fault_injection: bool = True
+
+    def populate_repo(self) -> None:
+        self.repo.write_file("hello", "hola\n")
+        self.repo.commit("Initial commit.")
+
+    def test_pending_requests_count_includes_a_blocked_lookup(self) -> None:
+        minor = os.minor(os.lstat(self.mount).st_dev)
+        counter_name = f"fuse.{PurePath(self.mount).name}.pending_requests.count"
+        lookup = threading.Thread(target=(Path(self.mount) / "hello").stat)
+        with self.run_with_blocking_fault(
+            keyClass="FuseDispatcherImpl::lookup", keyValueRegex="hello"
+        ):
+            lookup.start()
+            self.wait_on_fault_hit("FuseDispatcherImpl::lookup")
+            pending = self.get_counters()[counter_name]
+        lookup.join()
+
+        # FIXME: Assert that `pending` is more than 0 for each minor number.
+        # The counter is 0 when the minor number is 256 or more.
+        if minor >= 256:
+            self.assertEqual(0, pending)
+        else:
+            self.assertGreater(pending, 0)
