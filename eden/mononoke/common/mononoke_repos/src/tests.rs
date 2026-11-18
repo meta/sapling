@@ -560,3 +560,61 @@ fn test_unload_if_idle_keeps_a_repo_someone_holds() {
     drop(held);
     assert!(repos.unload_if_idle("foo", IDLE_WINDOW, Instant::now() + IDLE_WINDOW));
 }
+
+#[mononoke::test]
+async fn test_an_unloaded_repo_is_rebuilt_on_the_next_get() {
+    let loader = Arc::new(CountingLoader::default());
+    let repos = built_lazy_repo(loader.clone());
+    assert!(repos.unload_if_idle("foo", IDLE_WINDOW, Instant::now() + IDLE_WINDOW));
+
+    // Only `get` builds, exactly as for a placeholder.
+    assert!(repos.get_by_name("foo").is_none());
+    assert_eq!(loader.calls.load(Ordering::SeqCst), 0);
+
+    assert_eq!(repos.get("foo").await.unwrap().as_deref(), Some(&42));
+    assert_eq!(loader.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(repos.get_by_name("foo").as_deref(), Some(&42));
+}
+
+#[mononoke::test]
+async fn test_unload_if_idle_leaves_unbuilt_and_unknown_repos_alone() {
+    let later = Instant::now() + IDLE_WINDOW;
+
+    let repos: MononokeRepos<i32> = MononokeRepos::new_lazy(Arc::new(NeverLoads));
+    repos.add_placeholder("foo", 1);
+    assert!(!repos.unload_if_idle("foo", IDLE_WINDOW, later));
+    assert!(!repos.unload_if_idle("nope", IDLE_WINDOW, later));
+    assert_eq!(repos.iter_names().collect::<Vec<_>>(), vec!["foo"]);
+
+    // Building: the build still lands in the slot.
+    let gate = Arc::new(Gate::default());
+    let (repos, request) = start_build(&gate).await;
+    assert!(!repos.unload_if_idle("foo", IDLE_WINDOW, later));
+    gate.release.notify_one();
+    assert_eq!(request.await.unwrap().unwrap().as_deref(), Some(&42));
+    assert_eq!(repos.get_by_name("foo").as_deref(), Some(&42));
+
+    // Failed: the failure stays cached rather than the slot going back to
+    // `Empty`, which would let the next request retry at once.
+    let repos: MononokeRepos<i32> = MononokeRepos::new_lazy(Arc::new(FailingLoader));
+    repos.add_placeholder("foo", 1);
+    assert!(repos.get("foo").await.is_err());
+    assert!(!repos.unload_if_idle("foo", IDLE_WINDOW, later));
+    let err = repos.get("foo").await.unwrap_err();
+    assert!(
+        err.to_string().contains("Not retrying build of repo foo"),
+        "unexpected error: {err:#}"
+    );
+}
+
+#[mononoke::test]
+fn test_unload_if_idle_never_unloads_without_a_loader() {
+    let repos: MononokeRepos<i32> = MononokeRepos::new();
+    repos.add("foo", 1, 100);
+
+    assert!(
+        !repos.unload_if_idle("foo", IDLE_WINDOW, Instant::now() + IDLE_WINDOW),
+        "nothing could build the repo again"
+    );
+    assert_eq!(repos.get_by_name("foo").as_deref(), Some(&100));
+}
