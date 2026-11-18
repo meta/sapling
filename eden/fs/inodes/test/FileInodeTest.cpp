@@ -445,8 +445,9 @@ TEST_F(FileInodeTest, setattrTruncateAllMaterialized) {
 TEST_F(FileInodeTest, failedSetattrTruncateInvalidatesCachedSizeAndSha1) {
   mount_.addFile("dir/failed-setattr", "old payload");
   auto inode = mount_.getFileInode("dir/failed-setattr");
-  const auto oldSha1 =
-      inode->getSha1(ObjectFetchContext::getNullContext()).get(0ms);
+  EXPECT_NE(
+      kEmptySha1,
+      inode->getSha1(ObjectFetchContext::getNullContext()).get(0ms));
   EXPECT_EQ(11, getFileAttr(mount_, inode).st_size);
   mount_.getServerState()->getFaultInjector().injectError(
       "overlay-truncate-complete",
@@ -462,11 +463,10 @@ TEST_F(FileInodeTest, failedSetattrTruncateInvalidatesCachedSizeAndSha1) {
       "failure after truncate effect");
 
   EXPECT_EQ("", inode->readAll(ObjectFetchContext::getNullContext()).get());
-  // FIXME: FileInode keeps the SHA-1 and size it cached before the truncate.
-  // These should be kEmptySha1 and 0.
   EXPECT_EQ(
-      oldSha1, inode->getSha1(ObjectFetchContext::getNullContext()).get(0ms));
-  EXPECT_EQ(11, getFileAttr(mount_, inode).st_size);
+      kEmptySha1,
+      inode->getSha1(ObjectFetchContext::getNullContext()).get(0ms));
+  EXPECT_EQ(0, getFileAttr(mount_, inode).st_size);
 }
 
 TEST_F(FileInodeTest, setattrTruncatePartial) {

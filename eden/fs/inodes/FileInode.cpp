@@ -1807,8 +1807,8 @@ void FileInode::materializeAndTruncate(LockedState& state) {
 void FileInode::truncateInOverlay(LockedState& state) {
   XCHECK_EQ(state->tag, State::MATERIALIZED_IN_OVERLAY);
 
-  getOverlayFileAccess(state)->truncate(*this);
   state->materializedState.invalidate();
+  getOverlayFileAccess(state)->truncate(*this);
 }
 
 OverlayFileAccess* FileInode::getOverlayFileAccess(LockedState&) const {
