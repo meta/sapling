@@ -1,0 +1,14 @@
+load("@fbcode_macros//build_defs:python_unittest.bzl", "python_unittest")
+load("@fbsource//tools/build_defs/testinfra:network_access_utils.bzl", "network_access_utils")
+
+oncall("scm_client_infra")
+
+python_unittest(
+    name = "hgrepo_test",
+    srcs = ["test_hgrepo.py"],
+    network_access = network_access_utils.none(),
+    deps = [
+        "//eden/integration/lib:lib",
+        "//later:lib",
+    ],
+)

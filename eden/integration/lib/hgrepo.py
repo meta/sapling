@@ -43,6 +43,17 @@ def _append_tsan_suppressions(env: Dict[str, str]) -> Dict[str, str]:
     return env
 
 
+def _hg_sanitizer_environment(env: dict[str, str]) -> dict[str, str]:
+    """Apply SCM sanitizer policy only to the helper process environment."""
+    env = _append_tsan_suppressions(env)
+    asan_options = env.get("ASAN_OPTIONS")
+    if asan_options is not None:
+        env = dict(env)
+        prefix = asan_options.rstrip(":")
+        env["ASAN_OPTIONS"] = f"{prefix}:detect_leaks=0" if prefix else "detect_leaks=0"
+    return env
+
+
 def _finish_hg_result(
     cmd: List[str],
     result: Optional[subprocess.CompletedProcess],
@@ -223,7 +234,7 @@ class HgRepository(repobase.Repository):
         env: Optional[Dict[str, str]] = None,
         timeout: Optional[float] = None,
     ) -> subprocess.CompletedProcess:
-        env = _append_tsan_suppressions(self.hg_environment | (env or {}))
+        env = _hg_sanitizer_environment(self.hg_environment | (env or {}))
         argslist = list(args)
         cmd = [self.hg_bin] + (["--traceback"] if traceback else []) + argslist
         print(f"Trying to run {cmd}")
@@ -547,7 +558,7 @@ class HgRepository(repobase.Repository):
         process = await asyncio.create_subprocess_exec(
             *command,
             cwd=self.path,
-            env=self.hg_environment,
+            env=_hg_sanitizer_environment(self.hg_environment),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
