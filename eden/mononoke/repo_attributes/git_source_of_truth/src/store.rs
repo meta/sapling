@@ -1576,4 +1576,303 @@ mod test {
         assert_eq!(push.get_max_id(&ctx).await?, Some(RepositoryId::new(42)));
         Ok(())
     }
+
+    /// Repo names of `entries`, sorted so assertions do not depend on row order.
+    fn sorted_names(entries: &[GitSourceOfTruthConfigEntry]) -> Vec<&str> {
+        let mut names = entries
+            .iter()
+            .map(|entry| entry.repo_name.0.as_str())
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        names
+    }
+
+    /// One row in each state. Only the reserved row has a mutation id and a
+    /// storage config, so a read that drops either column shows up.
+    async fn insert_one_repo_per_state(
+        ctx: &CoreContext,
+        push: &SqlGitSourceOfTruthConfig,
+    ) -> Result<()> {
+        push.insert_repos(
+            ctx,
+            &[
+                (
+                    RepositoryId::new(1),
+                    RepositoryName("mononoke_repo".to_string()),
+                    GitSourceOfTruth::Mononoke,
+                    None,
+                ),
+                (
+                    RepositoryId::new(2),
+                    RepositoryName("metagit_repo".to_string()),
+                    GitSourceOfTruth::Metagit,
+                    None,
+                ),
+                (
+                    RepositoryId::new(3),
+                    RepositoryName("locked_repo".to_string()),
+                    GitSourceOfTruth::Locked,
+                    None,
+                ),
+                (
+                    RepositoryId::new(4),
+                    RepositoryName("reserved_repo".to_string()),
+                    GitSourceOfTruth::Reserved,
+                    Some("org_org".to_string()),
+                ),
+            ],
+        )
+        .await?;
+        push.update_mutation_id_by_repo_names_for_reserved_repos(
+            ctx,
+            &[RepositoryName("reserved_repo".to_string())],
+            9,
+        )
+        .await?;
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn test_get_any_returns_every_row_with_every_column(fb: FacebookInit) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let push = SqlGitSourceOfTruthConfigBuilder::with_sqlite_in_memory()?.build();
+        insert_one_repo_per_state(&ctx, &push).await?;
+
+        let mut entries = push.get_any(&ctx).await?;
+        entries.sort_by_key(|entry| entry.repo_id.id());
+        let rows = entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry.repo_id.id(),
+                    entry.repo_name.0.as_str(),
+                    entry.source_of_truth,
+                    entry.mutation_id,
+                    entry.storage_config.as_deref(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rows,
+            vec![
+                (1, "mononoke_repo", GitSourceOfTruth::Mononoke, None, None),
+                (2, "metagit_repo", GitSourceOfTruth::Metagit, None, None),
+                (3, "locked_repo", GitSourceOfTruth::Locked, None, None),
+                (
+                    4,
+                    "reserved_repo",
+                    GitSourceOfTruth::Reserved,
+                    Some(9),
+                    Some("org_org")
+                ),
+            ],
+            "get_any should return all four rows, whatever their state, with every column",
+        );
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn test_state_reads_return_only_their_state(fb: FacebookInit) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let push = SqlGitSourceOfTruthConfigBuilder::with_sqlite_in_memory()?.build();
+        insert_one_repo_per_state(&ctx, &push).await?;
+
+        assert_eq!(
+            sorted_names(&push.get_redirected_to_mononoke(&ctx).await?),
+            vec!["mononoke_repo"]
+        );
+        assert_eq!(
+            sorted_names(&push.get_redirected_to_metagit(&ctx).await?),
+            vec!["metagit_repo"]
+        );
+        assert_eq!(
+            sorted_names(&push.get_locked(&ctx).await?),
+            vec!["locked_repo"]
+        );
+        assert_eq!(
+            sorted_names(&push.get_reserved(&ctx).await?),
+            vec!["reserved_repo"]
+        );
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn test_update_source_of_truth_by_mutation_id_only_changes_that_mutation(
+        fb: FacebookInit,
+    ) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let push = SqlGitSourceOfTruthConfigBuilder::with_sqlite_in_memory()?.build();
+        push.insert_repos(
+            &ctx,
+            &[
+                (
+                    RepositoryId::new(1),
+                    RepositoryName("mutation_5".to_string()),
+                    GitSourceOfTruth::Reserved,
+                    None,
+                ),
+                (
+                    RepositoryId::new(2),
+                    RepositoryName("mutation_6".to_string()),
+                    GitSourceOfTruth::Reserved,
+                    None,
+                ),
+                (
+                    RepositoryId::new(3),
+                    RepositoryName("unstamped".to_string()),
+                    GitSourceOfTruth::Reserved,
+                    None,
+                ),
+            ],
+        )
+        .await?;
+        push.update_mutation_id_by_repo_names_for_reserved_repos(
+            &ctx,
+            &[RepositoryName("mutation_5".to_string())],
+            5,
+        )
+        .await?;
+        push.update_mutation_id_by_repo_names_for_reserved_repos(
+            &ctx,
+            &[RepositoryName("mutation_6".to_string())],
+            6,
+        )
+        .await?;
+
+        push.update_source_of_truth_by_mutation_id(&ctx, GitSourceOfTruth::Mononoke, 5)
+            .await?;
+
+        assert_eq!(
+            sorted_names(&push.get_redirected_to_mononoke(&ctx).await?),
+            vec!["mutation_5"],
+            "only the row stamped with mutation 5 should move to Mononoke",
+        );
+        assert_eq!(
+            sorted_names(&push.get_reserved(&ctx).await?),
+            vec!["mutation_6", "unstamped"],
+            "rows with another mutation id, or none, should stay Reserved",
+        );
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn test_delete_for_mutation_id_only_deletes_reserved_rows_of_that_mutation(
+        fb: FacebookInit,
+    ) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let push = SqlGitSourceOfTruthConfigBuilder::with_sqlite_in_memory()?.build();
+        push.insert_repos(
+            &ctx,
+            &[
+                (
+                    RepositoryId::new(1),
+                    RepositoryName("reserved_mutation_5".to_string()),
+                    GitSourceOfTruth::Reserved,
+                    None,
+                ),
+                (
+                    RepositoryId::new(2),
+                    RepositoryName("reserved_mutation_6".to_string()),
+                    GitSourceOfTruth::Reserved,
+                    None,
+                ),
+                (
+                    RepositoryId::new(3),
+                    RepositoryName("reserved_unstamped".to_string()),
+                    GitSourceOfTruth::Reserved,
+                    None,
+                ),
+                (
+                    RepositoryId::new(4),
+                    RepositoryName("landed_mutation_5".to_string()),
+                    GitSourceOfTruth::Reserved,
+                    None,
+                ),
+            ],
+        )
+        .await?;
+        push.update_mutation_id_by_repo_names_for_reserved_repos(
+            &ctx,
+            &[
+                RepositoryName("reserved_mutation_5".to_string()),
+                RepositoryName("landed_mutation_5".to_string()),
+            ],
+            5,
+        )
+        .await?;
+        push.update_mutation_id_by_repo_names_for_reserved_repos(
+            &ctx,
+            &[RepositoryName("reserved_mutation_6".to_string())],
+            6,
+        )
+        .await?;
+        push.update_source_of_truth_by_repo_names(
+            &ctx,
+            GitSourceOfTruth::Mononoke,
+            &[RepositoryName("landed_mutation_5".to_string())],
+        )
+        .await?;
+
+        push.delete_source_of_truth_for_mutation_id(&ctx, &5)
+            .await?;
+
+        assert_eq!(
+            sorted_names(&push.get_any(&ctx).await?),
+            vec![
+                "landed_mutation_5",
+                "reserved_mutation_6",
+                "reserved_unstamped"
+            ],
+            "only the Reserved row stamped with mutation 5 should be deleted",
+        );
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn test_delete_by_repo_names_only_deletes_listed_reserved_rows(
+        fb: FacebookInit,
+    ) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let push = SqlGitSourceOfTruthConfigBuilder::with_sqlite_in_memory()?.build();
+        push.insert_repos(
+            &ctx,
+            &[
+                (
+                    RepositoryId::new(1),
+                    RepositoryName("listed_reserved".to_string()),
+                    GitSourceOfTruth::Reserved,
+                    None,
+                ),
+                (
+                    RepositoryId::new(2),
+                    RepositoryName("listed_mononoke".to_string()),
+                    GitSourceOfTruth::Mononoke,
+                    None,
+                ),
+                (
+                    RepositoryId::new(3),
+                    RepositoryName("unlisted_reserved".to_string()),
+                    GitSourceOfTruth::Reserved,
+                    None,
+                ),
+            ],
+        )
+        .await?;
+
+        push.delete_source_of_truth_by_repo_names_for_reserved_repos(
+            &ctx,
+            &[
+                RepositoryName("listed_reserved".to_string()),
+                RepositoryName("listed_mononoke".to_string()),
+            ],
+        )
+        .await?;
+
+        assert_eq!(
+            sorted_names(&push.get_any(&ctx).await?),
+            vec!["listed_mononoke", "unlisted_reserved"],
+            "a listed non-Reserved row and an unlisted Reserved row should both survive",
+        );
+        Ok(())
+    }
 }
