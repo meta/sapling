@@ -8,6 +8,7 @@ rust_library(
     autocargo = {"cargo_toml_dir": "."},
     test_deps = [
         "//common/rust/shed/fbinit:fbinit-tokio",
+        "//eden/mononoke/blobstore:samplingblob",
         "//eden/mononoke/common/mononoke_macros:mononoke_macros",
         "//eden/mononoke/derived_data:deleted_manifest",
         "//eden/mononoke/tests/utils:tests_utils",

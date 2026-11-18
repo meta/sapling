@@ -35,6 +35,134 @@ use tests_utils::CreateCommitContext;
 
 use super::*;
 
+#[derive(Debug)]
+struct RejectBlobWrites(&'static str);
+
+impl samplingblob::SamplingHandler for RejectBlobWrites {
+    fn sample_get(
+        &self,
+        _ctx: &CoreContext,
+        _key: &str,
+        _value: Option<&blobstore::BlobstoreGetData>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn sample_put(
+        &self,
+        _ctx: &CoreContext,
+        key: &str,
+        _value: &mononoke_types::BlobstoreBytes,
+    ) -> Result<()> {
+        if key.contains(self.0) {
+            bail!("injected data write failure: {key}");
+        }
+        Ok(())
+    }
+}
+
+#[mononoke::fbinit_test]
+async fn failed_data_flush_prevents_terminal_publication(fb: FacebookInit) -> Result<()> {
+    let ctx = &CoreContext::test_mock(fb);
+    let (repo, _, _) = AugmentedManifestV2NoHgMapping::get_repo_and_dag::<TestRepo>(fb).await;
+    let base = CreateCommitContext::new_root(ctx, &repo)
+        .add_file("a", "left")
+        .add_file("z", "right")
+        .commit()
+        .await?;
+    let csid = CreateCommitContext::new(ctx, &repo, vec![base])
+        .delete_file("a")
+        .commit()
+        .await?;
+    let manager = repo
+        .repo_derived_data()
+        .manager()
+        .with_pipeline_mode(derived_data_manager::PipelineMode::Production);
+    manager
+        .derive_bulk_locally(
+            ctx,
+            &[csid],
+            None,
+            &[DerivableType::Unodes, DerivableType::SkeletonManifests],
+            None,
+            None,
+        )
+        .await?;
+    for (ty, prefix) in [
+        (DerivableType::Fsnodes, ".fsnode.blake2."),
+        (DerivableType::BssmV3, ".bssm3.blake2."),
+        (DerivableType::DeletedManifests, ".deletedmanifest2.blake2."),
+        (DerivableType::HgChangesets, ".hgchangeset.sha1."),
+    ] {
+        manager
+            .derive_bulk_locally(ctx, &[base], None, &[ty], None, None)
+            .await?;
+        let variant = ty.into_pipeline_derivable_variant()?;
+        let root = DerivationStagePayload::Manifest(ManifestStagePayload {
+            path: MPath::ROOT,
+            deps: vec![].into(),
+        });
+        let mut manager = manager.clone();
+        if bulk_derivation::pipeline_has_prepare(variant) {
+            let prepared = bulk_derivation::prepare_stage_batch(
+                &manager,
+                ctx,
+                vec![csid],
+                std::slice::from_ref(&root),
+                variant,
+            )
+            .await?;
+            manager = manager.with_prepared_inputs(Arc::new(prepared.into_iter().next().unwrap()));
+        }
+        let payload = if bulk_derivation::pipeline_has_finalize(variant) {
+            let outputs =
+                bulk_derivation::derive_stage_batch(&manager, ctx, vec![csid], &root, variant)
+                    .await?
+                    .outputs
+                    .into_iter()
+                    .collect::<Vec<_>>();
+            manager = manager.with_stage_inputs(StageInputs::new(&outputs)?);
+            DerivationStagePayload::Finalize
+        } else {
+            root
+        };
+        let blocked =
+            manager.with_replaced_blobstore(RepoBlobstore::new_with_wrapped_inner_blobstore(
+                repo.repo_blobstore().clone(),
+                |inner| {
+                    Arc::new(samplingblob::SamplingBlobstore::new(
+                        inner,
+                        Arc::new(RejectBlobWrites(prefix)),
+                    ))
+                },
+            ));
+        let error =
+            bulk_derivation::derive_stage_batch(&blocked, ctx, vec![csid], &payload, variant)
+                .await
+                .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("injected data write failure"),
+            "{ty:?}: {error:#}"
+        );
+        assert!(
+            BulkDerivation::fetch_derived_batch(&manager, ctx, &[csid], None, ty)
+                .await?
+                .is_empty(),
+            "{ty:?}"
+        );
+
+        bulk_derivation::derive_stage_batch(&manager, ctx, vec![csid], &payload, variant).await?;
+        assert_eq!(
+            BulkDerivation::fetch_derived_batch(&manager, ctx, &[csid], None, ty)
+                .await?
+                .len(),
+            1,
+            "{ty:?}"
+        );
+    }
+    Ok(())
+}
+
 async fn derive_with_references(
     manager: &DerivedDataManager,
     ctx: &CoreContext,

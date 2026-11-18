@@ -233,6 +233,7 @@ impl PipelineDerivable for FilenodesOnlyPublic {
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
+            derivation.flush(ctx).await?;
             Self::store_mapping_batch(ctx, derivation, roots).await?;
             return Ok(None);
         }

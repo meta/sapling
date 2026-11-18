@@ -1137,15 +1137,9 @@ impl DerivedDataManager {
                     (stats.completion_time, derived)
                 };
 
-                // Flush blobstore before persisting outputs.
-                derivation_ctx.flush(ctx).await?;
-
-                // Store stage outputs with a fresh write-batching context.
-                let mut store_ctx = self.derivation_context(None);
-                store_ctx.enable_write_batching();
                 let outputs = Derivable::store_stage_outputs(
                     ctx,
-                    &store_ctx,
+                    &derivation_ctx,
                     &stage,
                     derived,
                 )
@@ -1158,7 +1152,7 @@ impl DerivedDataManager {
                         )
                     })?;
 
-                store_ctx.flush(ctx).await?;
+                derivation_ctx.flush(ctx).await?;
 
                 Ok(StageBatchResult { duration: batch_duration, outputs })
             }

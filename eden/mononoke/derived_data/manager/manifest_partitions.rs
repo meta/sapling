@@ -57,11 +57,11 @@ use crate::ManifestDerivable;
 use crate::StageId;
 use crate::stage_outputs::StageOutput;
 
-/// Native children and the cached content address of a flat-map snapshot.
+/// Native children and their cached RPC encoding.
 #[derive(Clone, Debug)]
 pub struct PartitionOutput<Map> {
     map: Deferred<Map>,
-    snapshot: Arc<OnceCell<Blake2>>,
+    encoded: Arc<OnceCell<BlobstoreBytes>>,
 }
 
 impl<Map: Clone + Send + Sync + 'static> PartitionOutput<Map> {
@@ -76,7 +76,7 @@ impl<Map: Clone + Send + Sync + 'static> PartitionOutput<Map> {
     ) -> Self {
         Self {
             map: self.map.map(map),
-            snapshot: self.snapshot,
+            encoded: self.encoded,
         }
     }
 }
@@ -85,7 +85,7 @@ impl<Map> From<Map> for PartitionOutput<Map> {
     fn from(map: Map) -> Self {
         Self {
             map: map.into(),
-            snapshot: Arc::new(OnceCell::new()),
+            encoded: Arc::new(OnceCell::new()),
         }
     }
 }
@@ -613,9 +613,15 @@ impl<T: ManifestDerivable, V: ShardedMapV2Value> PartitionMap<T> for LoadableSha
         _derivation: &DerivationContext,
         output: PartitionOutput<Self>,
     ) -> Result<BlobstoreBytes> {
-        Ok(BlobstoreBytes::from_bytes(
-            output.load().await?.into_bytes(),
-        ))
+        Ok(output
+            .encoded
+            .get_or_try_init(|| async {
+                Ok::<_, anyhow::Error>(BlobstoreBytes::from_bytes(
+                    output.map.load().await?.into_bytes(),
+                ))
+            })
+            .await?
+            .clone())
     }
 
     fn decode(
@@ -623,7 +629,18 @@ impl<T: ManifestDerivable, V: ShardedMapV2Value> PartitionMap<T> for LoadableSha
         _derivation: &DerivationContext,
         bytes: BlobstoreBytes,
     ) -> Result<PartitionOutput<Self>> {
-        Ok(Self::from_bytes(&bytes.into_bytes())?.into())
+        let encoded = Arc::new(OnceCell::new_with(Some(bytes.clone())));
+        let decoded = Arc::new(OnceCell::new());
+        let map = Deferred::new(move || {
+            let (bytes, decoded) = (bytes.clone(), decoded.clone());
+            async move {
+                decoded
+                    .get_or_try_init(async || Self::from_bytes(&bytes.into_bytes()))
+                    .await
+                    .cloned()
+            }
+        });
+        Ok(PartitionOutput { map, encoded })
     }
 }
 
@@ -637,18 +654,18 @@ pub async fn store_sorted_subentries<V: Clone + Send + Sync + 'static>(
     output: PartitionOutput<SortedVectorTrieMap<V>>,
     encode: impl Fn(V) -> Result<BlobstoreBytes> + Send + Sync,
 ) -> Result<BlobstoreBytes> {
-    let id = output
-        .snapshot
+    let encoded = output
+        .encoded
         .get_or_try_init(|| async {
             let bytes = encode_sorted_subentries(output.map.load().await?, encode)?;
             let mut hash = HashContext::new(b"derivation_pipeline.children.v1");
             hash.update(bytes.as_bytes());
             let id = hash.finish();
             store.put(ctx, snapshot_key(id), bytes).await?;
-            Ok::<_, anyhow::Error>(id)
+            Ok::<_, anyhow::Error>(BlobstoreBytes::from_bytes(id.as_ref().to_vec()))
         })
         .await?;
-    Ok(BlobstoreBytes::from_bytes(id.as_ref().to_vec()))
+    Ok(encoded.clone())
 }
 
 pub fn decode_partition_reference<V: Clone + Send + Sync + 'static>(
@@ -677,7 +694,7 @@ pub fn decode_partition_reference<V: Clone + Send + Sync + 'static>(
     });
     Ok(PartitionOutput {
         map,
-        snapshot: Arc::new(OnceCell::new_with(Some(id))),
+        encoded: Arc::new(OnceCell::new_with(Some(bytes))),
     })
 }
 
@@ -1238,7 +1255,7 @@ mod tests {
             )
             .await?
             .into_partition()?;
-        assert!(Arc::ptr_eq(&parent.snapshot, &output.snapshot));
+        assert!(Arc::ptr_eq(&parent.encoded, &output.encoded));
         assert_eq!(
             store_sorted_subentries(&ctx, &store, output, |_| panic!(
                 "unchanged partition was encoded"

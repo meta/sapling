@@ -193,6 +193,7 @@ pub async fn store_stage_outputs<T: PipelineDerivable, Output, F>(
 where
     F: std::future::Future<Output = Result<BlobstoreBytes>>,
 {
+    derivation.flush(ctx).await?;
     let outputs = stream::iter(outputs)
         .map(|(csid, output)| {
             let key = mapping_key(csid);

@@ -273,6 +273,7 @@ impl PipelineDerivable for MappedHgChangesetId {
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
+            derivation.flush(ctx).await?;
             return derivation
                 .bonsai_hg_mapping()?
                 .bulk_add(ctx, &entries)

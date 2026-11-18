@@ -44,6 +44,38 @@ use crate::RootBssmV3DirectoryId;
 use crate::derive_from_predecessor::inner_derive_from_predecessor;
 use crate::path::BssmPath;
 
+#[mononoke::fbinit_test]
+async fn sharded_partitions_decode_only_when_consumed(fb: FacebookInit) -> Result<()> {
+    use derived_data_manager::manifest_partitions::PartitionMap;
+    use mononoke_types::BlobstoreBytes;
+    use mononoke_types::ThriftConvert;
+    use mononoke_types::sharded_map_v2::LoadableShardedMapV2Node;
+
+    type Map = LoadableShardedMapV2Node<BssmV3Entry>;
+    let ctx = &CoreContext::test_mock(fb);
+    let repo: TestRepo = fixtures::Linear::get_repo(fb).await;
+    let derivation = repo.repo_derived_data().manager().derivation_context(None);
+    for bytes in [
+        BlobstoreBytes::from_bytes(Map::default().into_bytes()),
+        BlobstoreBytes::empty(),
+    ] {
+        let output =
+            <Map as PartitionMap<RootBssmV3DirectoryId>>::decode(ctx, &derivation, bytes.clone())?;
+        assert_eq!(
+            <Map as PartitionMap<RootBssmV3DirectoryId>>::encode(ctx, &derivation, output.clone())
+                .await?,
+            bytes,
+        );
+        let loaded = output.load().await;
+        if bytes.is_empty() {
+            assert!(loaded.is_err());
+        } else {
+            assert_eq!(loaded?, Map::default());
+        }
+    }
+    Ok(())
+}
+
 #[facet::container]
 struct TestRepo(
     dyn BonsaiHgMapping,

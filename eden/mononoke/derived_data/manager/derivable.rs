@@ -310,6 +310,7 @@ pub trait PipelineDerivable: BonsaiDerivable {
     ) -> Result<Self::StageOutput>;
 
     /// Store canonical mappings and return other outputs to the caller.
+    /// Flush derived blobs before publishing mappings; the caller flushes the remaining writes.
     async fn store_stage_outputs(
         ctx: &CoreContext,
         derivation: &DerivationContext,
