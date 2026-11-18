@@ -186,10 +186,19 @@ pub fn indexed_augmented_entry(
 /// `LoadableShardedMapV2Node` so `expand` loads only the current node and hands
 /// children back as possibly-unloaded nodes, propagating the carried `index` to
 /// every entry and child.
+#[derive(Clone, Debug)]
 pub struct IndexedAugmentedTrieMap {
     inner: LoadableShardedMapV2Node<HgAugmentedManifestEntry>,
     index: Option<ParentIndex>,
 }
+
+impl PartialEq for IndexedAugmentedTrieMap {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+}
+
+impl Eq for IndexedAugmentedTrieMap {}
 
 impl IndexedAugmentedTrieMap {
     pub(crate) fn new(
@@ -197,6 +206,10 @@ impl IndexedAugmentedTrieMap {
         index: Option<ParentIndex>,
     ) -> Self {
         Self { inner, index }
+    }
+
+    pub(crate) fn with_index(self, index: Option<ParentIndex>) -> Self {
+        Self { index, ..self }
     }
 
     pub(crate) fn into_inner(self) -> LoadableShardedMapV2Node<HgAugmentedManifestEntry> {

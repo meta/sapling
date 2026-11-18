@@ -10,7 +10,6 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::future::Future;
-use std::hash::Hash;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -22,97 +21,47 @@ use futures::StreamExt;
 use futures::TryStreamExt;
 use futures::stream;
 use manifest::Entry;
-use manifest::KnownEntry;
-use manifest::LeafInfo;
 use manifest::Manifest;
 use manifest::ManifestOps;
 use manifest::StoreLoadable;
-use manifest::TreeInfo;
+use manifest::TreeInfoSubentries;
 use manifest::TrieMapOps;
-use manifest::derive_manifest_with_known_entries;
 use mononoke_types::BlobstoreBytes;
 use mononoke_types::BonsaiChangeset;
 use mononoke_types::ChangesetId;
 use mononoke_types::MPath;
-use mononoke_types::NonRootMPath;
 use mononoke_types::PipelineDerivableVariant;
 
 use crate::BonsaiDerivable;
 use crate::DerivationContext;
 use crate::DerivationStagePayload;
+use crate::ManifestDerivationInput;
+use crate::ManifestStageOutput;
 use crate::PipelineDerivable;
 use crate::StageId;
+use crate::StageOutputs;
+use crate::manifest_partitions::PartitionMap;
+use crate::manifest_partitions::select_subentries;
+use crate::stage_outputs::fetch_stage_outputs;
+use crate::stage_outputs::store_stage_outputs;
 
 type Store = Arc<dyn KeyedBlobstore>;
-
-/// The manifest inputs for one changeset at a stage boundary.
-pub struct ManifestDerivation<TreeId, Leaf> {
-    pub parents: Vec<Entry<TreeId, Leaf>>,
-    pub known_entries: HashMap<MPath, Option<Entry<TreeId, Leaf>>>,
-    pub path: MPath,
-}
-
-impl<TreeId, Leaf> ManifestDerivation<TreeId, Leaf> {
-    /// Whether a change needs preparation by this stage's leaf callback.
-    pub fn contains_change(&self, path: &NonRootMPath) -> bool {
-        self.path.is_prefix_of(path)
-            && !self
-                .known_entries
-                .keys()
-                .any(|known| known.is_prefix_of(path))
-    }
-
-    /// Derive the supplied inputs using the manifest's existing callbacks.
-    pub async fn derive<S, Change, Ctx, T, TFut, L, LFut>(
-        self,
-        ctx: CoreContext,
-        store: S,
-        changes: Vec<(NonRootMPath, Option<Change>)>,
-        create_tree: T,
-        create_leaf: L,
-    ) -> Result<Option<Entry<TreeId, Leaf>>>
-    where
-        S: KeyedBlobstore + Clone + Send + Sync + 'static,
-        Change: Send + Clone + Eq + Hash + Debug + 'static,
-        Leaf: Send + Clone + Eq + Hash + Debug + 'static,
-        TreeId: StoreLoadable<S> + Clone + Eq + Hash + Debug + Send + Sync + 'static,
-        TreeId::Value: Manifest<S, TreeId = TreeId, Leaf = Leaf> + Send + Sync,
-        <TreeId::Value as Manifest<S>>::TrieMapType:
-            TrieMapOps<S, Entry<TreeId, Leaf>> + Send + Sync + 'static,
-        T: Fn(TreeInfo<TreeId, Leaf, Ctx, <TreeId::Value as Manifest<S>>::TrieMapType>) -> TFut
-            + Send
-            + Sync
-            + 'static,
-        TFut: Future<Output = Result<(Ctx, TreeId)>> + Send + 'static,
-        L: Fn(LeafInfo<Leaf, Change>) -> LFut + Send + Sync + 'static,
-        LFut: Future<Output = Result<(Ctx, Leaf)>> + Send + 'static,
-        Ctx: Send + 'static,
-    {
-        derive_manifest_with_known_entries(
-            ctx,
-            store,
-            self.parents,
-            changes,
-            self.known_entries
-                .into_iter()
-                .map(|(path, entry)| (path, KnownEntry::Entry(entry)))
-                .collect(),
-            self.path,
-            create_tree,
-            create_leaf,
-        )
-        .await
-    }
-}
 
 /// Type-specific preparation and encoding for a manifest pipeline.
 #[async_trait]
 pub trait ManifestDerivable: BonsaiDerivable {
     type TreeId: Clone + Debug + Eq + Send + Sync + 'static;
     type Leaf: Clone + Debug + Eq + Send + Sync + 'static;
+    type TrieMapType: TrieMapOps<Store, Entry<Self::TreeId, Self::Leaf>>
+        + PartitionMap<Self>
+        + Clone
+        + Debug
+        + Eq
+        + Send
+        + Sync
+        + 'static;
 
     const PIPELINE_VARIANT: PipelineDerivableVariant;
-    const STAGE_KEY_PREFIX: &'static str;
     const MAPPING_KNOB_SWITCH: &'static str = Self::NAME;
 
     async fn load_root_manifest(
@@ -130,26 +79,63 @@ pub trait ManifestDerivable: BonsaiDerivable {
         ctx: &CoreContext,
         derivation: &DerivationContext,
         bonsai: BonsaiChangeset,
-        input: ManifestDerivation<Self::TreeId, Self::Leaf>,
-    ) -> Result<Option<Entry<Self::TreeId, Self::Leaf>>>;
+        input: ManifestDerivationInput<Self::TreeId, Self::Leaf, Self::TrieMapType>,
+    ) -> Result<ManifestStageOutput<Self::TreeId, Self::Leaf, Self::TrieMapType>>;
+
+    /// Derive in parent order, optionally preparing independent inputs for the whole batch.
+    async fn derive_manifest_batch(
+        ctx: &CoreContext,
+        derivation: &DerivationContext,
+        bonsais: Vec<BonsaiChangeset>,
+        stage: &StageId,
+        parents: HashMap<
+            ChangesetId,
+            ManifestStageOutput<Self::TreeId, Self::Leaf, Self::TrieMapType>,
+        >,
+        dependency_outputs: HashMap<
+            ChangesetId,
+            HashMap<StageId, ManifestStageOutput<Self::TreeId, Self::Leaf, Self::TrieMapType>>,
+        >,
+    ) -> Result<
+        HashMap<ChangesetId, ManifestStageOutput<Self::TreeId, Self::Leaf, Self::TrieMapType>>,
+    > {
+        derive_manifest_batch(
+            bonsais,
+            parents,
+            dependency_outputs,
+            |bonsai, parents, dependencies| {
+                let input =
+                    ManifestDerivationInput::from_stage_outputs(stage, parents, dependencies);
+                async move { Self::derive_manifest(ctx, derivation, bonsai, input?).await }
+            },
+        )
+        .await
+    }
+
+    async fn create_subentries(
+        ctx: &CoreContext,
+        derivation: &DerivationContext,
+        subentries: TreeInfoSubentries<Self::TreeId, Self::Leaf, (), Self::TrieMapType>,
+    ) -> Result<Self::TrieMapType>;
 
     fn encode_entry(entry: Option<Entry<Self::TreeId, Self::Leaf>>) -> BlobstoreBytes;
     fn decode_entry(bytes: BlobstoreBytes) -> Result<Option<Entry<Self::TreeId, Self::Leaf>>>;
 }
 
 #[async_trait]
-impl<T> PipelineDerivable for T
+impl<T, M> PipelineDerivable for T
 where
     T: ManifestDerivable,
-    T::TreeId: StoreLoadable<Store> + Unpin,
-    <T::TreeId as StoreLoadable<Store>>::Value:
-        Manifest<Store, TreeId = T::TreeId, Leaf = T::Leaf> + Send + Sync,
+    T::TreeId: StoreLoadable<Store, Value = M> + Unpin,
+    M: Manifest<Store, TreeId = T::TreeId, Leaf = T::Leaf, TrieMapType = T::TrieMapType>
+        + Send
+        + Sync,
     T::Leaf: Unpin,
 {
     const PIPELINE_DERIVABLE_VARIANT: PipelineDerivableVariant = T::PIPELINE_VARIANT;
     const HAS_FINALIZE: bool = false;
 
-    type StageOutput = Option<Entry<T::TreeId, T::Leaf>>;
+    type StageOutput = ManifestStageOutput<T::TreeId, T::Leaf, T::TrieMapType>;
 
     async fn derive_stage_batch(
         ctx: &CoreContext,
@@ -157,23 +143,15 @@ where
         bonsais: Vec<BonsaiChangeset>,
         payload: &DerivationStagePayload,
         parents: HashMap<ChangesetId, Self::StageOutput>,
-        dependency_outputs: HashMap<ChangesetId, HashMap<MPath, Self::StageOutput>>,
+        dependency_outputs: HashMap<ChangesetId, HashMap<StageId, Self::StageOutput>>,
     ) -> Result<HashMap<ChangesetId, Self::StageOutput>> {
-        let DerivationStagePayload::Manifest(payload) = payload else {
-            anyhow::bail!("{} has no finalize stage", T::NAME);
-        };
-        derive_manifest_batch(
+        T::derive_manifest_batch(
+            ctx,
+            derivation,
             bonsais,
+            &payload.stage_id(),
             parents,
             dependency_outputs,
-            |bonsai, parents, known_entries| {
-                let input = ManifestDerivation {
-                    parents: parents.into_iter().flatten().collect(),
-                    known_entries,
-                    path: payload.path.clone(),
-                };
-                T::derive_manifest(ctx, derivation, bonsai, input)
-            },
         )
         .await
     }
@@ -184,12 +162,37 @@ where
         derived: &Self,
         stage: &StageId,
     ) -> Result<Self::StageOutput> {
+        let root = derived.load_root_manifest(ctx, derivation).await?;
+        Self::extract_stage_output_from_root(
+            ctx,
+            derivation,
+            ManifestStageOutput::Entry(Some(Entry::Tree(root))),
+            stage,
+        )
+        .await
+    }
+
+    async fn extract_stage_output_from_root(
+        ctx: &CoreContext,
+        derivation: &DerivationContext,
+        root: Self::StageOutput,
+        stage: &StageId,
+    ) -> Result<Self::StageOutput> {
         let path = stage_path::<T>(stage)?;
-        derived
-            .load_root_manifest(ctx, derivation)
-            .await?
-            .find_entry(ctx.clone(), derivation.blobstore().clone(), path.clone())
-            .await
+        let blobstore: Store = derivation.blobstore().clone();
+        let Some(Entry::Tree(root)) = root.into_entry()? else {
+            anyhow::bail!("completed manifest root must be a tree");
+        };
+        let entry = root
+            .find_entry(ctx.clone(), blobstore.clone(), path.clone())
+            .await?;
+        if let StageId::Subentries(_, range) = stage {
+            let subentries = select_subentries(ctx, &blobstore, entry, *range).await?;
+            let entries = T::create_subentries(ctx, derivation, subentries).await?;
+            Ok(ManifestStageOutput::Subentries(entries.into()))
+        } else {
+            Ok(ManifestStageOutput::Entry(entry))
+        }
     }
 
     async fn store_stage_outputs(
@@ -197,35 +200,39 @@ where
         derivation: &DerivationContext,
         stage: &StageId,
         outputs: HashMap<ChangesetId, Self::StageOutput>,
-    ) -> Result<()> {
+    ) -> Result<Option<StageOutputs>> {
         let path = stage_path::<T>(stage)?;
-        let canonical = use_normal_mapping::<T>(path);
+        let canonical = matches!(stage, StageId::Manifest(_)) && use_normal_mapping::<T>(path);
         if !canonical {
-            return store_stage_blobs(
+            return store_stage_outputs::<Self, _, _>(
                 ctx,
                 derivation,
+                stage,
                 outputs,
-                |csid| stage_key::<T>(derivation, path, csid),
-                |entry| Ok(T::encode_entry(entry)),
+                |_| None,
+                |output| encode_output::<T>(ctx, derivation, output),
             )
             .await;
         }
-        stream::iter(outputs)
+        let derived = stream::iter(outputs)
             .map(|(csid, entry)| async move {
-                let Some(Entry::Tree(root)) = entry else {
-                    anyhow::bail!(
-                        "terminal stage output for {csid} should be a tree, got {entry:?}"
-                    );
+                let Some(Entry::Tree(root)) = entry.into_entry()? else {
+                    anyhow::bail!("terminal stage output for {csid} should be a tree");
                 };
-                T::from_root_manifest(ctx, derivation, root)
-                    .await?
-                    .store_mapping(ctx, derivation, csid)
-                    .await
+                Ok((csid, T::from_root_manifest(ctx, derivation, root).await?))
             })
             .buffered(100)
             .try_collect::<Vec<_>>()
             .await?;
-        Ok(())
+        derivation.flush(ctx).await?;
+        stream::iter(derived)
+            .map(
+                |(csid, derived)| async move { derived.store_mapping(ctx, derivation, csid).await },
+            )
+            .buffered(100)
+            .try_collect::<()>()
+            .await?;
+        Ok(None)
     }
 
     async fn fetch_stage_outputs(
@@ -235,23 +242,24 @@ where
         csids: Vec<ChangesetId>,
     ) -> Result<HashMap<ChangesetId, Self::StageOutput>> {
         let path = stage_path::<T>(stage)?;
-        let canonical = use_normal_mapping::<T>(path);
+        let canonical = matches!(stage, StageId::Manifest(_)) && use_normal_mapping::<T>(path);
         if !canonical {
-            return fetch_stage_blobs(
+            return fetch_stage_outputs::<Self, _, _>(
                 ctx,
                 derivation,
+                stage,
                 csids,
-                |csid| stage_key::<T>(derivation, path, csid),
-                |_, bytes| T::decode_entry(bytes),
+                |_| None,
+                |_, bytes| decode_output::<T>(ctx, derivation, stage, bytes),
             )
             .await;
         }
         stream::iter(csids)
             .map(|csid| async move {
                 let entry = match T::fetch(ctx, derivation, csid).await? {
-                    Some(root) => Some(Some(Entry::Tree(
+                    Some(root) => Some(ManifestStageOutput::Entry(Some(Entry::Tree(
                         root.load_root_manifest(ctx, derivation).await?,
-                    ))),
+                    )))),
                     None => None,
                 };
                 Ok::<_, anyhow::Error>(entry.map(|entry| (csid, entry)))
@@ -267,12 +275,12 @@ where
 pub async fn derive_manifest_batch<Output, F, Fut>(
     bonsais: Vec<BonsaiChangeset>,
     parents: HashMap<ChangesetId, Output>,
-    mut dependency_outputs: HashMap<ChangesetId, HashMap<MPath, Output>>,
+    mut dependency_outputs: HashMap<ChangesetId, HashMap<StageId, Output>>,
     mut derive: F,
 ) -> Result<HashMap<ChangesetId, Output>>
 where
     Output: Clone,
-    F: FnMut(BonsaiChangeset, Vec<Output>, HashMap<MPath, Output>) -> Fut,
+    F: FnMut(BonsaiChangeset, Vec<Output>, HashMap<StageId, Output>) -> Fut,
     Fut: Future<Output = Result<Output>>,
 {
     let mut results = HashMap::new();
@@ -294,56 +302,9 @@ where
     Ok(results)
 }
 
-/// Store stage outputs using the type's existing key and encoding.
-pub async fn store_stage_blobs<Output>(
-    ctx: &CoreContext,
-    derivation: &DerivationContext,
-    outputs: HashMap<ChangesetId, Output>,
-    key: impl Fn(ChangesetId) -> String,
-    encode: impl Fn(Output) -> Result<BlobstoreBytes>,
-) -> Result<()> {
-    stream::iter(outputs)
-        .map(|(csid, output)| {
-            let key = key(csid);
-            let bytes = encode(output);
-            async move { derivation.blobstore().put(ctx, key, bytes?).await }
-        })
-        .buffer_unordered(100)
-        .try_collect::<Vec<_>>()
-        .await?;
-    Ok(())
-}
-
-/// Missing blobs are omitted; encoded empty outputs remain present in the map.
-pub async fn fetch_stage_blobs<Output>(
-    ctx: &CoreContext,
-    derivation: &DerivationContext,
-    csids: Vec<ChangesetId>,
-    key: impl Fn(ChangesetId) -> String,
-    decode: impl Fn(ChangesetId, BlobstoreBytes) -> Result<Output>,
-) -> Result<HashMap<ChangesetId, Output>> {
-    stream::iter(csids)
-        .map(|csid| {
-            let key = key(csid);
-            let decode = &decode;
-            async move {
-                derivation
-                    .blobstore()
-                    .get(ctx, &key)
-                    .await?
-                    .map(|bytes| decode(csid, bytes.into()).map(|output| (csid, output)))
-                    .transpose()
-            }
-        })
-        .buffer_unordered(100)
-        .try_filter_map(|entry| async move { Ok(entry) })
-        .try_collect()
-        .await
-}
-
 fn stage_path<T: ManifestDerivable>(stage: &StageId) -> Result<&MPath> {
     match stage {
-        StageId::Manifest(path) => Ok(path),
+        StageId::Manifest(path) | StageId::Subentries(path, _) => Ok(path),
         StageId::Finalize => anyhow::bail!("{} has no finalize stage", T::NAME),
     }
 }
@@ -357,16 +318,30 @@ fn use_normal_mapping<T: ManifestDerivable>(path: &MPath) -> bool {
         )
 }
 
-fn stage_key<T: ManifestDerivable>(
+async fn encode_output<T: ManifestDerivable>(
+    ctx: &CoreContext,
     derivation: &DerivationContext,
-    path: &MPath,
-    csid: ChangesetId,
-) -> String {
-    format!(
-        "{}.{}.{}{}",
-        T::STAGE_KEY_PREFIX,
-        path.get_path_hash().to_hex(),
-        derivation.mapping_key_prefix::<T>(),
-        csid,
-    )
+    output: ManifestStageOutput<T::TreeId, T::Leaf, T::TrieMapType>,
+) -> Result<BlobstoreBytes> {
+    match output {
+        ManifestStageOutput::Entry(entry) => Ok(T::encode_entry(entry)),
+        ManifestStageOutput::Subentries(map) => {
+            <T::TrieMapType as PartitionMap<T>>::encode(ctx, derivation, map).await
+        }
+    }
+}
+
+async fn decode_output<T: ManifestDerivable>(
+    ctx: &CoreContext,
+    derivation: &DerivationContext,
+    stage: &StageId,
+    bytes: BlobstoreBytes,
+) -> Result<ManifestStageOutput<T::TreeId, T::Leaf, T::TrieMapType>> {
+    if matches!(stage, StageId::Subentries(..)) {
+        Ok(ManifestStageOutput::Subentries(
+            <T::TrieMapType as PartitionMap<T>>::decode(ctx, derivation, bytes)?,
+        ))
+    } else {
+        Ok(ManifestStageOutput::Entry(T::decode_entry(bytes)?))
+    }
 }

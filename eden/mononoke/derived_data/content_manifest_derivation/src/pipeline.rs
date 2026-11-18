@@ -11,29 +11,33 @@ use async_trait::async_trait;
 use context::CoreContext;
 use derived_data_manager::DerivationContext;
 use derived_data_manager::ManifestDerivable;
-use derived_data_manager::ManifestDerivation;
+use derived_data_manager::ManifestDerivationInput;
+use derived_data_manager::ManifestStageOutput;
 use fbthrift::compact_protocol;
 use manifest::Entry;
+use manifest::TreeInfoSubentries;
 use mononoke_types::BlobstoreBytes;
 use mononoke_types::BonsaiChangeset;
 use mononoke_types::ContentManifestId;
 use mononoke_types::PipelineDerivableVariant;
 use mononoke_types::ThriftConvert;
+use mononoke_types::content_manifest::ContentManifestEntry;
 use mononoke_types::content_manifest::ContentManifestFile;
+use mononoke_types::sharded_map_v2::LoadableShardedMapV2Node;
 use mononoke_types::thrift::content_manifest as content_manifest_thrift;
 
 use crate::RootContentManifestId;
+use crate::derive::create_content_manifest_subentries;
 use crate::derive::derive_content_manifest_entry;
-use crate::derive::empty_directory;
 use crate::derive::get_changes;
 
 #[async_trait]
 impl ManifestDerivable for RootContentManifestId {
     type TreeId = ContentManifestId;
     type Leaf = ContentManifestFile;
+    type TrieMapType = LoadableShardedMapV2Node<ContentManifestEntry>;
 
     const PIPELINE_VARIANT: PipelineDerivableVariant = PipelineDerivableVariant::ContentManifests;
-    const STAGE_KEY_PREFIX: &'static str = "derived_content_manifest_stage";
 
     async fn load_root_manifest(
         &self,
@@ -55,17 +59,28 @@ impl ManifestDerivable for RootContentManifestId {
         ctx: &CoreContext,
         derivation: &DerivationContext,
         bonsai: BonsaiChangeset,
-        input: ManifestDerivation<ContentManifestId, ContentManifestFile>,
-    ) -> Result<Option<Entry<ContentManifestId, ContentManifestFile>>> {
-        let is_root = input.path.is_root();
-        let entry =
-            derive_content_manifest_entry(ctx, derivation, input, get_changes(&bonsai)).await?;
-        match entry {
-            None if is_root => Ok(Some(Entry::Tree(
-                empty_directory(ctx, derivation.blobstore()).await?,
-            ))),
-            entry => Ok(entry),
-        }
+        input: ManifestDerivationInput<Self::TreeId, Self::Leaf, Self::TrieMapType>,
+    ) -> Result<ManifestStageOutput<Self::TreeId, Self::Leaf, Self::TrieMapType>> {
+        derive_content_manifest_entry(ctx, derivation, input, get_changes(&bonsai)).await
+    }
+
+    async fn create_subentries(
+        ctx: &CoreContext,
+        derivation: &DerivationContext,
+        subentries: TreeInfoSubentries<Self::TreeId, Self::Leaf, (), Self::TrieMapType>,
+    ) -> Result<Self::TrieMapType> {
+        let subentries = subentries
+            .into_iter()
+            .map(|(prefix, entry)| (prefix, entry.map_left(|(_, entry)| (None, entry))))
+            .collect();
+        Ok(LoadableShardedMapV2Node::Inlined(
+            create_content_manifest_subentries(
+                ctx.clone(),
+                derivation.blobstore().clone(),
+                subentries,
+            )
+            .await?,
+        ))
     }
 
     fn encode_entry(

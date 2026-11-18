@@ -7,28 +7,36 @@
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::task::Poll;
 
 use anyhow::Result;
 use blobstore::Loadable;
 use blobstore::Storable;
+use blobstore_test_utils::Tickable;
 use bonsai_hg_mapping::BonsaiHgMapping;
 use bookmarks::Bookmarks;
 use commit_graph::CommitGraph;
 use commit_graph::CommitGraphWriter;
 use context::CoreContext;
 use derivation_queue_thrift::DerivationPriority;
-use derived_data_manager::ManifestDerivation;
+use derived_data_manager::DerivationStagePayload;
+use derived_data_manager::ManifestDerivationInput;
+use derived_data_manager::ManifestStagePayload;
 use fbinit::FacebookInit;
 use filestore::FilestoreConfig;
+use futures::FutureExt;
 use futures::TryStreamExt;
+use futures::poll;
 use itertools::Itertools;
 use manifest::Entry;
+use manifest::KnownEntry;
 use manifest::ManifestOps;
 use mononoke_macros::mononoke;
+use mononoke_types::BlobstoreKey;
 use mononoke_types::BlobstoreValue;
 use mononoke_types::ChangesetId;
 use mononoke_types::path::MPath;
-use mononoke_types::skeleton_manifest_v2::SkeletonManifestV2;
 use pretty_assertions::assert_eq;
 use repo_blobstore::RepoBlobstore;
 use repo_blobstore::RepoBlobstoreArc;
@@ -36,6 +44,7 @@ use repo_blobstore::RepoBlobstoreRef;
 use repo_derived_data::RepoDerivedData;
 use repo_derived_data::RepoDerivedDataRef;
 use repo_identity::RepoIdentity;
+use repo_identity::RepoIdentityRef;
 use tests_utils::CreateCommitContext;
 use tests_utils::drawdag::changes;
 use tests_utils::drawdag::create_from_dag_with_changes;
@@ -55,6 +64,83 @@ struct TestRepo(
     FilestoreConfig,
     RepoIdentity,
 );
+
+#[mononoke::fbinit_test]
+async fn pipeline_flushes_roots_before_mappings(fb: FacebookInit) -> Result<()> {
+    justknobs::test_helpers::override_just_knobs(justknobs::test_helpers::JustKnobsInMemory::new(
+        HashMap::from([(
+            "scm/mononoke:derived_data_pipeline_terminal_stage_prod_mapping".to_owned(),
+            justknobs::test_helpers::KnobVal::Bool(true),
+        )]),
+    ));
+    let ctx = CoreContext::test_mock(fb);
+    let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+    let csid = CreateCommitContext::new_root(&ctx, &repo)
+        .add_file("file", "content")
+        .commit()
+        .await?;
+    let bonsai = csid.load(&ctx, repo.repo_blobstore()).await?.into_blob();
+    let manager = repo.repo_derived_data().manager();
+    let expected = manager
+        .derive::<RootSkeletonManifestV2Id>(&ctx, csid, None, DerivationPriority::LOW)
+        .await?;
+    let prefix = repo.repo_identity().id().prefix();
+    let root_key = format!("{prefix}{}", expected.inner_id().blobstore_key());
+    let mapping_key = format!(
+        "{prefix}{}",
+        format_key(&manager.derivation_context(None), csid)
+    );
+    let payload = DerivationStagePayload::Manifest(ManifestStagePayload {
+        path: MPath::ROOT,
+        deps: vec![].into(),
+    });
+
+    for error in [None, Some("root write failed")] {
+        let store = Arc::new(Tickable::new());
+        store.add_bytes(
+            format!("{prefix}{}", csid.blobstore_key()),
+            bonsai.clone().into(),
+        );
+        let manager = manager.with_replaced_blobstore(
+            RepoBlobstore::new_with_wrapped_inner_blobstore(repo.repo_blobstore().clone(), |_| {
+                store.clone()
+            }),
+        );
+        let mut derive = tokio::task::unconstrained(
+            manager.derive_stage_batch::<RootSkeletonManifestV2Id>(&ctx, vec![csid], &payload),
+        )
+        .boxed();
+
+        assert!(poll!(&mut derive).is_pending());
+        store.tick(None); // Read the Bonsai changeset.
+        loop {
+            let result = poll!(&mut derive);
+            assert!(store.get_bytes(&mapping_key).is_none());
+            if let Poll::Ready(result) = result {
+                let error = error.expect("mapping must have a separate flush");
+                assert!(format!("{:#}", result.unwrap_err()).contains(error));
+                assert!(store.get_bytes(&root_key).is_none());
+                break;
+            }
+            if store.get_bytes(&root_key).is_some() {
+                assert!(error.is_none());
+                store.tick(None);
+                derive.await?;
+                assert_eq!(
+                    store
+                        .get_bytes(&mapping_key)
+                        .map(RootSkeletonManifestV2Id::try_from)
+                        .transpose()?,
+                    Some(expected.clone()),
+                );
+                break;
+            }
+            store.tick(error);
+            tokio::task::yield_now().await;
+        }
+    }
+    Ok(())
+}
 
 const A_FILES: &[&str] = &[
     "dir1/subdir1/subsubdir1/file1",
@@ -400,7 +486,7 @@ async fn test_derivation_pipeline_independent_dirs(fb: FacebookInit) -> Result<(
     let changes = get_file_changes(&bcs);
 
     // Derive each top-level directory subtree independently.
-    let mut known_entries: HashMap<MPath, Option<Entry<SkeletonManifestV2, ()>>> = HashMap::new();
+    let mut known_entries = HashMap::new();
     for dir in ["dir1", "dir2"] {
         let prefix = MPath::new(dir)?;
         let parents = match parent_manifest
@@ -413,29 +499,31 @@ async fn test_derivation_pipeline_independent_dirs(fb: FacebookInit) -> Result<(
         let entry = derive_skeleton_manifest_v2_entry(
             &ctx,
             &derivation_ctx,
-            ManifestDerivation {
-                parents,
+            ManifestDerivationInput::Entry {
+                parents: parents.into_iter().map(Some).collect(),
                 known_entries: HashMap::new(),
                 path: prefix.clone(),
             },
             changes.clone(),
         )
-        .await?;
-        known_entries.insert(prefix, entry);
+        .await?
+        .into_entry()?;
+        known_entries.insert(prefix, KnownEntry::Entry(entry));
     }
 
     // Assemble the root from the staged subtrees.
     let root_entry = derive_skeleton_manifest_v2_entry(
         &ctx,
         &derivation_ctx,
-        ManifestDerivation {
-            parents: vec![Entry::Tree(parent_manifest)],
+        ManifestDerivationInput::Entry {
+            parents: vec![Some(Entry::Tree(parent_manifest))],
             known_entries,
             path: MPath::ROOT,
         },
         changes,
     )
     .await?
+    .into_entry()?
     .expect("root stage should produce an entry");
 
     let pipeline_id = root_entry
@@ -482,17 +570,15 @@ async fn test_derivation_pipeline_nested_dirs(fb: FacebookInit) -> Result<()> {
 
     // Stage the deep subtree first.
     let subdir1 = MPath::new("dir1/subdir1")?;
-    let subdir1_parents = match parent_manifest
-        .find_entry(ctx.clone(), blobstore.clone(), subdir1.clone())
-        .await?
-    {
-        Some(entry) => vec![entry],
-        None => vec![],
-    };
+    let subdir1_parents = vec![
+        parent_manifest
+            .find_entry(ctx.clone(), blobstore.clone(), subdir1.clone())
+            .await?,
+    ];
     let subdir1_entry = derive_skeleton_manifest_v2_entry(
         &ctx,
         &derivation_ctx,
-        ManifestDerivation {
+        ManifestDerivationInput::Entry {
             parents: subdir1_parents,
             known_entries: HashMap::new(),
             path: subdir1.clone(),
@@ -500,23 +586,21 @@ async fn test_derivation_pipeline_nested_dirs(fb: FacebookInit) -> Result<()> {
         changes.clone(),
     )
     .await?
+    .into_entry()?
     .expect("dir1/subdir1 stage should produce an entry");
 
     // Stage dir1 using the staged subdir1.
     let dir1 = MPath::new("dir1")?;
-    let dir1_parents = match parent_manifest
-        .find_entry(ctx.clone(), blobstore.clone(), dir1.clone())
-        .await?
-    {
-        Some(entry) => vec![entry],
-        None => vec![],
-    };
-    let dir1_known: HashMap<MPath, Option<Entry<SkeletonManifestV2, ()>>> =
-        HashMap::from([(subdir1, Some(subdir1_entry))]);
+    let dir1_parents = vec![
+        parent_manifest
+            .find_entry(ctx.clone(), blobstore.clone(), dir1.clone())
+            .await?,
+    ];
+    let dir1_known = HashMap::from([(subdir1, KnownEntry::Entry(Some(subdir1_entry)))]);
     let dir1_entry = derive_skeleton_manifest_v2_entry(
         &ctx,
         &derivation_ctx,
-        ManifestDerivation {
+        ManifestDerivationInput::Entry {
             parents: dir1_parents,
             known_entries: dir1_known,
             path: dir1.clone(),
@@ -524,22 +608,23 @@ async fn test_derivation_pipeline_nested_dirs(fb: FacebookInit) -> Result<()> {
         changes.clone(),
     )
     .await?
+    .into_entry()?
     .expect("dir1 stage should produce an entry");
 
     // Assemble the root using the staged dir1.
-    let root_known: HashMap<MPath, Option<Entry<SkeletonManifestV2, ()>>> =
-        HashMap::from([(dir1, Some(dir1_entry))]);
+    let root_known = HashMap::from([(dir1, KnownEntry::Entry(Some(dir1_entry)))]);
     let root_entry = derive_skeleton_manifest_v2_entry(
         &ctx,
         &derivation_ctx,
-        ManifestDerivation {
-            parents: vec![Entry::Tree(parent_manifest)],
+        ManifestDerivationInput::Entry {
+            parents: vec![Some(Entry::Tree(parent_manifest))],
             known_entries: root_known,
             path: MPath::ROOT,
         },
         changes,
     )
     .await?
+    .into_entry()?
     .expect("root stage should produce an entry");
 
     let pipeline_id = root_entry

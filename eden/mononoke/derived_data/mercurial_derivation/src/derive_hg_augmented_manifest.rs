@@ -8,6 +8,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::future::Future;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -20,7 +21,10 @@ use blobstore::StoreLoadable;
 use cloned::cloned;
 use context::CoreContext;
 use derived_data::prefetch_content_metadata;
-use derived_data_manager::ManifestDerivation;
+use derived_data_manager::ManifestDerivationInput;
+use derived_data_manager::ManifestStageOutput;
+use derived_data_manager::PipelineDerivable;
+use derived_data_manager::StageId;
 use either::Either;
 use filestore::FetchKey;
 use futures::future;
@@ -30,6 +34,7 @@ use futures::stream::FuturesUnordered;
 use futures::stream::StreamExt;
 use futures::stream::TryStreamExt;
 use manifest::Entry;
+use manifest::KnownEntry;
 use manifest::LeafInfo;
 use manifest::ManifestComparison;
 use manifest::ManifestOps;
@@ -88,6 +93,15 @@ use crate::indexed_augmented_manifest::IndexedAugmentedEntry;
 use crate::indexed_augmented_manifest::IndexedAugmentedFile;
 use crate::indexed_augmented_manifest::IndexedAugmentedTrieMap;
 use crate::indexed_augmented_manifest::indexed_augmented_entry;
+
+pub type AugmentedInput = ManifestDerivationInput<
+    IndexedAugmentedDirectory,
+    IndexedAugmentedFile,
+    IndexedAugmentedTrieMap,
+>;
+pub type AugmentedOutput =
+    ManifestStageOutput<IndexedAugmentedDirectory, IndexedAugmentedFile, IndexedAugmentedTrieMap>;
+pub type AclStageOutput = <acl_manifest::RootAclManifestId as PipelineDerivable>::StageOutput;
 
 /// Derive an HgAugmentedManifestId from an HgManifestId and parents.
 ///
@@ -618,156 +632,65 @@ pub fn normalize_acl_root(
     }
 }
 
-async fn resolve_copy_paths_from_augmented_root<Store>(
-    ctx: CoreContext,
-    blobstore: Store,
-    root: HgAugmentedManifestId,
-    parent_csid: ChangesetId,
-    paths: Vec<(NonRootMPath, MPath)>,
-) -> Result<HashMap<(NonRootMPath, ChangesetId), HgFileNodeId>>
-where
-    Store: KeyedBlobstore + Clone + 'static,
-{
-    if paths.iter().all(|(_, lookup_path)| lookup_path.is_root()) {
-        return Ok(HashMap::new());
-    }
-
-    let found: HashMap<MPath, HgFileNodeId> = root
-        .find_entries(
-            ctx,
-            blobstore,
-            paths
-                .iter()
-                .filter(|&(_, lookup_path)| !lookup_path.is_root())
-                .map(|(_, lookup_path)| manifest::PathOrPrefix::Path(lookup_path.clone())),
-        )
-        .try_filter_map(|(path, entry)| async move {
-            Ok(entry
-                .into_leaf()
-                .map(|file| (path, HgFileNodeId::new(file.filenode))))
-        })
-        .try_collect()
-        .await?;
-    Ok(paths
-        .into_iter()
-        .filter_map(|(copy_path, lookup_path)| {
-            found
-                .get(&lookup_path)
-                .copied()
-                .map(|filenode| ((copy_path, parent_csid), filenode))
-        })
-        .collect())
-}
-
-/// Pre-resolve copy-from source filenodes from parent augmented manifests.
-///
-/// Sources inside `stage_path` are resolved relative to parent stage outputs;
-/// sources outside it are resolved from the corresponding parent root.
-pub async fn resolve_copy_from_filenodes<Store>(
+/// Resolve p1/p2 copy sources through the shared parent manifest view.
+pub async fn resolve_copy_from_filenodes<Store, F, Fut>(
     ctx: &CoreContext,
     blobstore: &Store,
-    stage_path: &MPath,
+    stage: &StageId,
     file_changes: &[(NonRootMPath, Option<TrackedFileChange>)],
     parent_bonsai_csids: (Option<ChangesetId>, Option<ChangesetId>),
-    parents: &[Option<HgAugmentedManifestEntry>],
-    external_copy_parent_roots: &HashMap<ChangesetId, HgAugmentedManifestId>,
+    parents: &[AugmentedOutput],
+    load_parent_root: F,
 ) -> Result<HashMap<(NonRootMPath, ChangesetId), HgFileNodeId>>
 where
     Store: KeyedBlobstore + Clone + 'static,
+    F: Fn(ChangesetId) -> Fut + Send + Sync,
+    Fut: Future<Output = Result<Option<HgAugmentedManifestId>>> + Send,
 {
     let parent_csids = [parent_bonsai_csids.0, parent_bonsai_csids.1];
-    let mut stage_paths_by_parent: [Vec<(NonRootMPath, MPath)>; 2] = [Vec::new(), Vec::new()];
-    let mut external_paths_by_parent: [Vec<NonRootMPath>; 2] = [Vec::new(), Vec::new()];
-
-    for (_, change) in file_changes {
-        let Some((copy_path, copy_csid)) = change.as_ref().and_then(TrackedFileChange::copy_from)
-        else {
-            continue;
-        };
-        let Some(parent_index) = parent_csids
-            .iter()
-            .position(|parent_csid| parent_csid.as_ref() == Some(copy_csid))
-        else {
-            continue;
-        };
-        if stage_path.is_prefix_of(copy_path) {
-            stage_paths_by_parent[parent_index].push((
-                copy_path.clone(),
-                MPath::from(copy_path.clone()).remove_prefix_component(stage_path),
-            ));
-        } else {
-            external_paths_by_parent[parent_index].push(copy_path.clone());
-        }
-    }
-
-    stream::iter(
-        stage_paths_by_parent
-            .into_iter()
-            .zip(external_paths_by_parent)
-            .enumerate(),
-    )
-    .map(|(parent_index, (stage_paths, external_paths))| {
-        let parent_csid = parent_csids[parent_index];
-        let parent_entry = parents.get(parent_index).and_then(Option::as_ref).cloned();
-        let external_root =
-            parent_csid.and_then(|csid| external_copy_parent_roots.get(&csid).copied());
-        let stage_ctx = ctx.clone();
-        let stage_blobstore = blobstore.clone();
-        let external_ctx = ctx.clone();
-        let external_blobstore = blobstore.clone();
-        async move {
-            let Some(parent_csid) = parent_csid else {
-                return Ok::<HashMap<_, _>, anyhow::Error>(HashMap::new());
+    let load_parent_root = &load_parent_root;
+    stream::iter(parent_csids.into_iter().enumerate())
+        .map(|(index, csid)| async move {
+            let Some(csid) = csid else {
+                return Ok(HashMap::new());
             };
-            let stage_sources = async move {
-                match parent_entry {
-                    Some(HgAugmentedManifestEntry::FileNode(file)) => Ok(stage_paths
-                        .into_iter()
-                        .filter(|(_, relative_path)| relative_path.is_root())
-                        .map(|(copy_path, _)| {
-                            ((copy_path, parent_csid), HgFileNodeId::new(file.filenode))
-                        })
-                        .collect()),
-                    Some(HgAugmentedManifestEntry::DirectoryNode(dir)) => {
-                        resolve_copy_paths_from_augmented_root(
-                            stage_ctx,
-                            stage_blobstore,
-                            HgAugmentedManifestId::new(dir.treenode),
-                            parent_csid,
-                            stage_paths,
-                        )
-                        .await
+            let paths = file_changes
+                .iter()
+                .filter_map(|(_, change)| {
+                    let (path, parent) = change.as_ref()?.copy_from()?;
+                    (*parent == csid).then(|| path.clone())
+                })
+                .collect();
+            let parent = parents
+                .get(index)
+                .cloned()
+                .ok_or_else(|| anyhow!("missing augmented stage output for parent {csid}"))?;
+            let entries = parent
+                .find_parent_entries(ctx.clone(), blobstore.clone(), stage, paths, || async {
+                    match load_parent_root(csid).await? {
+                        Some(root) => {
+                            indexed_augmented_directory_from_id(ctx, blobstore, root, None)
+                                .await
+                                .map(Some)
+                        }
+                        None => Ok(None),
                     }
-                    None => Ok(HashMap::new()),
-                }
-            };
-            let external_sources = async move {
-                match external_root {
-                    Some(root) => {
-                        resolve_copy_paths_from_augmented_root(
-                            external_ctx,
-                            external_blobstore,
-                            root,
-                            parent_csid,
-                            external_paths
-                                .into_iter()
-                                .map(|path| (path.clone(), path.into()))
-                                .collect(),
-                        )
-                        .await
-                    }
-                    None => Ok(HashMap::new()),
-                }
-            };
-            let (mut stage_sources, external_sources) =
-                future::try_join(stage_sources, external_sources).await?;
-            stage_sources.extend(external_sources);
-            Ok(stage_sources)
-        }
-    })
-    .buffer_unordered(2)
-    .try_concat()
-    .await
+                })
+                .await?;
+            Ok::<HashMap<_, _>, anyhow::Error>(
+                entries
+                    .into_iter()
+                    .filter_map(|(path, entry)| {
+                        entry
+                            .into_leaf()
+                            .map(|file| ((path, csid), HgFileNodeId::new(file.node.filenode)))
+                    })
+                    .collect(),
+            )
+        })
+        .buffer_unordered(2)
+        .try_concat()
+        .await
 }
 
 /// Decision for a leaves-only merge conflict.
@@ -891,7 +814,7 @@ fn indexed_augmented_manifest_id(dir: &IndexedAugmentedDirectory) -> HgAugmented
     HgAugmentedManifestId::new(dir.node.treenode)
 }
 
-async fn indexed_augmented_directory_from_id<Store: KeyedBlobstore>(
+pub(crate) async fn indexed_augmented_directory_from_id<Store: KeyedBlobstore>(
     ctx: &CoreContext,
     blobstore: &Store,
     id: HgAugmentedManifestId,
@@ -1072,7 +995,9 @@ type AugmentedTreeCallbackSubentries = TreeInfoSubentries<
     IndexedAugmentedTrieMap,
 >;
 
-fn augmented_entry_from_indexed(entry: IndexedAugmentedEntry) -> HgAugmentedManifestEntry {
+pub(crate) fn augmented_entry_from_indexed(
+    entry: IndexedAugmentedEntry,
+) -> HgAugmentedManifestEntry {
     match entry {
         Entry::Tree(dir) => HgAugmentedManifestEntry::DirectoryNode(dir.node),
         Entry::Leaf(file) => HgAugmentedManifestEntry::FileNode(file.node),
@@ -1105,6 +1030,20 @@ fn collect_augmented_subentries(
         }
     }
     Ok(direct)
+}
+
+pub(crate) async fn create_augmented_subentries<Store: KeyedBlobstore>(
+    ctx: &CoreContext,
+    blobstore: &Store,
+    subentries: AugmentedTreeCallbackSubentries,
+) -> Result<IndexedAugmentedTrieMap> {
+    let entries = collect_augmented_subentries(subentries)?;
+    Ok(IndexedAugmentedTrieMap::new(
+        LoadableShardedMapV2Node::Inlined(
+            ShardedMapV2Node::from_entries_and_partial_maps(ctx, blobstore, entries).await?,
+        ),
+        None,
+    ))
 }
 
 /// Given the fully-merged subentries for one tree node, attempt parent reuse
@@ -1253,9 +1192,11 @@ async fn create_augmented_tree(
     >,
 ) -> Result<((), IndexedAugmentedDirectory)> {
     let dir_acl_id = acl_map.get(&tree_info.path).copied();
-    let direct = collect_augmented_subentries(tree_info.subentries)?;
-    let subentries =
-        ShardedMapV2Node::from_entries_and_partial_maps(&ctx, &blobstore, direct).await?;
+    let subentries = create_augmented_subentries(&ctx, &blobstore, tree_info.subentries)
+        .await?
+        .into_inner()
+        .load(&ctx, &blobstore)
+        .await?;
 
     finalize_envelope(
         &ctx,
@@ -1432,6 +1373,96 @@ pub async fn derive_augmented_manifest_entry_from_bonsai<Store>(
 where
     Store: KeyedBlobstore + Clone + 'static,
 {
+    let input = ManifestDerivationInput::Entry {
+        path: stage_path,
+        parents: parents
+            .into_iter()
+            .map(|entry| entry.map(|entry| indexed_augmented_entry(entry, None)))
+            .collect(),
+        known_entries: known_entries
+            .into_iter()
+            .map(|(path, entry)| {
+                (
+                    path,
+                    KnownEntry::Entry(entry.map(|entry| indexed_augmented_entry(entry, None))),
+                )
+            })
+            .collect(),
+    };
+    Ok(derive_augmented_stage(
+        ctx,
+        blobstore,
+        input,
+        file_changes,
+        parent_bonsai_csids,
+        |csid| future::ready(Ok(external_copy_parent_roots.get(&csid).copied())),
+        content_metadata_cache,
+        restricted_paths,
+        ManifestStageOutput::Entry(acl_root_overlay.map(Entry::Tree)),
+    )
+    .await?
+    .into_entry()?
+    .map(augmented_entry_from_indexed))
+}
+
+pub(crate) async fn derive_augmented_stage<Store, F, Fut>(
+    ctx: &CoreContext,
+    blobstore: &Store,
+    mut input: AugmentedInput,
+    file_changes: Vec<(NonRootMPath, Option<TrackedFileChange>)>,
+    parent_bonsai_csids: (Option<ChangesetId>, Option<ChangesetId>),
+    load_parent_root: F,
+    content_metadata_cache: &HashMap<ContentId, ContentMetadataV2>,
+    restricted_paths: &ArcRestrictedPathsConfigBased,
+    acl_output: AclStageOutput,
+) -> Result<AugmentedOutput>
+where
+    Store: KeyedBlobstore + Clone + 'static,
+    F: Fn(ChangesetId) -> Fut + Send + Sync,
+    Fut: Future<Output = Result<Option<HgAugmentedManifestId>>> + Send,
+{
+    let stage = input.stage_id();
+    let stage_path = input.path().clone();
+    let parents = input.parent_outputs();
+    match &mut input {
+        ManifestDerivationInput::Entry {
+            parents,
+            known_entries,
+            ..
+        } => {
+            for (index, entry) in parents.iter_mut().enumerate() {
+                if let Some(entry) = entry {
+                    *entry = indexed_augmented_entry(
+                        augmented_entry_from_indexed(entry.clone()),
+                        Some(ParentIndex(index)),
+                    );
+                }
+            }
+            for known in known_entries.values_mut() {
+                match known {
+                    KnownEntry::Entry(Some(entry)) => {
+                        *entry = indexed_augmented_entry(
+                            augmented_entry_from_indexed(entry.clone()),
+                            None,
+                        );
+                    }
+                    KnownEntry::Children(children) => {
+                        *children = children
+                            .clone()
+                            .map(|maps| maps.into_iter().map(|map| map.with_index(None)).collect());
+                    }
+                    KnownEntry::Entry(None) => {}
+                }
+            }
+        }
+        ManifestDerivationInput::Partition { parents, .. } => {
+            for (index, map) in parents.iter_mut().enumerate() {
+                *map = map
+                    .clone()
+                    .map_preserving_encoding(move |map| map.with_index(Some(ParentIndex(index))));
+            }
+        }
+    }
     let restricted_paths_enabled = justknobs::eval(
         "scm/mononoke:enabled_restricted_paths_access_logging",
         None,
@@ -1439,68 +1470,47 @@ where
     );
 
     let acl_root_path = stage_path.clone();
-    let (acl_map, merge_acl_root_overlay) = match acl_root_overlay {
-        None => (Arc::new(HashMap::new()), None),
-        // A merge can rebuild a directory where its parents diverge even when no
-        // file change touches that path: `derive_manifest_inner`'s bonsai
-        // semantics recurse into and rebuild a tree when "all parents entries
-        // are trees" with no change on the path. Such directories are not
-        // reachable from `file_changes`, so each merge tree callback loads the
-        // ACL pointer for the directory it actually rebuilds plus that
-        // directory's immediate child pointers.
-        Some(root_id) if parents.len() >= 2 => (Arc::new(HashMap::new()), Some(root_id)),
-        // Single-parent and root commits rebuild exactly the directories on the
-        // ancestor paths of `file_changes`. Scope the overlay load to that
-        // frontier so the cost is O(commit size), not O(total ACL tree size).
-        Some(root_id) => {
+    let (acl_map, merge_acl_root_overlay) = match &acl_output {
+        ManifestStageOutput::Entry(Some(Entry::Tree(root_id))) if parents.len() < 2 => {
             let target_dirs = changed_ancestor_dirs(&file_changes);
             (
                 Arc::new(
-                    targeted_acl_overlay_map(ctx, blobstore, &acl_root_path, root_id, &target_dirs)
-                        .await?,
+                    targeted_acl_overlay_map(
+                        ctx,
+                        blobstore,
+                        &acl_root_path,
+                        *root_id,
+                        &target_dirs,
+                    )
+                    .await?,
                 ),
                 None,
             )
         }
+        ManifestStageOutput::Entry(None | Some(Entry::Leaf(_))) => (Arc::new(HashMap::new()), None),
+        _ => (Arc::new(HashMap::new()), Some(acl_output)),
     };
 
     let copy_from_filenodes = resolve_copy_from_filenodes(
         ctx,
         blobstore,
-        &stage_path,
-        &file_changes,
+        &stage,
+        &file_changes
+            .iter()
+            .filter(|(path, _)| input.contains_change(path))
+            .cloned()
+            .collect::<Vec<_>>(),
         parent_bonsai_csids,
         &parents,
-        external_copy_parent_roots,
+        load_parent_root,
     )
     .await?;
 
-    let parents: Vec<_> = parents
-        .into_iter()
-        .enumerate()
-        .filter_map(|(index, entry)| {
-            entry.map(|entry| indexed_augmented_entry(entry, Some(ParentIndex(index))))
-        })
-        .collect();
-    let known_entries = known_entries
-        .into_iter()
-        .map(|(path, entry)| {
-            (
-                path,
-                entry.map(|entry| indexed_augmented_entry(entry, None)),
-            )
-        })
-        .collect();
     let blobstore_arc: Arc<dyn KeyedBlobstore> = Arc::new(blobstore.clone());
     let content_metadata_arc = Arc::new(content_metadata_cache.clone());
     let copy_from_arc = Arc::new(copy_from_filenodes);
     let restricted_paths_arc = Arc::clone(restricted_paths);
 
-    let input = ManifestDerivation {
-        parents,
-        known_entries,
-        path: stage_path,
-    };
     let entry = input
         .derive(
             ctx.clone(),
@@ -1564,10 +1574,11 @@ where
                     )
                 }
             },
+            |entries| create_augmented_subentries(ctx, blobstore, entries),
         )
         .await?;
 
-    Ok(entry.map(augmented_entry_from_indexed))
+    Ok(entry)
 }
 
 /// Derive an augmented manifest directly from prepared Bonsai inputs and parent
@@ -1737,23 +1748,6 @@ fn changed_ancestor_dirs(
     dirs
 }
 
-async fn acl_manifest_id_at_path(
-    ctx: &CoreContext,
-    blobstore: &(impl KeyedBlobstore + 'static),
-    root_acl_id: AclManifestId,
-    path: &MPath,
-) -> Result<Option<AclManifestId>> {
-    let mut acl_id = root_acl_id;
-    for component in path.iter() {
-        let children = load_acl_child_directory_map(ctx, blobstore, &acl_id).await?;
-        let Some(child_id) = children.get(component).copied() else {
-            return Ok(None);
-        };
-        acl_id = child_id;
-    }
-    Ok(Some(acl_id))
-}
-
 /// Build the `MPath -> AclManifestId` overlay map for one rebuilt directory.
 ///
 /// Merge derivation discovers rebuilt directories inside `derive_manifest`, so
@@ -1763,18 +1757,24 @@ async fn acl_manifest_id_at_path(
 /// child entries.
 async fn rebuilt_tree_acl_overlay_map(
     ctx: &CoreContext,
-    blobstore: &(impl KeyedBlobstore + 'static),
+    blobstore: &(impl KeyedBlobstore + Clone + 'static),
     acl_root_path: &MPath,
-    root_acl_id: AclManifestId,
+    acl_output: AclStageOutput,
     tree_path: &MPath,
 ) -> Result<HashMap<MPath, AclManifestId>> {
     if !acl_root_path.is_prefix_of(tree_path) {
         bail!("ACL root path {acl_root_path} is not a prefix of rebuilt tree path {tree_path}");
     }
     let relative_tree_path = tree_path.remove_prefix_component(acl_root_path);
-    let Some(tree_acl_id) =
-        acl_manifest_id_at_path(ctx, blobstore, root_acl_id, &relative_tree_path).await?
-    else {
+    let tree_entry = acl_output
+        .find_entries(
+            ctx.clone(),
+            blobstore.clone(),
+            vec![PathOrPrefix::Path(relative_tree_path)],
+        )
+        .try_next()
+        .await?;
+    let Some((_, Entry::Tree(tree_acl_id))) = tree_entry else {
         return Ok(HashMap::new());
     };
 

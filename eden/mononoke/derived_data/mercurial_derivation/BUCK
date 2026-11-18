@@ -10,7 +10,6 @@ rust_library(
         "//common/rust/shed/facet:facet",
         "//common/rust/shed/fbinit:fbinit",
         "//common/rust/shed/fbinit:fbinit-tokio",
-        "//eden/mononoke/common/mononoke_macros:mononoke_macros",
         "//eden/mononoke/repo_attributes/bookmarks:bookmarks",
         "//eden/mononoke/repo_attributes/commit_graph/commit_graph:commit_graph",
         "//eden/mononoke/repo_attributes/filestore:filestore",

@@ -8,8 +8,13 @@ edition = "2024"
 license = "GPLv2+"
 
 [dependencies]
+anyhow = "1.0.104"
+derived_data_manager = { version = "0.1.0", path = "../manager" }
 metaconfig_types = { version = "0.1.0", path = "../../metaconfig/types" }
 mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
+
+[dev-dependencies]
+mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
 
 [lints]
 workspace = true

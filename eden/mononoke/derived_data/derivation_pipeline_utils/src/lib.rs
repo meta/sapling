@@ -5,18 +5,50 @@
  * GNU General Public License version 2.
  */
 
-//! Payload-agnostic planning logic for the derivation pipeline: batch
-//! splitting at chokepoints.
+//! Shared type ordering and chokepoint batching for the derivation pipeline.
 
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+use anyhow::Result;
+use anyhow::ensure;
+use derived_data_manager::StageId;
+use derived_data_manager::StageKey;
+use derived_data_manager::partition_ranges;
 use metaconfig_types::DerivationPipelineConfig;
 use mononoke_types::BonsaiChangeset;
 use mononoke_types::ChangesetId;
-use mononoke_types::MPath;
-use mononoke_types::MPathHash;
+use mononoke_types::DerivableType;
 use mononoke_types::NonRootMPath;
+
+/// Order selected types with dependencies first, ignoring dependencies outside the set.
+pub fn topo_sort_types(
+    mut remaining: BTreeSet<DerivableType>,
+    dependencies: impl Fn(DerivableType) -> Vec<DerivableType>,
+) -> Result<Vec<DerivableType>> {
+    let mut sorted = Vec::with_capacity(remaining.len());
+    while !remaining.is_empty() {
+        let ready: Vec<_> = remaining
+            .iter()
+            .copied()
+            .filter(|t| {
+                dependencies(*t)
+                    .into_iter()
+                    .all(|dep| !remaining.contains(&dep))
+            })
+            .collect();
+        ensure!(
+            !ready.is_empty(),
+            "Cycle in derivable type dependencies: {remaining:?}"
+        );
+        for t in ready {
+            remaining.remove(&t);
+            sorted.push(t);
+        }
+    }
+    Ok(sorted)
+}
 
 /// Why a single-changeset batch is a chokepoint, and how far its barrier reaches.
 pub enum ChokepointKind {
@@ -25,7 +57,7 @@ pub enum ChokepointKind {
     Global,
     /// Cross-stage `copy_from`: only these dest stages depend on the previous
     /// batch's terminal stage; every other stage keeps its normal per-stage dep.
-    Stages(HashSet<MPathHash>),
+    Stages(HashSet<StageKey>),
 }
 
 /// A batch of changesets, optionally a single-changeset chokepoint.
@@ -37,15 +69,24 @@ pub struct Batch {
 /// The stage that owns `path`: the longest stage path that is a prefix of it.
 /// Stages partition the path space (`MPath::ROOT` is the catch-all), so this is
 /// always `Some`.
-pub fn owning_stage<'a>(
-    pipeline_config: &'a DerivationPipelineConfig,
+pub fn owning_stage(
+    pipeline_config: &DerivationPipelineConfig,
     path: &NonRootMPath,
-) -> Option<&'a MPath> {
-    pipeline_config
+) -> Option<StageId> {
+    let prefix = pipeline_config
         .stages
         .keys()
         .filter(|stage| stage.is_prefix_of(path))
-        .max_by_key(|stage| stage.num_components())
+        .max_by_key(|stage| stage.num_components())?;
+    let config = &pipeline_config.stages[prefix];
+    if !config.partition_cut_points.is_empty() {
+        if let Some(range) = partition_ranges(&config.partition_cut_points)
+            .find(|range| range.contains_path(prefix, path))
+        {
+            return Some(StageId::Subentries(prefix.clone(), range));
+        }
+    }
+    Some(StageId::Manifest(prefix.clone()))
 }
 
 /// Classify a changeset as a chokepoint and how far its barrier reaches.
@@ -61,12 +102,12 @@ pub fn chokepoint_kind(
 
     // Cross-stage `copy_from`: scope the barrier to each copy's dest stage. A
     // copy is cross-stage iff the dest's owning stage does not also cover src.
-    let dest_stages: HashSet<MPathHash> = bcs
+    let dest_stages: HashSet<StageKey> = bcs
         .file_changes()
         .filter_map(|(dest, fc)| {
             let (src, _) = fc.copy_from()?;
             let dest_stage = owning_stage(pipeline_config, dest)?;
-            (!dest_stage.is_prefix_of(src)).then(|| dest_stage.get_path_hash())
+            (!dest_stage.covers(src)).then(|| dest_stage.to_key())
         })
         .collect();
 
@@ -111,4 +152,49 @@ pub fn split_batches_at_chokepoints(
         }
     }
     split_batches
+}
+
+#[cfg(test)]
+mod tests {
+    use mononoke_macros::mononoke;
+
+    use super::*;
+
+    #[mononoke::test]
+    fn orders_dependencies_and_ignores_unselected_types() -> Result<()> {
+        let dependencies = |ty| match ty {
+            DerivableType::BlameV2 | DerivableType::Fastlog => vec![DerivableType::Unodes],
+            _ => vec![],
+        };
+        let types = BTreeSet::from([
+            DerivableType::BlameV2,
+            DerivableType::Fastlog,
+            DerivableType::Unodes,
+        ]);
+        let sorted = topo_sort_types(types.clone(), dependencies)?;
+        assert_eq!(sorted.first(), Some(&DerivableType::Unodes));
+        assert_eq!(sorted.into_iter().collect::<BTreeSet<_>>(), types);
+        assert_eq!(
+            topo_sort_types(BTreeSet::from([DerivableType::BlameV2]), dependencies)?,
+            vec![DerivableType::BlameV2],
+        );
+        assert!(topo_sort_types(BTreeSet::new(), dependencies)?.is_empty());
+        Ok(())
+    }
+
+    #[mononoke::test]
+    fn rejects_cycles() {
+        assert!(topo_sort_types(BTreeSet::from([DerivableType::Unodes]), |ty| vec![ty]).is_err());
+        let types = BTreeSet::from([DerivableType::BlameV2, DerivableType::Unodes]);
+        let error = topo_sort_types(types, |ty| match ty {
+            DerivableType::BlameV2 => vec![DerivableType::Unodes],
+            _ => vec![DerivableType::BlameV2],
+        })
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Cycle in derivable type dependencies")
+        );
+    }
 }

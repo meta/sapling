@@ -6,6 +6,7 @@ use std::path::Path;
 use thrift_compiler::Config;
 use thrift_compiler::GenContext;
 const CRATEMAP: &str = "\
+eden/mononoke/derived_data/if/derived_data_type.thrift derivation_queue_thrift->derived_data_type_if //eden/mononoke/derived_data/if:derived_data_type_if-rust
 eden/mononoke/derived_data/remote/if/derived_data_service.thrift crate //eden/mononoke/derived_data/remote/if:derived_data_service_if-rust
 eden/mononoke/git/git_types/if/git_types_thrift.thrift git_types_thrift //eden/mononoke/git/git_types/if:git-types-thrift-rust
 eden/mononoke/mercurial/types/if/mercurial_thrift.thrift mercurial_thrift //eden/mononoke/mercurial/types/if:mercurial-thrift-rust

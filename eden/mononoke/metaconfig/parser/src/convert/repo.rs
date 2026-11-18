@@ -1008,7 +1008,15 @@ impl Convert for RawDerivationPipelineStageConfig {
             .into_iter()
             .map(|p| MPath::new(p.as_bytes()))
             .collect::<Result<Vec<_>>>()?;
-        Ok(DerivationPipelineStageConfig { dependencies })
+        Ok(DerivationPipelineStageConfig {
+            dependencies,
+            partition_cut_points: self
+                .partition_cut_points
+                .unwrap_or_default()
+                .into_iter()
+                .map(u8::try_from)
+                .collect::<Result<_, _>>()?,
+        })
     }
 }
 

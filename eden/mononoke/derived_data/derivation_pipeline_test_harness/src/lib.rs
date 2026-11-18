@@ -29,6 +29,21 @@ use context::CoreContext;
 use derived_data_manager::DerivedDataManager;
 use fbinit::FacebookInit;
 use filestore::FilestoreConfig;
+use fixtures::AclNestedDirectories;
+use fixtures::AncestorDirectoryReplacement;
+use fixtures::AugmentedManifestSuppliedRoot;
+use fixtures::AugmentedManifestSuppliedRootAcl;
+use fixtures::AugmentedManifestV2AbsentParentStageNoHgMapping;
+use fixtures::AugmentedManifestV2AclNoHgMapping;
+use fixtures::AugmentedManifestV2DuplicateParentEntriesNoHgMapping;
+use fixtures::AugmentedManifestV2NoHgMapping;
+use fixtures::AugmentedManifestV2P3PlusParentsNoHgMapping;
+use fixtures::CrossStageDirectoryCopy;
+use fixtures::CrossStageFileCopy;
+use fixtures::MergedDeletionHistory;
+use fixtures::NestedDirectories;
+use fixtures::NestedSubtreeCopy;
+use fixtures::PartitionFileCopies;
 use fixtures::TestRepoFixture;
 use futures::FutureExt;
 use futures::stream;
@@ -66,7 +81,7 @@ pub struct TestRepo(
 );
 
 /// The pipeline-derivable types verified by the harness.
-const PIPELINE_TYPES: [DerivableType; 11] = [
+pub const PIPELINE_TYPES: [DerivableType; 11] = [
     DerivableType::Fsnodes,
     DerivableType::Unodes,
     DerivableType::Fastlog,
@@ -112,9 +127,7 @@ pub fn pipeline_config_from_stages(
                 .collect::<Result<Vec<MPath>>>()?;
             Ok((
                 stage_path.clone(),
-                DerivationPipelineStageConfig {
-                    dependencies: dep_paths,
-                },
+                DerivationPipelineStageConfig::new(dep_paths),
             ))
         })
         .collect::<Result<HashMap<_, _>>>()?;
@@ -262,10 +275,7 @@ async fn verify_pipeline_matches_canonical_impl<F: PipelineTestFixture + Send>(
 /// Scoped to the full graph (no canonical-only boundary): every parent is
 /// pipeline-derived in an earlier batch, so the pipeline is self-sufficient.
 ///
-/// `types` selects which types to derive and verify pipeline-first. Restrict it
-/// to types whose pipeline derivation is self-sufficient (e.g. `HgChangesets`);
-/// types with cross-type dependencies that read canonical data (e.g. `BlameV2`
-/// reading `Unodes`) are not yet safe to run pipeline-first.
+/// `types` selects the types to derive and verify, including their cross-type dependencies.
 pub async fn verify_pipeline_first_then_canonical<F: PipelineTestFixture + Send>(
     fb: FacebookInit,
     types: &[DerivableType],
@@ -280,6 +290,18 @@ async fn verify_pipeline_first_then_canonical_with_repo<F: PipelineTestFixture +
     types: &[DerivableType],
     use_terminal_mapping: bool,
 ) -> Result<(TestRepo, Vec<ChangesetId>)> {
+    let mut config = pipeline_config_from_stages(F::pipeline_stages())?;
+    config.types = types.iter().copied().collect();
+    verify_pipeline_first_then_canonical_with_config::<F>(fb, config, use_terminal_mapping).await
+}
+
+async fn verify_pipeline_first_then_canonical_with_config<F: PipelineTestFixture + Send>(
+    fb: FacebookInit,
+    config: DerivationPipelineConfig,
+    use_terminal_mapping: bool,
+) -> Result<(TestRepo, Vec<ChangesetId>)> {
+    config.validate()?;
+    let types = &config.types.iter().copied().collect::<Vec<_>>();
     let ctx = &CoreContext::test_mock(fb);
     let (repo, _commits, _dag) = F::get_repo_and_dag::<TestRepo>(fb).await;
     let manager = repo.repo_derived_data().manager();
@@ -293,10 +315,6 @@ async fn verify_pipeline_first_then_canonical_with_repo<F: PipelineTestFixture +
         )
         .await?
         .ok_or_else(|| anyhow!("fixture {} has no master bookmark", F::REPO_NAME))?;
-
-    let mut config = pipeline_config_from_stages(F::pipeline_stages())?;
-    config.types = types.iter().copied().collect();
-    config.validate()?;
 
     let mut all_commits = repo
         .commit_graph()
@@ -401,7 +419,7 @@ async fn plan_pipeline(
             ctx,
             vec![head],
             pipeline_boundary,
-            PIPELINE_BATCH_SIZE,
+            config.batch_size.get(),
         )
         .await?
         .try_collect()
@@ -417,7 +435,7 @@ async fn plan_pipeline(
     let derivation_pipeline_driver::PipelineOrder {
         sorted_stages,
         sorted_types,
-    } = derivation_pipeline_driver::plan_stages_and_types(manager, config, types);
+    } = derivation_pipeline_driver::plan_stages_and_types(manager, config, types)?;
     Ok(PipelinePlan {
         batches,
         sorted_stages,
@@ -435,7 +453,8 @@ async fn run_pipeline(
     ctx: &CoreContext,
     config: &DerivationPipelineConfig,
     plan: &PipelinePlan,
-) -> Result<()> {
+) -> Result<DerivedDataManager> {
+    let mut references = Vec::new();
     derivation_pipeline_driver::run_pipeline_batches(
         manager,
         ctx,
@@ -443,9 +462,11 @@ async fn run_pipeline(
         &plan.sorted_stages,
         &plan.sorted_types,
         &plan.batches,
+        |outputs| references.extend_from_slice(outputs),
     )
-    .await
-    .map_err(anyhow::Error::from)
+    .await?;
+    let inputs = derived_data_manager::StageInputs::new(&references)?;
+    Ok(manager.with_stage_inputs(inputs))
 }
 
 /// Assert pipeline output matches canonical for every pipeline-derived
@@ -455,6 +476,7 @@ async fn verify_pipeline_output<F: PipelineTestFixture>(
     manager: &DerivedDataManager,
     ctx: &CoreContext,
     all_commits: &[ChangesetId],
+    config: &DerivationPipelineConfig,
     plan: &PipelinePlan,
 ) -> Result<()> {
     let mut mismatches = Vec::new();
@@ -464,6 +486,27 @@ async fn verify_pipeline_output<F: PipelineTestFixture>(
         }
         for stage_path in &plan.sorted_stages {
             for &derivable_type in &plan.sorted_types {
+                let payload = derived_data_manager::ManifestStagePayload::from_config(
+                    stage_path.clone(),
+                    &config.stages[stage_path],
+                );
+                for range in payload.partitions() {
+                    let stage =
+                        derived_data_manager::StageId::Subentries(stage_path.clone(), range);
+                    if !BulkDerivation::verify_stage_output(
+                        manager,
+                        ctx,
+                        cs_id,
+                        derivable_type,
+                        &stage,
+                    )
+                    .await?
+                    {
+                        mismatches.push(format!(
+                            "cs_id={cs_id} type={derivable_type:?} stage={stage:?}"
+                        ));
+                    }
+                }
                 let matches = BulkDerivation::verify_stage_output(
                     manager,
                     ctx,
@@ -538,8 +581,8 @@ async fn run_derivation_and_verification<F: PipelineTestFixture + Send>(
         pipeline_boundary,
     )
     .await?;
-    run_pipeline(manager, ctx, config, &plan).await?;
-    verify_pipeline_output::<F>(manager, ctx, all_commits, &plan).await
+    let supplied = run_pipeline(manager, ctx, config, &plan).await?;
+    verify_pipeline_output::<F>(&supplied, ctx, all_commits, config, &plan).await
 }
 
 /// Run the full pipeline before any canonical derivation, then derive canonical
@@ -557,181 +600,176 @@ async fn run_pipeline_first_then_canonical<F: PipelineTestFixture + Send>(
     // every parent is pipeline-derived in an earlier batch, so no canonical data
     // is required for the pipeline to complete.
     let plan = plan_pipeline(ctx, repo, manager, config, types, head, vec![]).await?;
-    run_pipeline(manager, ctx, config, &plan).await?;
+    let supplied = run_pipeline(manager, ctx, config, &plan).await?;
 
     // Now derive canonical for the selected types, then verify byte-equality.
     manager
         .derive_bulk_locally(ctx, all_commits, None, types, None, None)
         .await
         .map_err(anyhow::Error::from)?;
-    verify_pipeline_output::<F>(manager, ctx, all_commits, &plan).await
+    verify_pipeline_output::<F>(&supplied, ctx, all_commits, config, &plan).await
+}
+
+impl PipelineTestFixture for NestedDirectories {
+    fn pipeline_stages() -> Vec<(&'static str, Vec<&'static str>)> {
+        vec![
+            ("", vec!["top1", "top2", "top3"]),
+            ("top1", vec![]),
+            ("top2", vec!["nested1", "nested2"]),
+            ("top2/nested1", vec![]),
+            ("top2/nested2", vec![]),
+            ("top3", vec![]),
+        ]
+    }
+}
+
+impl PipelineTestFixture for AugmentedManifestV2NoHgMapping {
+    fn pipeline_stages() -> Vec<(&'static str, Vec<&'static str>)> {
+        vec![
+            ("", vec!["top1", "top2"]),
+            ("top1", vec!["nested"]),
+            ("top1/nested", vec![]),
+            ("top2", vec![]),
+        ]
+    }
+}
+
+impl PipelineTestFixture for AugmentedManifestV2DuplicateParentEntriesNoHgMapping {
+    fn pipeline_stages() -> Vec<(&'static str, Vec<&'static str>)> {
+        vec![
+            ("", vec!["top1", "top2"]),
+            ("top1", vec![]),
+            ("top2", vec![]),
+        ]
+    }
+}
+
+impl PipelineTestFixture for AugmentedManifestV2AbsentParentStageNoHgMapping {
+    fn pipeline_stages() -> Vec<(&'static str, Vec<&'static str>)> {
+        vec![
+            ("", vec!["top1", "top2"]),
+            ("top1", vec![]),
+            ("top2", vec![]),
+        ]
+    }
+}
+
+impl PipelineTestFixture for AugmentedManifestV2P3PlusParentsNoHgMapping {
+    fn pipeline_stages() -> Vec<(&'static str, Vec<&'static str>)> {
+        vec![("", vec!["top1"]), ("top1", vec![])]
+    }
+}
+
+impl PipelineTestFixture for AclNestedDirectories {
+    fn pipeline_stages() -> Vec<(&'static str, Vec<&'static str>)> {
+        vec![
+            ("", vec!["top1", "top2"]),
+            ("top1", vec!["sub"]),
+            ("top1/sub", vec![]),
+            ("top2", vec![]),
+        ]
+    }
+}
+
+impl PipelineTestFixture for AncestorDirectoryReplacement {
+    fn pipeline_stages() -> Vec<(&'static str, Vec<&'static str>)> {
+        vec![("", vec!["a"]), ("a", vec!["b"]), ("a/b", vec![])]
+    }
+}
+
+impl PipelineTestFixture for AugmentedManifestV2AclNoHgMapping {
+    fn pipeline_stages() -> Vec<(&'static str, Vec<&'static str>)> {
+        vec![
+            ("", vec!["top1"]),
+            ("top1", vec!["docs"]),
+            ("top1/docs", vec![]),
+        ]
+    }
+}
+
+impl PipelineTestFixture for AugmentedManifestSuppliedRoot {
+    fn pipeline_stages() -> Vec<(&'static str, Vec<&'static str>)> {
+        vec![("", vec!["dir", "new"]), ("dir", vec![]), ("new", vec![])]
+    }
+}
+
+impl PipelineTestFixture for AugmentedManifestSuppliedRootAcl {
+    fn pipeline_stages() -> Vec<(&'static str, Vec<&'static str>)> {
+        vec![
+            ("", vec!["dir", "new", "restricted"]),
+            ("dir", vec![]),
+            ("new", vec![]),
+            ("restricted", vec![]),
+        ]
+    }
+}
+
+impl PipelineTestFixture for NestedSubtreeCopy {
+    fn pipeline_stages() -> Vec<(&'static str, Vec<&'static str>)> {
+        vec![
+            ("", vec!["top1", "top2"]),
+            ("top1", vec![]),
+            ("top2", vec![]),
+        ]
+    }
+}
+
+impl PipelineTestFixture for CrossStageDirectoryCopy {
+    fn pipeline_stages() -> Vec<(&'static str, Vec<&'static str>)> {
+        vec![
+            ("", vec!["top1", "top2"]),
+            ("top1", vec![]),
+            ("top2", vec![]),
+        ]
+    }
+}
+
+impl PipelineTestFixture for CrossStageFileCopy {
+    fn pipeline_stages() -> Vec<(&'static str, Vec<&'static str>)> {
+        vec![
+            ("", vec!["top1", "top2"]),
+            ("top1", vec![]),
+            ("top2", vec![]),
+        ]
+    }
+}
+
+impl PipelineTestFixture for MergedDeletionHistory {
+    fn pipeline_stages() -> Vec<(&'static str, Vec<&'static str>)> {
+        vec![
+            (
+                "",
+                vec!["dir", "dir_2", "dir_3", "dir_4", "dir_5", "dir_to_file"],
+            ),
+            ("dir", vec![]),
+            ("dir_2", vec![]),
+            ("dir_3", vec![]),
+            ("dir_4", vec![]),
+            ("dir_5", vec![]),
+            ("dir_to_file", vec![]),
+        ]
+    }
+}
+
+impl PipelineTestFixture for PartitionFileCopies {
+    fn pipeline_stages() -> Vec<(&'static str, Vec<&'static str>)> {
+        vec![("", vec!["data"]), ("data", vec![])]
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use bonsai_hg_mapping::BonsaiHgMappingRef;
-    use fixtures::AclNestedDirectories;
-    use fixtures::AncestorDirectoryReplacement;
-    use fixtures::AugmentedManifestSuppliedRoot;
-    use fixtures::AugmentedManifestSuppliedRootAcl;
-    use fixtures::AugmentedManifestV2AbsentParentStageNoHgMapping;
-    use fixtures::AugmentedManifestV2AclNoHgMapping;
-    use fixtures::AugmentedManifestV2DuplicateParentEntriesNoHgMapping;
-    use fixtures::AugmentedManifestV2NoHgMapping;
-    use fixtures::AugmentedManifestV2P3PlusParentsNoHgMapping;
-    use fixtures::CrossStageDirectoryCopy;
-    use fixtures::CrossStageFileCopy;
-    use fixtures::NestedDirectories;
-    use fixtures::NestedSubtreeCopy;
     use mononoke_macros::mononoke;
 
     use super::*;
 
-    /// Types verified pipeline-first (pipeline derived before any canonical
-    /// derivation; see `verify_pipeline_first_then_canonical`). A type belongs
-    /// here only if its pipeline derivation never reads canonical data that the
-    /// pipeline-ahead-of-canonical state would leave absent.
-    ///
-    /// `HgChangesets` qualifies: its only canonical read is the cross-stage
-    /// copy-source parent's hg, now resolved from the pipeline terminal stage
-    /// output (canonical fallback only for genuinely pre-pipeline parents).
-    ///
-    /// Excluded for now: `BlameV2` and `Fastlog` resolve their `Unodes`
-    /// dependency from canonical derived data. That is safe in production because
-    /// `Unodes` has been fully canonically derived (prod mapping) for a long
-    /// time, so it is never absent there — but it makes them fail the artificial
-    /// pipeline-first harness that withholds canonical. Add a type here once its
-    /// pipeline derivation is self-sufficient for every dependency still in the
-    /// transitionary state.
+    /// The ordinary-stage Mercurial regression cases run without canonical mappings.
     const PIPELINE_FIRST_TYPES: [DerivableType; 1] = [DerivableType::HgChangesets];
     const AUGMENTED_MANIFEST_TYPES: [DerivableType; 2] = [
         DerivableType::AclManifests,
         DerivableType::HgAugmentedManifests,
     ];
-
-    impl PipelineTestFixture for NestedDirectories {
-        fn pipeline_stages() -> Vec<(&'static str, Vec<&'static str>)> {
-            vec![
-                ("", vec!["top1", "top2", "top3"]),
-                ("top1", vec![]),
-                ("top2", vec!["nested1", "nested2"]),
-                ("top2/nested1", vec![]),
-                ("top2/nested2", vec![]),
-                ("top3", vec![]),
-            ]
-        }
-    }
-
-    impl PipelineTestFixture for AugmentedManifestV2NoHgMapping {
-        fn pipeline_stages() -> Vec<(&'static str, Vec<&'static str>)> {
-            vec![
-                ("", vec!["top1", "top2"]),
-                ("top1", vec!["nested"]),
-                ("top1/nested", vec![]),
-                ("top2", vec![]),
-            ]
-        }
-    }
-
-    impl PipelineTestFixture for AugmentedManifestV2DuplicateParentEntriesNoHgMapping {
-        fn pipeline_stages() -> Vec<(&'static str, Vec<&'static str>)> {
-            vec![
-                ("", vec!["top1", "top2"]),
-                ("top1", vec![]),
-                ("top2", vec![]),
-            ]
-        }
-    }
-
-    impl PipelineTestFixture for AugmentedManifestV2AbsentParentStageNoHgMapping {
-        fn pipeline_stages() -> Vec<(&'static str, Vec<&'static str>)> {
-            vec![
-                ("", vec!["top1", "top2"]),
-                ("top1", vec![]),
-                ("top2", vec![]),
-            ]
-        }
-    }
-
-    impl PipelineTestFixture for AugmentedManifestV2P3PlusParentsNoHgMapping {
-        fn pipeline_stages() -> Vec<(&'static str, Vec<&'static str>)> {
-            vec![("", vec!["top1"]), ("top1", vec![])]
-        }
-    }
-
-    impl PipelineTestFixture for AclNestedDirectories {
-        fn pipeline_stages() -> Vec<(&'static str, Vec<&'static str>)> {
-            vec![
-                ("", vec!["top1", "top2"]),
-                ("top1", vec!["sub"]),
-                ("top1/sub", vec![]),
-                ("top2", vec![]),
-            ]
-        }
-    }
-
-    impl PipelineTestFixture for AncestorDirectoryReplacement {
-        fn pipeline_stages() -> Vec<(&'static str, Vec<&'static str>)> {
-            vec![("", vec!["a"]), ("a", vec!["b"]), ("a/b", vec![])]
-        }
-    }
-
-    impl PipelineTestFixture for AugmentedManifestV2AclNoHgMapping {
-        fn pipeline_stages() -> Vec<(&'static str, Vec<&'static str>)> {
-            vec![
-                ("", vec!["top1"]),
-                ("top1", vec!["docs"]),
-                ("top1/docs", vec![]),
-            ]
-        }
-    }
-
-    impl PipelineTestFixture for AugmentedManifestSuppliedRoot {
-        fn pipeline_stages() -> Vec<(&'static str, Vec<&'static str>)> {
-            vec![("", vec!["dir", "new"]), ("dir", vec![]), ("new", vec![])]
-        }
-    }
-
-    impl PipelineTestFixture for AugmentedManifestSuppliedRootAcl {
-        fn pipeline_stages() -> Vec<(&'static str, Vec<&'static str>)> {
-            vec![
-                ("", vec!["dir", "new", "restricted"]),
-                ("dir", vec![]),
-                ("new", vec![]),
-                ("restricted", vec![]),
-            ]
-        }
-    }
-
-    impl PipelineTestFixture for NestedSubtreeCopy {
-        fn pipeline_stages() -> Vec<(&'static str, Vec<&'static str>)> {
-            vec![
-                ("", vec!["top1", "top2"]),
-                ("top1", vec![]),
-                ("top2", vec![]),
-            ]
-        }
-    }
-
-    impl PipelineTestFixture for CrossStageDirectoryCopy {
-        fn pipeline_stages() -> Vec<(&'static str, Vec<&'static str>)> {
-            vec![
-                ("", vec!["top1", "top2"]),
-                ("top1", vec![]),
-                ("top2", vec![]),
-            ]
-        }
-    }
-
-    impl PipelineTestFixture for CrossStageFileCopy {
-        fn pipeline_stages() -> Vec<(&'static str, Vec<&'static str>)> {
-            vec![
-                ("", vec!["top1", "top2"]),
-                ("top1", vec![]),
-                ("top2", vec![]),
-            ]
-        }
-    }
 
     #[mononoke::fbinit_test]
     async fn test_pipeline_matches_canonical(fb: FacebookInit) -> Result<()> {
@@ -748,6 +786,40 @@ mod tests {
         fb: FacebookInit,
     ) -> Result<()> {
         verify_pipeline_matches_canonical::<AncestorDirectoryReplacement>(fb).await
+    }
+
+    #[mononoke::fbinit_test]
+    async fn pipeline_first_stage_transitions(fb: FacebookInit) -> Result<()> {
+        verify_pipeline_first_then_canonical::<NestedDirectories>(fb, &PIPELINE_TYPES).await
+    }
+
+    #[mononoke::fbinit_test]
+    async fn pipeline_first_ancestor_replacement(fb: FacebookInit) -> Result<()> {
+        verify_pipeline_first_then_canonical::<AncestorDirectoryReplacement>(fb, &PIPELINE_TYPES)
+            .await
+    }
+
+    #[mononoke::fbinit_test]
+    async fn pipeline_first_duplicate_parents(fb: FacebookInit) -> Result<()> {
+        verify_pipeline_first_then_canonical::<AugmentedManifestV2DuplicateParentEntriesNoHgMapping>(fb, &PIPELINE_TYPES).await
+    }
+
+    #[mononoke::fbinit_test]
+    async fn pipeline_first_absent_parent_stage(fb: FacebookInit) -> Result<()> {
+        verify_pipeline_first_then_canonical::<AugmentedManifestV2AbsentParentStageNoHgMapping>(
+            fb,
+            &PIPELINE_TYPES,
+        )
+        .await
+    }
+
+    #[mononoke::fbinit_test]
+    async fn pipeline_first_octopus_merge(fb: FacebookInit) -> Result<()> {
+        verify_pipeline_first_then_canonical::<AugmentedManifestV2P3PlusParentsNoHgMapping>(
+            fb,
+            &PIPELINE_TYPES,
+        )
+        .await
     }
 
     async fn verify_augmented_manifest_pipeline_first_without_hg_mapping<
@@ -811,6 +883,15 @@ mod tests {
         verify_augmented_manifest_pipeline_first_without_hg_mapping::<
             AugmentedManifestV2P3PlusParentsNoHgMapping,
         >(fb)
+        .await
+    }
+
+    #[mononoke::fbinit_test]
+    async fn hg_finalization_uses_pipeline_subtree_sources(fb: FacebookInit) -> Result<()> {
+        verify_pipeline_first_then_canonical::<NestedSubtreeCopy>(
+            fb,
+            &[DerivableType::HgChangesets],
+        )
         .await
     }
 
@@ -1074,3 +1155,6 @@ mod tests {
         .await
     }
 }
+
+#[cfg(test)]
+mod partitions;

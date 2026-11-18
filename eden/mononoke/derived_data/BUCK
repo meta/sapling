@@ -90,11 +90,21 @@ rust_library(
     name = "derived_data_manager",
     srcs = glob(["manager/**/*.rs"]),
     autocargo = {"cargo_toml_dir": "manager"},
+    test_deps = [
+        "//common/rust/shed/fbinit:fbinit",
+        "//common/rust/shed/fbinit:fbinit-tokio",
+        "//eden/mononoke/blobstore:counting_blob",
+        "//eden/mononoke/blobstore:memblob",
+        "//eden/mononoke/common/mononoke_macros:mononoke_macros",
+    ],
     deps = [
         "fbsource//third-party/rust:anyhow",
         "fbsource//third-party/rust:async-recursion",
         "fbsource//third-party/rust:async-trait",
+        "fbsource//third-party/rust:bytes",
+        "fbsource//third-party/rust:derive_more",
         "fbsource//third-party/rust:futures",
+        "fbsource//third-party/rust:itertools",
         "fbsource//third-party/rust:serde",
         "fbsource//third-party/rust:thiserror",
         "fbsource//third-party/rust:tokio",
@@ -125,6 +135,7 @@ rust_library(
         "//eden/mononoke/repo_attributes/repo_derivation_queues/if:derivation_queue_thrift-rust",
         "//eden/mononoke/repo_attributes/restricted_paths_common:restricted_paths_common",
         "//eden/mononoke/servers/slapi/slapi_server/context:context",
+        "//thrift/lib/rust:fbthrift",
     ],
 )
 
@@ -424,7 +435,6 @@ rust_library(
     srcs = glob(["deleted_manifest/*.rs"]),
     autocargo = {"cargo_toml_dir": "deleted_manifest"},
     test_deps = [
-        "fbcode//common/rust/shed/sorted_vector_map:sorted_vector_map",
         "fbsource//third-party/rust:maplit",
         "fbsource//third-party/rust:pretty_assertions",
         ":derived_data_test_utils",
@@ -458,6 +468,7 @@ rust_library(
         "//common/rust/shed/borrowed:borrowed",
         "//common/rust/shed/bounded_traversal:bounded_traversal",
         "//common/rust/shed/cloned:cloned",
+        "//common/rust/shed/sorted_vector_map:sorted_vector_map",
         "//eden/mononoke/blobstore:blobstore",
         "//eden/mononoke/common/mononoke_macros:mononoke_macros",
         "//eden/mononoke/common/rust/justknobs_ext:justknobs",
@@ -521,9 +532,11 @@ rust_library(
     test_deps = [
         "fbsource//third-party/rust:async-recursion",
         "fbsource//third-party/rust:pretty_assertions",
+        "fbsource//third-party/rust:tokio",
         "//common/rust/shed/facet:facet",
         "//common/rust/shed/fbinit:fbinit",
         "//common/rust/shed/fbinit:fbinit-tokio",
+        "//eden/mononoke/blobstore:blobstore_test_utils",
         "//eden/mononoke/common/mononoke_macros:mononoke_macros",
         "//eden/mononoke/repo_attributes/bonsai_hg_mapping:bonsai_hg_mapping",
         "//eden/mononoke/repo_attributes/bookmarks:bookmarks",

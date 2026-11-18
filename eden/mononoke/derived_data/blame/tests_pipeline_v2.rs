@@ -22,6 +22,7 @@ use derived_data_manager::DerivationStagePayload;
 use derived_data_manager::ManifestStagePayload;
 use derived_data_manager::PipelineDerivable;
 use derived_data_manager::StageId;
+use derived_data_manager::StageInputs;
 use fbinit::FacebookInit;
 use filestore::FilestoreConfig;
 use futures::FutureExt;
@@ -51,7 +52,6 @@ use unodes::find_unode_rename_sources;
 
 use crate::RootBlameV2;
 use crate::format_key;
-use crate::pipeline_v2::is_chokepoint;
 
 #[derive(Clone)]
 #[facet::container]
@@ -145,7 +145,11 @@ async fn test_find_stage_unode_rename_sources(fb: FacebookInit) -> Result<()> {
     // source under S that does not exist in the tree parent.
     let child = CreateCommitContext::new(ctx, repo, vec![tree_parent, leaf_parent])
         .add_file_with_copy_info("dir/copy_under", "content in", (tree_parent, "dir/file_in"))
-        .add_file_with_copy_info("from_root", "stage root is a file", (leaf_parent, "dir"))
+        .add_file_with_copy_info(
+            "dir/from_root",
+            "stage root is a file",
+            (leaf_parent, "dir"),
+        )
         .add_file_with_copy_info("dir/copy_missing", "absent", (tree_parent, "dir/absent"))
         .commit()
         .await?;
@@ -163,10 +167,33 @@ async fn test_find_stage_unode_rename_sources(fb: FacebookInit) -> Result<()> {
             (leaf_parent, Some(Entry::Leaf(leaf_unode))),
         ]);
 
+    let parent_stage_outputs: HashMap<_, _> = parent_stage_outputs
+        .into_iter()
+        .map(|(csid, entry)| {
+            (
+                csid,
+                derived_data_manager::ManifestStageOutput::Entry(entry),
+            )
+        })
+        .collect();
+    let payload = DerivationStagePayload::Manifest(ManifestStagePayload {
+        path: stage_path.clone(),
+        deps: vec![].into(),
+    });
+    for missing in [tree_parent, leaf_parent] {
+        let mut incomplete = parent_stage_outputs.clone();
+        incomplete.remove(&missing);
+        let error =
+            find_stage_unode_rename_sources(ctx, &derivation_ctx, &payload, &bonsai, &incomplete)
+                .await
+                .err()
+                .expect("missing parent must fail copy resolution");
+        assert!(format!("{error:#}").contains("missing unode stage output"));
+    }
     let renames = find_stage_unode_rename_sources(
         ctx,
         &derivation_ctx,
-        &stage_path,
+        &payload,
         &bonsai,
         &parent_stage_outputs,
     )
@@ -188,7 +215,7 @@ async fn test_find_stage_unode_rename_sources(fb: FacebookInit) -> Result<()> {
 
     // Source equal to the stage root resolves against the leaf parent.
     match renames
-        .get(&NonRootMPath::new("from_root")?)
+        .get(&NonRootMPath::new("dir/from_root")?)
         .expect("source at the stage root should resolve against the leaf parent")
     {
         UnodeRenameSource::CopyInfo(source) => {
@@ -205,75 +232,6 @@ async fn test_find_stage_unode_rename_sources(fb: FacebookInit) -> Result<()> {
             .get(&NonRootMPath::new("dir/copy_missing")?)
             .is_none(),
         "a copy from a path absent in the parent's stage subtree should not resolve",
-    );
-
-    Ok(())
-}
-
-#[mononoke::fbinit_test]
-async fn test_is_chokepoint(fb: FacebookInit) -> Result<()> {
-    let ctx = CoreContext::test_mock(fb);
-    let repo: TestRepo = test_repo_factory::build_empty(ctx.fb).await?;
-    borrowed!(ctx, repo);
-
-    // Stage S owns the `dir` subtree.
-    let stage_path = MPath::new("dir")?;
-
-    let base = CreateCommitContext::new_root(ctx, repo)
-        .add_file("dir/file_in", "content in")
-        .add_file("outside", "content out")
-        .commit()
-        .await?;
-
-    // No copies, no subtree changes: not a chokepoint.
-    let plain = CreateCommitContext::new(ctx, repo, vec![base])
-        .add_file("dir/added", "added")
-        .commit()
-        .await?;
-    let plain_bonsai = plain.load(ctx, &repo.repo_blobstore).await?;
-    assert!(
-        !is_chokepoint(&plain_bonsai, &stage_path),
-        "a commit with no copies or subtree changes is not a chokepoint",
-    );
-
-    // Same-stage copy (source and dest both under S): not a chokepoint.
-    let same_stage = CreateCommitContext::new(ctx, repo, vec![base])
-        .add_file_with_copy_info("dir/copy_in", "content in", (base, "dir/file_in"))
-        .commit()
-        .await?;
-    let same_stage_bonsai = same_stage.load(ctx, &repo.repo_blobstore).await?;
-    assert!(
-        !is_chokepoint(&same_stage_bonsai, &stage_path),
-        "an in-stage copy is not a chokepoint",
-    );
-
-    // Cross-stage copy (copy into S from outside S): a chokepoint.
-    let cross_stage = CreateCommitContext::new(ctx, repo, vec![base])
-        .add_file_with_copy_info("dir/copy_out", "content out", (base, "outside"))
-        .commit()
-        .await?;
-    let cross_stage_bonsai = cross_stage.load(ctx, &repo.repo_blobstore).await?;
-    assert!(
-        is_chokepoint(&cross_stage_bonsai, &stage_path),
-        "a copy into S from outside S is a chokepoint",
-    );
-
-    // Subtree-change commit: a chokepoint. `freeze` only checks internal
-    // consistency, so it needs no JustKnobs (unlike `save_changesets`).
-    let mut subtree_bcs = CreateCommitContext::new(ctx, repo, vec![base])
-        .add_file("dir/copied/file_in", "content in")
-        .create_commit_object()
-        .await?;
-    subtree_bcs.subtree_changes = [(
-        MPath::new("dir/copied")?,
-        SubtreeChange::deep_copy(MPath::new("dir")?, base),
-    )]
-    .into_iter()
-    .collect();
-    let subtree_bonsai = subtree_bcs.freeze()?;
-    assert!(
-        is_chokepoint(&subtree_bonsai, &stage_path),
-        "a subtree-change commit is a chokepoint",
     );
 
     Ok(())
@@ -312,11 +270,10 @@ async fn test_unchanged_stage_leaf_preserves_canonical_attribution(fb: FacebookI
         .commit()
         .await?;
     let manager = repo.repo_derived_data().manager();
-    let derivation_ctx = manager.derivation_context(None);
     let stage_path = MPath::new("s")?;
     let payload = DerivationStagePayload::Manifest(ManifestStagePayload {
         path: stage_path.clone(),
-        deps: vec![],
+        deps: vec![].into(),
     });
 
     with_just_knobs_async(
@@ -332,16 +289,19 @@ async fn test_unchanged_stage_leaf_preserves_canonical_attribution(fb: FacebookI
 
             // Only the child gets a stage mapping. The manager resolves the
             // parent's canonical unode and correctly reuses its unchanged leaf.
-            manager
+            let result = manager
                 .derive_stage_batch::<RootUnodeManifestId>(ctx, vec![child], &payload)
                 .await?;
+            let inputs = StageInputs::new(&result.outputs.into_iter().collect::<Vec<_>>())?;
+            let manager = manager.with_stage_inputs(inputs);
+            let derivation_ctx = manager.derivation_context(None);
             let outputs = RootUnodeManifestId::fetch_stage_outputs(
                 ctx,
                 &derivation_ctx,
                 &StageId::Manifest(stage_path),
                 vec![parent, child],
             )
-            .await?;
+            .await?.into_iter().map(|(csid, output)| Ok((csid, output.into_entry()?))).collect::<Result<HashMap<_, _>>>()?;
             assert_eq!(outputs, HashMap::from([(child, Some(Entry::Leaf(file_unode)))]));
 
             manager
@@ -371,7 +331,8 @@ async fn derive_namespaced_stage(
     payload: &DerivationStagePayload,
     chain: &[ChangesetId],
 ) -> Result<()> {
-    derive_unode_stage_outputs(ctx, derivation_ctx, repo, payload, chain).await?;
+    let supplied = derive_unode_stage_outputs(ctx, derivation_ctx, repo, payload, chain).await?;
+    let derivation_ctx = &supplied;
     for csid in chain {
         let bonsai = csid.load(ctx, &repo.repo_blobstore).await?;
         RootBlameV2::derive_stage_batch(
@@ -397,14 +358,15 @@ async fn derive_unode_stage_outputs(
     repo: &TestRepo,
     payload: &DerivationStagePayload,
     chain: &[ChangesetId],
-) -> Result<()> {
+) -> Result<DerivationContext> {
     let DerivationStagePayload::Manifest(manifest_payload) = payload else {
         panic!("derive_unode_stage_outputs only supports manifest stages");
     };
     let stage_path = manifest_payload.path.clone();
+    let mut references = Vec::new();
     let mut unode_outputs: HashMap<
         ChangesetId,
-        Option<manifest::Entry<ManifestUnodeId, mononoke_types::FileUnodeId>>,
+        <RootUnodeManifestId as PipelineDerivable>::StageOutput,
     > = HashMap::new();
     for csid in chain {
         let bonsai = csid.load(ctx, &repo.repo_blobstore).await?;
@@ -421,16 +383,22 @@ async fn derive_unode_stage_outputs(
             HashMap::new(),
         )
         .await?;
-        RootUnodeManifestId::store_stage_outputs(
+        let reference = RootUnodeManifestId::store_stage_outputs(
             ctx,
             derivation_ctx,
             &StageId::Manifest(stage_path.clone()),
             out.clone(),
         )
         .await?;
+        references.extend(reference);
         unode_outputs.extend(out);
     }
-    Ok(())
+    let inputs = StageInputs::new(&references)?;
+    Ok(repo
+        .repo_derived_data()
+        .manager()
+        .with_stage_inputs(inputs)
+        .derivation_context(None))
 }
 
 /// Derive and store the namespaced unode + blame root-stage outputs for a
@@ -444,22 +412,9 @@ async fn derive_namespaced_root_stage(
     let stage_path = MPath::ROOT;
     let payload = DerivationStagePayload::Manifest(ManifestStagePayload {
         path: stage_path.clone(),
-        deps: vec![],
+        deps: vec![].into(),
     });
-    derive_unode_stage_outputs(ctx, derivation_ctx, repo, &payload, chain).await?;
-    for csid in chain {
-        let bonsai = csid.load(ctx, &repo.repo_blobstore).await?;
-        RootBlameV2::derive_stage_batch(
-            ctx,
-            derivation_ctx,
-            vec![bonsai],
-            &payload,
-            HashMap::new(),
-            HashMap::new(),
-        )
-        .await?;
-    }
-    Ok(())
+    derive_namespaced_stage(ctx, derivation_ctx, repo, &payload, chain).await
 }
 
 /// With the prod-mapping OFF, deriving canonical blame and namespaced
@@ -701,7 +656,7 @@ async fn test_merge_with_dep_pruning(fb: FacebookInit) -> Result<()> {
     let stage_path = MPath::ROOT;
     let payload = DerivationStagePayload::Manifest(ManifestStagePayload {
         path: stage_path.clone(),
-        deps: vec![MPathElement::new(b"dep".to_vec())?],
+        deps: vec![MPathElement::new(b"dep".to_vec())?].into(),
     });
 
     // Base forks into two branches; each touches a file under S and a file
@@ -751,7 +706,7 @@ async fn test_merge_with_dep_pruning(fb: FacebookInit) -> Result<()> {
     // it. verify checks the whole commit, so both must be blamed.
     let dep_payload = DerivationStagePayload::Manifest(ManifestStagePayload {
         path: MPath::new("dep")?,
-        deps: vec![],
+        deps: vec![].into(),
     });
     let chain = [base, left, right, merge];
 
@@ -761,8 +716,9 @@ async fn test_merge_with_dep_pruning(fb: FacebookInit) -> Result<()> {
         namespaced_test_knobs(),
         async {
             for stage_payload in [&dep_payload, &payload] {
-                derive_unode_stage_outputs(ctx, &derivation_ctx, repo, stage_payload, &chain)
-                    .await?;
+                let derivation_ctx =
+                    derive_unode_stage_outputs(ctx, &derivation_ctx, repo, stage_payload, &chain)
+                        .await?;
                 for csid in chain {
                     let bonsai = csid.load(ctx, &repo.repo_blobstore).await?;
                     RootBlameV2::derive_stage_batch(
@@ -818,7 +774,7 @@ async fn test_root_stage_prunes_dep_subtree(fb: FacebookInit) -> Result<()> {
     // Root stage with a single dep child stage `dep`, so the pruner runs.
     let root_payload = DerivationStagePayload::Manifest(ManifestStagePayload {
         path: MPath::ROOT,
-        deps: vec![MPathElement::new(b"dep".to_vec())?],
+        deps: vec![MPathElement::new(b"dep".to_vec())?].into(),
     });
 
     let c1 = CreateCommitContext::new_root(ctx, repo)
@@ -861,8 +817,9 @@ async fn test_root_stage_prunes_dep_subtree(fb: FacebookInit) -> Result<()> {
     with_just_knobs_async(
         namespaced_test_knobs(),
         async {
-            derive_unode_stage_outputs(ctx, &derivation_ctx, repo, &root_payload, &[c1, c2])
-                .await?;
+            let derivation_ctx =
+                derive_unode_stage_outputs(ctx, &derivation_ctx, repo, &root_payload, &[c1, c2])
+                    .await?;
             for csid in [c1, c2] {
                 let bonsai = csid.load(ctx, &repo.repo_blobstore).await?;
                 RootBlameV2::derive_stage_batch(
@@ -934,11 +891,11 @@ async fn test_cross_stage_copy_into_non_root_stage(fb: FacebookInit) -> Result<(
     // Stage S owns the `s` subtree; the root stage prunes `s`.
     let s_payload = DerivationStagePayload::Manifest(ManifestStagePayload {
         path: MPath::new("s")?,
-        deps: vec![],
+        deps: vec![].into(),
     });
     let root_payload = DerivationStagePayload::Manifest(ManifestStagePayload {
         path: MPath::ROOT,
-        deps: vec![MPathElement::new(b"s".to_vec())?],
+        deps: vec![MPathElement::new(b"s".to_vec())?].into(),
     });
     let stage_path = MPath::ROOT;
 
@@ -954,11 +911,6 @@ async fn test_cross_stage_copy_into_non_root_stage(fb: FacebookInit) -> Result<(
         .add_file_with_copy_info("s/copied", "copied content", (c1, "outside/src"))
         .commit()
         .await?;
-    let bonsai_c2 = c2.load(ctx, &repo.repo_blobstore).await?;
-    assert!(
-        is_chokepoint(&bonsai_c2, &MPath::new("s")?),
-        "copy into S from outside S must be a chokepoint",
-    );
 
     let derivation_ctx = repo.repo_derived_data().manager().derivation_context(None);
     let chain = [c1, c2];
@@ -1021,11 +973,11 @@ async fn test_non_root_stage_in_stage_copy(fb: FacebookInit) -> Result<()> {
     // Non-root stage S owns the `s` subtree; the root stage prunes it.
     let s_payload = DerivationStagePayload::Manifest(ManifestStagePayload {
         path: MPath::new("s")?,
-        deps: vec![],
+        deps: vec![].into(),
     });
     let root_payload = DerivationStagePayload::Manifest(ManifestStagePayload {
         path: MPath::ROOT,
-        deps: vec![MPathElement::new(b"s".to_vec())?],
+        deps: vec![MPathElement::new(b"s".to_vec())?].into(),
     });
     let stage_path = MPath::ROOT;
 
@@ -1040,11 +992,6 @@ async fn test_non_root_stage_in_stage_copy(fb: FacebookInit) -> Result<()> {
         .add_file_with_copy_info("s/copy", "original content", (c1, "s/orig"))
         .commit()
         .await?;
-    let bonsai_c2 = c2.load(ctx, &repo.repo_blobstore).await?;
-    assert!(
-        !is_chokepoint(&bonsai_c2, &MPath::new("s")?),
-        "in-stage copy must not be a chokepoint",
-    );
 
     let derivation_ctx = repo.repo_derived_data().manager().derivation_context(None);
     let chain = [c1, c2];
@@ -1090,71 +1037,63 @@ async fn test_non_root_stage_in_stage_copy(fb: FacebookInit) -> Result<()> {
     Ok(())
 }
 
-/// T3: store_stage_outputs / fetch_stage_outputs round-trip with the
-/// prod-mapping knob ON. The terminal (root) stage writes its output under the
-/// canonical `format_key`; the read-back must find it, and the storage key must
-/// equal the canonical `format_key`.
 #[mononoke::fbinit_test]
 async fn test_prod_mapping_round_trip(fb: FacebookInit) -> Result<()> {
     let ctx = CoreContext::test_mock(fb);
     let repo: TestRepo = test_repo_factory::build_empty(ctx.fb).await?;
     borrowed!(ctx, repo);
-
-    let stage_path = MPath::ROOT;
-
     let c1 = CreateCommitContext::new_root(ctx, repo)
         .add_file("a/file", "content")
         .commit()
         .await?;
-
-    let derivation_ctx = repo.repo_derived_data().manager().derivation_context(None);
+    let c2 = CreateCommitContext::new(ctx, repo, vec![c1])
+        .add_file("a/file", "changed")
+        .commit()
+        .await?;
+    let c3 = CreateCommitContext::new(ctx, repo, vec![c2])
+        .add_file("b/file", "not derived")
+        .commit()
+        .await?;
+    let manager = repo.repo_derived_data().manager();
+    let derivation = manager.derivation_context(None);
+    let stage = StageId::Manifest(MPath::ROOT);
+    let outputs = HashMap::from([(c1, ()), (c2, ())]);
 
     with_just_knobs_async(
         prod_mapping_test_knobs(),
         async {
-            // store_stage_outputs reads RootUnodeManifestId to build the
-            // canonical pointer, so derive canonical unodes first.
-            repo.repo_derived_data()
-                .manager()
+            let root1 = manager
                 .derive::<RootUnodeManifestId>(ctx, c1, None, DerivationPriority::LOW)
                 .await?;
+            let error = RootBlameV2::store_stage_outputs(ctx, &derivation, &stage, outputs.clone())
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains(&format!(
+                "terminal stage for {c2}: missing unode root stage output"
+            )));
 
-            let outputs: HashMap<ChangesetId, ()> = HashMap::from([(c1, ())]);
-            RootBlameV2::store_stage_outputs(
-                ctx,
-                &derivation_ctx,
-                &StageId::Manifest(stage_path.clone()),
-                outputs,
-            )
-            .await?;
-
-            // Round-trip: fetch_stage_outputs reads back the stored output.
-            let fetched = RootBlameV2::fetch_stage_outputs(
-                ctx,
-                &derivation_ctx,
-                &StageId::Manifest(stage_path.clone()),
-                vec![c1],
-            )
-            .await?;
+            let root2 = manager
+                .derive::<RootUnodeManifestId>(ctx, c2, None, DerivationPriority::LOW)
+                .await?;
+            RootBlameV2::store_stage_outputs(ctx, &derivation, &stage, outputs.clone()).await?;
             assert_eq!(
-                fetched,
-                HashMap::from([(c1, ())]),
-                "fetch_stage_outputs should read back what store_stage_outputs wrote",
+                RootBlameV2::fetch_stage_outputs(ctx, &derivation, &stage, vec![c1, c2, c3])
+                    .await?,
+                outputs,
             );
-
-            // The storage key must be the canonical format_key.
-            let key = format_key(&derivation_ctx, c1);
-            assert!(
-                derivation_ctx.blobstore().get(ctx, &key).await?.is_some(),
-                "with prod-mapping ON the terminal stage output must be stored at the canonical format_key",
-            );
+            for (csid, expected) in [(c1, root1), (c2, root2)] {
+                let bytes = derivation
+                    .blobstore()
+                    .get(ctx, &format_key(&derivation, csid))
+                    .await?
+                    .expect("canonical blame mapping should be present");
+                assert_eq!(RootUnodeManifestId::try_from(bytes)?, expected);
+            }
             anyhow::Ok(())
         }
         .boxed(),
     )
-    .await?;
-
-    Ok(())
+    .await
 }
 
 /// T4: A commit whose stage subtree is UNCHANGED from its parent yields an
@@ -1169,7 +1108,7 @@ async fn test_unchanged_stage_subtree_is_noop(fb: FacebookInit) -> Result<()> {
     // Stage S owns the `s` subtree.
     let s_payload = DerivationStagePayload::Manifest(ManifestStagePayload {
         path: MPath::new("s")?,
-        deps: vec![],
+        deps: vec![].into(),
     });
 
     let c1 = CreateCommitContext::new_root(ctx, repo)
@@ -1209,7 +1148,8 @@ async fn test_unchanged_stage_subtree_is_noop(fb: FacebookInit) -> Result<()> {
         namespaced_test_knobs(),
         async {
             // Derive namespaced unodes for both commits at stage S.
-            derive_unode_stage_outputs(ctx, &derivation_ctx, repo, &s_payload, &chain).await?;
+            let derivation_ctx =
+                derive_unode_stage_outputs(ctx, &derivation_ctx, repo, &s_payload, &chain).await?;
             // Run blame for c2 only: its S subtree is unchanged from c1.
             let bonsai_c2 = c2.load(ctx, &repo.repo_blobstore).await?;
             RootBlameV2::derive_stage_batch(

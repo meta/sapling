@@ -572,8 +572,20 @@ impl DerivedDataConfig {
 /// A single stage in a derivation pipeline, keyed by its absolute path.
 #[derive(Eq, Clone, Debug, PartialEq)]
 pub struct DerivationPipelineStageConfig {
+    /// First-byte partition cut points, in strictly increasing order.
+    pub partition_cut_points: Vec<u8>,
     /// Absolute paths of stages this one directly depends on.
     pub dependencies: Vec<MPath>,
+}
+
+impl DerivationPipelineStageConfig {
+    /// Create an unpartitioned stage with the given child-stage dependencies.
+    pub fn new(dependencies: Vec<MPath>) -> Self {
+        Self {
+            dependencies,
+            partition_cut_points: Vec::new(),
+        }
+    }
 }
 
 /// Pipeline configuration. The terminal stage is the one at `MPath::ROOT`.
@@ -597,6 +609,21 @@ impl DerivationPipelineConfig {
         }
 
         for (stage_path, config) in &self.stages {
+            if !config.partition_cut_points.is_empty() {
+                if !config.dependencies.is_empty() {
+                    bail!("Partitioned stage {stage_path} must not have child stages");
+                }
+                if config.partition_cut_points[0] == 0
+                    || !config
+                        .partition_cut_points
+                        .windows(2)
+                        .all(|pair| pair[0] < pair[1])
+                {
+                    bail!(
+                        "Stage {stage_path} partition cut points must be strictly increasing and exclude zero"
+                    );
+                }
+            }
             for dep in &config.dependencies {
                 if !self.stages.contains_key(dep) {
                     bail!("Stage {stage_path:?} depends on {dep:?}, which does not exist",);
@@ -3091,9 +3118,7 @@ mod tests {
 
     /// Build a stage with the given dependency paths.
     fn stage(deps: Vec<&str>) -> DerivationPipelineStageConfig {
-        DerivationPipelineStageConfig {
-            dependencies: deps.into_iter().map(mp).collect(),
-        }
+        DerivationPipelineStageConfig::new(deps.into_iter().map(mp).collect())
     }
 
     /// Build a `DerivationPipelineConfig` with the given (path, stage) pairs
@@ -3181,5 +3206,22 @@ mod tests {
     #[mononoke::test]
     fn test_acl_manifest_mode_default_is_disabled() {
         assert_eq!(AclManifestMode::default(), AclManifestMode::Disabled);
+    }
+    #[mononoke::test]
+    fn partition_cut_points_must_be_ordered_and_on_leaf_stages() {
+        for cuts in [vec![0], vec![100, 100], vec![200, 100]] {
+            let mut root = stage(vec![]);
+            root.partition_cut_points = cuts;
+            assert!(pipeline_config(vec![("", root)]).validate().is_err());
+        }
+        let mut root = stage(vec![]);
+        root.partition_cut_points = vec![1, 100, 255];
+        assert!(pipeline_config(vec![("", root.clone())]).validate().is_ok());
+        root.dependencies = vec![mp("child")];
+        assert!(
+            pipeline_config(vec![("", root), ("child", stage(vec![]))])
+                .validate()
+                .is_err()
+        );
     }
 }

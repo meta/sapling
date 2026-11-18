@@ -11,13 +11,17 @@ use async_trait::async_trait;
 use context::CoreContext;
 use derived_data_manager::DerivationContext;
 use derived_data_manager::ManifestDerivable;
-use derived_data_manager::ManifestDerivation;
+use derived_data_manager::ManifestDerivationInput;
+use derived_data_manager::ManifestStageOutput;
+use derived_data_manager::manifest_partitions::create_sorted_subentries;
 use fbthrift::compact_protocol;
 use manifest::Entry;
+use manifest::TreeInfoSubentries;
 use mononoke_types::BlobstoreBytes;
 use mononoke_types::BonsaiChangeset;
 use mononoke_types::PipelineDerivableVariant;
 use mononoke_types::SkeletonManifestId;
+use mononoke_types::SortedVectorTrieMap;
 use mononoke_types::thrift::skeleton_manifest as skmf_thrift;
 
 use crate::derive::derive_skeleton_manifest_entry;
@@ -28,9 +32,9 @@ use crate::mapping::get_file_changes;
 impl ManifestDerivable for RootSkeletonManifestId {
     type TreeId = SkeletonManifestId;
     type Leaf = ();
+    type TrieMapType = SortedVectorTrieMap<Entry<Self::TreeId, Self::Leaf>>;
 
     const PIPELINE_VARIANT: PipelineDerivableVariant = PipelineDerivableVariant::SkeletonManifests;
-    const STAGE_KEY_PREFIX: &'static str = "derived_skeleton_manifest_stage";
     const MAPPING_KNOB_SWITCH: &'static str = "skeleton_manifest";
 
     async fn load_root_manifest(
@@ -53,9 +57,17 @@ impl ManifestDerivable for RootSkeletonManifestId {
         ctx: &CoreContext,
         derivation: &DerivationContext,
         bonsai: BonsaiChangeset,
-        input: ManifestDerivation<SkeletonManifestId, ()>,
-    ) -> Result<Option<Entry<SkeletonManifestId, ()>>> {
+        input: ManifestDerivationInput<Self::TreeId, Self::Leaf, Self::TrieMapType>,
+    ) -> Result<ManifestStageOutput<Self::TreeId, Self::Leaf, Self::TrieMapType>> {
         derive_skeleton_manifest_entry(ctx, derivation, input, get_file_changes(&bonsai)).await
+    }
+
+    async fn create_subentries(
+        ctx: &CoreContext,
+        _derivation: &DerivationContext,
+        subentries: TreeInfoSubentries<Self::TreeId, Self::Leaf, (), Self::TrieMapType>,
+    ) -> Result<Self::TrieMapType> {
+        create_sorted_subentries(ctx, subentries).await
     }
 
     fn encode_entry(entry: Option<Entry<SkeletonManifestId, ()>>) -> BlobstoreBytes {

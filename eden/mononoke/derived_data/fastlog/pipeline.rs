@@ -9,32 +9,28 @@ use std::collections::HashMap;
 
 use anyhow::Error;
 use anyhow::Result;
-use anyhow::anyhow;
 use async_trait::async_trait;
-use blobstore::Loadable;
 use context::CoreContext;
 use derived_data_manager::BonsaiDerivable;
 use derived_data_manager::DerivationContext;
 use derived_data_manager::DerivationStagePayload;
 use derived_data_manager::PipelineDerivable;
 use derived_data_manager::StageId;
+use derived_data_manager::StageOutputs;
+use derived_data_manager::stage_outputs::fetch_stage_outputs;
+use derived_data_manager::stage_outputs::store_stage_outputs;
 use futures::StreamExt;
 use futures::TryStreamExt;
 use futures::stream;
-use manifest::Diff;
-use manifest::Entry;
-use manifest::find_intersection_of_diffs;
-use manifest::find_intersection_of_diffs_pruned;
 use mononoke_macros::mononoke;
 use mononoke_types::BlobstoreBytes;
 use mononoke_types::BonsaiChangeset;
 use mononoke_types::ChangesetId;
-use mononoke_types::FileUnodeId;
-use mononoke_types::ManifestUnodeId;
 use mononoke_types::PipelineDerivableVariant;
 use mononoke_types::path::MPath;
-use unodes::RootUnodeManifestId;
-use unodes::resolve_parent_stage_outputs;
+use unodes::fetch_stage_unodes;
+use unodes::find_new_canonical_unode_entries;
+use unodes::find_new_stage_entries;
 
 use crate::RootFastlog;
 use crate::fastlog_impl::create_new_batch_with_prefix;
@@ -46,15 +42,6 @@ use crate::mapping::format_key;
 /// Concurrency for per-unode fastlog batch writes within a single commit,
 /// matching the canonical `derive_single` buffering.
 const FASTLOG_BUFFER_SIZE: usize = 100;
-
-fn stage_blobstore_key(stage_path: &MPath, key_prefix: &str, cs_id: ChangesetId) -> String {
-    format!(
-        "derived_root_fastlog_stage.{}.{}{}",
-        stage_path.get_path_hash().to_hex(),
-        key_prefix,
-        cs_id,
-    )
-}
 
 fn use_normal_mapping(stage_path: &MPath) -> bool {
     stage_path.is_root()
@@ -96,43 +83,17 @@ impl PipelineDerivable for RootFastlog {
         bonsais: Vec<BonsaiChangeset>,
         payload: &DerivationStagePayload,
         _parents: HashMap<ChangesetId, Self::StageOutput>,
-        _dependency_outputs: HashMap<ChangesetId, HashMap<MPath, Self::StageOutput>>,
+        _dependency_outputs: HashMap<ChangesetId, HashMap<StageId, Self::StageOutput>>,
     ) -> Result<HashMap<ChangesetId, Self::StageOutput>> {
-        let DerivationStagePayload::Manifest(payload) = payload else {
+        let stage = payload.stage_id();
+        if matches!(stage, StageId::Finalize) {
             anyhow::bail!("{} has no finalize derive", Self::NAME);
-        };
-        let stage_path = &payload.path;
-
-        // Dep paths are immediate children of S (the payload stores only the
-        // last element), so each relative path is a single component; the diff
-        // over the S subtree produces paths relative to S, so we prune those.
-        // Child stages own the unodes under their subtrees.
-        let dep_paths_relative: Vec<MPath> = payload
-            .deps
-            .iter()
-            .map(|element| MPath::ROOT.join(std::iter::once(element)))
-            .collect();
+        }
 
         // Namespace pipeline fastlog batches until the prod-mapping flip.
         let fastlog_key_prefix = pipeline_fastlog_key_prefix();
 
-        // Fetch unode stage-S subtrees for the batch and all their parents in a
-        // single call.
-        let mut all_csids: Vec<ChangesetId> =
-            bonsais.iter().map(|b| b.get_changeset_id()).collect();
-        for bonsai in &bonsais {
-            all_csids.extend(bonsai.parents());
-        }
-        all_csids.sort();
-        all_csids.dedup();
-
-        let unode_outputs = RootUnodeManifestId::fetch_stage_outputs(
-            ctx,
-            derivation,
-            &StageId::Manifest(stage_path.clone()),
-            all_csids,
-        )
-        .await?;
+        let unode_outputs = fetch_stage_unodes(ctx, derivation, &stage, &bonsais).await?;
 
         let mut results = HashMap::new();
 
@@ -142,90 +103,19 @@ impl PipelineDerivable for RootFastlog {
         for bonsai in &bonsais {
             let csid = bonsai.get_changeset_id();
 
-            let own_output = *unode_outputs.get(&csid).ok_or_else(|| {
-                anyhow!("missing unode stage output for {csid} at stage {stage_path}")
-            })?;
-            let Some(own_output) = own_output else {
-                // No entry at this stage for this changeset: nothing to derive.
-                results.insert(csid, ());
-                continue;
-            };
-            // Resolve canonical-only parents for both leaf reuse and tree diffs.
-            let parent_stage_outputs = resolve_parent_stage_outputs(
+            let changed = find_new_stage_entries(
                 ctx,
                 derivation,
-                stage_path,
-                bonsai.parents(),
-                &unode_outputs,
+                payload,
+                unode_outputs[&csid].clone(),
+                bonsai
+                    .parents()
+                    .map(|parent| unode_outputs[&parent].clone())
+                    .collect(),
             )
-            .await?;
-            let subtree = match own_output {
-                Entry::Tree(subtree) => subtree,
-                Entry::Leaf(file_unode_id) => {
-                    // The stage root itself is a file (e.g. a directory replaced
-                    // by a file). Canonical fastlog records a batch for that leaf
-                    // unode, but the parent stage prunes path S, so this child
-                    // stage owns it. Mirror `find_intersection_of_diffs`: skip
-                    // only if an identical leaf already exists in a parent.
-                    let entry = Entry::Leaf(file_unode_id);
-                    let reused = parent_stage_outputs
-                        .values()
-                        .any(|parent_entry| *parent_entry == Some(entry));
-                    if !reused {
-                        let blobstore = derivation.blobstore();
-                        let parents = fetch_unode_parents(ctx, blobstore, entry).await?;
-                        let batch = create_new_batch_with_prefix(
-                            ctx,
-                            blobstore,
-                            parents,
-                            csid,
-                            fastlog_key_prefix,
-                        )
-                        .await?;
-                        save_fastlog_batch_by_unode_id_with_prefix(
-                            ctx,
-                            blobstore,
-                            entry,
-                            batch,
-                            fastlog_key_prefix,
-                        )
-                        .await?;
-                    }
-                    results.insert(csid, ());
-                    continue;
-                }
-            };
-
-            let parent_subtree_ids: Vec<ManifestUnodeId> = parent_stage_outputs
-                .values()
-                .filter_map(|e| (*e).and_then(Entry::into_tree))
-                .collect();
-
-            let pruner_dep_paths = dep_paths_relative.clone();
-            // Keep BOTH trees and leaves: fastlog derives directory unodes too.
-            let changed: Vec<Entry<ManifestUnodeId, FileUnodeId>> =
-                find_intersection_of_diffs_pruned(
-                    ctx.clone(),
-                    derivation.blobstore().clone(),
-                    subtree,
-                    parent_subtree_ids,
-                    move |diff: &Diff<ManifestUnodeId>| {
-                        let path = match diff {
-                            Diff::Added(path, _)
-                            | Diff::Removed(path, _)
-                            | Diff::Changed(path, _, _) => path,
-                        };
-                        !pruner_dep_paths.iter().any(|dep| dep.is_prefix_of(path))
-                    },
-                )
-                // The recurse pruner only gates subtrees, so a dep path resolving to
-                // a leaf still reaches the output and must be dropped here.
-                .try_filter_map(|(path, entry)| {
-                    let keep = !dep_paths_relative.iter().any(|dep| dep.is_prefix_of(&path));
-                    async move { Ok(keep.then_some(entry)) }
-                })
-                .try_collect()
-                .await?;
+            .await?
+            .into_iter()
+            .map(|(_, entry)| entry);
 
             // Write the per-unode batches concurrently, chaining onto parent
             // unode batches (pipeline prefix first, canonical fallback).
@@ -233,7 +123,6 @@ impl PipelineDerivable for RootFastlog {
                 .map(|entry| {
                     let ctx = ctx.clone();
                     let derivation = derivation.clone();
-                    let fastlog_key_prefix = fastlog_key_prefix.to_owned();
                     async move {
                         mononoke::spawn_task(async move {
                             let blobstore = derivation.blobstore();
@@ -243,7 +132,7 @@ impl PipelineDerivable for RootFastlog {
                                 blobstore,
                                 parents,
                                 csid,
-                                &fastlog_key_prefix,
+                                fastlog_key_prefix,
                             )
                             .await?;
                             save_fastlog_batch_by_unode_id_with_prefix(
@@ -251,7 +140,7 @@ impl PipelineDerivable for RootFastlog {
                                 blobstore,
                                 entry,
                                 batch,
-                                &fastlog_key_prefix,
+                                fastlog_key_prefix,
                             )
                             .await
                         })
@@ -277,37 +166,32 @@ impl PipelineDerivable for RootFastlog {
         Ok(())
     }
 
+    async fn extract_stage_output_from_root(
+        _ctx: &CoreContext,
+        _derivation: &DerivationContext,
+        _root: (),
+        _stage: &StageId,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     async fn store_stage_outputs(
         ctx: &CoreContext,
         derivation: &DerivationContext,
         stage: &StageId,
         outputs: HashMap<ChangesetId, Self::StageOutput>,
-    ) -> Result<()> {
-        let StageId::Manifest(stage_path) = stage else {
-            anyhow::bail!("{} has no finalize stage", Self::NAME);
-        };
-        let use_normal_mapping = use_normal_mapping(stage_path);
-        let key_prefix = derivation.mapping_key_prefix::<RootFastlog>();
-
-        stream::iter(outputs.into_keys().map(|cs_id| async move {
-            let key = if use_normal_mapping {
-                // The terminal stage writes the canonical mapping: an empty
-                // presence marker, matching `RootFastlog::store_mapping`.
-                format_key(derivation, cs_id)
-            } else {
-                // Non-terminal stages write an empty presence marker; fastlog's
-                // real output is the per-unode batch blobs.
-                stage_blobstore_key(stage_path, key_prefix, cs_id)
-            };
-            derivation
-                .blobstore()
-                .put(ctx, key, BlobstoreBytes::empty())
-                .await
-        }))
-        .buffered(100)
-        .try_collect::<Vec<_>>()
-        .await?;
-        Ok(())
+    ) -> Result<Option<StageOutputs>> {
+        let use_normal_mapping =
+            matches!(stage, StageId::Manifest(path) if use_normal_mapping(path));
+        store_stage_outputs::<Self, _, _>(
+            ctx,
+            derivation,
+            stage,
+            outputs,
+            |csid| use_normal_mapping.then(|| format_key(derivation, csid)),
+            async |()| Ok(BlobstoreBytes::empty()),
+        )
+        .await
     }
 
     async fn fetch_stage_outputs(
@@ -316,28 +200,17 @@ impl PipelineDerivable for RootFastlog {
         stage: &StageId,
         cs_ids: Vec<ChangesetId>,
     ) -> Result<HashMap<ChangesetId, Self::StageOutput>> {
-        let StageId::Manifest(stage_path) = stage else {
-            anyhow::bail!("{} has no finalize stage", Self::NAME);
-        };
-        let use_normal_mapping = use_normal_mapping(stage_path);
-        let key_prefix = derivation.mapping_key_prefix::<RootFastlog>();
-
-        let results = stream::iter(cs_ids.into_iter().map(|cs_id| async move {
-            let key = if use_normal_mapping {
-                format_key(derivation, cs_id)
-            } else {
-                stage_blobstore_key(stage_path, key_prefix, cs_id)
-            };
-            match derivation.blobstore().get(ctx, &key).await? {
-                Some(_) => Ok::<_, Error>(Some((cs_id, ()))),
-                None => Ok(None),
-            }
-        }))
-        .buffered(100)
-        .try_filter_map(|opt| async move { Ok(opt) })
-        .try_collect::<HashMap<_, _>>()
-        .await?;
-        Ok(results)
+        let use_normal_mapping =
+            matches!(stage, StageId::Manifest(path) if use_normal_mapping(path));
+        fetch_stage_outputs::<Self, _, _>(
+            ctx,
+            derivation,
+            stage,
+            cs_ids,
+            |csid| use_normal_mapping.then(|| format_key(derivation, csid)),
+            async |_, _| Ok(()),
+        )
+        .await
     }
 
     async fn verify_stage(
@@ -346,6 +219,9 @@ impl PipelineDerivable for RootFastlog {
         csid: ChangesetId,
         stage: &StageId,
     ) -> Result<bool> {
+        if matches!(stage, StageId::Subentries(..)) {
+            return Ok(true);
+        }
         let StageId::Manifest(stage_path) = stage else {
             anyhow::bail!("{} has no finalize stage", Self::NAME);
         };
@@ -355,33 +231,9 @@ impl PipelineDerivable for RootFastlog {
             return Ok(true);
         }
 
-        let bonsai = csid.load(ctx, derivation.blobstore()).await?;
-
-        // The commit's changed unodes: canonical full unode root diffed against
-        // the canonical parent unode roots (same set canonical fastlog derives).
-        // Keep BOTH trees and leaves.
-        let unode_root = derivation
-            .fetch_dependency::<RootUnodeManifestId>(ctx, csid)
-            .await?;
-        let parent_roots: Vec<ManifestUnodeId> =
-            stream::iter(bonsai.parents().map(|parent_csid| async move {
-                let root = derivation
-                    .fetch_dependency::<RootUnodeManifestId>(ctx, parent_csid)
-                    .await?;
-                Ok::<_, Error>(*root.manifest_unode_id())
-            }))
-            .buffered(100)
-            .try_collect()
-            .await?;
-
-        let changed: Vec<(MPath, Entry<ManifestUnodeId, FileUnodeId>)> =
-            find_intersection_of_diffs(
-                ctx.clone(),
-                derivation.blobstore().clone(),
-                *unode_root.manifest_unode_id(),
-                parent_roots,
-            )
-            .try_collect()
+        let changed = find_new_canonical_unode_entries(ctx, derivation, csid)
+            .await?
+            .try_collect::<Vec<_>>()
             .await?;
 
         // Data equality: per changed unode, the pipeline-side batch blob must

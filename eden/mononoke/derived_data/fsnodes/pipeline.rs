@@ -11,13 +11,17 @@ use async_trait::async_trait;
 use context::CoreContext;
 use derived_data_manager::DerivationContext;
 use derived_data_manager::ManifestDerivable;
-use derived_data_manager::ManifestDerivation;
+use derived_data_manager::ManifestDerivationInput;
+use derived_data_manager::ManifestStageOutput;
+use derived_data_manager::manifest_partitions::create_sorted_subentries;
 use fbthrift::compact_protocol;
 use manifest::Entry;
+use manifest::TreeInfoSubentries;
 use mononoke_types::BlobstoreBytes;
 use mononoke_types::BonsaiChangeset;
 use mononoke_types::FsnodeId;
 use mononoke_types::PipelineDerivableVariant;
+use mononoke_types::SortedVectorTrieMap;
 use mononoke_types::fsnode::FsnodeFile;
 use mononoke_types::thrift::fsnodes as fsnodes_thrift;
 
@@ -29,9 +33,9 @@ use crate::mapping::get_file_changes;
 impl ManifestDerivable for RootFsnodeId {
     type TreeId = FsnodeId;
     type Leaf = FsnodeFile;
+    type TrieMapType = SortedVectorTrieMap<Entry<Self::TreeId, Self::Leaf>>;
 
     const PIPELINE_VARIANT: PipelineDerivableVariant = PipelineDerivableVariant::Fsnodes;
-    const STAGE_KEY_PREFIX: &'static str = "derived_fsnode_stage";
 
     async fn load_root_manifest(
         &self,
@@ -53,9 +57,17 @@ impl ManifestDerivable for RootFsnodeId {
         ctx: &CoreContext,
         derivation: &DerivationContext,
         bonsai: BonsaiChangeset,
-        input: ManifestDerivation<FsnodeId, FsnodeFile>,
-    ) -> Result<Option<Entry<FsnodeId, FsnodeFile>>> {
+        input: ManifestDerivationInput<FsnodeId, FsnodeFile, Self::TrieMapType>,
+    ) -> Result<ManifestStageOutput<FsnodeId, FsnodeFile, Self::TrieMapType>> {
         derive_fsnode_entry(ctx, derivation, input, get_file_changes(&bonsai)).await
+    }
+
+    async fn create_subentries(
+        ctx: &CoreContext,
+        _derivation: &DerivationContext,
+        subentries: TreeInfoSubentries<FsnodeId, FsnodeFile, (), Self::TrieMapType>,
+    ) -> Result<Self::TrieMapType> {
+        create_sorted_subentries(ctx, subentries).await
     }
 
     fn encode_entry(entry: Option<Entry<FsnodeId, FsnodeFile>>) -> BlobstoreBytes {

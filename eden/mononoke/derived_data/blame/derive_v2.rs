@@ -36,6 +36,7 @@ use mononoke_types::blame_v2::store_blame_with_prefix;
 use unodes::RootUnodeManifestId;
 use unodes::UnodeRenameSource;
 use unodes::UnodeRenameSources;
+use unodes::fetch_pipeline_unode_root;
 use unodes::find_unode_rename_sources;
 
 use crate::DEFAULT_BLAME_FILESIZE_LIMIT;
@@ -233,11 +234,15 @@ async fn fetch_blame_parent(
             unode_id,
         } => (BlameParentId::ChangesetParent(parent_index), unode_id),
         BlameParentSource::ReplacementParent(csid) => {
-            let root = derivation_ctx
-                .fetch_dependency::<RootUnodeManifestId>(ctx, csid)
-                .await?;
+            let root = if blame_key_prefix.is_empty() {
+                *derivation_ctx
+                    .fetch_dependency::<RootUnodeManifestId>(ctx, csid)
+                    .await?
+                    .manifest_unode_id()
+            } else {
+                fetch_pipeline_unode_root(ctx, derivation_ctx, csid).await?
+            };
             let entry = root
-                .manifest_unode_id()
                 .find_entry(ctx.clone(), blobstore.clone(), path.clone().into())
                 .await?;
             let leaf = match entry {

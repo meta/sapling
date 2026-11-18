@@ -15,7 +15,8 @@ use blobstore::Storable;
 use cloned::cloned;
 use context::CoreContext;
 use derived_data_manager::DerivationContext;
-use derived_data_manager::ManifestDerivation;
+use derived_data_manager::ManifestDerivationInput;
+use derived_data_manager::ManifestStageOutput;
 use futures::StreamExt;
 use futures::TryStreamExt;
 use futures::stream;
@@ -60,7 +61,7 @@ fn mf_entry_to_skeleton_manifest_v2_entry(
     }
 }
 
-async fn create_skeleton_manifest_v2(
+pub(crate) async fn create_skeleton_manifest_v2(
     ctx: CoreContext,
     blobstore: Arc<dyn KeyedBlobstore>,
     subentries: TreeInfoSubentries<
@@ -127,9 +128,15 @@ pub(crate) async fn inner_derive(
 pub(crate) async fn derive_skeleton_manifest_v2_entry(
     ctx: &CoreContext,
     derivation_ctx: &DerivationContext,
-    input: ManifestDerivation<SkeletonManifestV2, ()>,
+    input: ManifestDerivationInput<
+        SkeletonManifestV2,
+        (),
+        LoadableShardedMapV2Node<SkeletonManifestV2Entry>,
+    >,
     changes: Vec<(NonRootMPath, Option<()>)>,
-) -> Result<Option<Entry<SkeletonManifestV2, ()>>> {
+) -> Result<
+    ManifestStageOutput<SkeletonManifestV2, (), LoadableShardedMapV2Node<SkeletonManifestV2Entry>>,
+> {
     type Leaf = ();
     type LeafChange = ();
     type TreeId = SkeletonManifestV2;
@@ -158,6 +165,13 @@ pub(crate) async fn derive_skeleton_manifest_v2_entry(
                 }
             },
             move |_leaf_info: LeafInfo<Leaf, LeafChange>| async move { anyhow::Ok(((), ())) },
+            |subentries| async move {
+                Ok(LoadableShardedMapV2Node::Inlined(
+                    create_skeleton_manifest_v2(ctx.clone(), blobstore.clone(), subentries)
+                        .await?
+                        .subentries,
+                ))
+            },
         )
         .await
 }

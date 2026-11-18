@@ -28,6 +28,7 @@ skeleton_manifest = { version = "0.1.0", path = "../skeleton_manifest" }
 
 [dev-dependencies]
 async-recursion = "1.2.0"
+blobstore_test_utils = { version = "0.1.0", path = "../../blobstore/test_utils" }
 bonsai_hg_mapping = { version = "0.1.0", path = "../../repo_attributes/bonsai_hg_mapping" }
 bookmarks = { version = "0.1.0", path = "../../repo_attributes/bookmarks" }
 commit_graph = { version = "0.1.0", path = "../../repo_attributes/commit_graph/commit_graph" }
@@ -44,6 +45,7 @@ repo_derived_data = { version = "0.1.0", path = "../../repo_attributes/repo_deri
 repo_identity = { version = "0.1.0", path = "../../repo_attributes/repo_identity" }
 test_repo_factory = { version = "0.1.0", path = "../../repo_factory/test_repo_factory" }
 tests_utils = { version = "0.1.0", path = "../../tests/utils" }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 
 [lints]
 workspace = true

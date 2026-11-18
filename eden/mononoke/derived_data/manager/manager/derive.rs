@@ -44,12 +44,13 @@ use futures_stats::TimedTryFutureExt;
 use lock_ext::LockExt;
 use mononoke_types::ChangesetId;
 use mononoke_types::DerivableType;
-use mononoke_types::MPath;
 use scuba_ext::FutureStatsScubaExt;
 use tracing::Instrument;
 
 use super::DerivationAssignment;
 use super::DerivedDataManager;
+use crate::StageBatchResult;
+use crate::StageId;
 use crate::context::DerivationContext;
 use crate::derivable::BonsaiDerivable;
 use crate::derivable::DerivableUntopologically;
@@ -982,37 +983,17 @@ impl DerivedDataManager {
         ctx: &CoreContext,
         csids: Vec<ChangesetId>,
         payload: &crate::stage_payload::DerivationStagePayload,
-    ) -> Result<Duration, DerivationError>
+    ) -> Result<StageBatchResult, DerivationError>
     where
         Derivable: PipelineDerivable,
     {
-        // Map the payload to its stage identity and dependency stages. Both
-        // Manifest and Finalize are dispatched to the trait implementation; a
-        // type that does not support a given stage fails inside its own trait
-        // methods (fetch/derive/store), not here.
-        let (stage, dep_paths): (crate::stage_payload::StageId, Vec<MPath>) = match payload {
-            crate::stage_payload::DerivationStagePayload::Manifest(manifest_payload) => {
-                let stage_path = manifest_payload.path.clone();
-                let dep_paths = manifest_payload
-                    .deps
-                    .iter()
-                    .map(|element| stage_path.join(std::iter::once(element)))
-                    .collect();
-                (
-                    crate::stage_payload::StageId::Manifest(stage_path),
-                    dep_paths,
-                )
-            }
-            crate::stage_payload::DerivationStagePayload::Finalize => {
-                // The finalize stage typically depends on the root manifest
-                // stage output (e.g. hg changeset generation needs the root
-                // manifest id), so resolve it as a dependency — it lands in
-                // `dependency_outputs` keyed at `MPath::ROOT`.
-                (crate::stage_payload::StageId::Finalize, vec![MPath::ROOT])
-            }
-        };
+        let stage = payload.stage_id();
+        let dep_stages = payload.dependencies();
         let stage_display = match &stage {
             crate::stage_payload::StageId::Manifest(path) => path.to_string(),
+            crate::stage_payload::StageId::Subentries(path, range) => {
+                format!("{path}/[{}]", range.suffix())
+            }
             crate::stage_payload::StageId::Finalize => "finalize".to_string(),
         };
 
@@ -1058,75 +1039,47 @@ impl DerivedDataManager {
                 external_parent_csids.dedup();
 
                 // Kick off all fetches concurrently: parents + each dependency stage.
-                let parent_fetch = Derivable::fetch_stage_outputs(
+                let parent_fetch = crate::stage_outputs::fetch_stage_outputs_with_fallback::<Derivable>(
                     ctx,
                     derivation_ctx_ref,
                     &stage,
                     external_parent_csids.clone(),
                 );
 
-                let dep_fetches = dep_paths.iter().map(async |dep_path| {
+                let dep_fetches = dep_stages.iter().map(async |dep_stage| {
                     let outputs = Derivable::fetch_stage_outputs(
                         ctx,
                         derivation_ctx_ref,
-                        &crate::stage_payload::StageId::Manifest(dep_path.clone()),
+                        dep_stage,
                         csids.clone(),
                     )
                     .await?;
-                    Ok::<_, Error>((dep_path.clone(), outputs))
+                    Ok::<_, Error>((dep_stage.clone(), outputs))
                 });
 
                 let (fetched_parents, dep_results) =
                     try_join(parent_fetch, try_join_all(dep_fetches)).await?;
 
-                // Resolve parent stage outputs. For parents missing a stage
-                // output (transitionary period where the stage config changed),
-                // fetch the full derived value and extract the stage output.
-                // The caller must ensure that either the stage output or the
-                // full derived value exists for every external parent.
-                let fallback: HashMap<ChangesetId, Derivable::StageOutput> =
-                    stream::iter(
-                        external_parent_csids
-                            .into_iter()
-                            .filter(|csid| !fetched_parents.contains_key(csid))
-                            .map(async |parent_csid| {
-                                let derived = derivation_ctx_ref
-                                    .fetch_dependency::<Derivable>(ctx, parent_csid)
-                                    .await?;
-                                let stage_output = Derivable::extract_stage_output_from_derived(
-                                    ctx,
-                                    derivation_ctx_ref,
-                                    &derived,
-                                    &stage,
-                                )
-                                .await?;
-                                Ok::<_, Error>((parent_csid, stage_output))
-                            }),
-                    )
-                    .buffered(100)
-                    .try_collect()
-                    .await?;
-                let parents: HashMap<ChangesetId, Derivable::StageOutput> =
-                    fetched_parents.into_iter().chain(fallback).collect();
+                let parents = fetched_parents;
 
                 // Build dependency outputs map from the concurrent fetch results.
                 let mut dependency_outputs: HashMap<
                     ChangesetId,
-                    HashMap<MPath, Derivable::StageOutput>,
+                    HashMap<StageId, Derivable::StageOutput>,
                 > = Default::default();
-                for (dep_path, dep_outputs) in dep_results {
+                for (dep_stage, dep_outputs) in dep_results {
                     for &csid in &csids {
                         let output = dep_outputs
                             .get(&csid)
                             .ok_or_else(|| {
                                 DerivationError::from(anyhow!(
-                                    "missing dependency stage output for path {dep_path}, changeset {csid}",
+                                    "missing dependency stage output for {dep_stage:?}, changeset {csid}",
                                 ))
                             })?;
                         dependency_outputs
                             .entry(csid)
                             .or_default()
-                            .insert(dep_path.clone(), output.clone());
+                            .insert(dep_stage.clone(), output.clone());
                     }
                 }
 
@@ -1163,12 +1116,11 @@ impl DerivedDataManager {
                 // Store stage outputs with a fresh write-batching context.
                 let mut store_ctx = self.derivation_context(None);
                 store_ctx.enable_write_batching();
-
-                Derivable::store_stage_outputs(
+                let outputs = Derivable::store_stage_outputs(
                     ctx,
                     &store_ctx,
                     &stage,
-                    derived.clone(),
+                    derived,
                 )
                 .await
                 .with_context(|| {
@@ -1181,7 +1133,7 @@ impl DerivedDataManager {
 
                 store_ctx.flush(ctx).await?;
 
-                Ok(batch_duration)
+                Ok(StageBatchResult { duration: batch_duration, outputs })
             }
             .timed()
             .await;

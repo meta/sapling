@@ -6,6 +6,7 @@
  */
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -23,15 +24,17 @@ use cloned::cloned;
 use context::CoreContext;
 use derivation_queue_thrift::DerivationPriority;
 use derived_data_manager::BonsaiDerivable;
-use futures::FutureExt;
+use derived_data_manager::ManifestStageOutput;
+use derived_data_manager::StageId;
+use derived_data_manager::manifest_partitions::create_sorted_subentries;
+use futures::StreamExt;
 use futures::TryStreamExt;
-use futures::future;
 use futures::future::try_join;
 use futures::future::try_join_all;
 use futures::stream;
 use manifest::Entry;
+use manifest::LeafInfo;
 use manifest::ManifestChanges;
-use manifest::ManifestOps;
 use manifest::Traced;
 use mercurial_types::HgChangesetId;
 use mercurial_types::HgFileNodeId;
@@ -59,9 +62,13 @@ use repo_derived_data::RepoDerivedDataRef;
 use restricted_paths_common::ArcRestrictedPathsConfigBased;
 use stats::prelude::*;
 
+use crate::derive_hg_manifest::HgManifestInput;
+use crate::derive_hg_manifest::HgManifestOutput;
 use crate::derive_hg_manifest::ParentIndex;
-use crate::derive_hg_manifest::derive_hg_manifest_with_known_entries;
+use crate::derive_hg_manifest::create_hg_file;
+use crate::derive_hg_manifest::create_hg_manifest;
 use crate::derive_hg_manifest::derive_simple_hg_manifest_stack_without_copy_info;
+use crate::derive_hg_manifest::prepare_manifest_input;
 use crate::mapping::HgChangesetDeriveOptions;
 use crate::mapping::MappedHgChangesetId;
 use crate::mapping::RootHgAugmentedManifestId;
@@ -195,28 +202,6 @@ pub(crate) async fn store_file_change<'a>(
     Ok((change.file_type(), filenode_id, metadata))
 }
 
-async fn resolve_paths(
-    ctx: CoreContext,
-    blobstore: Arc<dyn KeyedBlobstore>,
-    manifest_id: Option<HgManifestId>,
-    paths: Vec<NonRootMPath>,
-) -> Result<HashMap<NonRootMPath, HgFileNodeId>, Error> {
-    match manifest_id {
-        None => Ok(HashMap::new()),
-        Some(manifest_id) => {
-            let mapping: HashMap<NonRootMPath, HgFileNodeId> = manifest_id
-                .find_entries(ctx, blobstore, paths)
-                .map_ok(|(path, entry)| {
-                    Some((Option::<NonRootMPath>::from(path)?, entry.into_leaf()?.1))
-                })
-                .try_filter_map(future::ok)
-                .try_collect()
-                .await?;
-            Ok(mapping)
-        }
-    }
-}
-
 /// Root-stage wrapper around `get_manifest_entry_from_bonsai` that returns the
 /// root `HgManifestId` directly. Used by the non-pipelined derivation path.
 pub async fn get_manifest_from_bonsai(
@@ -226,22 +211,17 @@ pub async fn get_manifest_from_bonsai(
     bcs: BonsaiChangeset,
     parent_manifests: Vec<HgManifestId>,
 ) -> Result<HgManifestId, Error> {
-    let parent_entries: Vec<Option<Entry<HgManifestId, (FileType, HgFileNodeId)>>> =
-        parent_manifests
-            .into_iter()
-            .map(|m| Some(Entry::Tree(m)))
-            .collect();
-    let entry = get_manifest_entry_from_bonsai(
-        ctx,
-        blobstore,
-        restricted_paths,
-        bcs,
-        parent_entries,
-        MPath::ROOT,
-        HashMap::new(),
-        HashMap::new(),
-    )
-    .await?;
+    let parents = parent_manifests
+        .into_iter()
+        .map(|id| ManifestStageOutput::Entry(Some(Entry::Tree(Traced::generate(id)))))
+        .collect();
+    let input = prepare_manifest_input(&StageId::Manifest(MPath::ROOT), parents, HashMap::new())?;
+    let entry =
+        get_manifest_entry_from_bonsai(ctx, blobstore, restricted_paths, bcs, input, |_| async {
+            Ok(None)
+        })
+        .await?
+        .into_entry()?;
     // At the root stage, the widened primitive always returns Some(Entry::Tree(_))
     // (synthesizing an empty root manifest when all files are deleted).
     entry
@@ -250,68 +230,23 @@ pub async fn get_manifest_from_bonsai(
         .map(|t| t.into_untraced())
 }
 
-/// Derive a Mercurial manifest entry at `stage_path` from a bonsai changeset.
-///
-/// `parent_entries` are entries already at `stage_path` in bonsai-parent
-/// order — `parent_entries[i]` corresponds to `bcs.parents().nth(i)`. At the
-/// root stage callers pass `Entry::Tree(root_manifest_id)` for each parent
-/// (see `get_manifest_from_bonsai`); at a non-root stage the pipeline forwards
-/// the producing stage's outputs. `Entry::Leaf` or absent parents contribute
-/// no sub-manifest for filenode lookup but their positional slot is preserved.
-///
-/// With `stage_path == MPath::ROOT` and empty `known_entries`, this is the
-/// non-pipelined derivation. At a non-root `stage_path`, a `copy_from` whose
-/// source path lies outside `stage_path` is resolved from
-/// `cross_stage_copy_sources`, keyed by destination path: the caller looks up
-/// the source filenode in the parent's full root manifest (available at
-/// chokepoints) and supplies it here so the destination filenode hashes
-/// identically to the non-pipelined derivation.
-pub async fn get_manifest_entry_from_bonsai(
+/// Derive the stage using its ordered parent outputs and a lazy parent-root loader.
+pub async fn get_manifest_entry_from_bonsai<F, Fut>(
     ctx: CoreContext,
     blobstore: Arc<dyn KeyedBlobstore>,
     restricted_paths: ArcRestrictedPathsConfigBased,
     bcs: BonsaiChangeset,
-    parent_entries: Vec<Option<Entry<HgManifestId, (FileType, HgFileNodeId)>>>,
-    stage_path: MPath,
-    known_entries: HashMap<
-        MPath,
-        Option<
-            Entry<Traced<ParentIndex, HgManifestId>, Traced<ParentIndex, (FileType, HgFileNodeId)>>,
-        >,
-    >,
-    cross_stage_copy_sources: HashMap<NonRootMPath, (NonRootMPath, HgFileNodeId)>,
-) -> Result<
-    Option<Entry<Traced<ParentIndex, HgManifestId>, Traced<ParentIndex, (FileType, HgFileNodeId)>>>,
-    Error,
-> {
-    // NOTE: We ignore further parents beyond p1 and p2 for the purposed of tracking copy info
-    // or filenode parents. This is because hg supports just 2 parents at most, so we track
-    // copy info & filenode parents relative to the first 2 parents, then ignore other parents.
-
-    // manifest_p1/manifest_p2 are the first two bonsai parents' Tree entries at
-    // stage_path. Leaf or absent parents contribute None — no sub-manifest to
-    // look up filenodes in. Positional alignment with bcs.parents() is preserved
-    // because parent_entries is indexed by bonsai-parent slot, not filtered.
-    let manifest_p1 = parent_entries.first().and_then(|e| match e {
-        Some(Entry::Tree(m)) => Some(*m),
-        Some(Entry::Leaf(_)) | None => None,
-    });
-    let manifest_p2 = parent_entries.get(1).and_then(|e| match e {
-        Some(Entry::Tree(m)) => Some(*m),
-        Some(Entry::Leaf(_)) | None => None,
-    });
-
-    // Stage-root leaf filenodes: the parents' stage output when the stage root
-    // is itself a file, used to resolve a copy whose source is the stage root.
-    let leaf_p1 = parent_entries.first().and_then(|e| match e {
-        Some(Entry::Leaf((_ft, filenode))) => Some(*filenode),
-        Some(Entry::Tree(_)) | None => None,
-    });
-    let leaf_p2 = parent_entries.get(1).and_then(|e| match e {
-        Some(Entry::Leaf((_ft, filenode))) => Some(*filenode),
-        Some(Entry::Tree(_)) | None => None,
-    });
-
+    input: HgManifestInput,
+    load_parent_root: F,
+) -> Result<HgManifestOutput, Error>
+where
+    F: Fn(ChangesetId) -> Fut + Send + Sync,
+    Fut: Future<Output = Result<Option<Traced<ParentIndex, HgManifestId>>, Error>> + Send,
+{
+    let stage = input.stage_id();
+    let stage_path = input.path().clone();
+    let parent_outputs = input.parent_outputs();
+    // Mercurial tracks file parents and copies only through p1 and p2.
     let (p1, p2) = {
         let mut parents = bcs.parents();
         let p1 = parents.next();
@@ -323,8 +258,7 @@ pub async fn get_manifest_entry_from_bonsai(
     let file_changes = bcs
         .file_changes()
         .filter(|(path, change)| {
-            stage_path.is_prefix_of(*path)
-                || (change.is_changed() && path.is_prefix_of(&stage_path))
+            stage.covers(path) || (change.is_changed() && path.is_prefix_of(&stage_path))
         })
         .map(|(path, fc)| {
             Ok((
@@ -340,136 +274,143 @@ pub async fn get_manifest_entry_from_bonsai(
         })
         .collect::<Result<Vec<_>, Error>>()?;
 
-    // paths *modified* by changeset or *copied from p1/p2*, expressed
-    // relative to stage_path so they can be looked up inside the parents'
-    // subtree manifests via `find_entries`. At root the strip is the identity.
     let mut p1_paths = Vec::new();
     let mut p2_paths = Vec::new();
-    for (path, file_change) in file_changes.iter() {
+    for (path, file_change) in &file_changes {
+        if !input.contains_change(path) {
+            continue;
+        }
         let Some(file_change) = file_change else {
             continue;
         };
-
-        // Resolve copy_from sources for real parents (p1/p2). Copies from
-        // step-parents in an octopus merge are not propagated to hg copy
-        // info even in the non-pipelined path (see `store_file_change`),
-        // so we drop them here. Cross-stage copies (source outside
-        // stage_path) are resolved from `cross_stage_copy_sources` later,
-        // so they don't contribute to the in-stage subtree lookups here.
         if let Some((copy_path, bcsid)) = file_change.copy_from() {
-            let is_p1 = Some(bcsid) == p1.as_ref();
-            let is_p2 = Some(bcsid) == p2.as_ref();
-            if is_p1 || is_p2 {
-                if let Some(rel) = copy_path.remove_prefix_component(&stage_path) {
-                    if is_p1 {
-                        p1_paths.push(rel.clone());
-                    }
-                    if is_p2 {
-                        p2_paths.push(rel);
-                    }
-                }
+            if Some(bcsid) == p1.as_ref() {
+                p1_paths.push(copy_path.clone());
+            }
+            if Some(bcsid) == p2.as_ref() {
+                p2_paths.push(copy_path.clone());
             }
         }
-
-        // The destination path itself, looked up in both parents' subtrees
-        // for filenode-parent reuse (and the "copied-over-existing-file"
-        // case). A change landing exactly at stage_path strips to the stage
-        // root, which has no in-subtree filenode parent to resolve, so skip it.
-        if let Some(rel) = path.remove_prefix_component(&stage_path) {
-            p1_paths.push(rel.clone());
-            p2_paths.push(rel);
-        }
+        p1_paths.push(path.clone());
+        p2_paths.push(path.clone());
     }
+    let resolve_parent = |index: usize, paths: Vec<NonRootMPath>| {
+        let parent_output = parent_outputs.get(index).cloned();
+        let parent_csid = [p1, p2][index];
+        let ctx = ctx.clone();
+        let blobstore = blobstore.clone();
+        let stage = &stage;
+        let load_parent_root = &load_parent_root;
+        async move {
+            let Some(csid) = parent_csid else {
+                return Ok(HashMap::new());
+            };
+            let parent_output = parent_output
+                .ok_or_else(|| anyhow!("missing Hg stage output for parent {csid}"))?;
+            Ok::<HashMap<_, _>, Error>(
+                parent_output
+                    .find_parent_entries(ctx, blobstore, stage, paths, || load_parent_root(csid))
+                    .await?
+                    .into_iter()
+                    .filter_map(|(path, entry)| {
+                        entry.into_leaf().map(|file| (path, file.into_untraced().1))
+                    })
+                    .collect(),
+            )
+        }
+    };
+    let (p1s, p2s) = try_join(resolve_parent(0, p1_paths), resolve_parent(1, p2_paths)).await?;
 
-    // TODO:
-    // `derive_manifest` already provides parents for newly created files, so we
-    // can remove **all** lookups to files from here, and only leave lookups for
-    // files that were copied (i.e bonsai changes that contain `copy_path`)
-    let (p1s, p2s) = try_join(
-        resolve_paths(ctx.clone(), blobstore.clone(), manifest_p1, p1_paths),
-        resolve_paths(ctx.clone(), blobstore.clone(), manifest_p2, p2_paths),
-    )
-    .await?;
-    // p1s/p2s keys are paths relative to stage_path.
-
-    let file_changes: Vec<_> = file_changes
-        .into_iter()
-        .map(|(path, file_change)| Ok::<_, Error>((path, file_change)))
-        .collect();
-    let changes: Vec<_> = stream::iter(file_changes)
-        .map_ok({
-            cloned!(ctx, blobstore, stage_path);
-            move |(path, file_change)| match file_change {
-                None => future::ok((path, None)).left_future(),
-                Some(file_change) => {
-                    // Same-stage p1/p2 copies resolve from the in-stage
-                    // subtree lookups; cross-stage p1/p2 copies resolve from
-                    // the pre-resolved `cross_stage_copy_sources` map (keyed
-                    // by destination path). Step-parent copies are dropped,
-                    // matching the non-pipelined behavior.
-                    let copy_from = file_change.copy_from().and_then(|(copy_path, bcsid)| {
-                        let (parent_subtree, parent_leaf) = if Some(bcsid) == p1.as_ref() {
-                            (&p1s, leaf_p1)
-                        } else if Some(bcsid) == p2.as_ref() {
-                            (&p2s, leaf_p2)
-                        } else {
-                            return None;
-                        };
-                        match copy_path.remove_prefix_component(&stage_path) {
-                            // Source strictly under the stage: resolve in the parent's stage subtree.
-                            Some(copy_rel) => parent_subtree
-                                .get(&copy_rel)
-                                .map(|id| (copy_path.clone(), *id)),
-                            // Source is the stage root: take the copy parent's stage-output leaf
-                            // (the parent terminal isn't guaranteed derived here).
-                            None if MPath::from(copy_path.clone()) == stage_path => {
-                                parent_leaf.map(|filenode| (copy_path.clone(), filenode))
-                            }
-                            // Source strictly outside the stage: resolved by the caller's map.
-                            None => cross_stage_copy_sources.get(&path).cloned(),
-                        }
-                    });
-                    // A change landing exactly at stage_path is the parent's
-                    // stage-root file (when that output is a leaf), so its
-                    // filenode parent is the stage-root leaf; otherwise look up
-                    // the stage-relative path in the parent subtree.
-                    let path_rel = path.remove_prefix_component(&stage_path);
-                    let (p1, p2) = match path_rel.as_ref() {
-                        Some(rel) => (p1s.get(rel).cloned(), p2s.get(rel).cloned()),
-                        None => (leaf_p1, leaf_p2),
-                    };
-                    cloned!(ctx, blobstore);
-                    let spawned = mononoke::spawn_task(async move {
-                        let (file_type, filenode_id, _metadata) = store_file_change(
-                            ctx,
-                            blobstore,
-                            p1,
-                            p2,
-                            &path,
-                            &file_change,
-                            copy_from,
-                        )
-                        .await?;
-                        Ok((path, Some((file_type, filenode_id))))
-                    });
-                    async move { spawned.await? }.boxed().right_future()
-                }
-            }
+    let files_to_store = file_changes
+        .iter()
+        .filter_map(|(path, change)| {
+            input
+                .contains_change(path)
+                .then_some((path.clone(), change.as_ref()?.clone()))
         })
-        .try_buffer_unordered(1000)
-        .try_collect()
+        .collect::<Vec<_>>();
+    let p1s = Arc::new(p1s);
+    let p2s = Arc::new(p2s);
+    let files = stream::iter(files_to_store)
+        .map(|(path, file_change)| {
+            cloned!(ctx, blobstore, p1s, p2s);
+            let task = mononoke::spawn_task(async move {
+                let copy_from = file_change.copy_from().and_then(|(copy_path, bcsid)| {
+                    let parent = if Some(bcsid) == p1.as_ref() {
+                        &p1s
+                    } else if Some(bcsid) == p2.as_ref() {
+                        &p2s
+                    } else {
+                        return None;
+                    };
+                    parent.get(copy_path).map(|id| (copy_path.clone(), *id))
+                });
+                let (file_type, filenode_id, _) = store_file_change(
+                    ctx,
+                    blobstore,
+                    p1s.get(&path).copied(),
+                    p2s.get(&path).copied(),
+                    &path,
+                    &file_change,
+                    copy_from,
+                )
+                .await?;
+                Ok::<_, Error>((path, (file_type, filenode_id)))
+            });
+            async move { task.await? }
+        })
+        .buffer_unordered(1000)
+        .try_collect::<HashMap<_, _>>()
         .await?;
-
-    derive_hg_manifest_with_known_entries(
-        ctx.clone(),
-        blobstore,
-        restricted_paths,
-        parent_entries,
-        changes,
-        stage_path,
-        known_entries,
-    )
-    .await
+    let files = Arc::new(files);
+    input
+        .derive(
+            ctx.clone(),
+            blobstore.clone(),
+            file_changes,
+            {
+                cloned!(ctx, blobstore, restricted_paths);
+                move |info| {
+                    create_hg_manifest(
+                        ctx.clone(),
+                        blobstore.clone(),
+                        info,
+                        restricted_paths.clone(),
+                    )
+                }
+            },
+            {
+                cloned!(ctx, blobstore);
+                move |LeafInfo {
+                          path,
+                          change,
+                          parents,
+                      }| {
+                    cloned!(ctx, blobstore, files);
+                    async move {
+                        if change.is_some() {
+                            let entry = files.get(&path).copied().ok_or_else(|| {
+                                anyhow!("missing prepared Mercurial file at {path}")
+                            })?;
+                            Ok(((), Traced::generate(entry)))
+                        } else {
+                            create_hg_file(
+                                ctx,
+                                blobstore,
+                                LeafInfo {
+                                    path,
+                                    change: None,
+                                    parents,
+                                },
+                            )
+                            .await
+                        }
+                    }
+                }
+            },
+            |subentries| create_sorted_subentries(&ctx, subentries),
+        )
+        .await
 }
 
 pub(crate) async fn derive_from_parents(
@@ -890,23 +831,35 @@ mod pipeline_equivalence_tests {
             std::sync::Arc::new(repo.repo_blobstore().clone()),
             restricted_paths,
             bcs,
-            parent_entries,
-            stage_path,
-            known_entries,
-            HashMap::new(),
+            prepare_manifest_input(
+                &StageId::Manifest(stage_path),
+                parent_entries
+                    .into_iter()
+                    .map(|entry| {
+                        ManifestStageOutput::Entry(entry.map(crate::pipeline::wrap_entry_traced))
+                    })
+                    .collect(),
+                known_entries
+                    .into_iter()
+                    .map(|(path, entry)| {
+                        (StageId::Manifest(path), ManifestStageOutput::Entry(entry))
+                    })
+                    .collect(),
+            )?,
+            |_| async { Ok(None) },
         )
-        .await
+        .await?
+        .into_entry()
     }
 
-    /// Like `stage_entry`, but supplies a `cross_stage_copy_sources` map so a
-    /// sub-stage can resolve copies whose source lies outside its subtree.
+    /// Like `stage_entry`, but supplies the completed parent root for external copies.
     async fn stage_entry_with_cross_stage_sources(
         ctx: &CoreContext,
         repo: &TestRepo,
         child_cs_id: ChangesetId,
         parent_entries: Vec<Option<ManifestEntry<HgManifestId, (FileType, HgFileNodeId)>>>,
         stage_path: MPath,
-        cross_stage_copy_sources: HashMap<NonRootMPath, (NonRootMPath, HgFileNodeId)>,
+        parent_root: HgManifestId,
     ) -> Result<
         Option<
             ManifestEntry<
@@ -927,12 +880,20 @@ mod pipeline_equivalence_tests {
             std::sync::Arc::new(repo.repo_blobstore().clone()),
             restricted_paths,
             bcs,
-            parent_entries,
-            stage_path,
-            HashMap::new(),
-            cross_stage_copy_sources,
+            prepare_manifest_input(
+                &StageId::Manifest(stage_path),
+                parent_entries
+                    .into_iter()
+                    .map(|entry| {
+                        ManifestStageOutput::Entry(entry.map(crate::pipeline::wrap_entry_traced))
+                    })
+                    .collect(),
+                HashMap::new(),
+            )?,
+            |_| async { Ok(Some(Traced::generate(parent_root))) },
         )
-        .await
+        .await?
+        .into_entry()
     }
 
     /// Get the parent's already-derived root `HgManifestId` (deriving on
@@ -1104,8 +1065,7 @@ mod pipeline_equivalence_tests {
 
     /// Cross-stage `copy_from`: a file is copied into `dir1/` from a source
     /// outside `dir1/`. The sub-stage at `dir1/` resolves the source filenode
-    /// from `cross_stage_copy_sources` (which the pipeline pre-resolves from the
-    /// parent's full root manifest), then assembles the root. The pipelined root
+    /// from the parent's full root manifest, then assembles the root. The pipelined root
     /// must match the non-pipelined root byte-for-byte — the copied file's
     /// filenode carries the cross-stage source, so any divergence in the
     /// resolved source filenode changes the hash.
@@ -1127,37 +1087,27 @@ mod pipeline_equivalence_tests {
         let parent_root = parent_root_manifest(&ctx, &repo, parent).await?;
         let expected_root = derive_root_non_pipelined(&ctx, &repo, child, parent_root).await?;
 
-        // Resolve the cross-stage copy source from the parent's full root
-        // manifest, mirroring what the pipeline does at a chokepoint.
-        let copy_path = NonRootMPath::new("outside/src")?;
-        let source_entry = parent_root
-            .find_entry(
-                ctx.clone(),
-                repo.repo_blobstore().clone(),
-                MPath::from(copy_path.clone()),
-            )
-            .await?
-            .expect("cross-stage copy source must exist in parent root");
-        let (_ft, source_filenode) = source_entry
-            .into_leaf()
-            .expect("cross-stage copy source must be a file");
-        let cross_stage_sources: HashMap<NonRootMPath, (NonRootMPath, HgFileNodeId)> = vec![(
-            NonRootMPath::new("dir1/copied")?,
-            (copy_path, source_filenode),
-        )]
-        .into_iter()
-        .collect();
-
         let dir1 = MPath::new("dir1")?;
         let parent_dir1 =
             parent_subtree_at(&ctx, repo.repo_blobstore(), parent_root, dir1.clone()).await?;
+        let error = stage_entry_with_cross_stage_sources(
+            &ctx,
+            &repo,
+            child,
+            vec![],
+            dir1.clone(),
+            parent_root,
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("missing Hg stage output"));
         let dir1_entry = stage_entry_with_cross_stage_sources(
             &ctx,
             &repo,
             child,
             vec![parent_dir1],
             dir1.clone(),
-            cross_stage_sources,
+            parent_root,
         )
         .await?;
 

@@ -9,13 +9,16 @@ thrift_library(
         "rust",
     ],
     rust_deps = [
+        "fbsource//third-party/rust:bytes",
         "fbsource//third-party/rust:serde",
         "fbsource//third-party/rust:serde_derive",
+        "fbsource//third-party/rust:smallvec",
     ],
     thrift_srcs = {
         "derivation_queue.thrift": [],
     },
     deps = [
+        "//eden/mononoke/derived_data/if:derived_data_type_if",
         "//eden/mononoke/mononoke_types/serialization:mononoke_types_serialization",
         "//thrift/annotation:rust",
         "//thrift/annotation:thrift",

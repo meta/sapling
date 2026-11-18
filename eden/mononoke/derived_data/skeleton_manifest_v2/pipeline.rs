@@ -13,18 +13,23 @@ use blobstore::Storable;
 use context::CoreContext;
 use derived_data_manager::DerivationContext;
 use derived_data_manager::ManifestDerivable;
-use derived_data_manager::ManifestDerivation;
+use derived_data_manager::ManifestDerivationInput;
+use derived_data_manager::ManifestStageOutput;
 use fbthrift::compact_protocol;
 use manifest::Entry;
+use manifest::TreeInfoSubentries;
 use mononoke_types::BlobstoreBytes;
 use mononoke_types::BlobstoreValue;
 use mononoke_types::BonsaiChangeset;
 use mononoke_types::PipelineDerivableVariant;
 use mononoke_types::ThriftConvert;
+use mononoke_types::sharded_map_v2::LoadableShardedMapV2Node;
 use mononoke_types::skeleton_manifest_v2::SkeletonManifestV2;
+use mononoke_types::skeleton_manifest_v2::SkeletonManifestV2Entry;
 use mononoke_types::thrift::skeleton_manifest as skmf_thrift;
 
 use crate::RootSkeletonManifestV2Id;
+use crate::derive::create_skeleton_manifest_v2;
 use crate::derive::derive_skeleton_manifest_v2_entry;
 use crate::derive::get_file_changes;
 
@@ -32,10 +37,10 @@ use crate::derive::get_file_changes;
 impl ManifestDerivable for RootSkeletonManifestV2Id {
     type TreeId = SkeletonManifestV2;
     type Leaf = ();
+    type TrieMapType = LoadableShardedMapV2Node<SkeletonManifestV2Entry>;
 
     const PIPELINE_VARIANT: PipelineDerivableVariant =
         PipelineDerivableVariant::SkeletonManifestsV2;
-    const STAGE_KEY_PREFIX: &'static str = "derived_skeleton_manifest_v2_stage";
     const MAPPING_KNOB_SWITCH: &'static str = "skeleton_manifest_v2";
 
     async fn load_root_manifest(
@@ -60,9 +65,21 @@ impl ManifestDerivable for RootSkeletonManifestV2Id {
         ctx: &CoreContext,
         derivation: &DerivationContext,
         bonsai: BonsaiChangeset,
-        input: ManifestDerivation<SkeletonManifestV2, ()>,
-    ) -> Result<Option<Entry<SkeletonManifestV2, ()>>> {
+        input: ManifestDerivationInput<Self::TreeId, Self::Leaf, Self::TrieMapType>,
+    ) -> Result<ManifestStageOutput<Self::TreeId, Self::Leaf, Self::TrieMapType>> {
         derive_skeleton_manifest_v2_entry(ctx, derivation, input, get_file_changes(&bonsai)).await
+    }
+
+    async fn create_subentries(
+        ctx: &CoreContext,
+        derivation: &DerivationContext,
+        subentries: TreeInfoSubentries<Self::TreeId, Self::Leaf, (), Self::TrieMapType>,
+    ) -> Result<Self::TrieMapType> {
+        Ok(LoadableShardedMapV2Node::Inlined(
+            create_skeleton_manifest_v2(ctx.clone(), derivation.blobstore().clone(), subentries)
+                .await?
+                .subentries,
+        ))
     }
 
     fn encode_entry(entry: Option<Entry<SkeletonManifestV2, ()>>) -> BlobstoreBytes {

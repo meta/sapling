@@ -12,7 +12,6 @@ use std::sync::Arc;
 use acl_manifest::RootAclManifestId;
 use anyhow::Context;
 use anyhow::Result;
-use anyhow::bail;
 use blobstore::StoreLoadable;
 use context::CoreContext;
 use derived_data::prefetch_content_metadata;
@@ -27,36 +26,6 @@ use mononoke_types::BonsaiChangeset;
 use mononoke_types::ChangesetId;
 
 use crate::mapping::RootHgAugmentedManifestId;
-
-pub(crate) async fn fetch_augmented_roots_with_fallback(
-    ctx: &CoreContext,
-    derivation_ctx: &DerivationContext,
-    source_csids: Vec<ChangesetId>,
-    mut roots: HashMap<ChangesetId, HgAugmentedManifestId>,
-    source_description: &str,
-) -> Result<HashMap<ChangesetId, HgAugmentedManifestId>> {
-    let missing_sources: Vec<_> = source_csids
-        .iter()
-        .copied()
-        .filter(|csid| !roots.contains_key(csid))
-        .collect();
-    if !missing_sources.is_empty() {
-        roots.extend(
-            derivation_ctx
-                .fetch_derived_batch::<RootHgAugmentedManifestId>(ctx, missing_sources)
-                .await?
-                .into_iter()
-                .map(|(csid, root)| (csid, root.hg_augmented_manifest_id())),
-        );
-    }
-    if let Some(csid) = source_csids.iter().find(|csid| !roots.contains_key(csid)) {
-        bail!(
-            "{source_description} augmented manifest for changeset {csid} not found; \
-             it must be derived before the changeset that copies from it",
-        );
-    }
-    Ok(roots)
-}
 
 async fn lookup_mapped_root_hg_manifest_ids(
     ctx: &CoreContext,

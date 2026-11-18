@@ -5,23 +5,27 @@
  * GNU General Public License version 2.
  */
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 
-use anyhow::Error;
 use anyhow::Result;
 use anyhow::anyhow;
 use async_trait::async_trait;
 use blobstore::Loadable;
+use bytes::Bytes;
 use context::CoreContext;
-use derived_data_manager::BonsaiDerivable;
+use derived_data_manager::ChildNameRange;
 use derived_data_manager::DerivationContext;
 use derived_data_manager::DerivationStagePayload;
+use derived_data_manager::ManifestStageDependencies;
 use derived_data_manager::PipelineDerivable;
 use derived_data_manager::StageId;
+use derived_data_manager::StageOutputs;
+use derived_data_manager::manifest_pipeline::derive_manifest_batch;
+use derived_data_manager::stage_outputs::fetch_stage_outputs;
+use derived_data_manager::stage_outputs::store_stage_outputs;
 use fbthrift::compact_protocol;
-use futures::StreamExt;
-use futures::TryStreamExt;
-use futures::stream;
+use itertools::Either;
 use manifest::Entry;
 use manifest::PathTree;
 use mononoke_types::BlobstoreBytes;
@@ -29,38 +33,113 @@ use mononoke_types::BonsaiChangeset;
 use mononoke_types::ChangesetId;
 use mononoke_types::DeletedManifestV2Id;
 use mononoke_types::FileUnodeId;
+use mononoke_types::MPathElement;
 use mononoke_types::ManifestUnodeId;
 use mononoke_types::PipelineDerivableVariant;
+use mononoke_types::ThriftConvert;
 use mononoke_types::deleted_manifest_common::DeletedManifestCommon;
-use mononoke_types::deleted_manifest_v2::DeletedManifestV2;
 use mononoke_types::path::MPath;
+use mononoke_types::sharded_map::ShardedMapEdge;
+use mononoke_types::sharded_map::ShardedMapNode;
 use mononoke_types::thrift::deleted_manifest as dm_thrift;
 use mononoke_types::unode::UnodeEntry;
 use multimap::MultiMap;
-use unodes::RootUnodeManifestId;
-use unodes::resolve_parent_stage_outputs;
+use unodes::UnodeStageOutput;
+use unodes::fetch_stage_unodes;
 
 use crate::RootDeletedManifestV2Id;
+use crate::derive::DeletedManifestChildren;
 use crate::derive::DeletedManifestDeriver;
+use crate::derive::DeletedManifestSubentries;
+use crate::derive::KnownDeletedManifest;
+use crate::derive::UnodeChildren;
 use crate::mapping::RootDeletedManifestIdCommon;
 use crate::mapping_v2::format_key;
 
-fn stage_blobstore_key(stage_path: &MPath, key_prefix: &str, cs_id: ChangesetId) -> String {
-    format!(
-        "derived_deleted_manifest2_stage.{}.{}{}",
-        stage_path.get_path_hash().to_hex(),
-        key_prefix,
-        cs_id,
-    )
+fn stage_path(stage: &StageId) -> Result<&MPath> {
+    match stage {
+        StageId::Manifest(path) | StageId::Subentries(path, _) => Ok(path),
+        StageId::Finalize => anyhow::bail!("deleted manifests have no finalize stage"),
+    }
 }
 
-fn use_normal_mapping(stage_path: &MPath) -> bool {
-    stage_path.is_root()
+fn use_normal_mapping(stage: &StageId) -> bool {
+    matches!(stage, StageId::Manifest(path) if path.is_root())
         && justknobs::eval(
             "scm/mononoke:derived_data_pipeline_terminal_stage_prod_mapping",
             None,
             Some("deleted_manifests"),
         )
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeletedManifestStageOutput {
+    Entry(Option<DeletedManifestV2Id>),
+    Subentries(DeletedManifestSubentries),
+}
+
+impl DeletedManifestStageOutput {
+    fn into_entry(self) -> Result<Option<DeletedManifestV2Id>> {
+        match self {
+            Self::Entry(entry) => Ok(entry),
+            Self::Subentries(_) => anyhow::bail!("expected a deleted manifest entry"),
+        }
+    }
+
+    fn into_subentries(self) -> Result<DeletedManifestSubentries> {
+        match self {
+            Self::Subentries(children) => Ok(children),
+            Self::Entry(_) => anyhow::bail!("expected deleted manifest children"),
+        }
+    }
+}
+
+fn map_parts(
+    map: DeletedManifestSubentries,
+) -> BTreeMap<Bytes, Either<DeletedManifestV2Id, ShardedMapEdge<DeletedManifestV2Id>>> {
+    match map {
+        ShardedMapNode::Terminal { values } => values
+            .into_iter()
+            .map(|(name, id)| (Bytes::from(name.into_vec()), Either::Left(id)))
+            .collect(),
+        ShardedMapNode::Intermediate {
+            prefix,
+            value,
+            edges,
+            ..
+        } => value
+            .into_iter()
+            .map(|id| (Bytes::copy_from_slice(&prefix), Either::Left(id)))
+            .chain(edges.into_iter().map(|(byte, edge)| {
+                let mut name = prefix.to_vec();
+                name.push(byte);
+                (Bytes::from(name), Either::Right(edge))
+            }))
+            .collect(),
+    }
+}
+
+async fn select_children(
+    ctx: &CoreContext,
+    derivation: &DerivationContext,
+    map: DeletedManifestSubentries,
+    range: ChildNameRange,
+) -> Result<DeletedManifestSubentries> {
+    let entries = map_parts(map)
+        .into_iter()
+        .filter(|(name, _)| name.first().is_some_and(|byte| range.contains_byte(*byte)))
+        .collect();
+    ShardedMapNode::from_entries(ctx, derivation.blobstore(), entries).await
+}
+
+async fn unode_children(output: UnodeStageOutput) -> Result<Option<UnodeChildren>> {
+    let children = output
+        .into_subentries()
+        .await?
+        .into_iter()
+        .map(|(name, entry)| Ok((MPathElement::from_smallvec(name)?, to_unode_entry(&entry))))
+        .collect::<Result<UnodeChildren>>()?;
+    Ok((!children.is_empty()).then_some(children))
 }
 
 /// Unode stage entry -> deleted manifest's `UnodeEntry`.
@@ -78,7 +157,7 @@ impl PipelineDerivable for RootDeletedManifestV2Id {
 
     const HAS_FINALIZE: bool = false;
 
-    type StageOutput = Option<DeletedManifestV2Id>;
+    type StageOutput = DeletedManifestStageOutput;
 
     async fn derive_stage_batch(
         ctx: &CoreContext,
@@ -86,115 +165,140 @@ impl PipelineDerivable for RootDeletedManifestV2Id {
         bonsais: Vec<BonsaiChangeset>,
         payload: &DerivationStagePayload,
         parents: HashMap<ChangesetId, Self::StageOutput>,
-        dependency_outputs: HashMap<ChangesetId, HashMap<MPath, Self::StageOutput>>,
+        dependency_outputs: HashMap<ChangesetId, HashMap<StageId, Self::StageOutput>>,
     ) -> Result<HashMap<ChangesetId, Self::StageOutput>> {
-        let DerivationStagePayload::Manifest(payload) = payload else {
-            anyhow::bail!("{} has no finalize derive", Self::NAME);
-        };
-        let stage_path = &payload.path;
+        let stage = payload.stage_id();
+        let stage_path = stage_path(&stage)?;
         let blobstore = derivation.blobstore();
 
-        // Fetch unode stage-S subtrees for the batch and all their parents in a
-        // single call (the same-stage cross-type edge guarantees they exist).
-        let mut all_csids: Vec<ChangesetId> =
-            bonsais.iter().map(|b| b.get_changeset_id()).collect();
-        for bonsai in &bonsais {
-            all_csids.extend(bonsai.parents());
-        }
-        all_csids.sort();
-        all_csids.dedup();
+        let unode_outputs = fetch_stage_unodes(ctx, derivation, &stage, &bonsais).await?;
 
-        let unode_outputs = RootUnodeManifestId::fetch_stage_outputs(
-            ctx,
-            derivation,
-            &StageId::Manifest(stage_path.clone()),
-            all_csids,
-        )
-        .await?;
+        derive_manifest_batch(
+            bonsais,
+            parents,
+            dependency_outputs,
+            |bonsai, parents, dependencies| {
+                let unode_outputs = &unode_outputs;
+                async move {
+                    let cs_id = bonsai.get_changeset_id();
 
-        let mut results: HashMap<ChangesetId, Option<DeletedManifestV2Id>> = HashMap::new();
-
-        for bonsai in &bonsais {
-            let cs_id = bonsai.get_changeset_id();
-
-            // Current unode subtree at S.
-            let current_unode = unode_outputs
-                .get(&cs_id)
-                .ok_or_else(|| {
-                    anyhow!("missing unode stage output for {cs_id} at stage {stage_path}")
-                })?
-                .as_ref()
-                .map(to_unode_entry);
-
-            // Parent unode subtrees at S (bridges canonical-only parents).
-            let parent_unode_outputs = resolve_parent_stage_outputs(
-                ctx,
-                derivation,
-                stage_path,
-                bonsai.parents(),
-                &unode_outputs,
-            )
-            .await?;
-            let parent_unodes: MultiMap<UnodeEntry, ChangesetId> = parent_unode_outputs
-                .iter()
-                .filter_map(|(cs, entry)| entry.as_ref().map(|entry| (to_unode_entry(entry), *cs)))
-                .collect();
-
-            // Parent deleted manifest subtrees at S, preferring in-batch results.
-            // Every parent must have a stage output (a missing one is a broken
-            // invariant, not an empty subtree); a parent whose output is None
-            // simply has no deleted manifest here and contributes nothing.
-            let mut parent_dms: MultiMap<DeletedManifestV2Id, ChangesetId> = MultiMap::new();
-            for p in bonsai.parents() {
-                let out = results
-                    .get(&p)
-                    .copied()
-                    .or_else(|| parents.get(&p).copied())
-                    .ok_or_else(|| {
-                        anyhow!("missing deleted manifest stage output for parent {p} of {cs_id}")
-                    })?;
-                if let Some(id) = out {
-                    parent_dms.insert(id, p);
+                    let current_unode = unode_outputs[&cs_id].clone();
+                    let parent_unode_outputs = bonsai
+                        .parents()
+                        .map(|parent| (parent, unode_outputs[&parent].clone()))
+                        .collect::<HashMap<_, _>>()
+                        .into_iter();
+                    let parent_dms = bonsai.parents().zip(parents);
+                    let changes = bonsai
+                        .file_changes()
+                        .filter(|(path, _)| match payload {
+                            DerivationStagePayload::Subentries { range, .. } => {
+                                range.contains_path(stage_path, path)
+                            }
+                            _ => true,
+                        })
+                        .filter_map(|(path, _)| path.remove_prefix_component(stage_path))
+                        .map(|path| (path, ()))
+                        .collect::<PathTree<_>>();
+                    Ok(match payload {
+                        DerivationStagePayload::Subentries { .. } => {
+                            let parents = parent_dms
+                                .map(|(csid, output)| Ok((output.into_subentries()?, vec![csid])))
+                                .collect::<Result<_>>()?;
+                            let parent_unodes = futures::future::try_join_all(
+                                parent_unode_outputs.map(|(csid, output)| async move {
+                                    Ok::<_, anyhow::Error>(
+                                        unode_children(output)
+                                            .await?
+                                            .map(|children| (children, vec![csid])),
+                                    )
+                                }),
+                            )
+                            .await?
+                            .into_iter()
+                            .flatten()
+                            .collect();
+                            let children = DeletedManifestDeriver::derive_children(
+                                ctx,
+                                blobstore,
+                                cs_id,
+                                changes,
+                                DeletedManifestChildren {
+                                    parents,
+                                    parent_unodes,
+                                    current_unode: unode_children(current_unode).await?,
+                                },
+                            )
+                            .await?;
+                            DeletedManifestStageOutput::Subentries(children)
+                        }
+                        DerivationStagePayload::Manifest(manifest) => {
+                            let parents = parent_dms
+                                .map(|(csid, output)| Ok(output.into_entry()?.map(|id| (id, csid))))
+                                .collect::<Result<Vec<_>>>()?
+                                .into_iter()
+                                .flatten()
+                                .collect();
+                            let parent_unodes: MultiMap<_, _> = parent_unode_outputs
+                                .map(|(csid, output)| {
+                                    Ok(output
+                                        .into_entry()?
+                                        .map(|entry| (to_unode_entry(&entry), csid)))
+                                })
+                                .collect::<Result<Vec<_>>>()?
+                                .into_iter()
+                                .flatten()
+                                .collect();
+                            let current = current_unode.into_entry()?.as_ref().map(to_unode_entry);
+                            let known_entries = match &manifest.deps {
+                                ManifestStageDependencies::Children(_) => dependencies
+                                    .into_iter()
+                                    .map(|(stage, output)| {
+                                        let StageId::Manifest(path) = stage else {
+                                            anyhow::bail!("expected a manifest child stage");
+                                        };
+                                        Ok((
+                                            path.remove_prefix_component(stage_path),
+                                            KnownDeletedManifest::Entry(output.into_entry()?),
+                                        ))
+                                    })
+                                    .collect::<Result<_>>()?,
+                                ManifestStageDependencies::Partitions(_) => {
+                                    let parts = dependencies
+                                        .into_values()
+                                        .map(|output| Ok(map_parts(output.into_subentries()?)))
+                                        .collect::<Result<Vec<_>>>()?
+                                        .into_iter()
+                                        .flatten()
+                                        .collect();
+                                    let children =
+                                        ShardedMapNode::from_entries(ctx, blobstore, parts).await?;
+                                    HashMap::from([(
+                                        MPath::ROOT,
+                                        KnownDeletedManifest::Children(children),
+                                    )])
+                                }
+                            };
+                            let entry = DeletedManifestDeriver::derive_subtree(
+                                ctx,
+                                blobstore,
+                                cs_id,
+                                changes,
+                                parents,
+                                current,
+                                parent_unodes,
+                                known_entries,
+                                stage_path.is_root(),
+                            )
+                            .await?;
+                            DeletedManifestStageOutput::Entry(entry)
+                        }
+                        DerivationStagePayload::Finalize => unreachable!("checked stage path"),
+                    })
                 }
-            }
-
-            // Change set under S, relative to S.
-            let changes: PathTree<()> = PathTree::from_iter(
-                bonsai
-                    .file_changes()
-                    .filter_map(|(path, _)| path.remove_prefix_component(stage_path))
-                    .map(|rel| (rel, ())),
-            );
-
-            // Child-stage boundaries, keyed relative to S.
-            let known_entries: HashMap<MPath, Option<DeletedManifestV2Id>> = dependency_outputs
-                .get(&cs_id)
-                .map(|deps| {
-                    deps.iter()
-                        .map(|(dep_path, out)| (dep_path.remove_prefix_component(stage_path), *out))
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            let out = DeletedManifestDeriver::<DeletedManifestV2>::derive_subtree(
-                ctx,
-                blobstore,
-                cs_id,
-                changes,
-                parent_dms,
-                current_unode,
-                parent_unodes,
-                known_entries,
-                // The terminal stage materializes an empty root to match
-                // canonical derivation; non-terminal stages leave it None.
-                stage_path.is_root(),
-            )
-            .await?;
-
-            results.insert(cs_id, out);
-        }
-
-        Ok(results)
+            },
+        )
+        .await
     }
 
     async fn extract_stage_output_from_derived(
@@ -203,9 +307,7 @@ impl PipelineDerivable for RootDeletedManifestV2Id {
         derived: &RootDeletedManifestV2Id,
         stage: &StageId,
     ) -> Result<Self::StageOutput> {
-        let StageId::Manifest(stage_path) = stage else {
-            anyhow::bail!("{} has no finalize stage", Self::NAME);
-        };
+        let stage_path = stage_path(stage)?;
         // Walk the canonical deleted manifest down to `stage_path` and return the
         // node id there, whether or not it is itself deleted. `DeletedManifestOps::find_entry`
         // can't be used: it only yields nodes with a linknode set, so it would
@@ -217,10 +319,46 @@ impl PipelineDerivable for RootDeletedManifestV2Id {
             let node = current_id.load(ctx, blobstore).await?;
             match node.lookup(ctx, blobstore, element).await? {
                 Some(child_id) => current_id = child_id,
-                None => return Ok(None),
+                None => {
+                    return Ok(match stage {
+                        StageId::Subentries(..) => {
+                            DeletedManifestStageOutput::Subentries(ShardedMapNode::default())
+                        }
+                        _ => DeletedManifestStageOutput::Entry(None),
+                    });
+                }
             }
         }
-        Ok(Some(current_id))
+        match stage {
+            StageId::Subentries(_, range) => Ok(DeletedManifestStageOutput::Subentries(
+                select_children(
+                    ctx,
+                    derivation,
+                    current_id.load(ctx, blobstore).await?.subentries,
+                    *range,
+                )
+                .await?,
+            )),
+            _ => Ok(DeletedManifestStageOutput::Entry(Some(current_id))),
+        }
+    }
+
+    async fn extract_stage_output_from_root(
+        ctx: &CoreContext,
+        derivation: &DerivationContext,
+        root: Self::StageOutput,
+        stage: &StageId,
+    ) -> Result<Self::StageOutput> {
+        let id = root
+            .into_entry()?
+            .ok_or_else(|| anyhow!("expected deleted manifest root"))?;
+        Self::extract_stage_output_from_derived(
+            ctx,
+            derivation,
+            &RootDeletedManifestV2Id::new(id),
+            stage,
+        )
+        .await
     }
 
     async fn store_stage_outputs(
@@ -228,48 +366,43 @@ impl PipelineDerivable for RootDeletedManifestV2Id {
         derivation: &DerivationContext,
         stage: &StageId,
         outputs: HashMap<ChangesetId, Self::StageOutput>,
-    ) -> Result<()> {
-        let StageId::Manifest(stage_path) = stage else {
-            anyhow::bail!("{} has no finalize stage", Self::NAME);
-        };
-        let use_normal_mapping = use_normal_mapping(stage_path);
-        let key_prefix = derivation.mapping_key_prefix::<RootDeletedManifestV2Id>();
-
-        stream::iter(outputs.into_iter().map(|(cs_id, output)| async move {
-            if use_normal_mapping {
-                // Canonical deleted manifest always has a (possibly empty) root,
-                // so the terminal stage output must be present.
-                let Some(id) = output else {
-                    return Err(anyhow!("terminal stage output for {cs_id} is None"));
-                };
-                let key = format_key(derivation, cs_id);
-                derivation
-                    .blobstore()
-                    .put(ctx, key, RootDeletedManifestV2Id::new(id).into())
-                    .await
-            } else {
-                let key = stage_blobstore_key(stage_path, key_prefix, cs_id);
-                let thrift_output = match output {
-                    Some(id) => {
-                        dm_thrift::DeletedManifestStageOutput::deleted_manifest_id(id.into_thrift())
+    ) -> Result<Option<StageOutputs>> {
+        let use_normal_mapping = use_normal_mapping(stage);
+        store_stage_outputs::<Self, _, _>(
+            ctx,
+            derivation,
+            stage,
+            outputs,
+            |csid| use_normal_mapping.then(|| format_key(derivation, csid)),
+            async |output| {
+                if use_normal_mapping {
+                    let id = output
+                        .into_entry()?
+                        .ok_or_else(|| anyhow!("terminal stage output is None"))?;
+                    return Ok(RootDeletedManifestV2Id::new(id).into());
+                }
+                let bytes = match output {
+                    DeletedManifestStageOutput::Subentries(children) => {
+                        compact_protocol::serialize(children.into_thrift())
                     }
-                    None => dm_thrift::DeletedManifestStageOutput::empty(
-                        dm_thrift::DeletedManifestStageOutputEmpty {
-                            ..Default::default()
-                        },
-                    ),
+                    DeletedManifestStageOutput::Entry(entry) => {
+                        let output = match entry {
+                            Some(id) => dm_thrift::DeletedManifestStageOutput::deleted_manifest_id(
+                                id.into_thrift(),
+                            ),
+                            None => dm_thrift::DeletedManifestStageOutput::empty(
+                                dm_thrift::DeletedManifestStageOutputEmpty {
+                                    ..Default::default()
+                                },
+                            ),
+                        };
+                        compact_protocol::serialize(output)
+                    }
                 };
-                let bytes = compact_protocol::serialize(&thrift_output);
-                derivation
-                    .blobstore()
-                    .put(ctx, key, BlobstoreBytes::from_bytes(bytes))
-                    .await
-            }
-        }))
-        .buffered(100)
-        .try_collect::<Vec<_>>()
-        .await?;
-        Ok(())
+                Ok(BlobstoreBytes::from_bytes(bytes))
+            },
+        )
+        .await
     }
 
     async fn fetch_stage_outputs(
@@ -278,27 +411,26 @@ impl PipelineDerivable for RootDeletedManifestV2Id {
         stage: &StageId,
         cs_ids: Vec<ChangesetId>,
     ) -> Result<HashMap<ChangesetId, Self::StageOutput>> {
-        let StageId::Manifest(stage_path) = stage else {
-            anyhow::bail!("{} has no finalize stage", Self::NAME);
-        };
-        let use_normal_mapping = use_normal_mapping(stage_path);
-        let key_prefix = derivation.mapping_key_prefix::<RootDeletedManifestV2Id>();
-
-        let results = stream::iter(cs_ids.into_iter().map(|cs_id| async move {
-            if use_normal_mapping {
-                let key = format_key(derivation, cs_id);
-                let Some(blob) = derivation.blobstore().get(ctx, &key).await? else {
-                    return Ok::<_, Error>(None);
-                };
-                let root: RootDeletedManifestV2Id = blob.try_into()?;
-                Ok(Some((cs_id, Some(*root.id()))))
-            } else {
-                let key = stage_blobstore_key(stage_path, key_prefix, cs_id);
-                let Some(blob) = derivation.blobstore().get(ctx, &key).await? else {
-                    return Ok::<_, Error>(None);
-                };
+        let use_normal_mapping = use_normal_mapping(stage);
+        fetch_stage_outputs::<Self, _, _>(
+            ctx,
+            derivation,
+            stage,
+            cs_ids,
+            |csid| use_normal_mapping.then(|| format_key(derivation, csid)),
+            async |cs_id, blob| {
+                if use_normal_mapping {
+                    let root: RootDeletedManifestV2Id = blob.try_into()?;
+                    return Ok(DeletedManifestStageOutput::Entry(Some(*root.id())));
+                }
+                if matches!(stage, StageId::Subentries(..)) {
+                    let children = ShardedMapNode::from_thrift(compact_protocol::deserialize(
+                        blob.into_bytes(),
+                    )?)?;
+                    return Ok(DeletedManifestStageOutput::Subentries(children));
+                }
                 let thrift_output: dm_thrift::DeletedManifestStageOutput =
-                    compact_protocol::deserialize(blob.into_raw_bytes())?;
+                    compact_protocol::deserialize(blob.into_bytes())?;
                 let output = match thrift_output {
                     dm_thrift::DeletedManifestStageOutput::deleted_manifest_id(id) => {
                         Some(DeletedManifestV2Id::from_thrift(id)?)
@@ -310,13 +442,63 @@ impl PipelineDerivable for RootDeletedManifestV2Id {
                         ));
                     }
                 };
-                Ok(Some((cs_id, output)))
+                Ok(DeletedManifestStageOutput::Entry(output))
+            },
+        )
+        .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use fbinit::FacebookInit;
+    use mononoke_macros::mononoke;
+    use mononoke_types::deleted_manifest_v2::DeletedManifestV2;
+    use repo_derived_data::RepoDerivedDataRef;
+
+    use super::*;
+    use crate::test_utils::TestRepo;
+
+    #[mononoke::fbinit_test]
+    async fn partitions_preserve_native_map_hashes(fb: FacebookInit) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+        let derivation = repo.repo_derived_data().manager().derivation_context(None);
+        let id = DeletedManifestV2::new(None, ShardedMapNode::default()).id();
+        for size in [0, 1, 1999, 2000, 2001, 6000] {
+            for letters in [b"a".as_slice(), b"az".as_slice()] {
+                let entries = (0..size)
+                    .map(|n| {
+                        (
+                            Bytes::from(format!(
+                                "{}{n:05}",
+                                char::from(letters[n % letters.len()])
+                            )),
+                            Either::Left(id),
+                        )
+                    })
+                    .chain((size > 0).then(|| (Bytes::from_static(b"a"), Either::Left(id))))
+                    .collect();
+                let expected =
+                    ShardedMapNode::from_entries(&ctx, derivation.blobstore(), entries).await?;
+                let mut partitions = Vec::new();
+                for range in derived_data_manager::partition_ranges(b"dgjnqtw") {
+                    partitions
+                        .push(select_children(&ctx, &derivation, expected.clone(), range).await?);
+                }
+                let actual = ShardedMapNode::from_entries(
+                    &ctx,
+                    derivation.blobstore(),
+                    partitions.into_iter().flat_map(map_parts).collect(),
+                )
+                .await?;
+                assert_eq!(actual, expected, "size {size}, letters {letters:?}");
+                assert_eq!(
+                    DeletedManifestV2::new(None, actual).id(),
+                    DeletedManifestV2::new(None, expected).id()
+                );
             }
-        }))
-        .buffered(100)
-        .try_filter_map(|opt| async move { Ok(opt) })
-        .try_collect::<HashMap<_, _>>()
-        .await?;
-        Ok(results)
+        }
+        Ok(())
     }
 }

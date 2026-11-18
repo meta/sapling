@@ -16,7 +16,9 @@ doc = false
 
 [dependencies]
 anyhow = "1.0.104"
+bytes = { version = "1.12.1", features = ["serde"] }
 codegen_includer_proc_macro = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
+derived_data_type_if = { version = "0.1.0", path = "../../../derived_data/if" }
 fbthrift = { version = "0.0.1", git = "https://github.com/facebook/fbthrift.git", branch = "main" }
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
 mononoke_types_serialization = { version = "0.1.0", path = "../../../mononoke_types/serialization" }
@@ -24,6 +26,7 @@ ref-cast = "1.0.27"
 rust = { version = "0.0.1", git = "https://github.com/facebook/fbthrift.git", branch = "main" }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_derive = "1.0.229"
+smallvec = { version = "1.16.5", features = ["const_generics", "impl_bincode", "serde", "specialization", "union", "write"] }
 thiserror = "2.0.21"
 thrift = { version = "0.0.1", git = "https://github.com/facebook/fbthrift.git", branch = "main" }
 

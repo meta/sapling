@@ -19,7 +19,9 @@ use borrowed::borrowed;
 use cloned::cloned;
 use context::CoreContext;
 use derived_data_manager::DerivationContext;
-use derived_data_manager::ManifestDerivation;
+use derived_data_manager::ManifestDerivationInput;
+use derived_data_manager::ManifestStageOutput;
+use derived_data_manager::manifest_partitions::create_sorted_subentries;
 use futures::future::FutureExt;
 use futures::stream::FuturesOrdered;
 use futures::stream::FuturesUnordered;
@@ -131,9 +133,15 @@ pub(crate) async fn derive_skeleton_manifest(
 pub(crate) async fn derive_skeleton_manifest_entry(
     ctx: &CoreContext,
     derivation_ctx: &DerivationContext,
-    input: ManifestDerivation<SkeletonManifestId, ()>,
+    input: ManifestDerivationInput<
+        SkeletonManifestId,
+        (),
+        SortedVectorTrieMap<Entry<SkeletonManifestId, ()>>,
+    >,
     changes: Vec<(NonRootMPath, Option<(ContentId, FileType)>)>,
-) -> Result<Option<Entry<SkeletonManifestId, ()>>> {
+) -> Result<
+    ManifestStageOutput<SkeletonManifestId, (), SortedVectorTrieMap<Entry<SkeletonManifestId, ()>>>,
+> {
     let blobstore = derivation_ctx.blobstore();
     input
         .derive(
@@ -148,6 +156,7 @@ pub(crate) async fn derive_skeleton_manifest_entry(
                 }
             },
             |_leaf_info| async { Ok((None, ())) },
+            |subentries| create_sorted_subentries(ctx, subentries),
         )
         .await
 }
@@ -353,6 +362,7 @@ mod test {
     use commit_graph::CommitGraphWriter;
     use fbinit::FacebookInit;
     use filestore::FilestoreConfig;
+    use manifest::KnownEntry;
     use manifest::ManifestOps;
     use mononoke_macros::mononoke;
     use mononoke_types::ChangesetId;
@@ -967,8 +977,7 @@ mod test {
             derive_skeleton_manifest(&ctx, &derivation_ctx, vec![parent_id], changes.clone())
                 .await?;
 
-        let mut known_entries: HashMap<MPath, Option<Entry<SkeletonManifestId, ()>>> =
-            HashMap::new();
+        let mut known_entries = HashMap::new();
         for dir in ["dir1", "dir2"] {
             let prefix = MPath::new(dir)?;
             let parents = match parent_id
@@ -981,28 +990,30 @@ mod test {
             let entry = derive_skeleton_manifest_entry(
                 &ctx,
                 &derivation_ctx,
-                ManifestDerivation {
-                    parents,
+                ManifestDerivationInput::Entry {
+                    parents: parents.into_iter().map(Some).collect(),
                     known_entries: HashMap::new(),
                     path: prefix.clone(),
                 },
                 changes.clone(),
             )
-            .await?;
-            known_entries.insert(prefix, entry);
+            .await?
+            .into_entry()?;
+            known_entries.insert(prefix, KnownEntry::Entry(entry));
         }
 
         let root_entry = derive_skeleton_manifest_entry(
             &ctx,
             &derivation_ctx,
-            ManifestDerivation {
-                parents: vec![Entry::Tree(parent_id)],
+            ManifestDerivationInput::Entry {
+                parents: vec![Some(Entry::Tree(parent_id))],
                 known_entries,
                 path: MPath::ROOT,
             },
             changes,
         )
         .await?
+        .into_entry()?
         .expect("root stage should produce an entry");
 
         let pipeline_id = root_entry.into_tree().expect("root entry should be a tree");
@@ -1040,17 +1051,15 @@ mod test {
                 .await?;
 
         let subdir1 = MPath::new("dir1/subdir1")?;
-        let subdir1_parents = match parent_id
-            .find_entry(ctx.clone(), blobstore.clone(), subdir1.clone())
-            .await?
-        {
-            Some(entry) => vec![entry],
-            None => vec![],
-        };
+        let subdir1_parents = vec![
+            parent_id
+                .find_entry(ctx.clone(), blobstore.clone(), subdir1.clone())
+                .await?,
+        ];
         let subdir1_entry = derive_skeleton_manifest_entry(
             &ctx,
             &derivation_ctx,
-            ManifestDerivation {
+            ManifestDerivationInput::Entry {
                 parents: subdir1_parents,
                 known_entries: HashMap::new(),
                 path: subdir1.clone(),
@@ -1058,22 +1067,20 @@ mod test {
             changes.clone(),
         )
         .await?
+        .into_entry()?
         .expect("dir1/subdir1 stage should produce an entry");
 
         let dir1 = MPath::new("dir1")?;
-        let dir1_parents = match parent_id
-            .find_entry(ctx.clone(), blobstore.clone(), dir1.clone())
-            .await?
-        {
-            Some(entry) => vec![entry],
-            None => vec![],
-        };
-        let dir1_known: HashMap<MPath, Option<Entry<SkeletonManifestId, ()>>> =
-            HashMap::from([(subdir1, Some(subdir1_entry))]);
+        let dir1_parents = vec![
+            parent_id
+                .find_entry(ctx.clone(), blobstore.clone(), dir1.clone())
+                .await?,
+        ];
+        let dir1_known = HashMap::from([(subdir1, KnownEntry::Entry(Some(subdir1_entry)))]);
         let dir1_entry = derive_skeleton_manifest_entry(
             &ctx,
             &derivation_ctx,
-            ManifestDerivation {
+            ManifestDerivationInput::Entry {
                 parents: dir1_parents,
                 known_entries: dir1_known,
                 path: dir1.clone(),
@@ -1081,21 +1088,22 @@ mod test {
             changes.clone(),
         )
         .await?
+        .into_entry()?
         .expect("dir1 stage should produce an entry");
 
-        let root_known: HashMap<MPath, Option<Entry<SkeletonManifestId, ()>>> =
-            HashMap::from([(dir1, Some(dir1_entry))]);
+        let root_known = HashMap::from([(dir1, KnownEntry::Entry(Some(dir1_entry)))]);
         let root_entry = derive_skeleton_manifest_entry(
             &ctx,
             &derivation_ctx,
-            ManifestDerivation {
-                parents: vec![Entry::Tree(parent_id)],
+            ManifestDerivationInput::Entry {
+                parents: vec![Some(Entry::Tree(parent_id))],
                 known_entries: root_known,
                 path: MPath::ROOT,
             },
             changes,
         )
         .await?
+        .into_entry()?
         .expect("root stage should produce an entry");
 
         let pipeline_id = root_entry.into_tree().expect("root entry should be a tree");

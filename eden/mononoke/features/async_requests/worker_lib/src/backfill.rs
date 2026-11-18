@@ -364,7 +364,8 @@ async fn derive_slice_pipeline(
         manager,
         pipeline_config,
         &[derived_data_type],
-    );
+    )
+    .map_err(AsyncRequestsError::internal)?;
     // Reuse the (possibly throttled) manager's blobstore and commit graph.
     let commit_graph = manager.commit_graph();
     let blobstore = manager.repo_blobstore();
@@ -404,6 +405,7 @@ async fn derive_slice_pipeline(
                     &order.sorted_stages,
                     &order.sorted_types,
                     &batches,
+                    |_| {},
                 )
             },
             CHUNK_RETRY_BASE_BACKOFF,
@@ -1212,7 +1214,6 @@ mod tests {
     use commit_graph::CommitGraphWriter;
     use context::CoreContext;
     use derivation_queue_thrift::DerivationPriority;
-    use derived_data_manager::StageId;
     use fbinit::FacebookInit;
     use filestore::FilestoreConfig;
     use fsnodes::RootFsnodeId;
@@ -1241,12 +1242,7 @@ mod tests {
         DerivationPipelineConfig {
             types: types.into_iter().collect(),
             bookmarks: vec![],
-            stages: HashMap::from([(
-                MPath::ROOT,
-                DerivationPipelineStageConfig {
-                    dependencies: vec![],
-                },
-            )]),
+            stages: HashMap::from([(MPath::ROOT, DerivationPipelineStageConfig::new(vec![]))]),
             batch_size: NonZeroU64::new(batch_size).expect("batch size must be non-zero"),
         }
     }
@@ -1281,22 +1277,10 @@ mod tests {
         let stages = HashMap::from([
             (
                 MPath::ROOT,
-                DerivationPipelineStageConfig {
-                    dependencies: vec![dir1.clone(), dir2.clone()],
-                },
+                DerivationPipelineStageConfig::new(vec![dir1.clone(), dir2.clone()]),
             ),
-            (
-                dir1,
-                DerivationPipelineStageConfig {
-                    dependencies: vec![],
-                },
-            ),
-            (
-                dir2,
-                DerivationPipelineStageConfig {
-                    dependencies: vec![],
-                },
-            ),
+            (dir1, DerivationPipelineStageConfig::new(vec![])),
+            (dir2, DerivationPipelineStageConfig::new(vec![])),
         ]);
         Ok(DerivationPipelineConfig {
             types: types.into_iter().collect(),
@@ -1306,42 +1290,29 @@ mod tests {
         })
     }
 
-    /// Derive canonically as the source of truth, then assert every pipeline
-    /// stage output byte-matches canonical for every commit — the same
-    /// equivalence the pipeline test harness checks, but reached through the
-    /// backfill `derive_slice_pipeline` entry point.
-    async fn verify_all_stages_match_canonical(
+    async fn verify_pipeline_root_matches_canonical(
         manager: &DerivedDataManager,
         ctx: &CoreContext,
-        config: &DerivationPipelineConfig,
         cs_ids: &[ChangesetId],
         derived_data_type: DerivableType,
     ) -> Result<()> {
-        manager
+        let canonical = with_type_enabled(manager, derived_data_type, Some("canonical-test."));
+        canonical
             .derive_bulk_locally(ctx, cs_ids, None, &[derived_data_type], None, None)
-            .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        let variant = derived_data_type.into_pipeline_derivable_variant()?;
-        for &cs in cs_ids {
-            for stage_path in config.stages.keys() {
-                assert!(
-                    bulk_derivation::verify_stage_output(
-                        manager,
-                        ctx,
-                        cs,
-                        &StageId::Manifest(stage_path.clone()),
-                        variant,
-                    )
-                    .await?,
-                    "pipeline stage {stage_path:?} for {cs} diverged from canonical",
-                );
-            }
-        }
+            .await?;
+        let expected =
+            BulkDerivation::fetch_derived_batch(&canonical, ctx, cs_ids, None, derived_data_type)
+                .await?;
+        let actual =
+            BulkDerivation::fetch_derived_batch(manager, ctx, cs_ids, None, derived_data_type)
+                .await?;
+        assert_eq!(expected.len(), cs_ids.len());
+        assert_eq!(actual, expected, "pipeline roots diverged from canonical");
         Ok(())
     }
 
-    /// Run one pipeline slice over `(base, head)` with the per-chunk retry-limit
-    /// JK pinned, returning the derived count.
+    /// Run one pipeline slice over `(base, head)` with terminal mapping publication
+    /// enabled and the per-chunk retry-limit JK pinned, returning the derived count.
     async fn run_pipeline_slice(
         ctx: &CoreContext,
         manager: &DerivedDataManager,
@@ -1351,10 +1322,13 @@ mod tests {
         head: ChangesetId,
     ) -> Result<i64> {
         with_just_knobs_async(
-            JustKnobsInMemory::new(HashMap::from([(
-                JK_BACKFILL_CHUNK_RETRY_LIMIT.to_string(),
-                KnobVal::Int(0),
-            )])),
+            JustKnobsInMemory::new(HashMap::from([
+                (JK_BACKFILL_CHUNK_RETRY_LIMIT.to_string(), KnobVal::Int(0)),
+                (
+                    "scm/mononoke:derived_data_pipeline_terminal_stage_prod_mapping".to_string(),
+                    KnobVal::Bool(true),
+                ),
+            ])),
             derive_slice_pipeline(ctx, manager, config, derived_data_type, vec![(base, head)])
                 .boxed(),
         )
@@ -1606,26 +1580,8 @@ mod tests {
         // commit from its parent's stage output, which for a mis-ordered batch
         // would not yet exist for an in-batch parent.
         let config = root_only_pipeline_config([DerivableType::Fsnodes], 10);
-        let variant = DerivableType::Fsnodes.into_pipeline_derivable_variant()?;
-
-        // Pin the per-chunk retry-limit JK so the retry wrapper reads a defined
-        // value under test.
-        let derived = with_just_knobs_async(
-            JustKnobsInMemory::new(HashMap::from([(
-                JK_BACKFILL_CHUNK_RETRY_LIMIT.to_string(),
-                KnobVal::Int(0),
-            )])),
-            derive_slice_pipeline(
-                &ctx,
-                &manager,
-                &config,
-                DerivableType::Fsnodes,
-                vec![(c1, c3)],
-            )
-            .boxed(),
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("{e:#}"))?;
+        let derived =
+            run_pipeline_slice(&ctx, &manager, &config, DerivableType::Fsnodes, c1, c3).await?;
 
         // `range_stream(c1, c3)` is inclusive, so the whole c1..=c3 stack is
         // derived.
@@ -1633,22 +1589,13 @@ mod tests {
             derived, 3,
             "all three commits in the segment should be derived"
         );
-        // Every terminal ROOT stage must be stored; a mis-ordered batch would
-        // fail to derive a child before its parent.
-        for cs in [c1, c2, c3] {
-            assert!(
-                bulk_derivation::is_stage_derived(
-                    &manager,
-                    &ctx,
-                    cs,
-                    &StageId::Manifest(MPath::ROOT),
-                    variant,
-                )
-                .await?,
-                "terminal ROOT stage should be stored by the pipeline for {cs}",
-            );
-        }
-        Ok(())
+        verify_pipeline_root_matches_canonical(
+            &manager,
+            &ctx,
+            &[c1, c2, c3],
+            DerivableType::Fsnodes,
+        )
+        .await
     }
 
     /// Multi-stage pipeline through the backfill entry point for a serial type
@@ -1682,10 +1629,9 @@ mod tests {
         let derived =
             run_pipeline_slice(&ctx, &manager, &config, DerivableType::Fsnodes, c1, c3).await?;
         assert_eq!(derived, 3, "the whole c1..=c3 stack should be derived");
-        verify_all_stages_match_canonical(
+        verify_pipeline_root_matches_canonical(
             &manager,
             &ctx,
-            &config,
             &[c1, c2, c3],
             DerivableType::Fsnodes,
         )
@@ -1727,10 +1673,9 @@ mod tests {
             derived, 3,
             "the whole stack including the chokepoint should be derived"
         );
-        verify_all_stages_match_canonical(
+        verify_pipeline_root_matches_canonical(
             &manager,
             &ctx,
-            &config,
             &[c1, c2, c3],
             DerivableType::Fsnodes,
         )

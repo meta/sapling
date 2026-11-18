@@ -15,7 +15,8 @@ use blobstore::Storable;
 use cloned::cloned;
 use context::CoreContext;
 use derived_data_manager::DerivationContext;
-use derived_data_manager::ManifestDerivation;
+use derived_data_manager::ManifestDerivationInput;
+use derived_data_manager::ManifestStageOutput;
 use either::Either;
 use futures::StreamExt;
 use futures::TryStreamExt;
@@ -257,9 +258,19 @@ pub(crate) async fn derive_content_manifest(
 pub(crate) async fn derive_content_manifest_entry(
     ctx: &CoreContext,
     derivation_ctx: &DerivationContext,
-    input: ManifestDerivation<ContentManifestId, ContentManifestFile>,
+    input: ManifestDerivationInput<
+        ContentManifestId,
+        ContentManifestFile,
+        LoadableShardedMapV2Node<ContentManifestEntry>,
+    >,
     changes: Vec<(NonRootMPath, Option<ContentManifestFile>)>,
-) -> Result<Option<Entry<ContentManifestId, ContentManifestFile>>> {
+) -> Result<
+    ManifestStageOutput<
+        ContentManifestId,
+        ContentManifestFile,
+        LoadableShardedMapV2Node<ContentManifestEntry>,
+    >,
+> {
     let blobstore = derivation_ctx.blobstore();
     let restricted_paths = derivation_ctx.restricted_paths();
     input
@@ -284,6 +295,12 @@ pub(crate) async fn derive_content_manifest_entry(
                 }
             },
             create_content_manifest_file,
+            |subentries| async move {
+                Ok(LoadableShardedMapV2Node::Inlined(
+                    create_content_manifest_subentries(ctx.clone(), blobstore.clone(), subentries)
+                        .await?,
+                ))
+            },
         )
         .await
 }

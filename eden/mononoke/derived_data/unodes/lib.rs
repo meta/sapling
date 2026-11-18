@@ -32,8 +32,12 @@ mod pipeline;
 
 pub use mapping::RootUnodeManifestId;
 pub use mapping::format_key;
+pub use pipeline::UnodeStageOutput;
+pub use pipeline::fetch_pipeline_unode_root;
+pub use pipeline::fetch_stage_unodes;
+pub use pipeline::find_new_canonical_unode_entries;
+pub use pipeline::find_new_stage_entries;
 pub use pipeline::find_stage_unode_rename_sources;
-pub use pipeline::resolve_parent_stage_outputs;
 
 #[derive(Debug, Error)]
 pub enum UnodeDerivationError {
@@ -214,31 +218,38 @@ pub async fn find_unode_rename_sources(
         .map_ok(|unodes| unodes.into_iter().flatten().collect())
         .await?;
 
-    let subtree_ops = PathTree::from_iter(bonsai.subtree_changes().iter().map(
-        |(to_path, change)| match change {
-            SubtreeChange::SubtreeDeepCopy(copy) => (
-                to_path.clone(),
-                Some(SubtreeOpSource::Copy(SubtreeCopySource {
-                    parent: copy.from_cs_id,
-                    from_path: copy.from_path.clone(),
-                })),
-            ),
-            SubtreeChange::SubtreeMerge(merge) => (
-                to_path.clone(),
-                Some(SubtreeOpSource::Merge(SubtreeMergeSource {
-                    parent: merge.from_cs_id,
-                    from_path: merge.from_path.clone(),
-                })),
-            ),
-            SubtreeChange::SubtreeImport(_) => (to_path.clone(), None),
-            SubtreeChange::SubtreeCrossRepoMerge(_) => (to_path.clone(), None),
-        },
-    ));
+    let subtree_ops = subtree_rename_sources(bonsai);
 
     Ok(UnodeRenameSources {
         copy_info,
         subtree_ops,
     })
+}
+
+fn subtree_rename_sources(bonsai: &BonsaiChangeset) -> PathTree<Option<SubtreeOpSource>> {
+    PathTree::from_iter(
+        bonsai
+            .subtree_changes()
+            .iter()
+            .map(|(to_path, change)| match change {
+                SubtreeChange::SubtreeDeepCopy(copy) => (
+                    to_path.clone(),
+                    Some(SubtreeOpSource::Copy(SubtreeCopySource {
+                        parent: copy.from_cs_id,
+                        from_path: copy.from_path.clone(),
+                    })),
+                ),
+                SubtreeChange::SubtreeMerge(merge) => (
+                    to_path.clone(),
+                    Some(SubtreeOpSource::Merge(SubtreeMergeSource {
+                        parent: merge.from_cs_id,
+                        from_path: merge.from_path.clone(),
+                    })),
+                ),
+                SubtreeChange::SubtreeImport(_) => (to_path.clone(), None),
+                SubtreeChange::SubtreeCrossRepoMerge(_) => (to_path.clone(), None),
+            }),
+    )
 }
 
 #[cfg(test)]

@@ -8,7 +8,6 @@
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
-use std::time::Duration;
 
 use acl_manifest::RootAclManifestId;
 use anyhow::Error;
@@ -31,6 +30,7 @@ use derived_data_manager::DerivedDataManager;
 use derived_data_manager::PipelineDerivable;
 use derived_data_manager::Rederivation;
 use derived_data_manager::SharedDerivationError;
+use derived_data_manager::StageBatchResult;
 use derived_data_manager::StageId;
 use derived_data_manager::VisitedDerivableTypesMap;
 use derived_data_manager::VisitedDerivableTypesMapStatic;
@@ -526,7 +526,7 @@ pub async fn derive_stage_batch(
     csids: Vec<ChangesetId>,
     payload: &derived_data_manager::DerivationStagePayload,
     variant: PipelineDerivableVariant,
-) -> Result<Duration, DerivationError> {
+) -> Result<StageBatchResult, DerivationError> {
     match variant {
         PipelineDerivableVariant::Fsnodes => {
             ddm.derive_stage_batch::<RootFsnodeId>(ctx, csids, payload)

@@ -10,8 +10,10 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use acl_manifest::DirectoryAclInputs;
 use acl_manifest::RootAclManifestId;
@@ -20,17 +22,22 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use async_trait::async_trait;
+use blobstore::Blobstore;
 use blobstore::BlobstoreBytes;
 use blobstore::BlobstoreGetData;
 use blobstore::BlobstoreIsPresent;
 use blobstore::KeyedBlobstore;
 use blobstore::Loadable;
 use blobstore::LoadableError;
+use blobstore::OverwriteStatus;
+use blobstore::PutBehaviour;
 use blobstore::Storable;
 use bonsai_hg_mapping::BonsaiHgMappingRef;
 use cacheblob::MemWritesKeyedBlobstore;
 use context::CoreContext;
 use derived_data_manager::BonsaiDerivable;
+use derived_data_manager::DerivationStagePayload;
+use derived_data_manager::ManifestStagePayload;
 use fbinit::FacebookInit;
 use futures::FutureExt;
 use futures::stream::TryStreamExt;
@@ -40,6 +47,7 @@ use justknobs::test_helpers::override_just_knobs;
 use justknobs::test_helpers::with_just_knobs_async;
 use manifest::Entry;
 use manifest::ManifestOps;
+use memblob::Memblob;
 use mercurial_derivation::DeriveHgChangeset;
 use mercurial_derivation::MappedHgChangesetId;
 use mercurial_derivation::RootHgAugmentedManifestId;
@@ -79,8 +87,11 @@ use repo_derived_data::RepoDerivedDataRef;
 use restricted_paths::ManifestType;
 use restricted_paths::RestrictedPathManifestIdEntry;
 use restricted_paths::RestrictedPathsRef;
+use test_repo_factory::TestRepoFactory;
 use tests_utils::CreateCommitContext;
 use tests_utils::drawdag::extend_from_dag_with_actions;
+use tokio::sync::Barrier;
+use tokio::time::timeout;
 
 use crate::Repo;
 
@@ -882,15 +893,28 @@ async fn test_resolve_copy_from_filenodes(fb: FacebookInit) -> Result<()> {
         })
         .collect();
 
+    let error = derive_hg_augmented_manifest::resolve_copy_from_filenodes(
+        &ctx,
+        repo.repo_blobstore(),
+        &derived_data_manager::StageId::Manifest(MPath::new("copied_file")?),
+        &file_changes,
+        (Some(root), None),
+        &[],
+        |csid| std::future::ready(Ok((csid == root).then_some(root_aug))),
+    )
+    .await
+    .unwrap_err();
+    assert!(format!("{error:#}").contains("missing augmented stage output"));
+
     // Resolve copy-from filenodes
     let result = derive_hg_augmented_manifest::resolve_copy_from_filenodes(
         &ctx,
         repo.repo_blobstore(),
-        &MPath::new("copied_file")?,
+        &derived_data_manager::StageId::Manifest(MPath::new("copied_file")?),
         &file_changes,
         (Some(root), None),
-        &[],
-        &HashMap::from([(root, root_aug)]),
+        &[derived_data_manager::ManifestStageOutput::Entry(None)],
+        |csid| std::future::ready(Ok((csid == root).then_some(root_aug))),
     )
     .await?;
 
@@ -993,11 +1017,11 @@ async fn test_resolve_copy_from_filenodes_missing_source(fb: FacebookInit) -> Re
     let result = derive_hg_augmented_manifest::resolve_copy_from_filenodes(
         &ctx,
         repo.repo_blobstore(),
-        &MPath::new("new_file")?,
+        &derived_data_manager::StageId::Manifest(MPath::new("new_file")?),
         &file_changes,
         (Some(child), None),
-        &[],
-        &HashMap::from([(child, child_aug)]),
+        &[derived_data_manager::ManifestStageOutput::Entry(None)],
+        |csid| std::future::ready(Ok((csid == child).then_some(child_aug))),
     )
     .await?;
 
@@ -6727,4 +6751,118 @@ async fn test_upload_fails_when_transitive_child_is_missing(fb: FacebookInit) ->
         child,
     )
     .await
+}
+
+#[derive(Debug)]
+struct ConcurrentAclReads {
+    inner: Memblob,
+    gated: AtomicBool,
+    readers: Barrier,
+    reads: AtomicUsize,
+}
+
+impl fmt::Display for ConcurrentAclReads {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ConcurrentAclReads")
+    }
+}
+
+#[async_trait]
+impl Blobstore for ConcurrentAclReads {
+    async fn get<'a>(
+        &'a self,
+        ctx: &'a CoreContext,
+        key: &'a str,
+    ) -> Result<Option<BlobstoreGetData>> {
+        if self.gated.load(Ordering::Relaxed)
+            && (key.contains(".derived_root_aclmf.")
+                || key.contains(".derived_acl_manifest_stage."))
+        {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            timeout(Duration::from_secs(5), self.readers.wait())
+                .await
+                .context("both ACL roots must be read before either read finishes")?;
+        }
+        self.inner.get(ctx, key).await
+    }
+
+    async fn put_explicit<'a>(
+        &'a self,
+        ctx: &'a CoreContext,
+        key: String,
+        value: BlobstoreBytes,
+        behaviour: PutBehaviour,
+    ) -> Result<OverwriteStatus> {
+        self.inner.put_explicit(ctx, key, value, behaviour).await
+    }
+
+    async fn put_with_status<'a>(
+        &'a self,
+        ctx: &'a CoreContext,
+        key: String,
+        value: BlobstoreBytes,
+    ) -> Result<OverwriteStatus> {
+        self.inner.put_with_status(ctx, key, value).await
+    }
+
+    async fn unlink<'a>(&'a self, ctx: &'a CoreContext, key: &'a str) -> Result<()> {
+        Blobstore::unlink(&self.inner, ctx, key).await
+    }
+}
+
+#[mononoke::fbinit_test]
+async fn augmented_batch_prefetches_acl_roots_concurrently(fb: FacebookInit) -> Result<()> {
+    for canonical in [false, true] {
+        with_just_knobs_async(
+            JustKnobsInMemory::new(HashMap::from([(
+                "scm/mononoke:derived_data_pipeline_terminal_stage_prod_mapping".to_owned(),
+                KnobVal::Bool(canonical),
+            )])),
+            async {
+                let ctx = CoreContext::test_mock(fb);
+                let store = Arc::new(ConcurrentAclReads {
+                    inner: Memblob::default(),
+                    gated: AtomicBool::new(false),
+                    readers: Barrier::new(2),
+                    reads: AtomicUsize::new(0),
+                });
+                let repo: Repo = TestRepoFactory::new(fb)?
+                    .with_blobstore(store.clone())
+                    .build()
+                    .await?;
+                let first = CreateCommitContext::new_root(&ctx, &repo)
+                    .add_file("file", "first")
+                    .commit()
+                    .await?;
+                let second = CreateCommitContext::new(&ctx, &repo, vec![first])
+                    .add_file("file", "second")
+                    .commit()
+                    .await?;
+                let csids = vec![first, second];
+                let payload = DerivationStagePayload::Manifest(ManifestStagePayload {
+                    path: MPath::ROOT,
+                    deps: vec![].into(),
+                });
+                let manager = repo.repo_derived_data().manager();
+                let acl = manager
+                    .derive_stage_batch::<RootAclManifestId>(&ctx, csids.clone(), &payload)
+                    .await?;
+                let manager = manager.with_stage_inputs(derived_data_manager::StageInputs::new(
+                    &acl.outputs.into_iter().collect::<Vec<_>>(),
+                )?);
+                store.gated.store(true, Ordering::Relaxed);
+                manager
+                    .derive_stage_batch::<RootHgAugmentedManifestId>(&ctx, csids, &payload)
+                    .await?;
+                assert_eq!(
+                    store.reads.load(Ordering::Relaxed),
+                    if canonical { 2 } else { 0 }
+                );
+                anyhow::Ok(())
+            }
+            .boxed(),
+        )
+        .await?;
+    }
+    Ok(())
 }

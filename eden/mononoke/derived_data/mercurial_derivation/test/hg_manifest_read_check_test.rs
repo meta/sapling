@@ -22,6 +22,7 @@ use derived_data_manager::DerivationStagePayload;
 use derived_data_manager::ManifestStagePayload;
 use derived_data_manager::PipelineDerivable;
 use derived_data_manager::StageId;
+use derived_data_manager::StageInputs;
 use fbinit::FacebookInit;
 use justknobs::test_helpers::JustKnobsInMemory;
 use justknobs::test_helpers::KnobVal;
@@ -86,8 +87,6 @@ impl SamplingHandler for HgManifestReadLabels {
 }
 
 /// Turns `hgmanifest_read_from_augmented` on for every task on this thread.
-/// Hg changesets are derived without their augmented manifests, which tests
-/// derive explicitly when they need them.
 fn set_read_from_augmented() {
     override_just_knobs(JustKnobsInMemory::new(HashMap::from([
         (
@@ -191,7 +190,7 @@ async fn test_augmented_backfill_reads_are_labelled(fb: FacebookInit) -> Result<
     let (repo, labels) = repo_recording_labels(fb).await?;
     let (root, _) = root_and_child(&ctx, &repo).await?;
     let manager = repo.repo_derived_data().manager();
-    repo.derive_hg_changeset(&ctx, root).await?;
+    fixtures::store_hg_changesets_as_uploaded(&ctx, &repo, vec![root]).await?;
     manager
         .derive_exactly_batch::<RootAclManifestId>(&ctx, vec![root], None)
         .await?;
@@ -222,12 +221,15 @@ async fn test_hg_pipeline_stage_reads_are_labelled(fb: FacebookInit) -> Result<(
     // from the parent's derived changeset, and then its finalize stage.
     let root_stage = DerivationStagePayload::Manifest(ManifestStagePayload {
         path: MPath::ROOT,
-        deps: vec![],
+        deps: vec![].into(),
     });
-    manager
+    let root_outputs = manager
         .derive_stage_batch::<MappedHgChangesetId>(&ctx, vec![child], &root_stage)
         .await?;
     let root_stage_labels = labels.take();
+    let manager = manager.with_stage_inputs(StageInputs::new(
+        &root_outputs.outputs.into_iter().collect::<Vec<_>>(),
+    )?);
     manager
         .derive_stage_batch::<MappedHgChangesetId>(
             &ctx,
@@ -273,7 +275,7 @@ async fn test_hg_pipeline_seeding_from_derived_reads_are_labelled(fb: FacebookIn
 }
 
 #[mononoke::fbinit_test]
-async fn test_hg_pipeline_terminal_fetch_reads_are_labelled(fb: FacebookInit) -> Result<()> {
+async fn test_hg_pipeline_terminal_fetch_does_not_read_manifests(fb: FacebookInit) -> Result<()> {
     // Given: a commit whose Hg changeset is derived, and the pipeline's
     // finalize stage reading from the Bonsai-to-Hg mapping.
     set_read_from_augmented();
@@ -289,7 +291,7 @@ async fn test_hg_pipeline_terminal_fetch_reads_are_labelled(fb: FacebookInit) ->
     labels.take();
 
     // When: the pipeline fetches the commit's finalize stage output.
-    MappedHgChangesetId::fetch_stage_outputs(
+    let outputs = MappedHgChangesetId::fetch_stage_outputs(
         &ctx,
         &manager.derivation_context(None),
         &StageId::Finalize,
@@ -297,7 +299,7 @@ async fn test_hg_pipeline_terminal_fetch_reads_are_labelled(fb: FacebookInit) ->
     )
     .await?;
 
-    // Then: every Hg manifest read is labelled as the Hg pipeline.
-    assert_all_labelled(&labels.take(), access_labels::HG_CHANGESET_PIPELINE);
+    assert!(outputs.contains_key(&root));
+    assert!(labels.take().is_empty());
     Ok(())
 }

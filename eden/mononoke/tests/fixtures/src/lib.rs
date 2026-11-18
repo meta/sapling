@@ -58,6 +58,9 @@ use test_repo_factory::TestRepoFactoryBuilder;
 use tests_utils::Repo;
 use tests_utils::drawdag::extend_from_dag_with_actions;
 
+mod merged_deletion_history;
+pub use merged_deletion_history::MergedDeletionHistory;
+
 pub async fn store_files(
     ctx: &CoreContext,
     files: BTreeMap<&str, Option<&str>>,
@@ -1657,6 +1660,42 @@ impl TestRepoFixture for CrossStageFileCopy {
     )> {
         let ctx = CoreContext::test_mock(fb);
         extend_from_dag_with_actions(&ctx, repo, Self::DAG).await
+    }
+}
+
+/// Copies within and across child-name ranges, including a stage becoming a file and back.
+pub struct PartitionFileCopies;
+
+#[async_trait]
+impl TestRepoFixture for PartitionFileCopies {
+    const REPO_NAME: &'static str = "partition_file_copies";
+    const DAG: &'static str = r#"
+        # default_files: false
+        # author: * "author"
+        # bookmark: F master
+
+        F        # delete: F "data"
+        |        # copy: F "data/a" "a\n" E "data"
+        E        # copy: E "data" "a\n" D "data/b"
+        |
+        D        # copy: D "data/z" "a\n" C "data/b"
+        |
+        C        # copy: C "data/z2" "a\n" B "data/b"
+        |
+        B        # copy: B "data/b" "a\n" A "data/a"
+        |
+        A        # modify: A "data/a" "a\n"
+                 # modify: A "data/z" "z\n"
+    "#;
+
+    async fn init_repo(
+        fb: FacebookInit,
+        repo: &impl Repo,
+    ) -> Result<(
+        BTreeMap<String, ChangesetId>,
+        BTreeMap<String, BTreeSet<String>>,
+    )> {
+        extend_from_dag_with_actions(&CoreContext::test_mock(fb), repo, Self::DAG).await
     }
 }
 

@@ -18,7 +18,10 @@ use blobstore::KeyedBlobstore;
 use blobstore::Loadable;
 use cloned::cloned;
 use context::CoreContext;
-use derived_data_manager::ManifestDerivation;
+use derived_data_manager::ManifestDerivationInput;
+use derived_data_manager::ManifestStageOutput;
+use derived_data_manager::StageId;
+use derived_data_manager::manifest_partitions::create_sorted_subentries;
 use futures::future;
 use futures::future::TryFutureExt;
 use futures::future::try_join_all;
@@ -141,12 +144,54 @@ pub async fn derive_simple_hg_manifest_stack_without_copy_info(
         .collect())
 }
 
-/// Derive the root mercurial manifest from parent root manifests and bonsai
-/// file changes.
-///
-/// This is the non-pipelined derivation: it forwards to
-/// `derive_hg_manifest_with_known_entries` at the root stage with no known
-/// entries and returns the resulting root `HgManifestId`.
+pub type HgManifestEntry =
+    Entry<Traced<ParentIndex, HgManifestId>, Traced<ParentIndex, (FileType, HgFileNodeId)>>;
+pub type HgManifestOutput = ManifestStageOutput<
+    Traced<ParentIndex, HgManifestId>,
+    Traced<ParentIndex, (FileType, HgFileNodeId)>,
+    SortedVectorTrieMap<HgManifestEntry>,
+>;
+pub type HgManifestInput = ManifestDerivationInput<
+    Traced<ParentIndex, HgManifestId>,
+    Traced<ParentIndex, (FileType, HgFileNodeId)>,
+    SortedVectorTrieMap<HgManifestEntry>,
+>;
+
+pub(crate) fn prepare_manifest_input(
+    stage: &StageId,
+    parents: Vec<HgManifestOutput>,
+    dependencies: HashMap<StageId, HgManifestOutput>,
+) -> Result<HgManifestInput, Error> {
+    let parents = parents
+        .into_iter()
+        .enumerate()
+        .map(|(index, output)| {
+            let assign = move |entry: HgManifestEntry| match entry {
+                Entry::Tree(tree) => {
+                    Entry::Tree(Traced::assign(ParentIndex(index), tree.into_untraced()))
+                }
+                Entry::Leaf(leaf) => {
+                    Entry::Leaf(Traced::assign(ParentIndex(index), leaf.into_untraced()))
+                }
+            };
+            match output {
+                ManifestStageOutput::Entry(entry) => ManifestStageOutput::Entry(entry.map(assign)),
+                ManifestStageOutput::Subentries(map) => {
+                    ManifestStageOutput::Subentries(map.map_preserving_encoding(move |map| {
+                        SortedVectorTrieMap::new(
+                            map.into_iter()
+                                .map(|(name, entry)| (name, assign(entry)))
+                                .collect(),
+                        )
+                    }))
+                }
+            }
+        })
+        .collect();
+    ManifestDerivationInput::from_stage_outputs(stage, parents, dependencies)
+}
+
+/// Derive the root Mercurial manifest from parent roots and prepared file changes.
 pub async fn derive_hg_manifest(
     ctx: CoreContext,
     blobstore: Arc<dyn KeyedBlobstore>,
@@ -154,81 +199,37 @@ pub async fn derive_hg_manifest(
     parents: impl IntoIterator<Item = HgManifestId>,
     changes: impl IntoIterator<Item = (NonRootMPath, Option<(FileType, HgFileNodeId)>)> + 'static,
 ) -> Result<HgManifestId, Error> {
-    let entry = derive_hg_manifest_with_known_entries(
+    let parents = parents
+        .into_iter()
+        .map(|id| ManifestStageOutput::Entry(Some(Entry::Tree(Traced::generate(id)))))
+        .collect();
+    let input = prepare_manifest_input(&StageId::Manifest(MPath::ROOT), parents, HashMap::new())?;
+    derive_hg_manifest_entry(
         ctx,
         blobstore,
         restricted_paths,
-        parents.into_iter().map(|m| Some(Entry::Tree(m))),
-        changes,
-        MPath::ROOT,
-        HashMap::new(),
+        input,
+        changes.into_iter().collect(),
     )
-    .await?;
-    entry
-        .and_then(|e| e.into_tree())
-        .map(|t| t.into_untraced())
-        .ok_or_else(|| format_err!("root manifest derivation produced no tree entry"))
+    .await?
+    .into_entry()?
+    .and_then(Entry::into_tree)
+    .map(Traced::into_untraced)
+    .ok_or_else(|| format_err!("root manifest derivation produced no tree entry"))
 }
 
-/// Derive mercurial manifest from parent manifest entries at `stage_path`
-/// and bonsai file changes.
-///
-/// `parents` are entries already located at `stage_path`, in bonsai-parent
-/// order — `parents[i]` corresponds to `bcs.parents().nth(i)`. `None`
-/// signals that this parent has nothing at `stage_path` (neither a tree
-/// nor a leaf) and contributes no sub-manifest to the bounded traversal.
-/// `Some(Entry::Leaf(_))` is forwarded so `derive_manifest_with_known_entries`
-/// can detect the file-replacing-directory case at `stage_path`. Positional
-/// slots are preserved so the `Traced<ParentIndex, _>` tag on each forwarded
-/// parent matches the bonsai parent index.
-///
-/// At the root stage, callers pass `Some(Entry::Tree(root_manifest_id))` for
-/// every parent (no `None`); with `stage_path == MPath::ROOT` and empty
-/// `known_entries` this is the non-pipelined derivation as before.
-pub(crate) async fn derive_hg_manifest_with_known_entries(
+pub(crate) async fn derive_hg_manifest_entry(
     ctx: CoreContext,
     blobstore: Arc<dyn KeyedBlobstore>,
     restricted_paths: ArcRestrictedPathsConfigBased,
-    parents: impl IntoIterator<Item = Option<Entry<HgManifestId, (FileType, HgFileNodeId)>>>,
-    changes: impl IntoIterator<Item = (NonRootMPath, Option<(FileType, HgFileNodeId)>)> + 'static,
-    stage_path: MPath,
-    known_entries: HashMap<
-        MPath,
-        Option<
-            Entry<Traced<ParentIndex, HgManifestId>, Traced<ParentIndex, (FileType, HgFileNodeId)>>,
-        >,
-    >,
-) -> Result<
-    Option<Entry<Traced<ParentIndex, HgManifestId>, Traced<ParentIndex, (FileType, HgFileNodeId)>>>,
-    Error,
-> {
-    // Preserve positional alignment with bonsai parents: tag each forwarded
-    // entry with ParentIndex(i) where i is the bonsai-parent slot. Skip None
-    // slots — absent parents contribute nothing to the bounded traversal, and
-    // we have no entry to tag for them.
-    let parents: Vec<
-        Entry<Traced<ParentIndex, HgManifestId>, Traced<ParentIndex, (FileType, HgFileNodeId)>>,
-    > = parents
-        .into_iter()
-        .enumerate()
-        .filter_map(|(i, opt)| {
-            opt.map(|entry| match entry {
-                Entry::Tree(m) => Entry::Tree(Traced::assign(ParentIndex(i), m)),
-                Entry::Leaf(l) => Entry::Leaf(Traced::assign(ParentIndex(i), l)),
-            })
-        })
-        .collect();
-
-    let input = ManifestDerivation {
-        parents: parents.clone(),
-        known_entries,
-        path: stage_path.clone(),
-    };
-    let entry = input
+    input: HgManifestInput,
+    changes: Vec<(NonRootMPath, Option<(FileType, HgFileNodeId)>)>,
+) -> Result<HgManifestOutput, Error> {
+    input
         .derive(
             ctx.clone(),
             blobstore.clone(),
-            changes.into_iter().collect(),
+            changes,
             {
                 cloned!(ctx, blobstore, restricted_paths);
                 move |tree_info| {
@@ -244,40 +245,14 @@ pub(crate) async fn derive_hg_manifest_with_known_entries(
                 cloned!(ctx, blobstore);
                 move |leaf_info| create_hg_file(ctx.clone(), blobstore.clone(), leaf_info)
             },
+            |subentries| create_sorted_subentries(&ctx, subentries),
         )
-        .await?;
-
-    match entry {
-        Some(entry) => Ok(Some(entry)),
-        None if stage_path == MPath::ROOT => {
-            // All files have been deleted, generate empty **root** manifest.
-            // Only synthesized at the root stage — non-root stages return
-            // None to signal "this subtree is absent from this commit".
-            // At the root stage all parents must be Trees (root manifests
-            // are never leaves), so filtering here drops nothing in practice.
-            let tree_parents: Vec<_> = parents
-                .into_iter()
-                .filter_map(|e| match e {
-                    Entry::Tree(t) => Some(t),
-                    Entry::Leaf(_) => None,
-                })
-                .collect();
-            let tree_info = TreeInfo {
-                path: MPath::ROOT,
-                parents: tree_parents,
-                subentries: Default::default(),
-            };
-            let (_, traced_tree_id) =
-                create_hg_manifest(ctx, blobstore, tree_info, restricted_paths).await?;
-            Ok(Some(Entry::Tree(traced_tree_id)))
-        }
-        None => Ok(None),
-    }
+        .await
 }
 
 /// This function is used as callback from `derive_manifest` to generate and store manifest
 /// object from `TreeInfo`.
-async fn create_hg_manifest(
+pub(crate) async fn create_hg_manifest(
     ctx: CoreContext,
     blobstore: Arc<dyn KeyedBlobstore>,
     tree_info: TreeInfo<
@@ -430,7 +405,7 @@ async fn create_hg_manifest(
 
 /// This function is used as callback from `derive_manifest` to generate and store file entry
 /// object from `LeafInfo`.
-async fn create_hg_file(
+pub(crate) async fn create_hg_file(
     ctx: CoreContext,
     blobstore: Arc<dyn KeyedBlobstore>,
     leaf_info: LeafInfo<Traced<ParentIndex, (FileType, HgFileNodeId)>, (FileType, HgFileNodeId)>,

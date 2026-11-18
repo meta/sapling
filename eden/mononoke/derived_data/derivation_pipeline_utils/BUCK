@@ -6,7 +6,12 @@ rust_library(
     name = "derivation_pipeline_utils",
     srcs = glob(["src/**/*.rs"]),
     autocargo = {"cargo_toml_dir": "."},
+    test_deps = [
+        "//eden/mononoke/common/mononoke_macros:mononoke_macros",
+    ],
     deps = [
+        "fbsource//third-party/rust:anyhow",
+        "//eden/mononoke/derived_data:derived_data_manager",
         "//eden/mononoke/metaconfig:metaconfig_types",
         "//eden/mononoke/mononoke_types:mononoke_types",
     ],

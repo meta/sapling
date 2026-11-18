@@ -24,6 +24,7 @@ use derived_data_test_utils::bonsai_changeset_from_hg;
 use fbinit::FacebookInit;
 use filestore::FilestoreConfig;
 use fixtures::ManyFilesDirs;
+use fixtures::MergedDeletionHistory;
 use fixtures::TestRepoFixture;
 use fixtures::store_files;
 use futures::FutureExt;
@@ -38,9 +39,11 @@ use mononoke_types::BonsaiChangeset;
 use mononoke_types::BonsaiChangesetMut;
 use mononoke_types::ChangesetId;
 use mononoke_types::DateTime;
+use mononoke_types::DeletedManifestV2Id;
 use mononoke_types::FileChange;
 use mononoke_types::NonRootMPath;
 use mononoke_types::deleted_manifest_common::DeletedManifestCommon;
+use mononoke_types::deleted_manifest_v2::DeletedManifestV2;
 use mononoke_types::path::MPath;
 use pretty_assertions::assert_eq;
 use repo_blobstore::RepoBlobstore;
@@ -50,7 +53,6 @@ use repo_derived_data::RepoDerivedData;
 use repo_derived_data::RepoDerivedDataRef;
 use repo_identity::RepoIdentity;
 use sorted_vector_map::SortedVectorMap;
-use tests_utils::CreateCommitContext;
 use unodes::RootUnodeManifestId;
 
 use crate::derive::DeletedManifestDeriver;
@@ -120,7 +122,9 @@ pub(crate) async fn build_repo(fb: FacebookInit) -> Result<TestRepo, Error> {
     Ok(test_repo_factory::TestRepoFactory::new(fb)?.build().await?)
 }
 
-pub(crate) async fn linear_test<Root: RootDeletedManifestIdCommon>(
+pub(crate) async fn linear_test<
+    Root: RootDeletedManifestIdCommon<Manifest = DeletedManifestV2, Id = DeletedManifestV2Id>,
+>(
     fb: FacebookInit,
 ) -> Result<(), Error> {
     // Test simple separate files and whole dir deletions
@@ -285,7 +289,9 @@ pub(crate) async fn linear_test<Root: RootDeletedManifestIdCommon>(
     Ok(())
 }
 
-pub(crate) async fn many_file_dirs_test<Root: RootDeletedManifestIdCommon>(
+pub(crate) async fn many_file_dirs_test<
+    Root: RootDeletedManifestIdCommon<Manifest = DeletedManifestV2, Id = DeletedManifestV2Id>,
+>(
     fb: FacebookInit,
 ) -> Result<(), Error> {
     let repo: TestRepo = build_repo(fb).await.unwrap();
@@ -365,239 +371,32 @@ pub(crate) async fn many_file_dirs_test<Root: RootDeletedManifestIdCommon>(
     Ok(())
 }
 
-pub(crate) async fn merged_history_test<Root: RootDeletedManifestIdCommon>(
+pub(crate) async fn merged_history_test<
+    Root: RootDeletedManifestIdCommon<Manifest = DeletedManifestV2, Id = DeletedManifestV2Id>,
+>(
     fb: FacebookInit,
 ) -> Result<(), Error> {
-    //
-    //  N
-    //  | \
-    //  K  M
-    //  |  |
-    //  J  L
-    //  | /
-    //  I
-    //  | \
-    //  |  H
-    //  |  |
-    //  |  G
-    //  |  | \
-    //  |  D  F
-    //  |  |  |
-    //  B  C  E
-    //  | /
-    //  A
-    //
-    let repo: TestRepo = build_repo(fb).await.unwrap();
+    let (repo, commits, _) = MergedDeletionHistory::get_repo_and_dag::<TestRepo>(fb).await;
     let ctx = CoreContext::test_mock(fb);
-
-    let a = CreateCommitContext::new_root(&ctx, &repo)
-        .add_file("file", "1")
-        .add_file("dir/file", "2")
-        .add_file("dir_2/file", "3")
-        .add_file("dir_3/file_1", "1")
-        .add_file("dir_3/file_2", "2")
-        .commit()
-        .await?;
-
-    let b = CreateCommitContext::new(&ctx, &repo, vec![a.clone()])
-        .delete_file("file")
-        .delete_file("dir/file")
-        .delete_file("dir_3/file_1")
-        .add_file("dir/file_2", "file->file_2")
-        .commit()
-        .await?;
-    let deleted_nodes = gen_deleted_manifest_nodes::<Root>(&ctx, &repo, b.clone()).await?;
-    let expected_nodes = vec![
-        (MPath::ROOT, Status::Live),
-        (path("dir"), Status::Live),
-        (path("dir/file"), Status::Deleted(b)),
-        (path("dir_3"), Status::Live),
-        (path("dir_3/file_1"), Status::Deleted(b)),
-        (path("file"), Status::Deleted(b)),
-    ];
-    assert_eq!(deleted_nodes, expected_nodes);
-
-    let c = CreateCommitContext::new(&ctx, &repo, vec![a.clone()])
-        .add_file("file", "1->2")
-        .commit()
-        .await?;
-
-    let d = CreateCommitContext::new(&ctx, &repo, vec![c.clone()])
-        .delete_file("dir/file")
-        .delete_file("dir_2/file")
-        .commit()
-        .await?;
-
-    let deleted_nodes = gen_deleted_manifest_nodes::<Root>(&ctx, &repo, d.clone()).await?;
-    let expected_nodes = vec![
-        (MPath::ROOT, Status::Live),
-        (path("dir"), Status::Deleted(d)),
-        (path("dir/file"), Status::Deleted(d)),
-        (path("dir_2"), Status::Deleted(d)),
-        (path("dir_2/file"), Status::Deleted(d)),
-    ];
-    assert_eq!(deleted_nodes, expected_nodes);
-
-    let e = CreateCommitContext::new_root(&ctx, &repo)
-        .add_file("file", "3")
-        .add_file("dir_2/file", "4")
-        .commit()
-        .await?;
-
-    let f = CreateCommitContext::new(&ctx, &repo, vec![e.clone()])
-        .delete_file("file")
-        .add_file("dir_2/file", "4->5")
-        .commit()
-        .await?;
-
-    // first merge commit:
-    // * dir_2/file - was deleted in branch D and modified in F, merge commit
-    //   accepts modification. It means the file must be restored.
-    // * file - was changed in branch D and deleted in F, merge commit accepts
-    //   deletion. It means new deleted manifet node must be created and must
-    //   point to the merge commit.
-    // * dir/file - existed and was deleted in the one branch and never
-    //   existed in the other, but still must be discoverable.
-    let g = CreateCommitContext::new(&ctx, &repo, vec![d.clone(), f.clone()])
-        .delete_file("file")
-        .add_file("dir_2/file", "4->5")
-        .add_file("dir_2/file_2", "5")
-        .commit()
-        .await?;
-
-    let deleted_nodes = gen_deleted_manifest_nodes::<Root>(&ctx, &repo, g.clone()).await?;
-    let expected_nodes = vec![
-        (MPath::ROOT, Status::Live),
-        (path("dir"), Status::Deleted(d)),
-        (path("dir/file"), Status::Deleted(d)),
-        (path("file"), Status::Deleted(g)),
-    ];
-    assert_eq!(deleted_nodes, expected_nodes);
-
-    let h = CreateCommitContext::new(&ctx, &repo, vec![g.clone()])
-        .delete_file("dir_3/file_2")
-        .add_file("dir_2/file", "4->5")
-        .add_file("dir_2/file_2", "5")
-        .commit()
-        .await?;
-
-    let deleted_nodes = gen_deleted_manifest_nodes::<Root>(&ctx, &repo, h.clone()).await?;
-    let expected_nodes = vec![
-        (MPath::ROOT, Status::Live),
-        (path("dir"), Status::Deleted(d)),
-        (path("dir/file"), Status::Deleted(d)),
-        (path("dir_3"), Status::Live),
-        (path("dir_3/file_2"), Status::Deleted(h)),
-        (path("file"), Status::Deleted(g)),
-    ];
-    assert_eq!(deleted_nodes, expected_nodes);
-
-    // second merge commit
-    // * dir/file - is deleted in both branches, new manifest node must
-    //   have linknode pointed to the merge commit
-    // * file - same as for dir/file
-    // * dir - still exists because of dir/file_2
-    let i = CreateCommitContext::new(&ctx, &repo, vec![b.clone(), h.clone()])
-        .delete_file("dir_3/file_1")
-        .delete_file("dir_3/file_2")
-        .add_file("dir_2/file", "4->5")
-        .add_file("dir_5/file_1", "5.1")
-        .add_file("dir_5/file_2", "5.2")
-        .commit()
-        .await?;
-    let deleted_nodes = gen_deleted_manifest_nodes::<Root>(&ctx, &repo, i.clone()).await?;
-    let expected_nodes = vec![
-        (MPath::ROOT, Status::Live),
-        (path("dir"), Status::Live),
-        (path("dir/file"), Status::Deleted(i)),
-        (path("dir_3"), Status::Deleted(i)),
-        (path("dir_3/file_1"), Status::Deleted(i)),
-        (path("dir_3/file_2"), Status::Deleted(i)),
-        (path("file"), Status::Deleted(i)),
-    ];
-    assert_eq!(deleted_nodes, expected_nodes);
-
-    // this commit creates a file in a new dir
-    // and deletes one of the dir_5 files
-    let j = CreateCommitContext::new(&ctx, &repo, vec![i.clone()])
-        .delete_file("dir_5/file_1")
-        .add_file("dir_4/file_1", "new")
-        .commit()
-        .await?;
-
-    // this commit deletes the file created in its parent j
-    // and adds a new file and dir
-    let k = CreateCommitContext::new(&ctx, &repo, vec![j.clone()])
-        .delete_file("dir_4/file_1")
-        .add_file("dir_to_file/file", "will be replaced")
-        .add_file("dir_to_file/sub/deep/file", "will also be replaced")
-        .commit()
-        .await?;
-
-    // this commit creates a file in the same dir as the other branch
-    // and deletes one of the dir_5 files
-    let l = CreateCommitContext::new(&ctx, &repo, vec![i.clone()])
-        .delete_file("dir_5/file_2")
-        .add_file("dir_4/file_2", "new")
-        .commit()
-        .await?;
-
-    // this commit deletes the file created in its parent l
-    let m = CreateCommitContext::new(&ctx, &repo, vec![l.clone()])
-        .delete_file("dir_4/file_2")
-        .commit()
-        .await?;
-
-    // third merge commit
-    // * dir_4/file_1 - is created and then deleted in the branch K,
-    //   linknode for the merge commit N must point to the commit K
-    // * dir_4/file_2 - is created and then deleted in the branch M,
-    //   linknode for the merge commit N must point to the commit M
-    // * dir_4 - existed in both branches, linknode should point to
-    //   the merge commit itself
-    // * dir_5/file_1 - existed in both branches, but deleted in J,
-    //   linknode for the merge commit N must point to the N itself
-    // * dir_5/file_2 - existed in both branches, but deleted in L,
-    //   linknode for the merge commit N must point to the N itself
-    // * dir_5 - existed in both branches, but as a result of merge
-    //   must be deleted, linknode should point to N
-    // * dir_to_file/file is replaced here with dir_to_file, this
-    //   should result in dir_to_file node live and dir_to_file/file
-    //   deleted
-    let n = CreateCommitContext::new(&ctx, &repo, vec![k.clone(), m.clone()])
-        .delete_file("dir_5/file_1")
-        .delete_file("dir_5/file_2")
-        .add_file("dir_to_file", "replaced!")
-        .commit()
-        .await?;
-
-    let deleted_nodes = gen_deleted_manifest_nodes::<Root>(&ctx, &repo, n.clone()).await?;
-    let expected_nodes = vec![
-        (MPath::ROOT, Status::Live),
-        (path("dir"), Status::Live),
-        (path("dir/file"), Status::Deleted(i)),
-        (path("dir_3"), Status::Deleted(i)),
-        (path("dir_3/file_1"), Status::Deleted(i)),
-        (path("dir_3/file_2"), Status::Deleted(i)),
-        (path("dir_4"), Status::Deleted(n)),
-        (path("dir_4/file_1"), Status::Deleted(k)),
-        (path("dir_4/file_2"), Status::Deleted(m)),
-        (path("dir_5"), Status::Deleted(n)),
-        (path("dir_5/file_1"), Status::Deleted(n)),
-        (path("dir_5/file_2"), Status::Deleted(n)),
-        (path("dir_to_file"), Status::Live),
-        (path("dir_to_file/file"), Status::Deleted(n)),
-        (path("dir_to_file/sub"), Status::Deleted(n)),
-        (path("dir_to_file/sub/deep"), Status::Deleted(n)),
-        (path("dir_to_file/sub/deep/file"), Status::Deleted(n)),
-        (path("file"), Status::Deleted(i)),
-    ];
-    assert_eq!(deleted_nodes, expected_nodes);
-
+    for &(label, entries) in MergedDeletionHistory::DELETED_MANIFESTS {
+        let actual = gen_deleted_manifest_nodes::<Root>(&ctx, &repo, commits[label]).await?;
+        let expected = entries
+            .iter()
+            .map(|(path, deleted)| {
+                Ok((
+                    MPath::try_from(*path)?,
+                    deleted.map(|label| commits[label]).into(),
+                ))
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        assert_eq!(actual, expected, "commit {label}");
+    }
     Ok(())
 }
 
-pub(crate) async fn test_find_entries<Root: RootDeletedManifestIdCommon>(
+pub(crate) async fn test_find_entries<
+    Root: RootDeletedManifestIdCommon<Manifest = DeletedManifestV2, Id = DeletedManifestV2Id>,
+>(
     fb: FacebookInit,
 ) -> Result<(), Error> {
     // Test simple separate files and whole dir deletions
@@ -707,7 +506,9 @@ pub(crate) async fn test_find_entries<Root: RootDeletedManifestIdCommon>(
     Ok(())
 }
 
-pub(crate) async fn test_list_all_entries<Root: RootDeletedManifestIdCommon>(
+pub(crate) async fn test_list_all_entries<
+    Root: RootDeletedManifestIdCommon<Manifest = DeletedManifestV2, Id = DeletedManifestV2Id>,
+>(
     fb: FacebookInit,
 ) -> Result<(), Error> {
     // Test simple separate files and whole dir deletions
@@ -764,7 +565,9 @@ pub(crate) async fn test_list_all_entries<Root: RootDeletedManifestIdCommon>(
     Ok(())
 }
 
-async fn gen_deleted_manifest_nodes<Root: RootDeletedManifestIdCommon>(
+async fn gen_deleted_manifest_nodes<
+    Root: RootDeletedManifestIdCommon<Manifest = DeletedManifestV2, Id = DeletedManifestV2Id>,
+>(
     ctx: &CoreContext,
     repo: &TestRepo,
     bonsai: ChangesetId,
@@ -782,7 +585,9 @@ async fn gen_deleted_manifest_nodes<Root: RootDeletedManifestIdCommon>(
     Ok(deleted_nodes)
 }
 
-async fn create_cs_and_derive_manifest<Root: RootDeletedManifestIdCommon>(
+async fn create_cs_and_derive_manifest<
+    Root: RootDeletedManifestIdCommon<Manifest = DeletedManifestV2, Id = DeletedManifestV2Id>,
+>(
     ctx: CoreContext,
     repo: TestRepo,
     file_changes: BTreeMap<&str, Option<&str>>,
@@ -801,7 +606,9 @@ async fn create_cs_and_derive_manifest<Root: RootDeletedManifestIdCommon>(
     derive_manifest::<Root>(&ctx, &repo, bcs, parent_mf_ids).await
 }
 
-async fn derive_manifest<Root: RootDeletedManifestIdCommon>(
+async fn derive_manifest<
+    Root: RootDeletedManifestIdCommon<Manifest = DeletedManifestV2, Id = DeletedManifestV2Id>,
+>(
     ctx: &CoreContext,
     repo: &TestRepo,
     bcs: BonsaiChangeset,
@@ -827,13 +634,7 @@ async fn derive_manifest<Root: RootDeletedManifestIdCommon>(
         .zip(parent_unodes)
         .map(|((parent, parent_dm), parent_unode)| (parent, parent_dm, parent_unode))
         .collect();
-    let f = DeletedManifestDeriver::<Root::Manifest>::derive(
-        ctx,
-        &blobstore,
-        bcs,
-        parents,
-        current_unode,
-    );
+    let f = DeletedManifestDeriver::derive(ctx, &blobstore, bcs, parents, current_unode);
 
     let dfm_id = f.await.unwrap();
     // Make sure it's saved in the blobstore
@@ -884,7 +685,9 @@ impl From<Option<ChangesetId>> for Status {
     }
 }
 
-fn iterate_all_entries<Root: RootDeletedManifestIdCommon>(
+fn iterate_all_entries<
+    Root: RootDeletedManifestIdCommon<Manifest = DeletedManifestV2, Id = DeletedManifestV2Id>,
+>(
     ctx: CoreContext,
     repo: TestRepo,
     manifest_id: Root::Id,

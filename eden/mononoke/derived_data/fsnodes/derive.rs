@@ -21,7 +21,9 @@ use cloned::cloned;
 use context::CoreContext;
 use derived_data::prefetch_content_metadata;
 use derived_data_manager::DerivationContext;
-use derived_data_manager::ManifestDerivation;
+use derived_data_manager::ManifestDerivationInput;
+use derived_data_manager::ManifestStageOutput;
+use derived_data_manager::manifest_partitions::create_sorted_subentries;
 use digest::Digest;
 use futures::stream::FuturesOrdered;
 use futures::stream::FuturesUnordered;
@@ -121,9 +123,15 @@ pub(crate) async fn derive_fsnodes_stack(
 pub(crate) async fn derive_fsnode_entry(
     ctx: &CoreContext,
     derivation_ctx: &DerivationContext,
-    input: ManifestDerivation<FsnodeId, FsnodeFile>,
+    input: ManifestDerivationInput<
+        FsnodeId,
+        FsnodeFile,
+        SortedVectorTrieMap<Entry<FsnodeId, FsnodeFile>>,
+    >,
     changes: Vec<(NonRootMPath, Option<(ContentId, FileType)>)>,
-) -> Result<Option<Entry<FsnodeId, FsnodeFile>>> {
+) -> Result<
+    ManifestStageOutput<FsnodeId, FsnodeFile, SortedVectorTrieMap<Entry<FsnodeId, FsnodeFile>>>,
+> {
     let blobstore = derivation_ctx.blobstore();
     let restricted_paths = derivation_ctx.restricted_paths();
     let content_ids = changes
@@ -155,6 +163,7 @@ pub(crate) async fn derive_fsnode_entry(
                 cloned!(prefetched_content_metadata);
                 async move { check_fsnode_leaf(prefetched_content_metadata, leaf_info).await }
             },
+            |subentries| create_sorted_subentries(ctx, subentries),
         )
         .await
 }
@@ -170,37 +179,23 @@ pub(crate) async fn derive_fsnode(
     parents: Vec<FsnodeId>,
     changes: Vec<(NonRootMPath, Option<(ContentId, FileType)>)>,
 ) -> Result<FsnodeId> {
-    let blobstore = derivation_ctx.blobstore();
-    let restricted_paths = derivation_ctx.restricted_paths();
-    let parent_entries: Vec<Entry<FsnodeId, FsnodeFile>> =
-        parents.iter().map(|id| Entry::Tree(*id)).collect();
-    let maybe_entry = derive_fsnode_entry(
+    Ok(derive_fsnode_entry(
         ctx,
         derivation_ctx,
-        ManifestDerivation {
-            parents: parent_entries,
+        ManifestDerivationInput::Entry {
+            parents: parents
+                .into_iter()
+                .map(|id| Some(Entry::Tree(id)))
+                .collect(),
             known_entries: HashMap::new(),
             path: MPath::ROOT,
         },
         changes,
     )
-    .await?;
-
-    match maybe_entry {
-        Some(entry) => Ok(entry
-            .into_tree()
-            .expect("root derivation should always produce a tree")),
-        None => {
-            // All files have been deleted, generate empty fsnode
-            let tree_info = TreeInfo {
-                path: MPath::ROOT,
-                parents,
-                subentries: Default::default(),
-            };
-            let (_, tree_id) = create_fsnode(ctx, blobstore, &restricted_paths, tree_info).await?;
-            Ok(tree_id)
-        }
-    }
+    .await?
+    .into_entry()?
+    .and_then(Entry::into_tree)
+    .expect("root derivation should always produce a tree"))
 }
 
 /// Collect all the subentries for a new fsnode, reusing entries the parent
@@ -503,6 +498,7 @@ mod test {
     use fixtures::Linear;
     use fixtures::ManyFilesDirs;
     use fixtures::TestRepoFixture;
+    use manifest::KnownEntry;
     use manifest::ManifestOps;
     use mononoke_macros::mononoke;
     use repo_blobstore::RepoBlobstore;
@@ -961,14 +957,11 @@ mod test {
             .find_entry(ctx.clone(), blobstore.clone(), MPath::new("dir1").unwrap())
             .await
             .unwrap();
-        let dir1_parents = match dir1_parent {
-            Some(entry) => vec![entry],
-            None => vec![],
-        };
+        let dir1_parents = vec![dir1_parent];
         let dir1_entry = derive_fsnode_entry(
             &ctx,
             &derivation_ctx,
-            ManifestDerivation {
+            ManifestDerivationInput::Entry {
                 parents: dir1_parents,
                 known_entries: HashMap::new(),
                 path: MPath::new("dir1").unwrap(),
@@ -977,6 +970,8 @@ mod test {
         )
         .await
         .unwrap()
+        .into_entry()
+        .unwrap()
         .expect("dir1 stage should produce an entry");
 
         // Stage dir2: pass all changes with prefix
@@ -984,14 +979,11 @@ mod test {
             .find_entry(ctx.clone(), blobstore.clone(), MPath::new("dir2").unwrap())
             .await
             .unwrap();
-        let dir2_parents = match dir2_parent {
-            Some(entry) => vec![entry],
-            None => vec![],
-        };
+        let dir2_parents = vec![dir2_parent];
         let dir2_entry = derive_fsnode_entry(
             &ctx,
             &derivation_ctx,
-            ManifestDerivation {
+            ManifestDerivationInput::Entry {
                 parents: dir2_parents,
                 known_entries: HashMap::new(),
                 path: MPath::new("dir2").unwrap(),
@@ -1000,24 +992,34 @@ mod test {
         )
         .await
         .unwrap()
+        .into_entry()
+        .unwrap()
         .expect("dir2 stage should produce an entry");
 
         // Stage root: assemble with known_entries for dir1 and dir2
-        let known_entries: HashMap<MPath, Option<Entry<FsnodeId, FsnodeFile>>> = HashMap::from([
-            (MPath::new("dir1").unwrap(), Some(dir1_entry)),
-            (MPath::new("dir2").unwrap(), Some(dir2_entry)),
+        let known_entries = HashMap::from([
+            (
+                MPath::new("dir1").unwrap(),
+                KnownEntry::Entry(Some(dir1_entry)),
+            ),
+            (
+                MPath::new("dir2").unwrap(),
+                KnownEntry::Entry(Some(dir2_entry)),
+            ),
         ]);
         let root_entry = derive_fsnode_entry(
             &ctx,
             &derivation_ctx,
-            ManifestDerivation {
-                parents: vec![Entry::Tree(parent_fsnode_id)],
+            ManifestDerivationInput::Entry {
+                parents: vec![Some(Entry::Tree(parent_fsnode_id))],
                 known_entries,
                 path: MPath::ROOT,
             },
             changes,
         )
         .await
+        .unwrap()
+        .into_entry()
         .unwrap()
         .expect("root stage should produce an entry");
 
@@ -1089,14 +1091,11 @@ mod test {
             )
             .await
             .unwrap();
-        let subdir1_parents = match subdir1_parent {
-            Some(entry) => vec![entry],
-            None => vec![],
-        };
+        let subdir1_parents = vec![subdir1_parent];
         let subdir1_entry = derive_fsnode_entry(
             &ctx,
             &derivation_ctx,
-            ManifestDerivation {
+            ManifestDerivationInput::Entry {
                 parents: subdir1_parents,
                 known_entries: HashMap::new(),
                 path: MPath::new("dir1/subdir1").unwrap(),
@@ -1105,6 +1104,8 @@ mod test {
         )
         .await
         .unwrap()
+        .into_entry()
+        .unwrap()
         .expect("dir1/subdir1 stage should produce an entry");
 
         // Stage dir1: pass all changes with prefix, known_entries for subdir1
@@ -1112,16 +1113,15 @@ mod test {
             .find_entry(ctx.clone(), blobstore.clone(), MPath::new("dir1").unwrap())
             .await
             .unwrap();
-        let dir1_parents = match dir1_parent {
-            Some(entry) => vec![entry],
-            None => vec![],
-        };
-        let dir1_known_entries: HashMap<MPath, Option<Entry<FsnodeId, FsnodeFile>>> =
-            HashMap::from([(MPath::new("dir1/subdir1").unwrap(), Some(subdir1_entry))]);
+        let dir1_parents = vec![dir1_parent];
+        let dir1_known_entries = HashMap::from([(
+            MPath::new("dir1/subdir1").unwrap(),
+            KnownEntry::Entry(Some(subdir1_entry)),
+        )]);
         let dir1_entry = derive_fsnode_entry(
             &ctx,
             &derivation_ctx,
-            ManifestDerivation {
+            ManifestDerivationInput::Entry {
                 parents: dir1_parents,
                 known_entries: dir1_known_entries,
                 path: MPath::new("dir1").unwrap(),
@@ -1130,22 +1130,28 @@ mod test {
         )
         .await
         .unwrap()
+        .into_entry()
+        .unwrap()
         .expect("dir1 stage should produce an entry");
 
         // Stage root: assemble with known_entries for dir1
-        let root_known_entries: HashMap<MPath, Option<Entry<FsnodeId, FsnodeFile>>> =
-            HashMap::from([(MPath::new("dir1").unwrap(), Some(dir1_entry))]);
+        let root_known_entries = HashMap::from([(
+            MPath::new("dir1").unwrap(),
+            KnownEntry::Entry(Some(dir1_entry)),
+        )]);
         let root_entry = derive_fsnode_entry(
             &ctx,
             &derivation_ctx,
-            ManifestDerivation {
-                parents: vec![Entry::Tree(parent_fsnode_id)],
+            ManifestDerivationInput::Entry {
+                parents: vec![Some(Entry::Tree(parent_fsnode_id))],
                 known_entries: root_known_entries,
                 path: MPath::ROOT,
             },
             changes,
         )
         .await
+        .unwrap()
+        .into_entry()
         .unwrap()
         .expect("root stage should produce an entry");
 

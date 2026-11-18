@@ -24,14 +24,16 @@ use mononoke_types::BonsaiChangeset;
 use mononoke_types::ChangesetId;
 use mononoke_types::DerivableType;
 use mononoke_types::DerivableUntopologicallyVariant;
-use mononoke_types::MPath;
 use mononoke_types::PipelineDerivableVariant;
 
 use crate::DerivedDataManager;
 use crate::Rederivation;
 use crate::SharedDerivationError;
+use crate::StageId;
+use crate::StageOutputs;
 use crate::VisitedDerivableTypesMapStatic;
 use crate::context::DerivationContext;
+use crate::stage_outputs::StageOutput;
 
 /// Defines how derivation occurs.  Each derived data type must implement
 /// `BonsaiDerivable` to describe how to derive a new value from its inputs
@@ -252,7 +254,7 @@ pub trait PipelineDerivable: BonsaiDerivable {
     /// sets this `true` must implement the `Finalize` arms of the stage methods.
     const HAS_FINALIZE: bool;
 
-    type StageOutput: Send + Sync + Clone + Debug + PartialEq + 'static;
+    type StageOutput: StageOutput;
 
     /// Derive a batch of changesets for a specific stage.
     ///
@@ -261,15 +263,14 @@ pub trait PipelineDerivable: BonsaiDerivable {
     /// were derived without derivation pipeline) by extracting stage outputs
     /// from the full derived value before calling this method.
     ///
-    /// `dependency_outputs` is keyed by the absolute path of each dependency
-    /// stage.
+    /// `dependency_outputs` is keyed by dependency stage identity.
     async fn derive_stage_batch(
         ctx: &CoreContext,
         derivation: &DerivationContext,
         bonsais: Vec<BonsaiChangeset>,
         payload: &crate::stage_payload::DerivationStagePayload,
         parents: HashMap<ChangesetId, Self::StageOutput>,
-        dependency_outputs: HashMap<ChangesetId, HashMap<MPath, Self::StageOutput>>,
+        dependency_outputs: HashMap<ChangesetId, HashMap<StageId, Self::StageOutput>>,
     ) -> Result<HashMap<ChangesetId, Self::StageOutput>>;
 
     /// Extract a stage output from a fully derived value.
@@ -284,13 +285,21 @@ pub trait PipelineDerivable: BonsaiDerivable {
         stage: &crate::stage_payload::StageId,
     ) -> Result<Self::StageOutput>;
 
-    /// Store stage outputs. Key format and storage are owned by the implementer.
+    /// Select a stage from a completed pipeline root, including roots without a canonical mapping.
+    async fn extract_stage_output_from_root(
+        ctx: &CoreContext,
+        derivation: &DerivationContext,
+        root: Self::StageOutput,
+        stage: &StageId,
+    ) -> Result<Self::StageOutput>;
+
+    /// Store canonical mappings and return other outputs to the caller.
     async fn store_stage_outputs(
         ctx: &CoreContext,
         derivation: &DerivationContext,
         stage: &crate::stage_payload::StageId,
         outputs: HashMap<ChangesetId, Self::StageOutput>,
-    ) -> Result<()>;
+    ) -> Result<Option<StageOutputs>>;
 
     /// Fetch stage outputs. Changesets without stage data are omitted from the map.
     async fn fetch_stage_outputs(
@@ -320,7 +329,7 @@ pub trait PipelineDerivable: BonsaiDerivable {
         let expected_output =
             Self::extract_stage_output_from_derived(ctx, derivation, &derived, stage).await?;
 
-        Ok(*actual_output == expected_output)
+        actual_output.equivalent(&expected_output).await
     }
 }
 

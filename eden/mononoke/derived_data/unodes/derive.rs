@@ -16,7 +16,9 @@ use borrowed::borrowed;
 use cloned::cloned;
 use context::CoreContext;
 use derived_data_manager::DerivationContext;
-use derived_data_manager::ManifestDerivation;
+use derived_data_manager::ManifestDerivationInput;
+use derived_data_manager::ManifestStageOutput;
+use derived_data_manager::manifest_partitions::create_sorted_subentries;
 use futures::future;
 use futures::future::TryFutureExt;
 use futures::future::try_join_all;
@@ -92,9 +94,20 @@ pub(crate) async fn derive_unode_entry(
     ctx: &CoreContext,
     derivation_ctx: &DerivationContext,
     cs_id: ChangesetId,
-    input: ManifestDerivation<ManifestUnodeId, FileUnodeId>,
+    input: ManifestDerivationInput<
+        ManifestUnodeId,
+        FileUnodeId,
+        SortedVectorTrieMap<Entry<ManifestUnodeId, FileUnodeId>>,
+    >,
     changes: Vec<(NonRootMPath, Option<(ContentId, FileType)>)>,
-) -> Result<Option<Entry<ManifestUnodeId, FileUnodeId>>, Error> {
+) -> Result<
+    ManifestStageOutput<
+        ManifestUnodeId,
+        FileUnodeId,
+        SortedVectorTrieMap<Entry<ManifestUnodeId, FileUnodeId>>,
+    >,
+    Error,
+> {
     let blobstore = derivation_ctx.blobstore();
 
     input
@@ -112,6 +125,7 @@ pub(crate) async fn derive_unode_entry(
                 cloned!(ctx, blobstore);
                 move |leaf_info| create_unode_file(ctx.clone(), cs_id, blobstore.clone(), leaf_info)
             },
+            |subentries| create_sorted_subentries(ctx, subentries),
         )
         .await
 }
@@ -450,6 +464,7 @@ mod tests {
     use fixtures::ManyFilesDirs;
     use fixtures::TestRepoFixture;
     use futures::TryStreamExt;
+    use manifest::KnownEntry;
     use manifest::ManifestOps;
     use maplit::btreemap;
     use mercurial_derivation::DeriveHgChangeset;
@@ -1182,15 +1197,12 @@ mod tests {
             .find_entry(ctx.clone(), blobstore.clone(), MPath::new("dir1").unwrap())
             .await
             .unwrap();
-        let dir1_parents = match dir1_parent {
-            Some(entry) => vec![entry],
-            None => vec![],
-        };
+        let dir1_parents = vec![dir1_parent];
         let dir1_entry = derive_unode_entry(
             &ctx,
             &derivation_ctx,
             bcs_id,
-            ManifestDerivation {
+            ManifestDerivationInput::Entry {
                 parents: dir1_parents,
                 known_entries: HashMap::new(),
                 path: MPath::new("dir1").unwrap(),
@@ -1199,6 +1211,8 @@ mod tests {
         )
         .await
         .unwrap()
+        .into_entry()
+        .unwrap()
         .expect("dir1 stage should produce an entry");
 
         // Stage dir2: pass all changes with prefix
@@ -1206,15 +1220,12 @@ mod tests {
             .find_entry(ctx.clone(), blobstore.clone(), MPath::new("dir2").unwrap())
             .await
             .unwrap();
-        let dir2_parents = match dir2_parent {
-            Some(entry) => vec![entry],
-            None => vec![],
-        };
+        let dir2_parents = vec![dir2_parent];
         let dir2_entry = derive_unode_entry(
             &ctx,
             &derivation_ctx,
             bcs_id,
-            ManifestDerivation {
+            ManifestDerivationInput::Entry {
                 parents: dir2_parents,
                 known_entries: HashMap::new(),
                 path: MPath::new("dir2").unwrap(),
@@ -1223,26 +1234,35 @@ mod tests {
         )
         .await
         .unwrap()
+        .into_entry()
+        .unwrap()
         .expect("dir2 stage should produce an entry");
 
         // Stage root: assemble with known_entries for dir1 and dir2
-        let known_entries: HashMap<MPath, Option<Entry<ManifestUnodeId, FileUnodeId>>> =
-            HashMap::from([
-                (MPath::new("dir1").unwrap(), Some(dir1_entry)),
-                (MPath::new("dir2").unwrap(), Some(dir2_entry)),
-            ]);
+        let known_entries = HashMap::from([
+            (
+                MPath::new("dir1").unwrap(),
+                KnownEntry::Entry(Some(dir1_entry)),
+            ),
+            (
+                MPath::new("dir2").unwrap(),
+                KnownEntry::Entry(Some(dir2_entry)),
+            ),
+        ]);
         let root_entry = derive_unode_entry(
             &ctx,
             &derivation_ctx,
             bcs_id,
-            ManifestDerivation {
-                parents: vec![Entry::Tree(parent_unode_id)],
+            ManifestDerivationInput::Entry {
+                parents: vec![Some(Entry::Tree(parent_unode_id))],
                 known_entries,
                 path: MPath::ROOT,
             },
             changes,
         )
         .await
+        .unwrap()
+        .into_entry()
         .unwrap()
         .expect("root stage should produce an entry");
 
@@ -1323,15 +1343,12 @@ mod tests {
             )
             .await
             .unwrap();
-        let subdir1_parents = match subdir1_parent {
-            Some(entry) => vec![entry],
-            None => vec![],
-        };
+        let subdir1_parents = vec![subdir1_parent];
         let subdir1_entry = derive_unode_entry(
             &ctx,
             &derivation_ctx,
             bcs_id,
-            ManifestDerivation {
+            ManifestDerivationInput::Entry {
                 parents: subdir1_parents,
                 known_entries: HashMap::new(),
                 path: MPath::new("dir1/subdir1").unwrap(),
@@ -1340,6 +1357,8 @@ mod tests {
         )
         .await
         .unwrap()
+        .into_entry()
+        .unwrap()
         .expect("dir1/subdir1 stage should produce an entry");
 
         // Stage dir1: pass all changes with prefix, known_entries for subdir1
@@ -1347,17 +1366,16 @@ mod tests {
             .find_entry(ctx.clone(), blobstore.clone(), MPath::new("dir1").unwrap())
             .await
             .unwrap();
-        let dir1_parents = match dir1_parent {
-            Some(entry) => vec![entry],
-            None => vec![],
-        };
-        let dir1_known_entries: HashMap<MPath, Option<Entry<ManifestUnodeId, FileUnodeId>>> =
-            HashMap::from([(MPath::new("dir1/subdir1").unwrap(), Some(subdir1_entry))]);
+        let dir1_parents = vec![dir1_parent];
+        let dir1_known_entries = HashMap::from([(
+            MPath::new("dir1/subdir1").unwrap(),
+            KnownEntry::Entry(Some(subdir1_entry)),
+        )]);
         let dir1_entry = derive_unode_entry(
             &ctx,
             &derivation_ctx,
             bcs_id,
-            ManifestDerivation {
+            ManifestDerivationInput::Entry {
                 parents: dir1_parents,
                 known_entries: dir1_known_entries,
                 path: MPath::new("dir1").unwrap(),
@@ -1366,23 +1384,29 @@ mod tests {
         )
         .await
         .unwrap()
+        .into_entry()
+        .unwrap()
         .expect("dir1 stage should produce an entry");
 
         // Stage root: assemble with known_entries for dir1
-        let root_known_entries: HashMap<MPath, Option<Entry<ManifestUnodeId, FileUnodeId>>> =
-            HashMap::from([(MPath::new("dir1").unwrap(), Some(dir1_entry))]);
+        let root_known_entries = HashMap::from([(
+            MPath::new("dir1").unwrap(),
+            KnownEntry::Entry(Some(dir1_entry)),
+        )]);
         let root_entry = derive_unode_entry(
             &ctx,
             &derivation_ctx,
             bcs_id,
-            ManifestDerivation {
-                parents: vec![Entry::Tree(parent_unode_id)],
+            ManifestDerivationInput::Entry {
+                parents: vec![Some(Entry::Tree(parent_unode_id))],
                 known_entries: root_known_entries,
                 path: MPath::ROOT,
             },
             changes,
         )
         .await
+        .unwrap()
+        .into_entry()
         .unwrap()
         .expect("root stage should produce an entry");
 

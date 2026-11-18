@@ -6,16 +6,25 @@
  */
 
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 use anyhow::Result;
+use blobstore::KeyedBlobstore;
 use blobstore::Loadable;
 use content_manifest_derivation::RootContentManifestId;
 use context::CoreContext;
 use derivation_queue_thrift::DerivationPriority;
+use derived_data_manager::ChildNameRange;
+use derived_data_manager::ManifestDerivable;
+use derived_data_manager::ManifestDerivationInput;
+use derived_data_manager::ManifestStageOutput;
+use derived_data_manager::PipelineDerivable;
+use derived_data_manager::StageId;
 use fbinit::FacebookInit;
 use manifest::Entry;
 use manifest::ManifestOps;
 use mononoke_macros::mononoke;
+use mononoke_types::BlobstoreKey;
 use mononoke_types::ChangesetId;
 use mononoke_types::ContentId;
 use mononoke_types::MPath;
@@ -31,6 +40,98 @@ use crate::DirectoryAclInputs;
 use crate::RootAclManifestId;
 use crate::acl_node_for_directory;
 use crate::test_utils::*;
+
+#[mononoke::fbinit_test]
+async fn test_pipeline_reads_only_owned_acl_changes(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let counted = build_counted_test_repo(fb).await?;
+    let repo = &counted.repo;
+    let parent = CreateCommitContext::new_root(&ctx, repo)
+        .add_file("a/.slacl", SLACL_PROJECT1)
+        .add_file("z/.slacl", SLACL_PROJECT2)
+        .commit()
+        .await?;
+    let child = CreateCommitContext::new(&ctx, repo, vec![parent])
+        .add_file("a/.slacl", INVALID_SLACL)
+        .commit()
+        .await?;
+    let parent = derive(&ctx, repo, parent).await?;
+    let expected = derive(&ctx, repo, child).await?;
+    assert_ne!(parent, expected);
+    let bonsai = child.load(&ctx, repo.repo_blobstore()).await?;
+    let content_id = bonsai
+        .file_changes()
+        .next()
+        .unwrap()
+        .1
+        .simplify()
+        .unwrap()
+        .content_id();
+    repo.repo_blobstore()
+        .unlink(&ctx, &content_id.blobstore_key())
+        .await?;
+    assert!(
+        filestore::fetch_concat(repo.repo_blobstore(), &ctx, content_id)
+            .await
+            .is_err()
+    );
+    let derivation = repo.repo_derived_data().manager().derivation_context(None);
+
+    let unchanged = StageId::Subentries(MPath::ROOT, ChildNameRange::new(b'm', u8::MAX)?);
+    let parent_output = RootAclManifestId::extract_stage_output_from_derived(
+        &ctx,
+        &derivation,
+        &parent,
+        &unchanged,
+    )
+    .await?;
+    let input = ManifestDerivationInput::from_stage_outputs(
+        &unchanged,
+        vec![parent_output],
+        HashMap::new(),
+    )?;
+    let before = counted.counters.snapshot();
+    RootAclManifestId::derive_manifest(&ctx, &derivation, bonsai.clone(), input).await?;
+    assert_eq!((counted.counters.snapshot() - before).gets, 0);
+
+    let root = StageId::Manifest(MPath::ROOT);
+    for dependencies in [
+        vec![
+            StageId::Manifest(MPath::new("a")?),
+            StageId::Manifest(MPath::new("z")?),
+        ],
+        vec![
+            StageId::Subentries(MPath::ROOT, ChildNameRange::new(0, b'm' - 1)?),
+            unchanged,
+        ],
+    ] {
+        let mut outputs = HashMap::new();
+        for stage in dependencies {
+            outputs.insert(
+                stage.clone(),
+                RootAclManifestId::extract_stage_output_from_derived(
+                    &ctx,
+                    &derivation,
+                    &expected,
+                    &stage,
+                )
+                .await?,
+            );
+        }
+        let input = ManifestDerivationInput::from_stage_outputs(
+            &root,
+            vec![ManifestStageOutput::Entry(Some(Entry::Tree(
+                *parent.inner_id(),
+            )))],
+            outputs,
+        )?;
+        let actual = RootAclManifestId::derive_manifest(&ctx, &derivation, bonsai.clone(), input)
+            .await?
+            .into_entry()?;
+        assert_eq!(actual, Some(Entry::Tree(*expected.inner_id())));
+    }
+    Ok(())
+}
 
 // ---------------------------------------------------------------------------
 // Incremental derivation tests

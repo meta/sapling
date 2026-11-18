@@ -10,15 +10,11 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use anyhow::Result;
-use anyhow::anyhow;
 use bulk_derivation::BulkDerivation;
-use bulk_derivation::derive_stage_batch;
 use clap::Args;
 use context::CoreContext;
 use context::SessionClass;
-use derived_data_manager::DerivationStagePayload;
 use derived_data_manager::DerivedDataManager;
-use derived_data_manager::ManifestStagePayload;
 use derived_data_manager::Rederivation;
 use futures::StreamExt;
 use futures::TryStreamExt;
@@ -29,7 +25,6 @@ use mononoke_api::ChangesetId;
 use mononoke_app::args::ChangesetArgs;
 use mononoke_app::args::MultiDerivedDataArgs;
 use mononoke_types::DerivableType;
-use mononoke_types::MPath;
 use tracing::debug;
 
 use super::Repo;
@@ -50,15 +45,6 @@ pub(super) struct DeriveArgs {
     /// Batch size to use for derivation
     #[clap(long)]
     batch_size: Option<u64>,
-    /// Derive only a single pipeline stage, identified by its absolute path
-    /// (e.g. `""` for the root, or `"fbcode"`). Only supported for types
-    /// with pipeline derivation (fsnodes, unodes).
-    #[clap(long, value_parser = parse_mpath)]
-    stage_path: Option<MPath>,
-}
-
-fn parse_mpath(s: &str) -> Result<MPath> {
-    MPath::new(s.as_bytes())
 }
 
 pub(super) async fn derive(
@@ -91,53 +77,7 @@ pub(super) async fn derive(
         Default::default()
     };
 
-    if let Some(stage_path) = args.stage_path {
-        let pipeline_config = manager
-            .repo_config()
-            .derived_data_config
-            .pipeline_config
-            .as_ref()
-            .ok_or_else(|| anyhow!("repo has no derivation pipeline config"))?;
-        let stage = pipeline_config
-            .stages
-            .get(&stage_path)
-            .ok_or_else(|| anyhow!("Pipeline config has no stage at path {stage_path}"))?;
-        let deps = stage
-            .dependencies
-            .iter()
-            .map(|dep_path| {
-                dep_path
-                    .iter()
-                    .last()
-                    .expect("validator: dep path is non-empty")
-                    .clone()
-            })
-            .collect();
-        let payload = DerivationStagePayload::Manifest(ManifestStagePayload {
-            path: stage_path.clone(),
-            deps,
-        });
-        for derived_data_type in &derived_data_types {
-            let variant = derived_data_type.into_pipeline_derivable_variant()?;
-
-            debug!(
-                "about to derive stage at {} of {} for {} commits",
-                stage_path,
-                derived_data_type.name(),
-                csids.len()
-            );
-
-            let duration =
-                derive_stage_batch(manager, ctx, csids.to_vec(), &payload, variant).await?;
-
-            debug!(
-                "Stage at {} derivation for {} completed in {}ms",
-                stage_path,
-                derived_data_type.name(),
-                duration.as_millis()
-            );
-        }
-    } else if args.unsafe_derive_untopologically {
+    if args.unsafe_derive_untopologically {
         for derived_data_type in derived_data_types {
             stream::iter(csids)
                 .map(|csid| {

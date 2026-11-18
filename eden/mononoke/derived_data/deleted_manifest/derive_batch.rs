@@ -22,32 +22,38 @@ use futures::stream::TryStreamExt;
 use itertools::Itertools;
 use manifest::PathTree;
 use mononoke_types::BlobstoreKey;
+use mononoke_types::BlobstoreValue;
 use mononoke_types::ChangesetId;
+use mononoke_types::DeletedManifestV2Id;
 use mononoke_types::MPathElement;
 use mononoke_types::NonRootMPath;
 use mononoke_types::deleted_manifest_common::DeletedManifestCommon;
+use mononoke_types::deleted_manifest_v2::DeletedManifestV2;
 
 use crate::derive::DeletedManifestChangeType;
 use crate::derive::DeletedManifestDeriver;
 use crate::derive::PathChange;
 
-struct UnfoldNode<M: DeletedManifestCommon> {
+struct UnfoldNode {
     path_element: Option<MPathElement>,
     all_changes: PathTree<Vec<(ChangesetId, PathChange)>>,
-    parent: Option<M::Id>,
+    parent: Option<DeletedManifestV2Id>,
 }
 
-struct FoldNode<M> {
+struct FoldNode {
     change_by_cs: ByChangeset<DeletedManifestChangeType>,
-    parent: Option<M>,
+    parent: Option<DeletedManifestV2>,
     base_name: Option<MPathElement>,
 }
 
-struct FoldOutput<M: DeletedManifestCommon>(Option<MPathElement>, ByChangeset<Option<M::Id>>);
+struct FoldOutput(
+    Option<MPathElement>,
+    ByChangeset<Option<DeletedManifestV2Id>>,
+);
 
 struct ByChangeset<V>(HashMap<ChangesetId, V>);
 
-impl<Manifest: DeletedManifestCommon> DeletedManifestDeriver<Manifest> {
+impl DeletedManifestDeriver {
     /// Derives DM for a simple stack of commits
     /// The idea is similar to manifest::derive_manifests_for_simple_stack_of_commits (https://fburl.com/code/5fy838h2)
     /// A simple stack of commits is a stack of consecutive commits that does not include a merge commit.
@@ -61,9 +67,9 @@ impl<Manifest: DeletedManifestCommon> DeletedManifestDeriver<Manifest> {
     pub(crate) async fn derive_simple_stack(
         ctx: &CoreContext,
         blobstore: &Arc<dyn KeyedBlobstore>,
-        parent: Option<Manifest::Id>,
+        parent: Option<DeletedManifestV2Id>,
         all_changes: Vec<(ChangesetId, Vec<(NonRootMPath, PathChange)>)>,
-    ) -> Result<Vec<Manifest::Id>> {
+    ) -> Result<Vec<DeletedManifestV2Id>> {
         let (path_tree, commit_stack) = {
             let mut path_tree: PathTree<Vec<(ChangesetId, PathChange)>> = PathTree::default();
             let mut commit_stack: Vec<ChangesetId> = vec![];
@@ -101,10 +107,10 @@ impl<Manifest: DeletedManifestCommon> DeletedManifestDeriver<Manifest> {
         ctx: &CoreContext,
         blobstore: &Arc<dyn KeyedBlobstore>,
         commit_stack: Vec<ChangesetId>,
-        parent_id: Option<Manifest::Id>,
-        mfid_by_cs: ByChangeset<Option<Manifest::Id>>,
-    ) -> Result<Vec<Manifest::Id>> {
-        let mut mfids: Vec<Manifest::Id> = Vec::with_capacity(commit_stack.len());
+        parent_id: Option<DeletedManifestV2Id>,
+        mfid_by_cs: ByChangeset<Option<DeletedManifestV2Id>>,
+    ) -> Result<Vec<DeletedManifestV2Id>> {
+        let mut mfids: Vec<DeletedManifestV2Id> = Vec::with_capacity(commit_stack.len());
         let mut cur_mfid = parent_id;
         // This is a "cache", so we only create the empty manifest once, if necessary
         let mut cached_empty_mf_id = None;
@@ -120,7 +126,7 @@ impl<Manifest: DeletedManifestCommon> DeletedManifestDeriver<Manifest> {
                 if let Some(mfid) = cached_empty_mf_id {
                     mfid
                 } else {
-                    let mf = Manifest::copy_and_update_subentries(
+                    let mf = DeletedManifestV2::copy_and_update_subentries(
                         ctx,
                         blobstore,
                         None,
@@ -141,11 +147,8 @@ impl<Manifest: DeletedManifestCommon> DeletedManifestDeriver<Manifest> {
     async fn unfold_batch(
         ctx: &CoreContext,
         blobstore: &Arc<dyn KeyedBlobstore>,
-        unfold_node: UnfoldNode<Manifest>,
-    ) -> Result<(
-        FoldNode<Manifest>,
-        impl IntoIterator<Item = UnfoldNode<Manifest>> + use<Manifest>,
-    )> {
+        unfold_node: UnfoldNode,
+    ) -> Result<(FoldNode, impl IntoIterator<Item = UnfoldNode> + use<>)> {
         let UnfoldNode {
             path_element,
             all_changes,
@@ -215,11 +218,13 @@ impl<Manifest: DeletedManifestCommon> DeletedManifestDeriver<Manifest> {
         ctx: &CoreContext,
         blobstore: &Arc<dyn KeyedBlobstore>,
         commit_stack: &[ChangesetId],
-        mut parent: Option<Manifest>,
-        mut modified_subentries_by_cs: ByChangeset<BTreeMap<MPathElement, Option<Manifest::Id>>>,
+        mut parent: Option<DeletedManifestV2>,
+        mut modified_subentries_by_cs: ByChangeset<
+            BTreeMap<MPathElement, Option<DeletedManifestV2Id>>,
+        >,
         mut change_by_cs: ByChangeset<DeletedManifestChangeType>,
-    ) -> Result<ByChangeset<Option<Manifest::Id>>> {
-        let mut mfid_by_cs: ByChangeset<Option<Manifest::Id>> = ByChangeset(HashMap::new());
+    ) -> Result<ByChangeset<Option<DeletedManifestV2Id>>> {
+        let mut mfid_by_cs: ByChangeset<Option<DeletedManifestV2Id>> = ByChangeset(HashMap::new());
         // TODO: We can optimise here even further by only iterating over the commits that are
         // keys in either modified_subentries_by_cs or change_by_cs, but we need to do so in
         // the correct order. This optimisation likely doesn't help much as iterating over the
@@ -235,7 +240,7 @@ impl<Manifest: DeletedManifestCommon> DeletedManifestDeriver<Manifest> {
             let cur_subentries_to_update = modified_subentries.unwrap_or_default();
             let mf = match change.unwrap_or(DeletedManifestChangeType::RemoveIfNowEmpty) {
                 DeletedManifestChangeType::CreateDeleted => {
-                    let mf = Manifest::copy_and_update_subentries(
+                    let mf = DeletedManifestV2::copy_and_update_subentries(
                         ctx,
                         blobstore,
                         parent,
@@ -247,7 +252,7 @@ impl<Manifest: DeletedManifestCommon> DeletedManifestDeriver<Manifest> {
                     Some(mf)
                 }
                 DeletedManifestChangeType::RemoveIfNowEmpty => {
-                    let mf = Manifest::copy_and_update_subentries(
+                    let mf = DeletedManifestV2::copy_and_update_subentries(
                         ctx,
                         blobstore,
                         parent,
@@ -276,9 +281,9 @@ impl<Manifest: DeletedManifestCommon> DeletedManifestDeriver<Manifest> {
         ctx: &CoreContext,
         blobstore: &Arc<dyn KeyedBlobstore>,
         commit_stack: &[ChangesetId],
-        fold_node: FoldNode<Manifest>,
-        subentries: impl Iterator<Item = FoldOutput<Manifest>>,
-    ) -> Result<FoldOutput<Manifest>> {
+        fold_node: FoldNode,
+        subentries: impl Iterator<Item = FoldOutput>,
+    ) -> Result<FoldOutput> {
         let FoldNode {
             change_by_cs,
             parent,
@@ -307,11 +312,11 @@ impl<Manifest: DeletedManifestCommon> DeletedManifestDeriver<Manifest> {
         Ok(FoldOutput(base_name, mfid_by_cs))
     }
 
-    async fn save_mf(
-        mf: Manifest,
+    pub(super) async fn save_mf(
+        mf: DeletedManifestV2,
         ctx: &CoreContext,
         blobstore: &Arc<dyn KeyedBlobstore>,
-    ) -> Result<Manifest::Id> {
+    ) -> Result<DeletedManifestV2Id> {
         let mf_id = mf.id();
         let key = mf_id.blobstore_key();
         blobstore.put(ctx, key, mf.into_blob().into()).await?;

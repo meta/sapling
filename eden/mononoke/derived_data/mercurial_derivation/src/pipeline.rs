@@ -6,9 +6,8 @@
  */
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 
-use anyhow::Context as _;
-use anyhow::Error;
 use anyhow::Result;
 use anyhow::anyhow;
 use async_trait::async_trait;
@@ -18,18 +17,25 @@ use bonsai_hg_mapping::BonsaiHgMappingEntry;
 use context::CoreContext;
 use derived_data_manager::DerivationContext;
 use derived_data_manager::DerivationStagePayload;
+use derived_data_manager::ManifestStageOutput;
 use derived_data_manager::PipelineDerivable;
 use derived_data_manager::StageId;
+use derived_data_manager::StageOutputs;
+use derived_data_manager::manifest_partitions::create_sorted_subentries;
+use derived_data_manager::manifest_partitions::decode_partition_reference;
+use derived_data_manager::manifest_partitions::select_subentries;
+use derived_data_manager::manifest_partitions::store_sorted_subentries;
 use derived_data_manager::manifest_pipeline::derive_manifest_batch;
-use derived_data_manager::manifest_pipeline::fetch_stage_blobs;
-use derived_data_manager::manifest_pipeline::store_stage_blobs;
+use derived_data_manager::stage_outputs::StageOutput;
+use derived_data_manager::stage_outputs::fetch_stage_outputs;
+use derived_data_manager::stage_outputs::fetch_stage_outputs_with_fallback;
+use derived_data_manager::stage_outputs::store_stage_outputs;
 use fbthrift::compact_protocol;
 use futures::StreamExt;
 use futures::TryStreamExt;
 use futures::stream;
 use manifest::Entry;
 use manifest::ManifestOps;
-use manifest::PathOrPrefix;
 use manifest::Traced;
 use mercurial_types::HgChangesetId;
 use mercurial_types::HgFileNodeId;
@@ -48,65 +54,65 @@ use mononoke_types::path::MPath;
 use crate::access_labels;
 use crate::derive_hg_changeset::generate_hg_changeset;
 use crate::derive_hg_changeset::get_manifest_entry_from_bonsai;
+use crate::derive_hg_manifest::HgManifestOutput;
 use crate::derive_hg_manifest::ParentIndex;
+use crate::derive_hg_manifest::prepare_manifest_input;
 use crate::mapping::HgChangesetDeriveOptions;
 use crate::mapping::MappedHgChangesetId;
 use crate::mapping::get_subtree_change_sources;
 
-/// Output of a single pipeline stage for `MappedHgChangesetId`.
-///
-/// `entry` carries the manifest entry at the stage's configured path,
-/// preserving its `Traced<ParentIndex, _>` lineage from the producing
-/// stage so downstream stages can plug it back into `derive_manifest`
-/// via `known_entries` without rewrapping.
-///
-/// `hg_cs_id` is set only by the finalize stage (manifest stages leave it
-/// `None`): it carries each parent's hg changeset id through `parents` so the
-/// finalize chain can hash the next commit's changeset without a
-/// `bonsai_hg_mapping` lookup for in-batch parents.
-#[derive(Clone, Debug, PartialEq)]
-pub struct HgStageOutput {
-    pub entry: Option<
-        Entry<Traced<ParentIndex, HgManifestId>, Traced<ParentIndex, (FileType, HgFileNodeId)>>,
-    >,
-    pub hg_cs_id: Option<HgChangesetId>,
+#[derive(Clone, Debug)]
+pub enum HgStageOutput {
+    Manifest(HgManifestOutput),
+    Finalize {
+        manifest_id: HgManifestId,
+        hg_cs_id: HgChangesetId,
+    },
 }
 
-/// Stage-output key format version; bump on any format change so older binaries read a disjoint keyspace (re-derive) instead of misreading. v2: hg_cs_id moved to the finalize stage.
-const STAGE_OUTPUT_FORMAT_VERSION: u32 = 2;
-
-fn stage_blobstore_key(stage_path: &MPath, key_prefix: &str, cs_id: ChangesetId) -> String {
-    format!(
-        "derived_hg_manifest_stage.v{STAGE_OUTPUT_FORMAT_VERSION}.{}.{key_prefix}{cs_id}",
-        stage_path.get_path_hash().to_hex(),
-    )
-}
-
-/// Blobstore key for the finalize stage output (transitional, used while the
-/// prod-mapping knob is off). Distinct from the manifest stage keys, which are
-/// keyed by stage path hash.
-fn finalize_blobstore_key(key_prefix: &str, cs_id: ChangesetId) -> String {
-    format!("derived_hg_manifest_stage.v{STAGE_OUTPUT_FORMAT_VERSION}.finalize.{key_prefix}{cs_id}")
-}
-
-fn untraced_manifest_id(
-    entry: &Entry<Traced<ParentIndex, HgManifestId>, Traced<ParentIndex, (FileType, HgFileNodeId)>>,
-) -> Option<HgManifestId> {
-    match entry {
-        Entry::Tree(t) => Some(*t.untraced()),
-        Entry::Leaf(_) => None,
+#[async_trait]
+impl StageOutput for HgStageOutput {
+    async fn equivalent(&self, other: &Self) -> Result<bool> {
+        match (self, other) {
+            (Self::Manifest(a), Self::Manifest(b)) => a.equivalent(b).await,
+            (
+                Self::Finalize {
+                    manifest_id: a,
+                    hg_cs_id: ac,
+                },
+                Self::Finalize {
+                    manifest_id: b,
+                    hg_cs_id: bc,
+                },
+            ) => Ok(a == b && ac == bc),
+            _ => Ok(false),
+        }
     }
 }
 
-/// Strip the `Traced` wrappers from a stage-output entry. Used at stage
-/// boundaries before handing entries to `get_manifest_entry_from_bonsai`,
-/// which re-assigns `ParentIndex` by bonsai-parent position.
-pub(crate) fn untrace_entry(
-    entry: Entry<Traced<ParentIndex, HgManifestId>, Traced<ParentIndex, (FileType, HgFileNodeId)>>,
-) -> Entry<HgManifestId, (FileType, HgFileNodeId)> {
-    match entry {
-        Entry::Tree(t) => Entry::Tree(t.into_untraced()),
-        Entry::Leaf(l) => Entry::Leaf(l.into_untraced()),
+impl HgStageOutput {
+    fn into_manifest(self) -> Result<HgManifestOutput> {
+        match self {
+            Self::Manifest(output) => Ok(output),
+            Self::Finalize { .. } => anyhow::bail!("expected manifest stage output"),
+        }
+    }
+
+    fn root_manifest(&self) -> Option<HgManifestId> {
+        match self {
+            Self::Manifest(ManifestStageOutput::Entry(Some(Entry::Tree(tree)))) => {
+                Some(*tree.untraced())
+            }
+            Self::Finalize { manifest_id, .. } => Some(*manifest_id),
+            _ => None,
+        }
+    }
+
+    fn hg_cs_id(&self) -> Option<HgChangesetId> {
+        match self {
+            Self::Finalize { hg_cs_id, .. } => Some(*hg_cs_id),
+            Self::Manifest(_) => None,
+        }
     }
 }
 
@@ -114,7 +120,7 @@ pub(crate) fn untrace_entry(
 /// reconstructing a stage output from a non-pipelined derivation: lineage is
 /// not recoverable from a SQL-only or post-hoc load, so every leaf and tree
 /// is tagged as "generated" (no specific parent index).
-fn wrap_entry_traced(
+pub(crate) fn wrap_entry_traced(
     entry: Entry<HgManifestId, (FileType, HgFileNodeId)>,
 ) -> Entry<Traced<ParentIndex, HgManifestId>, Traced<ParentIndex, (FileType, HgFileNodeId)>> {
     match entry {
@@ -123,193 +129,32 @@ fn wrap_entry_traced(
     }
 }
 
-/// Resolve cross-stage copy sources for a single bonsai at `cur_stage_path`.
-///
-/// A cross-stage copy is a file change under `cur_stage_path` whose `copy_from`
-/// references a real parent (p1/p2) at a source path outside `cur_stage_path`.
-/// The source filenode lives in that parent's full root hg manifest, which the
-/// per-stage output doesn't carry, so we resolve the parent's terminal (root)
-/// stage output and look the source filenode up in its root manifest. The
-/// terminal stage output is resolved the same two-tier way the manager resolves
-/// the `parents` map: read the pipeline terminal stage output, falling back to
-/// extracting it from the canonical derived value for parents that predate the
-/// pipeline. Returns a map keyed by destination path.
-async fn resolve_cross_stage_copy_sources(
+async fn fetch_parent_root(
     ctx: &CoreContext,
     derivation: &DerivationContext,
-    blobstore: &std::sync::Arc<dyn blobstore::KeyedBlobstore>,
-    bonsai: &BonsaiChangeset,
-    cur_stage_path: &MPath,
-) -> Result<HashMap<mononoke_types::NonRootMPath, (mononoke_types::NonRootMPath, HgFileNodeId)>> {
-    use mononoke_types::FileChange;
-
-    let parents: Vec<ChangesetId> = bonsai.parents().collect();
-    let p1 = parents.first().copied();
-    let p2 = parents.get(1).copied();
-
-    // Collect cross-stage copies as (dest, copy_path, parent_csid).
-    let mut pending: Vec<(
-        mononoke_types::NonRootMPath,
-        mononoke_types::NonRootMPath,
-        ChangesetId,
-    )> = Vec::new();
-    for (path, fc) in bonsai.file_changes() {
-        // Keep dests at or under the stage; skip dests strictly outside it.
-        if !cur_stage_path.is_prefix_of(path) {
-            continue;
-        }
-        let FileChange::Change(tc) = fc else {
-            continue;
-        };
-        let Some((copy_path, bcsid)) = tc.copy_from() else {
-            continue;
-        };
-        let is_real_parent = Some(*bcsid) == p1 || Some(*bcsid) == p2;
-        if !is_real_parent {
-            continue;
-        }
-        // Only sources strictly outside the stage need the parent terminal root;
-        // sources at or under the stage are resolved from the parent stage output.
-        if cur_stage_path.is_prefix_of(copy_path) {
-            continue;
-        }
-        pending.push((path.clone(), copy_path.clone(), *bcsid));
-    }
-
-    if pending.is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    let mut needed: Vec<ChangesetId> = pending.iter().map(|(_, _, csid)| *csid).collect();
-    needed.sort();
-    needed.dedup();
-
-    // Resolve each source parent's terminal (root) stage output, mirroring the
-    // manager's transitionary parent resolution: pipeline terminal stage output
-    // first, falling back to the canonical derived value for parents that have
-    // no pipeline terminal output yet. Pre-flip the canonical fallback leans on
-    // bonsai_hg_mapping exactly as the manager does; we never read it directly.
-    let mut terminal_outputs = MappedHgChangesetId::fetch_stage_outputs(
+    csid: ChangesetId,
+) -> Result<Option<Traced<ParentIndex, HgManifestId>>> {
+    let root = fetch_stage_outputs_with_fallback::<MappedHgChangesetId>(
         ctx,
         derivation,
         &StageId::Manifest(MPath::ROOT),
-        needed.clone(),
+        vec![csid],
     )
-    .await?;
-    let missing: Vec<ChangesetId> = needed
-        .iter()
-        .copied()
-        .filter(|csid| !terminal_outputs.contains_key(csid))
-        .collect();
-    let fetched: Vec<(ChangesetId, HgStageOutput)> = stream::iter(missing)
-        .map(|parent_csid| async move {
-            let derived = derivation
-                .fetch_dependency::<MappedHgChangesetId>(ctx, parent_csid)
-                .await
-                .with_context(|| {
-                    format!(
-                        "resolving cross-stage copy source parent {parent_csid}: no pipeline terminal stage output and canonical hg changeset not derived"
-                    )
-                })?;
-            let output = MappedHgChangesetId::extract_stage_output_from_derived(
-                ctx,
-                derivation,
-                &derived,
-                &StageId::Manifest(MPath::ROOT),
-            )
-            .await?;
-            Ok::<_, Error>((parent_csid, output))
-        })
-        .buffer_unordered(10)
-        .try_collect()
-        .await?;
-    terminal_outputs.extend(fetched);
-
-    // Group cross-stage copies by source parent so each parent needs only a
-    // single manifest traversal.
-    let mut by_parent: HashMap<
-        ChangesetId,
-        Vec<(mononoke_types::NonRootMPath, mononoke_types::NonRootMPath)>,
-    > = HashMap::new();
-    for (dest, copy_path, parent_csid) in pending {
-        by_parent
-            .entry(parent_csid)
-            .or_default()
-            .push((dest, copy_path));
-    }
-
-    // Resolve each parent concurrently: take its root hg manifest id from the
-    // terminal stage output, then do a single `find_entries` for all of that
-    // parent's copy sources. Mirrors canonical `resolve_paths`: copies whose
-    // source is absent in the parent, or is not a file, are silently dropped.
-    let resolved: HashMap<
-        mononoke_types::NonRootMPath,
-        (mononoke_types::NonRootMPath, HgFileNodeId),
-    > = stream::iter(by_parent)
-        .map(|(parent_csid, copies)| {
-            let terminal_outputs = &terminal_outputs;
-            let ctx = ctx.clone();
-            let blobstore = blobstore.clone();
-            async move {
-                let output = terminal_outputs.get(&parent_csid).ok_or_else(|| {
-                    anyhow!(
-                        "no terminal stage output resolved for cross-stage copy source parent {parent_csid}"
-                    )
-                })?;
-                let root_manifest = output
-                    .entry
-                    .as_ref()
-                    .and_then(untraced_manifest_id)
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "terminal stage output for cross-stage copy source parent {parent_csid} has no root manifest entry"
-                        )
-                    })?;
-
-                let found: HashMap<MPath, (FileType, HgFileNodeId)> = root_manifest
-                    .find_entries(
-                        ctx,
-                        blobstore,
-                        copies
-                            .iter()
-                            .map(|(_, copy_path)| PathOrPrefix::Path(MPath::from(copy_path.clone()))),
-                    )
-                    .try_filter_map(|(path, entry)| async move {
-                        Ok(entry.into_leaf().map(|leaf| (path, leaf)))
-                    })
-                    .try_collect()
-                    .await?;
-
-                let resolved_for_parent: Vec<(
-                    mononoke_types::NonRootMPath,
-                    (mononoke_types::NonRootMPath, HgFileNodeId),
-                )> = copies
-                    .into_iter()
-                    .filter_map(|(dest, copy_path)| {
-                        found
-                            .get(&MPath::from(copy_path.clone()))
-                            .map(|(_file_type, filenode)| (dest, (copy_path, *filenode)))
-                    })
-                    .collect();
-                Ok::<_, Error>(resolved_for_parent)
-            }
-        })
-        .buffer_unordered(10)
-        .try_concat()
-        .await?
-        .into_iter()
-        .collect();
-
-    Ok(resolved)
+    .await?
+    .remove(&csid)
+    .ok_or_else(|| anyhow!("missing Hg root for {csid}"))?
+    .into_manifest()?
+    .into_entry()?
+    .and_then(Entry::into_tree)
+    .ok_or_else(|| anyhow!("Hg root for {csid} is not a tree"))?;
+    Ok(Some(root))
 }
 
 #[async_trait]
 impl PipelineDerivable for MappedHgChangesetId {
     const PIPELINE_DERIVABLE_VARIANT: PipelineDerivableVariant =
         PipelineDerivableVariant::HgChangesets;
-
     const HAS_FINALIZE: bool = true;
-
     type StageOutput = HgStageOutput;
 
     async fn derive_stage_batch(
@@ -318,73 +163,43 @@ impl PipelineDerivable for MappedHgChangesetId {
         bonsais: Vec<BonsaiChangeset>,
         payload: &DerivationStagePayload,
         parents: HashMap<ChangesetId, Self::StageOutput>,
-        dependency_outputs: HashMap<ChangesetId, HashMap<MPath, Self::StageOutput>>,
+        dependency_outputs: HashMap<ChangesetId, HashMap<StageId, Self::StageOutput>>,
     ) -> Result<HashMap<ChangesetId, Self::StageOutput>> {
         let ctx = &ctx.with_access_label(access_labels::HG_CHANGESET_PIPELINE);
-        let blobstore = derivation.blobstore();
-
-        let payload = match payload {
-            DerivationStagePayload::Manifest(payload) => payload,
-            DerivationStagePayload::Finalize => {
-                return finalize_stage_batch(ctx, derivation, bonsais, parents, dependency_outputs)
-                    .await;
-            }
-        };
-        let cur_stage_path = &payload.path;
-
+        if matches!(payload, DerivationStagePayload::Finalize) {
+            return finalize_stage_batch(ctx, derivation, bonsais, parents, dependency_outputs)
+                .await;
+        }
+        let stage = payload.stage_id();
         derive_manifest_batch(
             bonsais,
             parents,
             dependency_outputs,
-            |bonsai, parent_outputs, dependencies| async move {
-                // Parent entries at stage_path, in bonsai-parent order. Positional
-                // slots are preserved so `get_manifest_entry_from_bonsai` can align
-                // `parent_entries[i]` with `bcs.parents().nth(i)` for copy-from
-                // filenode lookup. `None` means the parent has nothing at
-                // stage_path. The Traced wrappers from the producing stage are
-                // stripped; the callee re-tags by bonsai-parent position.
-                let parent_entries: Vec<Option<Entry<HgManifestId, (FileType, HgFileNodeId)>>> =
-                    parent_outputs
-                        .iter()
-                        .map(|out| out.entry.clone().map(untrace_entry))
-                        .collect();
-
-                let known_entries = dependencies
-                    .into_iter()
-                    .map(|(path, output)| (path, output.entry))
-                    .collect();
-
-                // Resolve cross-stage copy sources: a file change under
-                // `cur_stage_path` whose `copy_from` source is a real parent
-                // (p1/p2) but lies outside `cur_stage_path`. The source filenode
-                // lives in the parent's full root manifest, which the stage output
-                // doesn't carry, so we load the parent's root hg envelope and look
-                // it up there. Keyed by destination path.
-                let cross_stage_copy_sources = resolve_cross_stage_copy_sources(
-                    ctx,
-                    derivation,
-                    blobstore,
-                    &bonsai,
-                    cur_stage_path,
-                )
-                .await?;
-
-                let entry = get_manifest_entry_from_bonsai(
-                    ctx.clone(),
-                    blobstore.clone(),
-                    derivation.restricted_paths(),
-                    bonsai,
-                    parent_entries,
-                    cur_stage_path.clone(),
-                    known_entries,
-                    cross_stage_copy_sources,
-                )
-                .await?;
-
-                Ok(HgStageOutput {
-                    entry,
-                    hg_cs_id: None,
-                })
+            |bonsai, parents, dependencies| {
+                let stage = &stage;
+                async move {
+                    let input = prepare_manifest_input(
+                        stage,
+                        parents
+                            .into_iter()
+                            .map(HgStageOutput::into_manifest)
+                            .collect::<Result<_>>()?,
+                        dependencies
+                            .into_iter()
+                            .map(|(stage, output)| Ok((stage, output.into_manifest()?)))
+                            .collect::<Result<_>>()?,
+                    )?;
+                    get_manifest_entry_from_bonsai(
+                        ctx.clone(),
+                        derivation.blobstore().clone(),
+                        derivation.restricted_paths(),
+                        bonsai,
+                        input,
+                        |csid| fetch_parent_root(ctx, derivation, csid),
+                    )
+                    .await
+                    .map(HgStageOutput::Manifest)
+                }
             },
         )
         .await
@@ -399,25 +214,45 @@ impl PipelineDerivable for MappedHgChangesetId {
         let ctx = &ctx.with_access_label(access_labels::HG_CHANGESET_PIPELINE);
         let hg_cs_id = derived.hg_changeset_id();
         let envelope = hg_cs_id.load(ctx, derivation.blobstore()).await?;
-        let root_mfid = envelope.manifestid();
-        // A manifest stage is anchored at its configured path; the finalize
-        // stage is anchored at the root manifest and additionally carries the
-        // hg changeset id.
-        let stage_path = match stage {
-            StageId::Manifest(stage_path) => stage_path.clone(),
-            StageId::Finalize => MPath::ROOT,
+        let manifest_id = envelope.manifestid();
+        let path = match stage {
+            StageId::Manifest(path) | StageId::Subentries(path, _) => path,
+            StageId::Finalize => {
+                return Ok(HgStageOutput::Finalize {
+                    manifest_id,
+                    hg_cs_id,
+                });
+            }
         };
-        let raw_entry = root_mfid
-            .find_entry(ctx.clone(), derivation.blobstore().clone(), stage_path)
-            .await?;
-        // Lineage isn't recoverable from non-pipelined derivation. Wrap with
-        // Traced::generate, matching the convention used by derive_hg_manifest
-        // for entries that didn't come from a specific input parent.
-        // Functionally safe because known_entries short-circuit
-        // MergeResult::Reuse without consulting Traced state.
-        let entry = raw_entry.map(wrap_entry_traced);
-        let hg_cs_id = matches!(stage, StageId::Finalize).then_some(hg_cs_id);
-        Ok(HgStageOutput { entry, hg_cs_id })
+        let entry = manifest_id
+            .find_entry(ctx.clone(), derivation.blobstore().clone(), path.clone())
+            .await?
+            .map(wrap_entry_traced);
+        let output = if let StageId::Subentries(_, range) = stage {
+            let entries = select_subentries(ctx, derivation.blobstore(), entry, *range).await?;
+            ManifestStageOutput::Subentries(create_sorted_subentries(ctx, entries).await?.into())
+        } else {
+            ManifestStageOutput::Entry(entry)
+        };
+        Ok(HgStageOutput::Manifest(output))
+    }
+
+    async fn extract_stage_output_from_root(
+        ctx: &CoreContext,
+        derivation: &DerivationContext,
+        root: Self::StageOutput,
+        stage: &StageId,
+    ) -> Result<Self::StageOutput> {
+        let id = root
+            .hg_cs_id()
+            .ok_or_else(|| anyhow!("expected finalized Hg changeset"))?;
+        Self::extract_stage_output_from_derived(
+            ctx,
+            derivation,
+            &MappedHgChangesetId::new(id),
+            stage,
+        )
+        .await
     }
 
     async fn store_stage_outputs(
@@ -425,7 +260,7 @@ impl PipelineDerivable for MappedHgChangesetId {
         derivation: &DerivationContext,
         stage: &StageId,
         outputs: HashMap<ChangesetId, Self::StageOutput>,
-    ) -> Result<()> {
+    ) -> Result<Option<StageOutputs>> {
         if matches!(stage, StageId::Finalize)
             && justknobs::eval(
                 "scm/mononoke:derived_data_pipeline_terminal_stage_prod_mapping",
@@ -433,40 +268,30 @@ impl PipelineDerivable for MappedHgChangesetId {
                 Some("hg_changesets"),
             )
         {
-            let entries: Vec<BonsaiHgMappingEntry> = outputs
-                .iter()
+            let entries = outputs
+                .into_iter()
                 .map(|(bcs_id, output)| {
-                    let hg_cs_id = output.hg_cs_id.ok_or_else(|| {
-                        anyhow!(
-                            "finalize stage output for {bcs_id} missing hg_cs_id (cannot write bonsai_hg_mapping)",
-                        )
-                    })?;
                     Ok(BonsaiHgMappingEntry {
-                        hg_cs_id,
-                        bcs_id: *bcs_id,
+                        bcs_id,
+                        hg_cs_id: output
+                            .hg_cs_id()
+                            .ok_or_else(|| anyhow!("missing final Hg changeset for {bcs_id}"))?,
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
-            derivation
+            return derivation
                 .bonsai_hg_mapping()?
                 .bulk_add(ctx, &entries)
-                .await?;
-            return Ok(());
+                .await
+                .map(|_| None);
         }
-        let key_prefix = derivation.mapping_key_prefix::<Self>();
-        store_stage_blobs(
+        store_stage_outputs::<Self, _, _>(
             ctx,
             derivation,
+            stage,
             outputs,
-            |csid| match stage {
-                StageId::Manifest(path) => stage_blobstore_key(path, key_prefix, csid),
-                StageId::Finalize => finalize_blobstore_key(key_prefix, csid),
-            },
-            |output| {
-                Ok(BlobstoreBytes::from_bytes(compact_protocol::serialize(
-                    &stage_output_to_thrift(&output)?,
-                )))
-            },
+            |_| None,
+            |output| encode_stage_output(ctx, derivation, output),
         )
         .await
     }
@@ -487,46 +312,33 @@ impl PipelineDerivable for MappedHgChangesetId {
         {
             let entries = derivation
                 .bonsai_hg_mapping()?
-                .get(ctx, cs_ids.clone().into())
+                .get(ctx, cs_ids.into())
                 .await?;
-            let hg_by_bcs: HashMap<ChangesetId, HgChangesetId> = entries
-                .into_iter()
-                .map(|e| (e.bcs_id, e.hg_cs_id))
-                .collect();
-
-            let results =
-                stream::iter(hg_by_bcs.into_iter().map(|(bcs_id, hg_cs_id)| async move {
-                    let envelope = hg_cs_id.load(ctx, derivation.blobstore()).await?;
-                    let root_mfid = envelope.manifestid();
-                    let raw_entry = root_mfid
-                        .find_entry(ctx.clone(), derivation.blobstore().clone(), MPath::ROOT)
-                        .await?;
-                    let entry = raw_entry.map(wrap_entry_traced);
-                    Ok::<_, Error>((
-                        bcs_id,
-                        HgStageOutput {
-                            entry,
-                            hg_cs_id: Some(hg_cs_id),
-                        },
-                    ))
-                }))
-                .buffer_unordered(100)
-                .try_collect::<HashMap<_, _>>()
-                .await?;
-            return Ok(results);
+            return stream::iter(entries.into_iter().map(|entry| async move {
+                let manifest_id = entry
+                    .hg_cs_id
+                    .load(ctx, derivation.blobstore())
+                    .await?
+                    .manifestid();
+                Ok((
+                    entry.bcs_id,
+                    HgStageOutput::Finalize {
+                        manifest_id,
+                        hg_cs_id: entry.hg_cs_id,
+                    },
+                ))
+            }))
+            .buffer_unordered(100)
+            .try_collect()
+            .await;
         }
-        let key_prefix = derivation.mapping_key_prefix::<Self>();
-        fetch_stage_blobs(
+        fetch_stage_outputs::<Self, _, _>(
             ctx,
             derivation,
+            stage,
             cs_ids,
-            |csid| match stage {
-                StageId::Manifest(path) => stage_blobstore_key(path, key_prefix, csid),
-                StageId::Finalize => finalize_blobstore_key(key_prefix, csid),
-            },
-            |csid, bytes| {
-                stage_output_from_thrift(csid, compact_protocol::deserialize(bytes.into_bytes())?)
-            },
+            |_| None,
+            |csid, bytes| decode_stage_output(ctx, derivation, stage, csid, bytes),
         )
         .await
     }
@@ -540,7 +352,7 @@ async fn finalize_stage_batch(
     derivation: &DerivationContext,
     bonsais: Vec<BonsaiChangeset>,
     parents: HashMap<ChangesetId, HgStageOutput>,
-    dependency_outputs: HashMap<ChangesetId, HashMap<MPath, HgStageOutput>>,
+    dependency_outputs: HashMap<ChangesetId, HashMap<StageId, HgStageOutput>>,
 ) -> Result<HashMap<ChangesetId, HgStageOutput>> {
     let blobstore = derivation.blobstore();
     let derivation_opts = HgChangesetDeriveOptions {
@@ -554,9 +366,9 @@ async fn finalize_stage_batch(
     let manifest_id_of = |id: &ChangesetId| -> Option<HgManifestId> {
         let out = dependency_outputs
             .get(id)
-            .and_then(|deps| deps.get(&MPath::ROOT))
+            .and_then(|deps| deps.get(&StageId::Manifest(MPath::ROOT)))
             .or_else(|| parents.get(id))?;
-        out.entry.as_ref().and_then(untraced_manifest_id)
+        out.root_manifest()
     };
 
     // Compute each commit's changed-file list in parallel. It depends only on
@@ -593,137 +405,284 @@ async fn finalize_stage_batch(
         .try_collect()
         .await?;
 
-    derive_manifest_batch(
-        bonsais,
-        parents,
-        dependency_outputs,
-        |bonsai, parent_outputs, mut dependencies| {
-            let cs_id = bonsai.get_changeset_id();
-            let files = files_by_cs.remove(&cs_id);
-            let derivation_opts = &derivation_opts;
-            async move {
-                let root_manifest_entry = dependencies
-                    .remove(&MPath::ROOT)
-                    .and_then(|out| out.entry)
-                    .ok_or_else(|| {
-                        anyhow!("finalize for {cs_id}: missing root manifest dependency output")
-                    })?;
-                let manifest_id = untraced_manifest_id(&root_manifest_entry).ok_or_else(|| {
-                    anyhow!("finalize for {cs_id}: root manifest dependency is not a tree")
-                })?;
-                let parent_hg_cs_ids = bonsai
-                    .parents()
-                    .zip(parent_outputs)
-                    .map(|(parent_csid, output)| {
-                        output.hg_cs_id.ok_or_else(|| {
-                            anyhow!("finalize parent {parent_csid} of {cs_id} has no hg_cs_id")
-                        })
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                let files = files.ok_or_else(|| {
-                    anyhow!("finalize for {cs_id}: changed files were not computed")
-                })?;
-                let subtree_change_sources =
-                    get_subtree_change_sources(ctx, derivation, &bonsai, &HashMap::new()).await?;
-                let subtree_changes = HgSubtreeChanges::from_bonsai_subtree_changes(
-                    bonsai.subtree_changes(),
-                    subtree_change_sources,
-                )?;
-                let (hg_cs_id, _hg_blob_cs) = generate_hg_changeset(
-                    ctx,
-                    blobstore,
-                    bonsai,
-                    manifest_id,
-                    parent_hg_cs_ids,
-                    files,
-                    subtree_changes,
-                    derivation_opts,
-                )
-                .await?;
-                Ok(HgStageOutput {
-                    entry: Some(root_manifest_entry),
-                    hg_cs_id: Some(hg_cs_id),
-                })
-            }
-        },
+    let batch_ids: HashSet<_> = bonsais
+        .iter()
+        .map(BonsaiChangeset::get_changeset_id)
+        .collect();
+    let source_ids = bonsais
+        .iter()
+        .flat_map(|bonsai| bonsai.subtree_changes().values())
+        .filter_map(|change| change.change_source().map(|(csid, _)| csid))
+        .filter(|csid| !batch_ids.contains(csid))
+        .collect::<HashSet<_>>();
+    let mut source_mapping: HashMap<_, _> = MappedHgChangesetId::fetch_stage_outputs(
+        ctx,
+        derivation,
+        &StageId::Finalize,
+        source_ids.into_iter().collect(),
     )
-    .await
+    .await?
+    .into_iter()
+    .filter_map(|(csid, output)| {
+        output
+            .hg_cs_id()
+            .map(|id| (csid, MappedHgChangesetId::new(id)))
+    })
+    .collect();
+    let mut results: HashMap<ChangesetId, HgStageOutput> = HashMap::new();
+    for bonsai in bonsais {
+        let cs_id = bonsai.get_changeset_id();
+        let manifest_id = manifest_id_of(&cs_id)
+            .ok_or_else(|| anyhow!("finalize for {cs_id}: missing root manifest dependency"))?;
+        let parent_hg_cs_ids = bonsai
+            .parents()
+            .map(|parent| {
+                results
+                    .get(&parent)
+                    .or_else(|| parents.get(&parent))
+                    .and_then(HgStageOutput::hg_cs_id)
+                    .ok_or_else(|| anyhow!("finalize parent {parent} of {cs_id} has no hg_cs_id"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let files = files_by_cs
+            .remove(&cs_id)
+            .ok_or_else(|| anyhow!("finalize for {cs_id}: changed files were not computed"))?;
+        let sources = get_subtree_change_sources(ctx, derivation, &bonsai, &source_mapping).await?;
+        let subtree_changes =
+            HgSubtreeChanges::from_bonsai_subtree_changes(bonsai.subtree_changes(), sources)?;
+        let (hg_cs_id, _) = generate_hg_changeset(
+            ctx,
+            blobstore,
+            bonsai,
+            manifest_id,
+            parent_hg_cs_ids,
+            files,
+            subtree_changes,
+            &derivation_opts,
+        )
+        .await?;
+        source_mapping.insert(cs_id, MappedHgChangesetId::new(hg_cs_id));
+        results.insert(
+            cs_id,
+            HgStageOutput::Finalize {
+                manifest_id,
+                hg_cs_id,
+            },
+        );
+    }
+    Ok(results)
 }
 
-fn stage_output_to_thrift(
-    output: &HgStageOutput,
-) -> Result<mercurial_thrift::HgManifestStageOutput> {
-    if let Some(hg_cs_id) = output.hg_cs_id {
-        let manifest_id = output
-            .entry
-            .as_ref()
-            .and_then(untraced_manifest_id)
-            .ok_or_else(|| {
-                anyhow!(
-                    "terminal stage output with hg_cs_id {hg_cs_id} is missing a tree manifest entry",
-                )
-            })?;
-        return Ok(mercurial_thrift::HgManifestStageOutput::terminal(
-            mercurial_thrift::HgManifestStageTerminal {
-                hg_cs_id: hg_cs_id.into_nodehash().into_thrift(),
-                manifest_id: manifest_id.into_nodehash().into_thrift(),
-            },
-        ));
+async fn encode_stage_output(
+    ctx: &CoreContext,
+    derivation: &DerivationContext,
+    output: HgStageOutput,
+) -> Result<BlobstoreBytes> {
+    if let HgStageOutput::Manifest(ManifestStageOutput::Subentries(map)) = output {
+        store_sorted_subentries(ctx, derivation.blobstore(), map, |entry| {
+            encode_entry_output(HgStageOutput::Manifest(ManifestStageOutput::Entry(Some(
+                entry,
+            ))))
+        })
+        .await
+    } else {
+        encode_entry_output(output)
     }
+}
 
-    Ok(match &output.entry {
-        Some(Entry::Tree(t)) => {
+fn encode_entry_output(output: HgStageOutput) -> Result<BlobstoreBytes> {
+    let output = match output {
+        HgStageOutput::Manifest(ManifestStageOutput::Subentries(_)) => {
+            anyhow::bail!("expected Hg entry")
+        }
+        HgStageOutput::Manifest(ManifestStageOutput::Entry(Some(Entry::Tree(tree)))) => {
             mercurial_thrift::HgManifestStageOutput::tree(mercurial_thrift::HgManifestStageTree {
-                manifest_id: t.untraced().into_nodehash().into_thrift(),
+                manifest_id: tree.into_untraced().into_nodehash().into_thrift(),
             })
         }
-        Some(Entry::Leaf(l)) => {
-            let (file_type, filenode_id) = *l.untraced();
+        HgStageOutput::Manifest(ManifestStageOutput::Entry(Some(Entry::Leaf(leaf)))) => {
+            let (file_type, filenode_id) = leaf.into_untraced();
             mercurial_thrift::HgManifestStageOutput::leaf(mercurial_thrift::HgManifestStageLeaf {
                 file_type: file_type.into_thrift(),
                 filenode_id: filenode_id.into_nodehash().into_thrift(),
             })
         }
-        None => mercurial_thrift::HgManifestStageOutput::empty(
-            mercurial_thrift::HgManifestStageOutputEmpty {},
+        HgStageOutput::Manifest(ManifestStageOutput::Entry(None)) => {
+            mercurial_thrift::HgManifestStageOutput::empty(
+                mercurial_thrift::HgManifestStageOutputEmpty {},
+            )
+        }
+        HgStageOutput::Finalize {
+            manifest_id,
+            hg_cs_id,
+        } => mercurial_thrift::HgManifestStageOutput::terminal(
+            mercurial_thrift::HgManifestStageTerminal {
+                hg_cs_id: hg_cs_id.into_nodehash().into_thrift(),
+                manifest_id: manifest_id.into_nodehash().into_thrift(),
+            },
         ),
-    })
+    };
+    Ok(BlobstoreBytes::from_bytes(compact_protocol::serialize(
+        &output,
+    )))
 }
 
-fn stage_output_from_thrift(
-    cs_id: ChangesetId,
-    thrift_output: mercurial_thrift::HgManifestStageOutput,
+async fn decode_stage_output(
+    ctx: &CoreContext,
+    derivation: &DerivationContext,
+    stage: &StageId,
+    csid: ChangesetId,
+    bytes: BlobstoreBytes,
 ) -> Result<HgStageOutput> {
-    match thrift_output {
-        mercurial_thrift::HgManifestStageOutput::tree(t) => {
-            let manifest_id = HgManifestId::new(HgNodeHash::from_thrift(t.manifest_id)?);
-            Ok(HgStageOutput {
-                entry: Some(Entry::Tree(Traced::generate(manifest_id))),
-                hg_cs_id: None,
-            })
+    if matches!(stage, StageId::Subentries(..)) {
+        let map = decode_partition_reference(
+            ctx,
+            derivation.blobstore().clone(),
+            derivation.stage_inputs().clone(),
+            bytes,
+            move |bytes| {
+                decode_entry_output(csid, bytes)?
+                    .into_manifest()?
+                    .into_entry()?
+                    .ok_or_else(|| anyhow!("empty entry in Hg partition"))
+            },
+        )?;
+        return Ok(HgStageOutput::Manifest(ManifestStageOutput::Subentries(
+            map,
+        )));
+    }
+    decode_entry_output(csid, bytes)
+}
+
+fn decode_entry_output(csid: ChangesetId, bytes: BlobstoreBytes) -> Result<HgStageOutput> {
+    let output = match compact_protocol::deserialize(bytes.into_bytes())? {
+        mercurial_thrift::HgManifestStageOutput::tree(tree) => {
+            ManifestStageOutput::Entry(Some(Entry::Tree(Traced::generate(HgManifestId::new(
+                HgNodeHash::from_thrift(tree.manifest_id)?,
+            )))))
         }
-        mercurial_thrift::HgManifestStageOutput::leaf(l) => {
-            let file_type = FileType::from_thrift(l.file_type)?;
-            let filenode_id = HgFileNodeId::from_thrift(l.filenode_id)?;
-            Ok(HgStageOutput {
-                entry: Some(Entry::Leaf(Traced::generate((file_type, filenode_id)))),
-                hg_cs_id: None,
-            })
+        mercurial_thrift::HgManifestStageOutput::leaf(leaf) => {
+            ManifestStageOutput::Entry(Some(Entry::Leaf(Traced::generate((
+                FileType::from_thrift(leaf.file_type)?,
+                HgFileNodeId::from_thrift(leaf.filenode_id)?,
+            )))))
         }
-        mercurial_thrift::HgManifestStageOutput::empty(_) => Ok(HgStageOutput {
-            entry: None,
-            hg_cs_id: None,
-        }),
-        mercurial_thrift::HgManifestStageOutput::terminal(t) => {
-            let hg_cs_id = HgChangesetId::new(HgNodeHash::from_thrift(t.hg_cs_id)?);
-            let manifest_id = HgManifestId::new(HgNodeHash::from_thrift(t.manifest_id)?);
-            Ok(HgStageOutput {
-                entry: Some(Entry::Tree(Traced::generate(manifest_id))),
-                hg_cs_id: Some(hg_cs_id),
-            })
+        mercurial_thrift::HgManifestStageOutput::empty(_) => ManifestStageOutput::Entry(None),
+        mercurial_thrift::HgManifestStageOutput::terminal(terminal) => {
+            return Ok(HgStageOutput::Finalize {
+                hg_cs_id: HgChangesetId::new(HgNodeHash::from_thrift(terminal.hg_cs_id)?),
+                manifest_id: HgManifestId::new(HgNodeHash::from_thrift(terminal.manifest_id)?),
+            });
         }
-        mercurial_thrift::HgManifestStageOutput::UnknownField(x) => Err(anyhow!(
-            "unknown HgManifestStageOutput variant {x} for {cs_id}",
-        )),
+        mercurial_thrift::HgManifestStageOutput::UnknownField(field) => {
+            anyhow::bail!("unknown Hg stage output variant {field} for {csid}")
+        }
+    };
+    Ok(HgStageOutput::Manifest(output))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+
+    use derived_data_manager::ChildNameRange;
+    use derived_data_manager::StageInputs;
+    use derived_data_manager::manifest_partitions::PartitionOutput;
+    use mononoke_macros::mononoke;
+    use mononoke_types::SortedVectorTrieMap;
+    use mononoke_types::hash::Blake2;
+    use mononoke_types::sha1_hash::Sha1;
+    use repo_blobstore::RepoBlobstore;
+    use repo_blobstore::RepoBlobstoreRef;
+
+    use super::*;
+
+    #[facet::container]
+    struct TestRepo(RepoBlobstore);
+
+    #[mononoke::fbinit_test]
+    async fn unchanged_partition_reuses_snapshot_after_parent_retagging(
+        fb: fbinit::FacebookInit,
+    ) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+        let store = repo.repo_blobstore();
+        let tree = HgManifestId::new(HgNodeHash::new(Sha1::from_byte_array([1; 20])));
+        let map = SortedVectorTrieMap::new(
+            [(
+                b"alpha".as_slice().into(),
+                Entry::Tree(Traced::generate(tree)),
+            )]
+            .into_iter()
+            .collect(),
+        );
+        let parent: PartitionOutput<_> = map.into();
+        let reference = store_sorted_subentries(&ctx, store, parent.clone(), |entry| {
+            encode_entry_output(HgStageOutput::Manifest(ManifestStageOutput::Entry(Some(
+                entry,
+            ))))
+        })
+        .await?;
+        let decodes = Arc::new(AtomicUsize::new(0));
+        let mut parent = decode_partition_reference(
+            &ctx,
+            store.clone(),
+            Arc::new(StageInputs::default()),
+            reference.clone(),
+            {
+                let decodes = decodes.clone();
+                move |bytes| {
+                    decodes.fetch_add(1, Ordering::Relaxed);
+                    decode_entry_output(ChangesetId::new(Blake2::from_byte_array([2; 32])), bytes)?
+                        .into_manifest()?
+                        .into_entry()?
+                        .ok_or_else(|| anyhow!("empty test entry"))
+                }
+            },
+        )?;
+        let stage = StageId::Subentries(MPath::new("dir")?, ChildNameRange::new(0, b'm')?);
+        for _ in 0..3 {
+            let input = prepare_manifest_input(
+                &stage,
+                vec![ManifestStageOutput::Subentries(parent)],
+                HashMap::new(),
+            )?;
+            let output = input
+                .derive(
+                    ctx.clone(),
+                    store.clone(),
+                    vec![(NonRootMPath::new("elsewhere")?, Some(1u8))],
+                    |_| async {
+                        Err::<((), Traced<ParentIndex, HgManifestId>), _>(anyhow!(
+                            "unexpected tree derivation"
+                        ))
+                    },
+                    |_| async {
+                        Err::<((), Traced<ParentIndex, (FileType, HgFileNodeId)>), _>(anyhow!(
+                            "unexpected leaf derivation"
+                        ))
+                    },
+                    |children| create_sorted_subentries(&ctx, children),
+                )
+                .await?;
+            let ManifestStageOutput::Subentries(output) = output else {
+                anyhow::bail!("expected partition output");
+            };
+            parent = output;
+            assert_eq!(
+                store_sorted_subentries(&ctx, store, parent.clone(), |_| {
+                    panic!("unchanged Hg partition was encoded again")
+                })
+                .await?,
+                reference
+            );
+        }
+        assert_eq!(decodes.load(Ordering::Relaxed), 0);
+        let entry = parent.clone().load().await?.into_iter().next().unwrap().1;
+        assert_eq!(entry.into_tree().unwrap().id(), Some(&ParentIndex(0)));
+        assert_eq!(decodes.load(Ordering::Relaxed), 1);
+        Ok(())
     }
 }
