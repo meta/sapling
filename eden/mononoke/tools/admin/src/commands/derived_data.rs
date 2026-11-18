@@ -21,7 +21,6 @@ mod slice;
 mod verify_aug_direct;
 mod verify_aug_upload;
 mod verify_manifests;
-mod verify_stage_output;
 
 use std::collections::HashMap;
 
@@ -84,8 +83,6 @@ use self::verify_aug_upload::VerifyAugUploadArgs;
 use self::verify_aug_upload::verify_aug_upload;
 use self::verify_manifests::VerifyManifestsArgs;
 use self::verify_manifests::verify_manifests;
-use self::verify_stage_output::VerifyStageOutputArgs;
-use self::verify_stage_output::verify_stage_output;
 
 #[facet::container]
 struct Repo {
@@ -200,8 +197,6 @@ enum DerivedDataSubcommand {
     VerifyAugUpload(VerifyAugUploadArgs),
     /// Compare different manifest types to ensure they are equivalent
     VerifyManifests(VerifyManifestsArgs),
-    /// Verify stage derivation output matches normal derivation output
-    VerifyStageOutput(VerifyStageOutputArgs),
 }
 
 pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
@@ -332,7 +327,6 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
         | DerivedDataSubcommand::VerifyAugDirect(_)
         | DerivedDataSubcommand::VerifyAugUpload(_)
         | DerivedDataSubcommand::VerifyManifests(_)
-        | DerivedDataSubcommand::VerifyStageOutput(_)
         | DerivedDataSubcommand::ListManifest(_)
         | DerivedDataSubcommand::Slice(_) => {
             open_repo_for_derive(&app, &repo_args, false, args.bypass_redaction)
@@ -363,7 +357,6 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
             | DerivedDataSubcommand::Slice(_)
             | DerivedDataSubcommand::VerifyAugDirect(_)
             | DerivedDataSubcommand::VerifyAugUpload(_)
-            | DerivedDataSubcommand::VerifyStageOutput(_)
     );
 
     let manager = if is_read_only {
@@ -404,9 +397,6 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
         DerivedDataSubcommand::Slice(args) => slice(&ctx, &repo, &manager, args).await?,
         DerivedDataSubcommand::DeriveSlice(args) => {
             derive_slice(&ctx, &repo, &manager, args).await?
-        }
-        DerivedDataSubcommand::VerifyStageOutput(args) => {
-            verify_stage_output(&ctx, &repo, &manager, args).await?
         }
     }
 

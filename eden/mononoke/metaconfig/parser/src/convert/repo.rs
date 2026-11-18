@@ -856,6 +856,10 @@ impl Convert for RawDerivedDataConfig {
                 .pipeline_config_v2
                 .map(|raw| raw.convert())
                 .transpose()?,
+            shadow_pipeline_config: self
+                .shadow_pipeline_config
+                .map(|raw| raw.convert())
+                .transpose()?,
         })
     }
 }

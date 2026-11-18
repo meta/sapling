@@ -279,10 +279,6 @@ async fn test_hg_pipeline_terminal_fetch_does_not_read_manifests(fb: FacebookIni
     // Given: a commit whose Hg changeset is derived, and the pipeline's
     // finalize stage reading from the Bonsai-to-Hg mapping.
     set_read_from_augmented();
-    override_just_knobs(JustKnobsInMemory::new(HashMap::from([(
-        "scm/mononoke:derived_data_pipeline_terminal_stage_prod_mapping".to_string(),
-        KnobVal::Bool(true),
-    )])));
     let ctx = CoreContext::test_mock(fb);
     let (repo, labels) = repo_recording_labels(fb).await?;
     let (root, _) = root_and_child(&ctx, &repo).await?;

@@ -206,10 +206,6 @@ mod tests {
     use fixtures::create_bonsai_changeset_with_author;
     use fixtures::create_bonsai_changeset_with_files;
     use fixtures::store_files;
-    use futures::FutureExt;
-    use justknobs::test_helpers::JustKnobsInMemory;
-    use justknobs::test_helpers::KnobVal;
-    use justknobs::test_helpers::with_just_knobs_async;
     use manifest::ManifestOps;
     use maplit::btreemap;
     use mercurial_derivation::DeriveHgChangeset;
@@ -270,72 +266,71 @@ mod tests {
             .add_file("outside", "unrelated change")
             .commit()
             .await?;
-        let manager = repo.repo_derived_data().manager();
+        let manager = repo
+            .repo_derived_data()
+            .manager()
+            .with_pipeline_mode(derived_data_manager::PipelineMode::Shadow);
         let stage_path = MPath::new("s")?;
         let payload = DerivationStagePayload::Manifest(ManifestStagePayload {
             path: stage_path.clone(),
             deps: vec![].into(),
         });
-        let knobs = JustKnobsInMemory::new(HashMap::from([(
-            "scm/mononoke:derived_data_pipeline_terminal_stage_prod_mapping".to_string(),
-            KnobVal::Bool(false),
-        )]));
-
-        with_just_knobs_async(
-            knobs,
-            async {
-                manager
-                    .derive::<RootFastlog>(ctx, parent, None, DerivationPriority::LOW)
-                    .await?;
-                let root = manager
-                    .derive::<RootUnodeManifestId>(ctx, parent, None, DerivationPriority::LOW)
-                    .await?;
-                let entry = root
-                    .manifest_unode_id()
-                    .find_entry(ctx.clone(), repo.repo_blobstore.clone(), stage_path.clone())
-                    .await?
-                    .expect("the stage path should exist");
-                assert!(matches!(entry, Entry::Leaf(_)));
-                let before = fetch_list(ctx, &repo, entry).await;
-                assert_eq!(before, vec![(parent, vec![])]);
-
-                let result = manager
-                    .derive_stage_batch::<RootUnodeManifestId>(ctx, vec![child], &payload)
-                    .await?;
-                let inputs = derived_data_manager::StageInputs::new(&result.outputs.into_iter().collect::<Vec<_>>())?;
-                let manager = manager.with_stage_inputs(inputs);
-                let derivation_ctx = manager.derivation_context(None);
-                let outputs = RootUnodeManifestId::fetch_stage_outputs(
-                    ctx,
-                    &derivation_ctx,
-                    &StageId::Manifest(stage_path),
-                    vec![parent, child],
-                )
-                .await?.into_iter().map(|(csid, output)| Ok((csid, output.into_entry()?))).collect::<Result<HashMap<_, _>>>()?;
-                assert_eq!(outputs, HashMap::from([(child, Some(entry))]));
-
-                manager
-                    .derive_stage_batch::<RootFastlog>(ctx, vec![child], &payload)
-                    .await?;
-                let after = match fetch_fastlog_batch_by_unode_id_with_prefix(
-                    ctx,
-                    &repo.repo_blobstore,
-                    &entry,
-                    "pipeline.",
-                )
+        async {
+            manager
+                .derive::<RootFastlog>(ctx, parent, None, DerivationPriority::LOW)
+                .await?;
+            let root = manager
+                .derive::<RootUnodeManifestId>(ctx, parent, None, DerivationPriority::LOW)
+                .await?;
+            let entry = root
+                .manifest_unode_id()
+                .find_entry(ctx.clone(), repo.repo_blobstore.clone(), stage_path.clone())
                 .await?
-                {
-                    Some(batch) => fetch_flattened(&batch, ctx, &repo.repo_blobstore).await?,
-                    None => before.clone(),
-                };
-                assert_eq!(
-                    before, after,
-                    "commit {child} changed only outside; file history must still point to {parent}",
-                );
-                anyhow::Ok(())
-            }
-            .boxed(),
-        )
+                .expect("the stage path should exist");
+            assert!(matches!(entry, Entry::Leaf(_)));
+            let before = fetch_list(ctx, &repo, entry).await;
+            assert_eq!(before, vec![(parent, vec![])]);
+
+            let result = manager
+                .derive_stage_batch::<RootUnodeManifestId>(ctx, vec![child], &payload)
+                .await?;
+            let inputs = derived_data_manager::StageInputs::new(
+                &result.outputs.into_iter().collect::<Vec<_>>(),
+            )?;
+            let manager = manager.with_stage_inputs(inputs);
+            let derivation_ctx = manager.derivation_context(None);
+            let outputs = RootUnodeManifestId::fetch_stage_outputs(
+                ctx,
+                &derivation_ctx,
+                &StageId::Manifest(stage_path),
+                vec![parent, child],
+            )
+            .await?
+            .into_iter()
+            .map(|(csid, output)| Ok((csid, output.into_entry()?)))
+            .collect::<Result<HashMap<_, _>>>()?;
+            assert_eq!(outputs, HashMap::from([(child, Some(entry))]));
+
+            manager
+                .derive_stage_batch::<RootFastlog>(ctx, vec![child], &payload)
+                .await?;
+            let after = match fetch_fastlog_batch_by_unode_id_with_prefix(
+                ctx,
+                &repo.repo_blobstore,
+                &entry,
+                "pipeline.",
+            )
+            .await?
+            {
+                Some(batch) => fetch_flattened(&batch, ctx, &repo.repo_blobstore).await?,
+                None => before.clone(),
+            };
+            assert_eq!(
+                before, after,
+                "commit {child} changed only outside; file history must still point to {parent}",
+            );
+            anyhow::Ok(())
+        }
         .await
     }
 

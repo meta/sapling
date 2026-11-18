@@ -32,6 +32,16 @@ use crate::StageInputs;
 use crate::derivable::BonsaiDerivable;
 use crate::manager::derive::Rederivation;
 
+/// Publication policy for pipeline stage requests.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PipelineMode {
+    /// Publish canonical mappings and history.
+    #[default]
+    Production,
+    /// Return terminal outputs and keep history outside canonical keys.
+    Shadow,
+}
+
 /// Context for performing derivation.
 ///
 /// This struct is passed to derivation implementations.  They can use it
@@ -43,6 +53,7 @@ pub struct DerivationContext {
     pub(crate) bonsai_git_mapping: Option<Arc<dyn BonsaiGitMapping>>,
     pub(crate) filenodes: Option<Arc<dyn Filenodes>>,
     pub(crate) stage_inputs: Arc<StageInputs>,
+    pub(crate) pipeline_mode: PipelineMode,
     config_name: String,
     config: DerivedDataTypesConfig,
     pub(crate) rederivation: Option<Arc<dyn Rederivation>>,
@@ -87,6 +98,7 @@ impl DerivationContext {
             repo_id,
             repo_name,
             stage_inputs: Arc::default(),
+            pipeline_mode: PipelineMode::Production,
             config_name,
             config,
             rederivation,
@@ -97,6 +109,11 @@ impl DerivationContext {
             pipeline_config,
             commit_derived_data_mapping: Some(commit_derived_data_mapping),
         }
+    }
+
+    /// Whether pipeline derivation may publish the type's canonical data.
+    pub fn publish_pipeline_outputs(&self) -> bool {
+        self.pipeline_mode == PipelineMode::Production
     }
 
     pub(crate) fn with_replaced_rederivation(

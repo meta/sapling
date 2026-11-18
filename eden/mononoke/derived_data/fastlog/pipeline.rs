@@ -43,26 +43,12 @@ use crate::mapping::format_key;
 /// matching the canonical `derive_single` buffering.
 const FASTLOG_BUFFER_SIZE: usize = 100;
 
-fn use_normal_mapping(stage_path: &MPath) -> bool {
-    stage_path.is_root()
-        && justknobs::eval(
-            "scm/mononoke:derived_data_pipeline_terminal_stage_prod_mapping",
-            None,
-            Some("fastlog"),
-        )
+fn use_normal_mapping(derivation: &DerivationContext, stage_path: &MPath) -> bool {
+    stage_path.is_root() && derivation.publish_pipeline_outputs()
 }
 
-/// Prefix for pipeline fastlog batch blob writes/reads, gated on the same
-/// prod-mapping JustKnob as the terminal mapping. After the flip the pipeline
-/// writes the canonical content-addressed key (empty prefix, becoming source of
-/// truth); before it, batches are namespaced. Applies at every stage (fastlog
-/// batches are keyed by unode hash, so there is no cross-stage key collision).
-fn pipeline_fastlog_key_prefix() -> &'static str {
-    if justknobs::eval(
-        "scm/mononoke:derived_data_pipeline_terminal_stage_prod_mapping",
-        None,
-        Some("fastlog"),
-    ) {
+fn pipeline_fastlog_key_prefix(derivation: &DerivationContext) -> &'static str {
+    if derivation.publish_pipeline_outputs() {
         ""
     } else {
         "pipeline."
@@ -90,8 +76,7 @@ impl PipelineDerivable for RootFastlog {
             anyhow::bail!("{} has no finalize derive", Self::NAME);
         }
 
-        // Namespace pipeline fastlog batches until the prod-mapping flip.
-        let fastlog_key_prefix = pipeline_fastlog_key_prefix();
+        let fastlog_key_prefix = pipeline_fastlog_key_prefix(derivation);
 
         let unode_outputs = fetch_stage_unodes(ctx, derivation, &stage, &bonsais).await?;
 
@@ -182,7 +167,7 @@ impl PipelineDerivable for RootFastlog {
         outputs: HashMap<ChangesetId, Self::StageOutput>,
     ) -> Result<Option<StageOutputs>> {
         let use_normal_mapping =
-            matches!(stage, StageId::Manifest(path) if use_normal_mapping(path));
+            matches!(stage, StageId::Manifest(path) if use_normal_mapping(derivation, path));
         store_stage_outputs::<Self, _, _>(
             ctx,
             derivation,
@@ -201,7 +186,7 @@ impl PipelineDerivable for RootFastlog {
         cs_ids: Vec<ChangesetId>,
     ) -> Result<HashMap<ChangesetId, Self::StageOutput>> {
         let use_normal_mapping =
-            matches!(stage, StageId::Manifest(path) if use_normal_mapping(path));
+            matches!(stage, StageId::Manifest(path) if use_normal_mapping(derivation, path));
         fetch_stage_outputs::<Self, _, _>(
             ctx,
             derivation,
@@ -238,7 +223,7 @@ impl PipelineDerivable for RootFastlog {
 
         // Data equality: per changed unode, the pipeline-side batch blob must
         // match the canonical batch blob.
-        let pipeline_prefix = pipeline_fastlog_key_prefix();
+        let pipeline_prefix = "pipeline.";
         let blobstore = derivation.blobstore();
         for (_path, entry) in changed {
             let (pipeline_batch, canonical_batch) = futures::future::try_join(

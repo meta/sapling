@@ -35,7 +35,6 @@ impl ManifestDerivable for RootSkeletonManifestId {
     type TrieMapType = SortedVectorTrieMap<Entry<Self::TreeId, Self::Leaf>>;
 
     const PIPELINE_VARIANT: PipelineDerivableVariant = PipelineDerivableVariant::SkeletonManifests;
-    const MAPPING_KNOB_SWITCH: &'static str = "skeleton_manifest";
 
     async fn load_root_manifest(
         &self,

@@ -504,6 +504,9 @@ pub struct DerivedDataConfig {
 
     /// Repo-level pipeline configuration.
     pub pipeline_config: Option<DerivationPipelineConfig>,
+
+    /// Pipeline layout for independent shadow derivation and verification.
+    pub shadow_pipeline_config: Option<DerivationPipelineConfig>,
 }
 
 impl DerivedDataConfig {

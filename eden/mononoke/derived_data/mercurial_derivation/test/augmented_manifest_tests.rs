@@ -6774,10 +6774,7 @@ impl Blobstore for ConcurrentAclReads {
         ctx: &'a CoreContext,
         key: &'a str,
     ) -> Result<Option<BlobstoreGetData>> {
-        if self.gated.load(Ordering::Relaxed)
-            && (key.contains(".derived_root_aclmf.")
-                || key.contains(".derived_acl_manifest_stage."))
-        {
+        if self.gated.load(Ordering::Relaxed) && key.contains(".derived_root_aclmf.") {
             self.reads.fetch_add(1, Ordering::Relaxed);
             timeout(Duration::from_secs(5), self.readers.wait())
                 .await
@@ -6813,55 +6810,55 @@ impl Blobstore for ConcurrentAclReads {
 #[mononoke::fbinit_test]
 async fn augmented_batch_prefetches_acl_roots_concurrently(fb: FacebookInit) -> Result<()> {
     for canonical in [false, true] {
-        with_just_knobs_async(
-            JustKnobsInMemory::new(HashMap::from([(
-                "scm/mononoke:derived_data_pipeline_terminal_stage_prod_mapping".to_owned(),
-                KnobVal::Bool(canonical),
-            )])),
-            async {
-                let ctx = CoreContext::test_mock(fb);
-                let store = Arc::new(ConcurrentAclReads {
-                    inner: Memblob::default(),
-                    gated: AtomicBool::new(false),
-                    readers: Barrier::new(2),
-                    reads: AtomicUsize::new(0),
+        async {
+            let ctx = CoreContext::test_mock(fb);
+            let store = Arc::new(ConcurrentAclReads {
+                inner: Memblob::default(),
+                gated: AtomicBool::new(false),
+                readers: Barrier::new(2),
+                reads: AtomicUsize::new(0),
+            });
+            let repo: Repo = TestRepoFactory::new(fb)?
+                .with_blobstore(store.clone())
+                .build()
+                .await?;
+            let first = CreateCommitContext::new_root(&ctx, &repo)
+                .add_file("file", "first")
+                .commit()
+                .await?;
+            let second = CreateCommitContext::new(&ctx, &repo, vec![first])
+                .add_file("file", "second")
+                .commit()
+                .await?;
+            let csids = vec![first, second];
+            let payload = DerivationStagePayload::Manifest(ManifestStagePayload {
+                path: MPath::ROOT,
+                deps: vec![].into(),
+            });
+            let manager = repo
+                .repo_derived_data()
+                .manager()
+                .with_pipeline_mode(if canonical {
+                    derived_data_manager::PipelineMode::Production
+                } else {
+                    derived_data_manager::PipelineMode::Shadow
                 });
-                let repo: Repo = TestRepoFactory::new(fb)?
-                    .with_blobstore(store.clone())
-                    .build()
-                    .await?;
-                let first = CreateCommitContext::new_root(&ctx, &repo)
-                    .add_file("file", "first")
-                    .commit()
-                    .await?;
-                let second = CreateCommitContext::new(&ctx, &repo, vec![first])
-                    .add_file("file", "second")
-                    .commit()
-                    .await?;
-                let csids = vec![first, second];
-                let payload = DerivationStagePayload::Manifest(ManifestStagePayload {
-                    path: MPath::ROOT,
-                    deps: vec![].into(),
-                });
-                let manager = repo.repo_derived_data().manager();
-                let acl = manager
-                    .derive_stage_batch::<RootAclManifestId>(&ctx, csids.clone(), &payload)
-                    .await?;
-                let manager = manager.with_stage_inputs(derived_data_manager::StageInputs::new(
-                    &acl.outputs.into_iter().collect::<Vec<_>>(),
-                )?);
-                store.gated.store(true, Ordering::Relaxed);
-                manager
-                    .derive_stage_batch::<RootHgAugmentedManifestId>(&ctx, csids, &payload)
-                    .await?;
-                assert_eq!(
-                    store.reads.load(Ordering::Relaxed),
-                    if canonical { 2 } else { 0 }
-                );
-                anyhow::Ok(())
-            }
-            .boxed(),
-        )
+            let acl = manager
+                .derive_stage_batch::<RootAclManifestId>(&ctx, csids.clone(), &payload)
+                .await?;
+            let manager = manager.with_stage_inputs(derived_data_manager::StageInputs::new(
+                &acl.outputs.into_iter().collect::<Vec<_>>(),
+            )?);
+            store.gated.store(true, Ordering::Relaxed);
+            manager
+                .derive_stage_batch::<RootHgAugmentedManifestId>(&ctx, csids, &payload)
+                .await?;
+            assert_eq!(
+                store.reads.load(Ordering::Relaxed),
+                if canonical { 2 } else { 0 }
+            );
+            anyhow::Ok(())
+        }
         .await?;
     }
     Ok(())

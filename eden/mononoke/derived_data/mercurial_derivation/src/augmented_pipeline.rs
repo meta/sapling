@@ -323,10 +323,6 @@ mod tests {
     use derived_data_manager::stage_outputs::fetch_stage_outputs;
     use derived_data_manager::stage_outputs::store_stage_outputs;
     use fbinit::FacebookInit;
-    use futures::FutureExt;
-    use justknobs::test_helpers::JustKnobsInMemory;
-    use justknobs::test_helpers::KnobVal;
-    use justknobs::test_helpers::with_just_knobs_async;
     use mercurial_types::HgNodeHash;
     use mononoke_macros::mononoke;
     use mononoke_types::ChangesetId;
@@ -459,110 +455,101 @@ mod tests {
         let ctx = CoreContext::test_mock(fb);
         let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
 
-        // Given: a terminal output and the terminal switch on.
+        // Given: a terminal output in production mode.
         let cs_id = ChangesetId::new(Blake2::from_byte_array([5; 32]));
         let expected =
             HgAugmentedManifestId::new(HgNodeHash::new(NodeSha1::from_byte_array([5; 20])));
 
-        with_just_knobs_async(
-            JustKnobsInMemory::new(HashMap::from([(
-                "scm/mononoke:derived_data_pipeline_terminal_stage_prod_mapping".to_string(),
-                KnobVal::Bool(true),
-            )])),
-            async move {
-                let derivation = repo.repo_derived_data().manager().derivation_context(None);
-                let key_prefix = derivation.mapping_key_prefix::<RootHgAugmentedManifestId>();
+        async move {
+            let derivation = repo.repo_derived_data().manager().derivation_context(None);
+            let key_prefix = derivation.mapping_key_prefix::<RootHgAugmentedManifestId>();
 
-                // When: the pipeline stores the terminal root.
-                RootHgAugmentedManifestId::store_stage_outputs(
-                    &ctx,
-                    &derivation,
-                    &StageId::Manifest(MPath::ROOT),
-                    HashMap::from([(cs_id, output(directory_output(5)))]),
-                )
-                .await?;
+            // When: the pipeline stores the terminal root.
+            RootHgAugmentedManifestId::store_stage_outputs(
+                &ctx,
+                &derivation,
+                &StageId::Manifest(MPath::ROOT),
+                HashMap::from([(cs_id, output(directory_output(5)))]),
+            )
+            .await?;
 
-                // Then: only the shared root mapping is recorded.
-                assert_eq!(
-                    derivation
-                        .blobstore()
-                        .get(&ctx, &stage_blobstore_key(&MPath::ROOT, key_prefix, cs_id))
-                        .await?,
-                    None,
-                );
-                assert_eq!(
-                    RootHgAugmentedManifestId::fetch(&ctx, &derivation, cs_id)
-                        .await?
-                        .map(|root| root.hg_augmented_manifest_id()),
-                    Some(expected),
-                );
+            // Then: only the shared root mapping is recorded.
+            assert_eq!(
+                derivation
+                    .blobstore()
+                    .get(&ctx, &stage_blobstore_key(&MPath::ROOT, key_prefix, cs_id))
+                    .await?,
+                None,
+            );
+            assert_eq!(
+                RootHgAugmentedManifestId::fetch(&ctx, &derivation, cs_id)
+                    .await?
+                    .map(|root| root.hg_augmented_manifest_id()),
+                Some(expected),
+            );
 
-                Ok(())
-            }
-            .boxed(),
-        )
+            Ok(())
+        }
         .await
     }
 
     #[mononoke::fbinit_test]
-    async fn test_terminal_switch_off_uses_only_supplied_outputs(fb: FacebookInit) -> Result<()> {
+    async fn test_shadow_terminal_uses_only_supplied_outputs(fb: FacebookInit) -> Result<()> {
         let ctx = CoreContext::test_mock(fb);
         let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
         let output_cs_id = ChangesetId::new(Blake2::from_byte_array([6; 32]));
         let shared_cs_id = ChangesetId::new(Blake2::from_byte_array([7; 32]));
         let expected = directory_output(6);
 
-        with_just_knobs_async(
-            JustKnobsInMemory::new(HashMap::from([(
-                "scm/mononoke:derived_data_pipeline_terminal_stage_prod_mapping".to_string(),
-                KnobVal::Bool(false),
-            )])),
-            async move {
-                let derivation = repo.repo_derived_data().manager().derivation_context(None);
+        async move {
+            let derivation = repo
+                .repo_derived_data()
+                .manager()
+                .with_pipeline_mode(derived_data_manager::PipelineMode::Shadow)
+                .derivation_context(None);
 
-                // One explicit output and one changeset with only a canonical mapping.
-                let returned = RootHgAugmentedManifestId::store_stage_outputs(
-                    &ctx,
-                    &derivation,
-                    &StageId::Manifest(MPath::ROOT),
-                    HashMap::from([(output_cs_id, output(expected.clone()))]),
-                )
-                .await?;
-                RootHgAugmentedManifestId::new(HgAugmentedManifestId::new(HgNodeHash::new(
-                    NodeSha1::from_byte_array([7; 20]),
-                )))
-                .store_mapping(&ctx, &derivation, shared_cs_id)
-                .await?;
+            // One explicit output and one changeset with only a canonical mapping.
+            let returned = RootHgAugmentedManifestId::store_stage_outputs(
+                &ctx,
+                &derivation,
+                &StageId::Manifest(MPath::ROOT),
+                HashMap::from([(output_cs_id, output(expected.clone()))]),
+            )
+            .await?;
+            RootHgAugmentedManifestId::new(HgAugmentedManifestId::new(HgNodeHash::new(
+                NodeSha1::from_byte_array([7; 20]),
+            )))
+            .store_mapping(&ctx, &derivation, shared_cs_id)
+            .await?;
 
-                let inputs = StageInputs::new(&returned.into_iter().collect::<Vec<_>>())?;
-                let derivation = repo
-                    .repo_derived_data()
-                    .manager()
-                    .with_stage_inputs(inputs)
-                    .derivation_context(None);
+            let inputs = StageInputs::new(&returned.into_iter().collect::<Vec<_>>())?;
+            let derivation = repo
+                .repo_derived_data()
+                .manager()
+                .with_pipeline_mode(derived_data_manager::PipelineMode::Shadow)
+                .with_stage_inputs(inputs)
+                .derivation_context(None);
 
-                // When: the pipeline checks terminal completion with the switch off.
-                let outputs = RootHgAugmentedManifestId::fetch_stage_outputs(
-                    &ctx,
-                    &derivation,
-                    &StageId::Manifest(MPath::ROOT),
-                    vec![output_cs_id, shared_cs_id],
-                )
-                .await?;
+            // When: the pipeline checks terminal completion in shadow mode.
+            let outputs = RootHgAugmentedManifestId::fetch_stage_outputs(
+                &ctx,
+                &derivation,
+                &StageId::Manifest(MPath::ROOT),
+                vec![output_cs_id, shared_cs_id],
+            )
+            .await?;
 
-                // Only the supplied output is completion; no canonical mapping was written.
-                use derived_data_manager::stage_outputs::StageOutput;
-                assert_eq!(outputs.len(), 1);
-                assert!(outputs[&output_cs_id].equivalent(&output(expected)).await?);
-                assert_eq!(
-                    RootHgAugmentedManifestId::fetch(&ctx, &derivation, output_cs_id).await?,
-                    None,
-                );
+            // Only the supplied output is completion; no canonical mapping was written.
+            use derived_data_manager::stage_outputs::StageOutput;
+            assert_eq!(outputs.len(), 1);
+            assert!(outputs[&output_cs_id].equivalent(&output(expected)).await?);
+            assert_eq!(
+                RootHgAugmentedManifestId::fetch(&ctx, &derivation, output_cs_id).await?,
+                None,
+            );
 
-                Ok(())
-            }
-            .boxed(),
-        )
+            Ok(())
+        }
         .await
     }
 }

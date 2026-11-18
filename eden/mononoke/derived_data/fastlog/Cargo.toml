@@ -21,7 +21,6 @@ derived_data_manager = { version = "0.1.0", path = "../manager" }
 derived_data_service_if = { version = "0.1.0", path = "../remote/if" }
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
 history_manifest = { version = "0.1.0", path = "../history_manifest" }
-justknobs_ext = { version = "0.1.0", path = "../../common/rust/justknobs_ext" }
 manifest = { version = "0.1.0", path = "../../manifest" }
 maplit = "1.0"
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }

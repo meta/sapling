@@ -29,7 +29,6 @@ derived_data_service_if = { version = "0.1.0", path = "../remote/if" }
 fbthrift = { version = "0.0.1", git = "https://github.com/facebook/fbthrift.git", branch = "main" }
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
 itertools = "0.15.0"
-justknobs_ext = { version = "0.1.0", path = "../../common/rust/justknobs_ext" }
 manifest = { version = "0.1.0", path = "../../manifest" }
 maplit = "1.0"
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }

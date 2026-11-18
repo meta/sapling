@@ -76,7 +76,10 @@ async fn verify_partitions<F: PipelineTestFixture + Send>(
     config.validate()?;
     let ctx = &CoreContext::test_mock(fb);
     let (repo, labels, _) = F::get_repo_and_dag::<TestRepo>(fb).await;
-    let manager = repo.repo_derived_data().manager();
+    let manager = &repo
+        .repo_derived_data()
+        .manager()
+        .with_pipeline_mode(derived_data_manager::PipelineMode::Shadow);
     let head = repo
         .bookmarks()
         .get(
@@ -114,57 +117,21 @@ async fn verify_partitions<F: PipelineTestFixture + Send>(
             .all(|batch| batch.commits.len() as u64 <= config.batch_size.get())
     );
 
-    with_just_knobs_async(
-        JustKnobsInMemory::new(HashMap::from([(
-            "scm/mononoke:derived_data_pipeline_terminal_stage_prod_mapping".to_string(),
-            KnobVal::Bool(false),
-        )])),
-        async {
-            let mut references = Vec::new();
-            for batches in plan.batches.chunk_by(|_, next| next.chokepoint.is_none()) {
-                for &derived_type in &plan.sorted_types {
-                    let variant = derived_type.into_pipeline_derivable_variant()?;
-                    // Partitions advance to the next chokepoint before assembly catches up.
-                    for (path, stage) in &config.stages {
-                        let payload = ManifestStagePayload::from_config(path.clone(), stage);
-                        for range in payload.partitions().into_iter().rev() {
-                            let payload = DerivationStagePayload::Subentries {
-                                path: path.clone(),
-                                range,
-                            };
-                            let payload = DerivationStagePayload::from_thrift(payload.to_thrift())?;
-                            for batch in batches {
-                                derive_with_references(
-                                    manager,
-                                    ctx,
-                                    &mut references,
-                                    batch.commits.clone(),
-                                    &payload,
-                                    variant,
-                                )
-                                .await?;
-                            }
-                        }
-                    }
-                    assert!(
-                        !BulkDerivation::is_stage_derived(
-                            manager,
-                            ctx,
-                            head,
-                            derived_type,
-                            &StageId::Manifest(MPath::ROOT)
-                        )
-                        .await?
-                    );
-                    for batch in batches {
-                        for path in &plan.sorted_stages {
-                            let payload = DerivationStagePayload::Manifest(
-                                ManifestStagePayload::from_config(
-                                    path.clone(),
-                                    &config.stages[path],
-                                ),
-                            );
-                            let payload = DerivationStagePayload::from_thrift(payload.to_thrift())?;
+    async {
+        let mut references = Vec::new();
+        for batches in plan.batches.chunk_by(|_, next| next.chokepoint.is_none()) {
+            for &derived_type in &plan.sorted_types {
+                let variant = derived_type.into_pipeline_derivable_variant()?;
+                // Partitions advance to the next chokepoint before assembly catches up.
+                for (path, stage) in &config.stages {
+                    let payload = ManifestStagePayload::from_config(path.clone(), stage);
+                    for range in payload.partitions().into_iter().rev() {
+                        let payload = DerivationStagePayload::Subentries {
+                            path: path.clone(),
+                            range,
+                        };
+                        let payload = DerivationStagePayload::from_thrift(payload.to_thrift())?;
+                        for batch in batches {
                             derive_with_references(
                                 manager,
                                 ctx,
@@ -175,35 +142,61 @@ async fn verify_partitions<F: PipelineTestFixture + Send>(
                             )
                             .await?;
                         }
-                        if bulk_derivation::pipeline_has_finalize(variant) {
-                            derive_with_references(
-                                manager,
-                                ctx,
-                                &mut references,
-                                batch.commits.clone(),
-                                &DerivationStagePayload::Finalize,
-                                variant,
-                            )
-                            .await?;
-                        }
+                    }
+                }
+                assert!(
+                    !BulkDerivation::is_stage_derived(
+                        manager,
+                        ctx,
+                        head,
+                        derived_type,
+                        &StageId::Manifest(MPath::ROOT)
+                    )
+                    .await?
+                );
+                for batch in batches {
+                    for path in &plan.sorted_stages {
+                        let payload = DerivationStagePayload::Manifest(
+                            ManifestStagePayload::from_config(path.clone(), &config.stages[path]),
+                        );
+                        let payload = DerivationStagePayload::from_thrift(payload.to_thrift())?;
+                        derive_with_references(
+                            manager,
+                            ctx,
+                            &mut references,
+                            batch.commits.clone(),
+                            &payload,
+                            variant,
+                        )
+                        .await?;
+                    }
+                    if bulk_derivation::pipeline_has_finalize(variant) {
+                        derive_with_references(
+                            manager,
+                            ctx,
+                            &mut references,
+                            batch.commits.clone(),
+                            &DerivationStagePayload::Finalize,
+                            variant,
+                        )
+                        .await?;
                     }
                 }
             }
-            manager
-                .derive_bulk_locally(ctx, &commits, None, &PIPELINE_TYPES, None, None)
-                .await?;
-            let inputs = StageInputs::new(&references)?;
-            verify_pipeline_output::<F>(
-                &manager.with_stage_inputs(inputs),
-                ctx,
-                &commits,
-                &config,
-                &plan,
-            )
-            .await
         }
-        .boxed(),
-    )
+        manager
+            .derive_bulk_locally(ctx, &commits, None, &PIPELINE_TYPES, None, None)
+            .await?;
+        let inputs = StageInputs::new(&references)?;
+        verify_pipeline_output::<F>(
+            &manager.with_stage_inputs(inputs),
+            ctx,
+            &commits,
+            &config,
+            &plan,
+        )
+        .await
+    }
     .await
 }
 
@@ -315,26 +308,22 @@ async fn partitions_mixed_canonical_and_pipeline_parents(fb: FacebookInit) -> Re
 
 #[mononoke::fbinit_test]
 async fn partitions_cover_byte_boundaries(fb: FacebookInit) -> Result<()> {
-    with_just_knobs_async(
-        JustKnobsInMemory::new(HashMap::from([(
-            "scm/mononoke:derived_data_pipeline_terminal_stage_prod_mapping".to_string(),
-            KnobVal::Bool(false),
-        )])),
-        async {
-            for cuts in [vec![1, 255], b"dgjnqtw".to_vec(), (1..=255).collect()] {
-                verify_byte_boundaries(fb, cuts).await?;
-            }
-            Ok(())
+    async {
+        for cuts in [vec![1, 255], b"dgjnqtw".to_vec(), (1..=255).collect()] {
+            verify_byte_boundaries(fb, cuts).await?;
         }
-        .boxed(),
-    )
+        Ok(())
+    }
     .await
 }
 
 async fn verify_byte_boundaries(fb: FacebookInit, cuts: Vec<u8>) -> Result<()> {
     let ctx = &CoreContext::test_mock(fb);
     let (repo, _, _) = AugmentedManifestV2NoHgMapping::get_repo_and_dag::<TestRepo>(fb).await;
-    let manager = repo.repo_derived_data().manager();
+    let manager = &repo
+        .repo_derived_data()
+        .manager()
+        .with_pipeline_mode(derived_data_manager::PipelineMode::Shadow);
     // Mercurial rejects newline and 0x01 in paths.
     let paths = (1..=255)
         .filter(|byte| !b"/\n\x01".contains(byte))
@@ -399,7 +388,10 @@ async fn verify_byte_boundaries(fb: FacebookInit, cuts: Vec<u8>) -> Result<()> {
 async fn partitions_require_all_dependencies_and_allow_retry(fb: FacebookInit) -> Result<()> {
     let ctx = &CoreContext::test_mock(fb);
     let (repo, _, _) = AugmentedManifestV2NoHgMapping::get_repo_and_dag::<TestRepo>(fb).await;
-    let manager = repo.repo_derived_data().manager();
+    let manager = &repo
+        .repo_derived_data()
+        .manager()
+        .with_pipeline_mode(derived_data_manager::PipelineMode::Shadow);
     let csid = CreateCommitContext::new_root(ctx, &repo)
         .add_file("a", "left")
         .add_file("z", "right")
@@ -499,7 +491,10 @@ async fn local_driver_releases_outputs_after_their_last_consumer(fb: FacebookIni
         .add_file("data/d", "d")
         .commit()
         .await?;
-    let manager = repo.repo_derived_data().manager();
+    let manager = &repo
+        .repo_derived_data()
+        .manager()
+        .with_pipeline_mode(derived_data_manager::PipelineMode::Shadow);
     let mut config = pipeline_config_from_stages(vec![("", vec!["data"]), ("data", vec![])])?;
     config.types = BTreeSet::from([DerivableType::Fsnodes]);
     config.batch_size = NonZeroU64::new(1).unwrap();
@@ -520,43 +515,36 @@ async fn local_driver_releases_outputs_after_their_last_consumer(fb: FacebookIni
         vec![a, b, c, d],
     )
     .await?;
-    with_just_knobs_async(
-        JustKnobsInMemory::new(HashMap::from([(
-            "scm/mononoke:derived_data_pipeline_terminal_stage_prod_mapping".to_owned(),
-            KnobVal::Bool(false),
-        )])),
-        async {
-            let mut observed: Vec<std::sync::Weak<_>> = Vec::new();
-            derivation_pipeline_driver::run_pipeline_batches(
-                manager,
-                &ctx,
-                &config,
-                &order.sorted_stages,
-                &order.sorted_types,
-                &batches,
-                |outputs| {
-                    if !observed.is_empty() {
-                        assert!(
-                            observed[0].upgrade().is_some(),
-                            "old merge parent was released too early"
-                        );
-                    }
-                    if observed.len() == 3 {
-                        assert!(
-                            observed[1].upgrade().is_none(),
-                            "unneeded batch was retained"
-                        );
-                    }
-                    observed.push(std::sync::Arc::downgrade(&outputs[0].outputs));
-                },
-            )
-            .await?;
-            assert_eq!(observed.len(), 4);
-            assert!(observed.iter().all(|output| output.upgrade().is_none()));
-            anyhow::Ok(())
-        }
-        .boxed(),
-    )
+    async {
+        let mut observed: Vec<std::sync::Weak<_>> = Vec::new();
+        derivation_pipeline_driver::run_pipeline_batches(
+            manager,
+            &ctx,
+            &config,
+            &order.sorted_stages,
+            &order.sorted_types,
+            &batches,
+            |outputs| {
+                if !observed.is_empty() {
+                    assert!(
+                        observed[0].upgrade().is_some(),
+                        "old merge parent was released too early"
+                    );
+                }
+                if observed.len() == 3 {
+                    assert!(
+                        observed[1].upgrade().is_none(),
+                        "unneeded batch was retained"
+                    );
+                }
+                observed.push(std::sync::Arc::downgrade(&outputs[0].outputs));
+            },
+        )
+        .await?;
+        assert_eq!(observed.len(), 4);
+        assert!(observed.iter().all(|output| output.upgrade().is_none()));
+        anyhow::Ok(())
+    }
     .await
 }
 
@@ -733,104 +721,99 @@ async fn merged_deletion_history_partition_outputs(fb: FacebookInit) -> Result<(
 
 #[mononoke::fbinit_test]
 async fn copies_within_a_partition_advance_before_assembly(fb: FacebookInit) -> Result<()> {
-    with_just_knobs_async(
-        JustKnobsInMemory::new(HashMap::from([(
-            "scm/mononoke:derived_data_pipeline_terminal_stage_prod_mapping".to_string(),
-            KnobVal::Bool(false),
-        )])),
-        async {
-            for canonical_parent in [false, true] {
-                let ctx = &CoreContext::test_mock(fb);
-                let (repo, labels, _) = PartitionFileCopies::get_repo_and_dag::<TestRepo>(fb).await;
-                let manager = repo.repo_derived_data().manager();
-                let mut config = partitioned_config::<PartitionFileCopies>()?;
-                config.batch_size = NonZeroU64::new(1).unwrap();
-                let head = labels["B"];
-                let boundary = if canonical_parent {
-                    vec![labels["A"]]
-                } else {
-                    vec![]
-                };
-                manager
-                    .derive_bulk_locally(ctx, &boundary, None, &PIPELINE_TYPES, None, None)
-                    .await?;
-                let plan = plan_pipeline(
-                    ctx,
-                    &repo,
-                    manager,
-                    &config,
-                    &PIPELINE_TYPES,
-                    head,
-                    boundary,
-                )
+    async {
+        for canonical_parent in [false, true] {
+            let ctx = &CoreContext::test_mock(fb);
+            let (repo, labels, _) = PartitionFileCopies::get_repo_and_dag::<TestRepo>(fb).await;
+            let manager = &repo
+                .repo_derived_data()
+                .manager()
+                .with_pipeline_mode(derived_data_manager::PipelineMode::Shadow);
+            let mut config = partitioned_config::<PartitionFileCopies>()?;
+            config.batch_size = NonZeroU64::new(1).unwrap();
+            let head = labels["B"];
+            let boundary = if canonical_parent {
+                vec![labels["A"]]
+            } else {
+                vec![]
+            };
+            manager
+                .derive_bulk_locally(ctx, &boundary, None, &PIPELINE_TYPES, None, None)
                 .await?;
-                let commits = plan
-                    .batches
-                    .iter()
-                    .flat_map(|batch| batch.commits.clone())
-                    .collect::<Vec<_>>();
-                let path = MPath::new("data")?;
-                let manifest =
-                    ManifestStagePayload::from_config(path.clone(), &config.stages[&path]);
-                let mut references = Vec::new();
-                for derived_type in &plan.sorted_types {
-                    let variant = derived_type.into_pipeline_derivable_variant()?;
-                    for range in manifest.partitions() {
-                        let payload = DerivationStagePayload::Subentries {
-                            path: path.clone(),
-                            range,
-                        };
-                        for &csid in &commits {
-                            derive_with_references(
-                                manager,
-                                ctx,
-                                &mut references,
-                                vec![csid],
-                                &payload,
-                                variant,
-                            )
-                            .await?;
-                        }
-                    }
-                    assert!(
-                        !BulkDerivation::is_stage_derived(
+            let plan = plan_pipeline(
+                ctx,
+                &repo,
+                manager,
+                &config,
+                &PIPELINE_TYPES,
+                head,
+                boundary,
+            )
+            .await?;
+            let commits = plan
+                .batches
+                .iter()
+                .flat_map(|batch| batch.commits.clone())
+                .collect::<Vec<_>>();
+            let path = MPath::new("data")?;
+            let manifest = ManifestStagePayload::from_config(path.clone(), &config.stages[&path]);
+            let mut references = Vec::new();
+            for derived_type in &plan.sorted_types {
+                let variant = derived_type.into_pipeline_derivable_variant()?;
+                for range in manifest.partitions() {
+                    let payload = DerivationStagePayload::Subentries {
+                        path: path.clone(),
+                        range,
+                    };
+                    for &csid in &commits {
+                        derive_with_references(
                             manager,
                             ctx,
-                            head,
-                            *derived_type,
-                            &StageId::Manifest(MPath::ROOT),
+                            &mut references,
+                            vec![csid],
+                            &payload,
+                            variant,
                         )
-                        .await?
-                    );
+                        .await?;
+                    }
                 }
-                let mut references = Vec::new();
-                derivation_pipeline_driver::run_pipeline_batches(
-                    manager,
-                    ctx,
-                    &config,
-                    &plan.sorted_stages,
-                    &plan.sorted_types,
-                    &plan.batches,
-                    |outputs| references.extend_from_slice(outputs),
-                )
-                .await?;
-                manager
-                    .derive_bulk_locally(ctx, &commits, None, &PIPELINE_TYPES, None, None)
-                    .await?;
-                let inputs = StageInputs::new(&references)?;
-                verify_pipeline_output::<PartitionFileCopies>(
-                    &manager.with_stage_inputs(inputs),
-                    ctx,
-                    &commits,
-                    &config,
-                    &plan,
-                )
-                .await?;
+                assert!(
+                    !BulkDerivation::is_stage_derived(
+                        manager,
+                        ctx,
+                        head,
+                        *derived_type,
+                        &StageId::Manifest(MPath::ROOT),
+                    )
+                    .await?
+                );
             }
-            Ok(())
+            let mut references = Vec::new();
+            derivation_pipeline_driver::run_pipeline_batches(
+                manager,
+                ctx,
+                &config,
+                &plan.sorted_stages,
+                &plan.sorted_types,
+                &plan.batches,
+                |outputs| references.extend_from_slice(outputs),
+            )
+            .await?;
+            manager
+                .derive_bulk_locally(ctx, &commits, None, &PIPELINE_TYPES, None, None)
+                .await?;
+            let inputs = StageInputs::new(&references)?;
+            verify_pipeline_output::<PartitionFileCopies>(
+                &manager.with_stage_inputs(inputs),
+                ctx,
+                &commits,
+                &config,
+                &plan,
+            )
+            .await?;
         }
-        .boxed(),
-    )
+        Ok(())
+    }
     .await
 }
 
@@ -838,7 +821,14 @@ async fn verify_batch_outputs<F: PipelineTestFixture + Send>(fb: FacebookInit) -
     for release_parents in [false, true] {
         let ctx = &CoreContext::test_mock(fb);
         let (repo, _, _) = F::get_repo_and_dag::<TestRepo>(fb).await;
-        let manager = repo.repo_derived_data().manager();
+        let manager = &repo
+            .repo_derived_data()
+            .manager()
+            .with_pipeline_mode(if release_parents {
+                derived_data_manager::PipelineMode::Production
+            } else {
+                derived_data_manager::PipelineMode::Shadow
+            });
         let mut config = partitioned_config::<F>()?;
         config.batch_size = NonZeroU64::new(1).unwrap();
         let head = repo
@@ -858,16 +848,10 @@ async fn verify_batch_outputs<F: PipelineTestFixture + Send>(fb: FacebookInit) -
             .flat_map(|batch| batch.commits.clone())
             .collect();
         with_just_knobs_async(
-            JustKnobsInMemory::new(HashMap::from([
-                (
-                    "scm/mononoke:enable_subtree_changes".to_owned(),
-                    KnobVal::Bool(true),
-                ),
-                (
-                    "scm/mononoke:derived_data_pipeline_terminal_stage_prod_mapping".to_owned(),
-                    KnobVal::Bool(release_parents),
-                ),
-            ])),
+            JustKnobsInMemory::new(HashMap::from([(
+                "scm/mononoke:enable_subtree_changes".to_owned(),
+                KnobVal::Bool(true),
+            )])),
             async {
                 let mut references = Vec::new();
                 let mut verification_refs = Vec::new();
@@ -928,6 +912,10 @@ async fn verify_batch_outputs<F: PipelineTestFixture + Send>(fb: FacebookInit) -
                     if release_parents {
                         references.clear();
                     }
+                }
+                if release_parents {
+                    return verify_terminal_mappings::<F>(ctx, manager, &PIPELINE_TYPES, &commits)
+                        .await;
                 }
                 manager
                     .derive_bulk_locally(ctx, &commits, None, &PIPELINE_TYPES, None, None)

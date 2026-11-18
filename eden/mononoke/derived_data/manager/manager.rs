@@ -133,6 +133,15 @@ impl DerivedDataManager {
         }
     }
 
+    /// Set whether stage requests publish canonical data or return shadow outputs.
+    pub fn with_pipeline_mode(&self, mode: crate::PipelineMode) -> Self {
+        let mut inner = self.inner.as_ref().clone();
+        inner.derivation_context.pipeline_mode = mode;
+        Self {
+            inner: Arc::new(inner),
+        }
+    }
+
     /// Supply immutable outputs from parent and dependency stages.
     pub fn with_stage_inputs(&self, inputs: Arc<StageInputs>) -> Self {
         let mut inner = self.inner.as_ref().clone();

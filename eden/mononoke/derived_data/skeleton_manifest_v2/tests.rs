@@ -67,12 +67,6 @@ struct TestRepo(
 
 #[mononoke::fbinit_test]
 async fn pipeline_flushes_roots_before_mappings(fb: FacebookInit) -> Result<()> {
-    justknobs::test_helpers::override_just_knobs(justknobs::test_helpers::JustKnobsInMemory::new(
-        HashMap::from([(
-            "scm/mononoke:derived_data_pipeline_terminal_stage_prod_mapping".to_owned(),
-            justknobs::test_helpers::KnobVal::Bool(true),
-        )]),
-    ));
     let ctx = CoreContext::test_mock(fb);
     let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
     let csid = CreateCommitContext::new_root(&ctx, &repo)

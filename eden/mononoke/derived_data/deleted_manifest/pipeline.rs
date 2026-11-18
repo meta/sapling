@@ -63,13 +63,9 @@ fn stage_path(stage: &StageId) -> Result<&MPath> {
     }
 }
 
-fn use_normal_mapping(stage: &StageId) -> bool {
+fn use_normal_mapping(derivation: &DerivationContext, stage: &StageId) -> bool {
     matches!(stage, StageId::Manifest(path) if path.is_root())
-        && justknobs::eval(
-            "scm/mononoke:derived_data_pipeline_terminal_stage_prod_mapping",
-            None,
-            Some("deleted_manifests"),
-        )
+        && derivation.publish_pipeline_outputs()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -367,7 +363,7 @@ impl PipelineDerivable for RootDeletedManifestV2Id {
         stage: &StageId,
         outputs: HashMap<ChangesetId, Self::StageOutput>,
     ) -> Result<Option<StageOutputs>> {
-        let use_normal_mapping = use_normal_mapping(stage);
+        let use_normal_mapping = use_normal_mapping(derivation, stage);
         store_stage_outputs::<Self, _, _>(
             ctx,
             derivation,
@@ -411,7 +407,7 @@ impl PipelineDerivable for RootDeletedManifestV2Id {
         stage: &StageId,
         cs_ids: Vec<ChangesetId>,
     ) -> Result<HashMap<ChangesetId, Self::StageOutput>> {
-        let use_normal_mapping = use_normal_mapping(stage);
+        let use_normal_mapping = use_normal_mapping(derivation, stage);
         fetch_stage_outputs::<Self, _, _>(
             ctx,
             derivation,

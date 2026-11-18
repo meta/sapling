@@ -47,26 +47,12 @@ use crate::format_key;
 /// `derive_blame_v2` buffering.
 const BLAME_BUFFER_SIZE: usize = 256;
 
-fn use_normal_mapping(stage_path: &MPath) -> bool {
-    stage_path.is_root()
-        && justknobs::eval(
-            "scm/mononoke:derived_data_pipeline_terminal_stage_prod_mapping",
-            None,
-            Some("blame"),
-        )
+fn use_normal_mapping(derivation: &DerivationContext, stage_path: &MPath) -> bool {
+    stage_path.is_root() && derivation.publish_pipeline_outputs()
 }
 
-/// Prefix for pipeline blame blob writes/reads, gated on the same prod-mapping
-/// JustKnob as the terminal mapping. After the flip the pipeline writes the
-/// canonical content-addressed key (empty prefix, becoming source of truth);
-/// before it, blame is namespaced. Applies at every stage (blame blobs are
-/// keyed by file unode, so there is no cross-stage key collision).
-fn pipeline_blame_key_prefix() -> &'static str {
-    if justknobs::eval(
-        "scm/mononoke:derived_data_pipeline_terminal_stage_prod_mapping",
-        None,
-        Some("blame"),
-    ) {
+fn pipeline_blame_key_prefix(derivation: &DerivationContext) -> &'static str {
+    if derivation.publish_pipeline_outputs() {
         ""
     } else {
         "pipeline."
@@ -99,8 +85,7 @@ impl PipelineDerivable for RootBlameV2 {
             .blame_filesize_limit
             .unwrap_or(DEFAULT_BLAME_FILESIZE_LIMIT);
 
-        // Namespace pipeline blame blobs until the prod-mapping flip.
-        let blame_key_prefix = pipeline_blame_key_prefix();
+        let blame_key_prefix = pipeline_blame_key_prefix(derivation);
 
         let unode_outputs = fetch_stage_unodes(ctx, derivation, &stage, &bonsais).await?;
 
@@ -198,7 +183,7 @@ impl PipelineDerivable for RootBlameV2 {
         stage: &StageId,
         outputs: HashMap<ChangesetId, Self::StageOutput>,
     ) -> Result<Option<StageOutputs>> {
-        if matches!(stage, StageId::Manifest(path) if use_normal_mapping(path)) {
+        if matches!(stage, StageId::Manifest(path) if use_normal_mapping(derivation, path)) {
             let mut unode_outputs = RootUnodeManifestId::fetch_stage_outputs(
                 ctx,
                 derivation,
@@ -246,7 +231,7 @@ impl PipelineDerivable for RootBlameV2 {
         cs_ids: Vec<ChangesetId>,
     ) -> Result<HashMap<ChangesetId, Self::StageOutput>> {
         let use_normal_mapping =
-            matches!(stage, StageId::Manifest(path) if use_normal_mapping(path));
+            matches!(stage, StageId::Manifest(path) if use_normal_mapping(derivation, path));
         fetch_stage_outputs::<Self, _, _>(
             ctx,
             derivation,
@@ -286,7 +271,7 @@ impl PipelineDerivable for RootBlameV2 {
 
         // Data equality: per changed file, the pipeline-side blame blob must
         // match the canonical blame blob.
-        let pipeline_prefix = pipeline_blame_key_prefix();
+        let pipeline_prefix = "pipeline.";
         for file_unode_id in changed {
             let (pipeline_blame, canonical_blame) = futures::future::try_join(
                 load_blame_with_prefix(ctx, derivation.blobstore(), file_unode_id, pipeline_prefix),

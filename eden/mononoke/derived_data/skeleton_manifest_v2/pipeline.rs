@@ -41,7 +41,6 @@ impl ManifestDerivable for RootSkeletonManifestV2Id {
 
     const PIPELINE_VARIANT: PipelineDerivableVariant =
         PipelineDerivableVariant::SkeletonManifestsV2;
-    const MAPPING_KNOB_SWITCH: &'static str = "skeleton_manifest_v2";
 
     async fn load_root_manifest(
         &self,

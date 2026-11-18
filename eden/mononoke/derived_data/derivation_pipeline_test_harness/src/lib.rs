@@ -213,7 +213,10 @@ async fn verify_pipeline_matches_canonical_impl<F: PipelineTestFixture + Send>(
 ) -> Result<(TestRepo, Vec<ChangesetId>)> {
     let ctx = &CoreContext::test_mock(fb);
     let (repo, _commits, _dag) = F::get_repo_and_dag::<TestRepo>(fb).await;
-    let manager = repo.repo_derived_data().manager();
+    let manager = &repo
+        .repo_derived_data()
+        .manager()
+        .with_pipeline_mode(derived_data_manager::PipelineMode::Shadow);
 
     let head = repo
         .bookmarks()
@@ -304,7 +307,14 @@ async fn verify_pipeline_first_then_canonical_with_config<F: PipelineTestFixture
     let types = &config.types.iter().copied().collect::<Vec<_>>();
     let ctx = &CoreContext::test_mock(fb);
     let (repo, _commits, _dag) = F::get_repo_and_dag::<TestRepo>(fb).await;
-    let manager = repo.repo_derived_data().manager();
+    let manager = &repo
+        .repo_derived_data()
+        .manager()
+        .with_pipeline_mode(if use_terminal_mapping {
+            derived_data_manager::PipelineMode::Production
+        } else {
+            derived_data_manager::PipelineMode::Shadow
+        });
 
     let head = repo
         .bookmarks()
@@ -339,50 +349,44 @@ async fn verify_pipeline_first_then_canonical_with_config<F: PipelineTestFixture
         let plan = plan_pipeline(ctx, &repo, manager, &config, types, head, vec![]).await?;
         run_pipeline(manager, ctx, &config, &plan).await?;
 
-        // A separate blobstore and mapping database keep canonical derivation
-        // from reusing or filling in the pipeline's terminal outputs.
-        let (canonical_repo, _, _) = F::get_repo_and_dag::<TestRepo>(fb).await;
-        let canonical = canonical_repo.repo_derived_data().manager();
-        canonical
-            .derive_bulk_locally(ctx, &all_commits, None, types, None, None)
-            .await?;
-        for &derived_type in types {
-            let expected = BulkDerivation::fetch_derived_batch(
-                canonical,
-                ctx,
-                &all_commits,
-                None,
-                derived_type,
-            )
-            .await?;
-            let actual =
-                BulkDerivation::fetch_derived_batch(manager, ctx, &all_commits, None, derived_type)
-                    .await?;
-            assert_eq!(expected.len(), all_commits.len());
-            assert_eq!(
-                actual,
-                expected,
-                "terminal mappings for {derived_type:?} in {}",
-                F::REPO_NAME
-            );
-        }
-        Ok(())
+        verify_terminal_mappings::<F>(ctx, manager, types, &all_commits).await
     };
     with_just_knobs_async(
-        JustKnobsInMemory::new(HashMap::from([
-            (
-                "scm/mononoke:enable_subtree_changes".to_string(),
-                KnobVal::Bool(true),
-            ),
-            (
-                "scm/mononoke:derived_data_pipeline_terminal_stage_prod_mapping".to_string(),
-                KnobVal::Bool(use_terminal_mapping),
-            ),
-        ])),
+        JustKnobsInMemory::new(HashMap::from([(
+            "scm/mononoke:enable_subtree_changes".to_string(),
+            KnobVal::Bool(true),
+        )])),
         run.boxed(),
     )
     .await?;
     Ok((repo, all_commits))
+}
+
+async fn verify_terminal_mappings<F: PipelineTestFixture + Send>(
+    ctx: &CoreContext,
+    manager: &DerivedDataManager,
+    types: &[DerivableType],
+    commits: &[ChangesetId],
+) -> Result<()> {
+    // Keep canonical derivation from reusing or filling in the pipeline outputs.
+    let (canonical_repo, _, _) = F::get_repo_and_dag::<TestRepo>(ctx.fb).await;
+    let canonical = canonical_repo.repo_derived_data().manager();
+    canonical
+        .derive_bulk_locally(ctx, commits, None, types, None, None)
+        .await?;
+    for &ty in types {
+        let expected =
+            BulkDerivation::fetch_derived_batch(canonical, ctx, commits, None, ty).await?;
+        let actual = BulkDerivation::fetch_derived_batch(manager, ctx, commits, None, ty).await?;
+        assert_eq!(expected.len(), commits.len());
+        assert_eq!(
+            actual,
+            expected,
+            "terminal mappings for {ty:?} in {}",
+            F::REPO_NAME
+        );
+    }
+    Ok(())
 }
 
 /// The planned, payload-agnostic pipeline work: batches (split at chokepoints),

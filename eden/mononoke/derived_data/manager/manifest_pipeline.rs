@@ -62,7 +62,6 @@ pub trait ManifestDerivable: BonsaiDerivable {
         + 'static;
 
     const PIPELINE_VARIANT: PipelineDerivableVariant;
-    const MAPPING_KNOB_SWITCH: &'static str = Self::NAME;
 
     async fn load_root_manifest(
         &self,
@@ -202,7 +201,8 @@ where
         outputs: HashMap<ChangesetId, Self::StageOutput>,
     ) -> Result<Option<StageOutputs>> {
         let path = stage_path::<T>(stage)?;
-        let canonical = matches!(stage, StageId::Manifest(_)) && use_normal_mapping::<T>(path);
+        let canonical =
+            matches!(stage, StageId::Manifest(_)) && use_normal_mapping(derivation, path);
         if !canonical {
             return store_stage_outputs::<Self, _, _>(
                 ctx,
@@ -242,7 +242,8 @@ where
         csids: Vec<ChangesetId>,
     ) -> Result<HashMap<ChangesetId, Self::StageOutput>> {
         let path = stage_path::<T>(stage)?;
-        let canonical = matches!(stage, StageId::Manifest(_)) && use_normal_mapping::<T>(path);
+        let canonical =
+            matches!(stage, StageId::Manifest(_)) && use_normal_mapping(derivation, path);
         if !canonical {
             return fetch_stage_outputs::<Self, _, _>(
                 ctx,
@@ -309,13 +310,8 @@ fn stage_path<T: ManifestDerivable>(stage: &StageId) -> Result<&MPath> {
     }
 }
 
-fn use_normal_mapping<T: ManifestDerivable>(path: &MPath) -> bool {
-    path.is_root()
-        && justknobs::eval(
-            "scm/mononoke:derived_data_pipeline_terminal_stage_prod_mapping",
-            None,
-            Some(T::MAPPING_KNOB_SWITCH),
-        )
+fn use_normal_mapping(derivation: &DerivationContext, path: &MPath) -> bool {
+    path.is_root() && derivation.publish_pipeline_outputs()
 }
 
 async fn encode_output<T: ManifestDerivable>(

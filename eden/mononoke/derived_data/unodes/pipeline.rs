@@ -410,7 +410,10 @@ mod tests {
             .add_file("dir/apple", "new a")
             .commit()
             .await?;
-        let manager = repo.repo_derived_data.manager();
+        let manager = repo
+            .repo_derived_data
+            .manager()
+            .with_pipeline_mode(derived_data_manager::PipelineMode::Shadow);
         for csid in [c, d] {
             manager
                 .derive::<RootUnodeManifestId>(&ctx, csid, None, DerivationPriority::LOW)

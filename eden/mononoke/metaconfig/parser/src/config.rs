@@ -1745,6 +1745,7 @@ mod test {
                     extra_types_available_for_read: hashset! {},
                     wbc_excluded_types: hashset! {},
                     pipeline_config: None,
+                    shadow_pipeline_config: None,
                 },
                 enforce_lfs_acl_check: false,
                 repo_client_use_warm_bookmarks_cache: true,

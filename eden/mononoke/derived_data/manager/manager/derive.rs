@@ -1178,7 +1178,9 @@ impl DerivedDataManager {
     where
         Derivable: PipelineDerivable,
     {
-        let derivation_ctx = self.derivation_context(None);
+        let derivation_ctx = self
+            .with_pipeline_mode(crate::PipelineMode::Shadow)
+            .derivation_context(None);
         Ok(Derivable::verify_stage(ctx, &derivation_ctx, csid, stage).await?)
     }
 
