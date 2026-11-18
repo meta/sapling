@@ -1577,8 +1577,10 @@ def readsparseconfig(
                 "the edensparse extension does not support additional includes/excludes"
             )
         elif depth > 0 and len(profiles) > 0:
-            raise error.ProgrammingError(
-                "the edensparse extension does not support nested profiles (%include rules)"
+            raise error.Abort(
+                _("'%s' is not a valid filter: filters cannot %%include other profiles")
+                % filename,
+                hint=_("if enabled, run '@prog@ filteredfs disable %s'") % filename,
             )
 
     return rawconfig
@@ -2099,7 +2101,7 @@ def _showsubcmdlogic(ui, repo, opts) -> None:
             raw = getrawprofile(repo, profile, ".")
         except KeyError:
             return [(depth, profile, LOOKUP_NOT_FOUND, "")]
-        sc = readsparseconfig(repo, raw, depth=depth)
+        sc = readsparseconfig(repo, raw, filename=profile, depth=depth)
 
         profileinfo = [(depth, profile, LOOKUP_SUCCESS, sc.metadata.get("title"))]
         for profile in sorted(sc.profiles):
@@ -2950,6 +2952,11 @@ def _config(
             elif delete:
                 newinclude.difference_update(pats)
                 newexclude.difference_update(pats)
+
+            if _isedensparse(repo):
+                # Aborts if a filter being enabled is not valid.
+                for profile in newprofiles - oldprofiles:
+                    readsparseprofile(repo, ".", profile, None, depth=1)
 
             repo.writesparseconfig(newinclude, newexclude, newprofiles)
 

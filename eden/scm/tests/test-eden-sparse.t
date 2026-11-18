@@ -63,3 +63,46 @@ Don't crash with extensions in this state
   $ sl diff -r 'desc(b)' --stat --config extensions.sparse= --config extensions.edensparse=!
   abort: *$ENOENT$* (glob)
   [255]
+
+Profiles that %include other profiles are not valid filters
+
+  $ cd
+  $ newrepo server-nested
+  $ echo foo > file
+  $ touch flat base
+  $ cat > nested << EOF
+  > %include base
+  > [include]
+  > *
+  > EOF
+  $ sl commit -Aqm a
+  $ sl book master
+
+  $ cd
+  $ sl clone -q --eden test:server-nested client-nested --config clone.eden-sparse-filter=flat
+  $ cd client-nested
+  $ sl filteredfs enable nested
+  Manually modifying filters is not recommended. Do you still wish to continue? (yn)? y
+  abort: 'nested' is not a valid filter: filters cannot %include other profiles
+  (if enabled, run 'sl filteredfs disable nested')
+  [255]
+
+A checkout that already has one enabled gets the same abort and can disable it
+
+  $ cd
+  $ sl clone -q --eden test:server-nested client-enabled --config clone.eden-sparse-filter=nested
+  $ cd client-enabled
+  $ echo bar > file
+  $ sl commit -qm b
+  abort: 'nested' is not a valid filter: filters cannot %include other profiles
+  (if enabled, run 'sl filteredfs disable nested')
+  [255]
+  $ sl filteredfs show
+  Enabled Profiles:
+  
+  abort: 'nested' is not a valid filter: filters cannot %include other profiles
+  (if enabled, run 'sl filteredfs disable nested')
+  [255]
+  $ sl filteredfs disable nested
+  Manually modifying filters is not recommended. Do you still wish to continue? (yn)? y
+  $ sl commit -qm b
