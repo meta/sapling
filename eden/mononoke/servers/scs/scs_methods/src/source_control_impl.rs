@@ -1017,11 +1017,18 @@ fn check_memory_usage(
 const ROOT_OPERATION_NAME: &str = "scs_method_root";
 
 /// Endpoint labels bound to the `mononoke_endpoint` Luna sample key of the
-/// `mononoke_scm` policy. SCS method names are normalised onto the labels SLAPI
+/// `mononoke_scm` policy. `repo_land_stack` is normalised onto the label SLAPI
 /// already emits so that one policy branch rates a land identically whichever
 /// transport it arrived on.
 const LAND_ENDPOINT_LABEL: &str = "land_stack";
-const BOOKMARK_ENDPOINT_LABEL: &str = "set_bookmark";
+
+/// Bookmark moves get their own label rather than sharing SLAPI's
+/// `set_bookmark`, which the policy rates as a land. 93% of `repo_move_bookmark`
+/// arrives from `client_entry_point = scs` — service-to-service automation
+/// rather than user lands — at 6.4/s, which at the 1:1 land rate would take half
+/// the policy's whole trace budget.
+const BOOKMARK_ENDPOINT_LABEL: &str = "bookmark_move";
+
 const OTHER_ENDPOINT_LABEL: &str = "other";
 
 fn root_trace_endpoint(method: &str) -> &'static str {
@@ -2032,8 +2039,7 @@ mod tests {
     }
 
     #[mononoke::test]
-    fn every_bookmark_move_is_labelled_as_a_bookmark_set() {
-        // All three move a bookmark, so all three are lands for policy purposes.
+    fn every_bookmark_move_is_labelled_as_a_bookmark_move() {
         for method in [
             "repo_create_bookmark",
             "repo_move_bookmark",
@@ -2063,16 +2069,21 @@ mod tests {
     }
 
     /// The `mononoke_scm` Luna expression selects its 1:1 land branch by
-    /// matching these labels against the prefixes `land` and `set_bookmark`. A
-    /// label that stops matching silently demotes lands to the thin catch-all
-    /// sample rate, which is why the prefixes are asserted here rather than
-    /// left to the policy.
+    /// matching these labels against the prefixes `land` and `set_bookmark`, and
+    /// its 1:100 branch against `bookmark_move`. A label that drifts off those
+    /// prefixes either demotes lands to the thin catch-all rate or promotes SCS
+    /// bookmark automation to the land rate, so they are asserted here rather
+    /// than left to the policy.
     #[mononoke::test]
     fn land_labels_match_the_policy_prefixes() {
         assert!(LAND_ENDPOINT_LABEL.starts_with("land"));
-        assert!(BOOKMARK_ENDPOINT_LABEL.starts_with("set_bookmark"));
         assert!(!OTHER_ENDPOINT_LABEL.starts_with("land"));
         assert!(!OTHER_ENDPOINT_LABEL.starts_with("set_bookmark"));
+
+        // Must reach the policy's own 1:100 branch, not either land prefix.
+        assert_eq!(BOOKMARK_ENDPOINT_LABEL, "bookmark_move");
+        assert!(!BOOKMARK_ENDPOINT_LABEL.starts_with("land"));
+        assert!(!BOOKMARK_ENDPOINT_LABEL.starts_with("set_bookmark"));
     }
 
     #[mononoke::fbinit_test]
