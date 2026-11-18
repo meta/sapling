@@ -9,6 +9,8 @@
 
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
+use std::time::Instant;
 
 use futures::FutureExt;
 use mononoke_macros::mononoke;
@@ -101,7 +103,7 @@ fn test_add_placeholder_does_not_unbuild_a_loaded_repo() {
     repos.add("foo", 1, 100);
 
     // An assignment arriving for a repo that is already built must leave it
-    // alone. Un-building is eviction, which this type does not do.
+    // alone. Only `unload_if_idle` un-builds a repo.
     repos.add_placeholder("foo", 1);
 
     assert_eq!(repos.get_by_name("foo").as_deref(), Some(&100));
@@ -472,4 +474,89 @@ async fn test_a_failed_rebuild_keeps_the_old_repo_without_a_hold() {
         .await
         .unwrap();
     assert_eq!(repo.as_deref(), Some(&42));
+}
+
+const IDLE_WINDOW: Duration = Duration::from_secs(60);
+
+/// A lazy collection with `foo` built as `100`.
+fn built_lazy_repo(loader: Arc<dyn RepoLoader<i32>>) -> MononokeRepos<i32> {
+    let repos = MononokeRepos::new_lazy(loader);
+    repos.add("foo", 1, 100);
+    repos
+}
+
+#[mononoke::test]
+fn test_unload_if_idle_unloads_an_idle_repo() {
+    let repos = built_lazy_repo(Arc::new(NeverLoads));
+
+    assert!(repos.unload_if_idle("foo", IDLE_WINDOW, Instant::now() + IDLE_WINDOW));
+
+    // Back to a placeholder: still assigned, no longer built.
+    assert!(repos.get_by_name("foo").is_none());
+    assert!(repos.get_by_id(1).is_none());
+    assert_eq!(repos.iter().count(), 0);
+    assert_eq!(repos.iter_loaded_names().count(), 0);
+    assert_eq!(repos.iter_names().collect::<Vec<_>>(), vec!["foo"]);
+    assert_eq!(repos.iter_ids().collect::<Vec<_>>(), vec![1]);
+}
+
+#[mononoke::test]
+async fn test_unload_if_idle_keeps_a_recently_looked_up_repo() {
+    let repos = built_lazy_repo(Arc::new(NeverLoads));
+    let before_lookup = Instant::now();
+    let _ = repos.get_by_name("foo");
+    assert!(
+        !repos.unload_if_idle("foo", IDLE_WINDOW, before_lookup + IDLE_WINDOW),
+        "get_by_name must count as use"
+    );
+
+    let repos = built_lazy_repo(Arc::new(NeverLoads));
+    let before_lookup = Instant::now();
+    let _ = repos.get_by_id(1);
+    assert!(
+        !repos.unload_if_idle("foo", IDLE_WINDOW, before_lookup + IDLE_WINDOW),
+        "get_by_id must count as use"
+    );
+
+    let repos = built_lazy_repo(Arc::new(NeverLoads));
+    let before_lookup = Instant::now();
+    let _ = repos.get("foo").await.unwrap();
+    assert!(
+        !repos.unload_if_idle("foo", IDLE_WINDOW, before_lookup + IDLE_WINDOW),
+        "get must count as use"
+    );
+}
+
+#[mononoke::test]
+async fn test_unload_if_idle_ignores_listing_and_rebuilds() {
+    let repos = built_lazy_repo(Arc::new(NeverLoads));
+    let before_listing = Instant::now();
+
+    // What periodic jobs do to every repo. None of it is a request for `foo`,
+    // so none of it may keep `foo` loaded.
+    assert_eq!(repos.iter().count(), 1);
+    assert_eq!(repos.iter_loaded_names().count(), 1);
+    let rebuilt = repos
+        .rebuild_if_present("foo", Arc::new(CountingLoader::default()))
+        .await
+        .unwrap();
+    assert_eq!(rebuilt.as_deref(), Some(&42));
+    drop(rebuilt);
+
+    assert!(repos.unload_if_idle("foo", IDLE_WINDOW, before_listing + IDLE_WINDOW));
+}
+
+#[mononoke::test]
+fn test_unload_if_idle_keeps_a_repo_someone_holds() {
+    let repos = built_lazy_repo(Arc::new(NeverLoads));
+    let held = repos.get_by_name("foo").expect("foo is built");
+
+    assert!(
+        !repos.unload_if_idle("foo", IDLE_WINDOW, Instant::now() + IDLE_WINDOW),
+        "unloading a held repo would leave a second copy once it is rebuilt"
+    );
+    assert_eq!(repos.get_by_name("foo").as_deref(), Some(&100));
+
+    drop(held);
+    assert!(repos.unload_if_idle("foo", IDLE_WINDOW, Instant::now() + IDLE_WINDOW));
 }
