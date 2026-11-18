@@ -124,6 +124,7 @@ rust_binary(
         "//eden/mononoke/derived_data:skeleton_manifest_v2",
         "//eden/mononoke/derived_data:unodes",
         "//eden/mononoke/derived_data/content_manifest_derivation:content_manifest_derivation",
+        "//eden/mononoke/derived_data/derivation_pipeline_driver:derivation_pipeline_driver",
         "//eden/mononoke/derived_data/history_manifest:history_manifest",
         "//eden/mononoke/derived_data/mercurial_derivation:mercurial_derivation",
         "//eden/mononoke/features/async_requests:async_requests",

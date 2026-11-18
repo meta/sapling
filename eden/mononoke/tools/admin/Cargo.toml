@@ -56,6 +56,7 @@ context = { version = "0.1.0", path = "../../servers/slapi/slapi_server/context"
 cross_repo_sync = { version = "0.1.0", path = "../../features/cross_repo_sync" }
 deleted_manifest = { version = "0.1.0", path = "../../derived_data/deleted_manifest" }
 deletion_log = { version = "0.1.0", path = "../../repo_attributes/deletion_log" }
+derivation_pipeline_driver = { version = "0.1.0", path = "../../derived_data/derivation_pipeline_driver" }
 derivation_queue_thrift = { version = "0.1.0", path = "../../repo_attributes/repo_derivation_queues/if" }
 derive_more = { version = "2.1.1", features = ["full"] }
 derived_data_manager = { version = "0.1.0", path = "../../derived_data/manager" }

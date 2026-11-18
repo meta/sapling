@@ -21,6 +21,7 @@ use blobstore::Loadable;
 use bookmarks::BookmarkKey;
 use bookmarks::BookmarksRef;
 use bookmarks::Freshness;
+use bulk_derivation::BulkDerivation;
 use cacheblob::MemWritesBlobstore;
 use clap::ArgGroup;
 use clap::Args;
@@ -29,6 +30,9 @@ use commit_graph::CommitGraphRef;
 use context::CoreContext;
 use derived_data_manager::DerivationContext;
 use derived_data_manager::DerivedDataManager;
+use derived_data_manager::PipelineMode;
+use derived_data_manager::StageId;
+use derived_data_manager::StageInputs;
 use futures::StreamExt;
 use futures::TryStreamExt;
 use futures::future;
@@ -42,6 +46,7 @@ use mercurial_types::sharded_augmented_manifest::HgAugmentedManifestEntry;
 use mercurial_types::sharded_augmented_manifest::HgAugmentedManifestEnvelope;
 use mononoke_types::BonsaiChangeset;
 use mononoke_types::ChangesetId;
+use mononoke_types::DerivableType;
 use mononoke_types::MPath;
 use mononoke_types::typed_hash::AclManifestId;
 use repo_blobstore::RepoBlobstore;
@@ -52,6 +57,7 @@ use restricted_paths_common::RestrictedPathsConfigBased;
 use tracing::info;
 
 use super::Repo;
+use super::verify_aug_upload::OverwritingOverlay;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct VerifyMismatch {
@@ -216,6 +222,118 @@ impl<'a> Verifier<'a> {
             None => Ok(success_outcome),
             Some(mismatch) => Ok(VerifyOneOutcome::Mismatch(mismatch)),
         }
+    }
+
+    async fn verify_pipeline_batch(&mut self, mut cs_ids: Vec<ChangesetId>) -> Result<()> {
+        let mut config = self
+            .manager
+            .repo_config()
+            .derived_data_config
+            .shadow_pipeline_config
+            .clone()
+            .context("missing shadow pipeline config")?;
+        let types = [
+            DerivableType::AclManifests,
+            DerivableType::HgAugmentedManifests,
+        ];
+        config.types = types.into_iter().collect();
+        config.stages_by_type.retain(|ty, _| types.contains(ty));
+        config.validate()?;
+
+        let computed = RepoBlobstore::new_with_wrapped_inner_blobstore(
+            self.repo.repo_blobstore().clone(),
+            |inner| Arc::new(OverwritingOverlay(Arc::new(MemWritesBlobstore::new(inner)))),
+        );
+        let manager = self
+            .manager
+            .with_replaced_blobstore(computed)
+            .with_replaced_restricted_paths(self.restricted_paths.clone())
+            .with_pipeline_mode(PipelineMode::Shadow);
+        let generations = self
+            .repo
+            .commit_graph()
+            .many_changeset_generations(self.ctx, &cs_ids)
+            .await?;
+        cs_ids.sort_by_key(|cs_id| generations[cs_id]);
+        let batches = derivation_pipeline_driver::plan_batches(
+            self.ctx,
+            manager.repo_blobstore(),
+            &config,
+            cs_ids.clone(),
+        )
+        .await?;
+        let order = derivation_pipeline_driver::plan_stages_and_types(&manager, &config, &types)?;
+        let mut outputs = Vec::new();
+        derivation_pipeline_driver::run_pipeline_batches(
+            &manager,
+            self.ctx,
+            &config,
+            &order.sorted_stages,
+            &order.sorted_types,
+            &batches,
+            |batch| outputs.extend_from_slice(batch),
+        )
+        .await?;
+
+        let canonical = self
+            .manager
+            .with_stage_inputs(StageInputs::new(&outputs)?)
+            .with_pipeline_mode(PipelineMode::Shadow);
+        let derivation = manager.derivation_context(None);
+        let computed_blobstore = derivation.blobstore();
+        for cs_id in cs_ids {
+            for ty in types {
+                anyhow::ensure!(
+                    BulkDerivation::verify_stage_output(
+                        &canonical,
+                        self.ctx,
+                        cs_id,
+                        ty,
+                        &StageId::Manifest(MPath::ROOT),
+                    )
+                    .await?,
+                    "MISMATCH at {cs_id}: {ty:?} terminal output"
+                );
+            }
+            let stored = self
+                .fetch_required::<RootHgAugmentedManifestId>(cs_id)
+                .await?;
+            let root_id = stored.hg_augmented_manifest_id();
+            let expected = root_id.load(self.ctx, self.repo.repo_blobstore()).await?;
+            let acl = self.fetch_required::<RootAclManifestId>(cs_id).await?;
+            let acl_paths = cached_acl_overlay_map(
+                self.ctx,
+                self.repo.repo_blobstore(),
+                normalize_acl_root(&acl)?,
+                &mut self.acl_cache,
+            )
+            .await?;
+            let bonsai = cs_id.load(self.ctx, self.repo.repo_blobstore()).await?;
+            let mut paths = self
+                .parent_acl_paths(self.repo.repo_blobstore(), cs_id, &bonsai)
+                .await?;
+            paths.extend(acl_paths.keys().cloned());
+            if let Some(mismatch) = self
+                .compare_computed_root_to_stored(
+                    computed_blobstore,
+                    cs_id,
+                    root_id,
+                    &expected,
+                    &paths,
+                )
+                .await?
+            {
+                bail!(
+                    "MISMATCH at {}: {} computed={} expected={}",
+                    mismatch.cs_id,
+                    mismatch.field,
+                    mismatch.computed,
+                    mismatch.expected
+                );
+            }
+            info!("pipeline match: cs_id={cs_id} hg_augmented_manifest_id={root_id}");
+        }
+        Ok(())
     }
 
     async fn derive_bonsai_direct_root(
@@ -596,6 +714,10 @@ pub(super) struct VerifyAugDirectArgs {
     )]
     batch_size: u64,
 
+    /// Replay ACL and augmented manifests using the shadow pipeline layout, with writes kept in memory.
+    #[clap(long)]
+    pipeline: bool,
+
     /// Number of verifier batches to process concurrently. Maximum: 100.
     #[clap(long, default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..=MAX_VERIFY_AUG_DIRECT_CONCURRENCY))]
     concurrency: u64,
@@ -784,10 +906,17 @@ async fn verify_aug_direct_batch(
     repo: &Repo,
     manager: &DerivedDataManager,
     batch: VerifyBatch,
+    pipeline: bool,
 ) -> Result<(u64, VerifyBatchCounts)> {
     let index = batch.index;
     let mut counts = VerifyBatchCounts::default();
     let mut verifier = Verifier::new(ctx, repo, manager);
+
+    if pipeline {
+        counts.processed = batch.cs_ids.len() as u64;
+        verifier.verify_pipeline_batch(batch.cs_ids).await?;
+        return Ok((index, counts));
+    }
 
     for cs_id in batch.cs_ids {
         counts.processed += 1;
@@ -844,7 +973,7 @@ pub(super) async fn verify_aug_direct(
     let mut full_v2_fallback = 0;
 
     batches
-        .map_ok(|batch| verify_aug_direct_batch(ctx, repo, manager, batch))
+        .map_ok(|batch| verify_aug_direct_batch(ctx, repo, manager, batch, args.pipeline))
         .try_buffer_unordered(concurrency)
         .try_for_each(|(batch_index, counts)| {
             processed += counts.processed;
@@ -1580,6 +1709,7 @@ mod tests {
                 index: 42,
                 cs_ids: vec![fixture.root],
             },
+            false,
         )
         .await?;
 
