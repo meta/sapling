@@ -13,6 +13,7 @@ pub use create_changeset::AclFileChangeRejectedInChangeset;
 pub use create_changeset::AclFileValidation;
 pub use create_changeset::CreateChangeset;
 
+pub use crate::bonsai_generation::create_bonsai_changeset_object;
 pub use crate::bonsai_generation::save_bonsai_changeset_object;
 pub use crate::repo_commit::ChangesetHandle;
 pub use crate::repo_commit::UploadEntries;

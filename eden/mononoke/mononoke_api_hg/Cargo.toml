@@ -26,6 +26,7 @@ futures = { version = "0.3.34", features = ["async-await", "compat"] }
 futures-util = { version = "0.3.34", features = ["compat"] }
 getbundle_response = { version = "0.1.0", path = "../repo_client/getbundle_response" }
 justknobs_ext = { version = "0.1.0", path = "../common/rust/justknobs_ext" }
+manifest = { version = "0.1.0", path = "../manifest" }
 mercurial_derivation = { version = "0.1.0", path = "../derived_data/mercurial_derivation" }
 mercurial_mutation = { version = "0.1.0", path = "../mercurial/mutation" }
 mercurial_types = { version = "0.1.0", path = "../mercurial/types" }
@@ -43,6 +44,7 @@ restricted_paths = { version = "0.1.0", path = "../repo_attributes/restricted_pa
 sapling-dag-types = { version = "0.2.0", path = "../../scm/lib/dag/dag-types" }
 sapling-edenapi_types = { version = "0.1.0", path = "../../scm/lib/edenapi/types" }
 sapling-revisionstore_types = { version = "0.1.0", path = "../../scm/lib/revisionstore/types" }
+thiserror = "2.0.21"
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 unbundle = { version = "0.1.0", path = "../repo_client/unbundle" }
 

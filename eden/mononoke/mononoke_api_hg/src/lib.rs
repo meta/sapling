@@ -16,6 +16,7 @@ pub mod data;
 pub mod ext;
 pub mod file;
 pub mod repo;
+pub mod snapshot;
 pub mod tree;
 
 pub use data::HgDataContext;
@@ -24,5 +25,7 @@ pub use ext::RepoContextHgExt;
 pub use file::HgFileContext;
 pub use repo::CommitMutation;
 pub use repo::HgRepoContext;
+pub use snapshot::SnapshotUploadError;
+pub use snapshot::snapshot_bonsai_from_hg;
 pub use tree::HgAugmentedTreeRestrictionContext;
 pub use tree::HgTreeContext;
