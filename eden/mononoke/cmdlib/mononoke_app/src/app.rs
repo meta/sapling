@@ -825,20 +825,16 @@ impl MononokeApp {
         // conservative parse-independent proxy (deep repos load on demand, fail-open).
         let serves_all = service.is_none();
         let manifest = self.configs.manifest();
-        let non_deep: HashSet<&str> = manifest
-            .as_ref()
-            .map(|m| {
-                m.repos
-                    .iter()
-                    .filter(|e| !e.is_deep_sharded)
-                    .map(|e| e.repo_name.as_str())
-                    .collect()
-            })
-            .unwrap_or_default();
+        let non_deep = |name: &str| {
+            manifest
+                .as_ref()
+                .and_then(|m| m.repo(name))
+                .is_some_and(|entry| !entry.is_deep_sharded)
+        };
         let repo_filter = self.environment().filter_repos.clone();
         let blocking = startup_blocking_failures(
             failed,
-            |n| serves_all || non_deep.contains(n),
+            |n| serves_all || non_deep(n),
             |n| repo_filter.as_ref().is_none_or(|f| f(n)),
         );
         startup_parse_failure_decision(&blocking)

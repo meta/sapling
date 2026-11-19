@@ -474,7 +474,7 @@ async fn run_manifest_reload_pass(
     state.cached_manifest_storage = Some(storage.clone());
 
     // Rebuilt every pass so repos that left the manifest or failed to parse drop out.
-    let mut parsed_specs = HashMap::with_capacity(current_manifest.repos.len());
+    let mut parsed_specs = HashMap::with_capacity(current_manifest.repos().len());
 
     // Scoped so the repo_handles read guard is dropped before any await below.
     let merged = {
@@ -510,7 +510,7 @@ async fn run_manifest_reload_pass(
             None
         };
         let mut repos = RepoConfigs::new(HashMap::new(), CommonConfig::default()).repos;
-        for entry in &current_manifest.repos {
+        for entry in current_manifest.repos() {
             if let Some(handle) = handles.get(&entry.repo_name) {
                 let (spec, version_info) = handle.get_with_version();
                 // The previous parse, if the shared configs its spec names are unchanged.
@@ -590,15 +590,10 @@ async fn run_manifest_reload_pass(
     // Commit only now: everything above can `return`.
     // rcu overlay, not a blind store: keep repos rcu-inserted by concurrent
     // loads after the merge snapshot; non-members still drop.
-    let manifest_names: HashSet<&str> = current_manifest
-        .repos
-        .iter()
-        .map(|e| e.repo_name.as_str())
-        .collect();
     repo_configs.rcu(|current| {
         let mut repos = merged.repos.clone();
         for (name, entry) in current.repos.iter() {
-            if manifest_names.contains(name.as_str()) && !repos.contains_key(name) {
+            if current_manifest.repo(name).is_some() && !repos.contains_key(name) {
                 repos.insert(name.clone(), entry.clone());
             }
         }
@@ -792,7 +787,7 @@ pub(crate) fn sync_repo_handles(
     let to_remove = compute_handles_to_remove(&current_repos, manifest);
 
     let new_handles: Vec<_> = manifest
-        .repos
+        .repos()
         .iter()
         .filter(|entry| !entry.is_deep_sharded && !current_repos.contains(&entry.repo_name))
         .filter_map(
@@ -864,14 +859,9 @@ fn compute_handles_to_remove(
     current_repos: &HashSet<String>,
     manifest: &ServiceManifest,
 ) -> Vec<String> {
-    let manifest_repo_names: HashSet<&str> = manifest
-        .repos
-        .iter()
-        .map(|e| e.repo_name.as_str())
-        .collect();
     current_repos
         .iter()
-        .filter(|name| !manifest_repo_names.contains(name.as_str()))
+        .filter(|name| manifest.repo(name).is_none())
         .cloned()
         .collect()
 }

@@ -96,9 +96,7 @@ fn load_repo_spec(app: &MononokeApp, repo_name: &str) -> Result<LoadedSpec> {
         );
     };
     let entry = manifest
-        .repos
-        .iter()
-        .find(|entry| entry.repo_name == repo_name)
+        .repo(repo_name)
         .with_context(|| match configs.service() {
             Some(service) => format!("repo {repo_name} is not served by {service}"),
             None => format!("repo {repo_name} is not in the {tier} tier manifest"),

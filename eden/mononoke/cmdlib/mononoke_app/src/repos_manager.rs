@@ -412,13 +412,9 @@ impl<Repo> MononokeReposManager<Repo> {
             .configs
             .manifest()
             .context("add_lazy_repo: no tier manifest, so split-loading is off")?;
-        let entry = manifest
-            .repos
-            .iter()
-            .find(|entry| entry.repo_name == repo_name)
-            .with_context(|| {
-                format!("add_lazy_repo: repo {repo_name} is not in the tier manifest")
-            })?;
+        let entry = manifest.repo(repo_name).with_context(|| {
+            format!("add_lazy_repo: repo {repo_name} is not in the tier manifest")
+        })?;
         self.repos.add_placeholder(repo_name, entry.repo_id);
         Ok(())
     }
@@ -612,13 +608,10 @@ where
     }
     // Tier membership is the authorisation boundary: nothing outside the
     // manifest is read, let alone built. Misses are rare, so no cache.
-    let Some(repo_id) = configs.manifest().and_then(|manifest| {
-        manifest
-            .repos
-            .iter()
-            .find(|entry| entry.repo_name == repo_name)
-            .map(|entry| entry.repo_id)
-    }) else {
+    let Some(repo_id) = configs
+        .manifest()
+        .and_then(|manifest| manifest.repo(repo_name).map(|entry| entry.repo_id))
+    else {
         return Ok(None);
     };
     let repo_config = match configs.get_or_load_repo_config(repo_name) {
@@ -665,7 +658,7 @@ struct ReconcileConfigSource {
 impl ConfigSource for ReconcileConfigSource {
     fn manifest(&self) -> Vec<ManifestEntry> {
         self.configs.manifest().map_or_else(Vec::new, |m| {
-            m.repos
+            m.repos()
                 .iter()
                 .map(|e| ManifestEntry {
                     name: e.repo_name.clone(),
@@ -942,7 +935,7 @@ where
             // hook. The std Mutex is acquired after all awaits, not across one.
             if let Some(manifest) = self.configs.manifest() {
                 let live: HashSet<&str> = manifest
-                    .repos
+                    .repos()
                     .iter()
                     .map(|e| e.repo_name.as_str())
                     .collect();
@@ -1155,7 +1148,7 @@ fn scheme_from_config_path(config_path: &str) -> CommitIdentityScheme {
 /// this task happens to have cached.
 fn repo_names_from_manifest(manifest: &ServiceManifest) -> HashMap<String, CommitIdentityScheme> {
     manifest
-        .repos
+        .repos()
         .iter()
         .map(|entry| {
             (
@@ -1202,7 +1195,7 @@ impl MononokeConfigUpdateReceiver {
     fn refresh_from_manifest(&self, configs: &MononokeConfigs) {
         match configs.manifest() {
             Some(manifest) => {
-                STATS::tier_names_manifest_len.add_value(manifest.repos.len() as i64);
+                STATS::tier_names_manifest_len.add_value(manifest.repos().len() as i64);
                 self.repo_names_in_tier
                     .store(Arc::new(repo_names_from_manifest(&manifest)));
             }

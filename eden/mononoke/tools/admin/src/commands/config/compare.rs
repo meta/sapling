@@ -100,8 +100,8 @@ pub async fn run(app: MononokeApp, args: CompareArgs) -> Result<()> {
             ));
         }
         differences.extend(compare_repos(
-            &view.manifest.repos,
-            &manifest.repos,
+            view.manifest.repos(),
+            manifest.repos(),
             &location,
             args.specs.then(|| SpecSides {
                 deployment_store: repo_store,

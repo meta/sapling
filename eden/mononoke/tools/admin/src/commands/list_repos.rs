@@ -38,7 +38,7 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
         by_id.insert(repo_config.repoid.id(), repo_name.clone());
     }
     if let Some(manifest) = app.configs().manifest() {
-        for entry in &manifest.repos {
+        for entry in manifest.repos() {
             by_id
                 .entry(entry.repo_id)
                 .or_insert(entry.repo_name.clone());

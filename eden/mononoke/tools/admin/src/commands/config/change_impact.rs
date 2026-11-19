@@ -103,11 +103,7 @@ impl<'a> ConfigVersion<'a> {
     }
 
     fn entry(&self, repo_name: &str) -> Option<&TierRepoEntry> {
-        self.view
-            .manifest
-            .repos
-            .iter()
-            .find(|entry| entry.repo_name == repo_name)
+        self.view.manifest.repo(repo_name)
     }
 
     fn spec(&self, repo_name: &str) -> Result<Option<Arc<RepoSpec>>> {
@@ -151,7 +147,7 @@ impl<'a> ConfigVersion<'a> {
     fn repo_names(&self) -> BTreeSet<String> {
         self.view
             .manifest
-            .repos
+            .repos()
             .iter()
             .map(|entry| entry.repo_name.clone())
             .collect()

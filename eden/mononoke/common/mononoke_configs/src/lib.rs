@@ -438,9 +438,7 @@ impl MononokeConfigs {
             .get();
 
         let entry = manifest
-            .repos
-            .iter()
-            .find(|e| e.repo_name == repo_name)
+            .repo(repo_name)
             .ok_or_else(|| anyhow!("Repo {repo_name} not found in manifest"))?;
 
         let config_store = self
@@ -509,7 +507,7 @@ impl MononokeConfigs {
         };
         let manifest = manifest_source.get();
 
-        let Some(entry) = manifest.repos.iter().find(|e| e.repo_name == repo_name) else {
+        let Some(entry) = manifest.repo(repo_name) else {
             return Ok(());
         };
 
@@ -787,7 +785,7 @@ impl MononokeConfigs {
             .cloned()
             .collect();
         if let Some(manifest) = self.manifest() {
-            for entry in &manifest.repos {
+            for entry in manifest.repos() {
                 all_names.insert(entry.repo_name.clone());
             }
         }
@@ -814,7 +812,7 @@ impl MononokeConfigs {
             None => anyhow::bail!("unknown repoid: RepositoryId({repo_id})"),
         };
         let entry = manifest
-            .repos
+            .repos()
             .iter()
             .find(|e| e.repo_id == repo_id)
             .ok_or_else(|| anyhow!("unknown repoid: RepositoryId({repo_id})"))?;

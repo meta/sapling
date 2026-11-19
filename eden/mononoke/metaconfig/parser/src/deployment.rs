@@ -39,7 +39,9 @@ use crate::config::parse_common_and_storage;
 pub struct ServiceManifest {
     /// The repos, each with the config path of its `RepoSpec` in the store the
     /// manifest was read from.
-    pub repos: Vec<TierRepoEntry>,
+    repos: Vec<TierRepoEntry>,
+    /// Each repo's index in `repos`, by name, so finding a repo is a lookup.
+    by_name: HashMap<String, usize>,
     /// Common config for every repo.
     pub common: RawCommonConfig,
     /// Named storage configs, which repo configs refer to by name.
@@ -50,6 +52,36 @@ pub struct ServiceManifest {
 }
 
 impl ServiceManifest {
+    /// A manifest of `repos`. A repo listed more than once keeps its first entry.
+    pub fn new(
+        repos: Vec<TierRepoEntry>,
+        common: RawCommonConfig,
+        storage: HashMap<String, RawStorageConfig>,
+        presets: Option<Presets>,
+    ) -> Self {
+        let mut by_name = HashMap::with_capacity(repos.len());
+        for (index, entry) in repos.iter().enumerate() {
+            by_name.entry(entry.repo_name.clone()).or_insert(index);
+        }
+        Self {
+            repos,
+            by_name,
+            common,
+            storage,
+            presets,
+        }
+    }
+
+    /// The repos, in manifest order.
+    pub fn repos(&self) -> &[TierRepoEntry] {
+        &self.repos
+    }
+
+    /// The entry of the repo named `repo_name`.
+    pub fn repo(&self, repo_name: &str) -> Option<&TierRepoEntry> {
+        self.by_name.get(repo_name).map(|index| &self.repos[*index])
+    }
+
     /// The parsed common and storage config.
     pub fn parse_common_and_storage(&self) -> Result<(CommonConfig, StorageConfigs)> {
         parse_common_and_storage(&self.common, &self.storage)
@@ -58,12 +90,7 @@ impl ServiceManifest {
 
 impl From<TierManifest> for ServiceManifest {
     fn from(manifest: TierManifest) -> Self {
-        Self {
-            repos: manifest.repos,
-            common: manifest.common,
-            storage: manifest.storage,
-            presets: None,
-        }
+        Self::new(manifest.repos, manifest.common, manifest.storage, None)
     }
 }
 
@@ -145,12 +172,12 @@ pub fn service_view(
     }
     Ok(ServiceView {
         service,
-        manifest: ServiceManifest {
+        manifest: ServiceManifest::new(
             repos,
             common,
-            storage: deployment.storage.clone().into_iter().collect(),
-            presets: deployment.presets.clone(),
-        },
+            deployment.storage.clone().into_iter().collect(),
+            deployment.presets.clone(),
+        ),
         legacy_tier: service_config.legacy_tier.clone(),
     })
 }
@@ -265,6 +292,29 @@ mod tests {
             root: ConfigRoot::ConfigStore,
             name: "prod".to_owned(),
         }
+    }
+
+    #[mononoke::test]
+    fn test_manifest_finds_repos_by_name() {
+        let entry = |name: &str, repo_id| TierRepoEntry {
+            repo_name: name.to_owned(),
+            repo_id,
+            ..Default::default()
+        };
+        let manifest = ServiceManifest::new(
+            vec![entry("a", 1), entry("b", 2), entry("a", 3)],
+            Default::default(),
+            HashMap::new(),
+            None,
+        );
+        assert_eq!(manifest.repos().len(), 3);
+        assert_eq!(
+            manifest.repo("a").map(|entry| entry.repo_id),
+            Some(1),
+            "a repo listed twice gives its first entry"
+        );
+        assert_eq!(manifest.repo("b").map(|entry| entry.repo_id), Some(2));
+        assert!(manifest.repo("c").is_none());
     }
 
     #[mononoke::test]

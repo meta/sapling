@@ -439,7 +439,7 @@ fn load_explicit(
         .manifest()
         .map(|manifest| {
             manifest
-                .repos
+                .repos()
                 .iter()
                 .map(|entry| (entry.repo_id, entry.repo_name.clone()))
                 .collect()

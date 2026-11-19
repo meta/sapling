@@ -771,7 +771,7 @@ fn test_deployment_mode_loads_the_service_view() {
     let names: Vec<_> = git_server
         .manifest()
         .expect("deployment mode has a manifest")
-        .repos
+        .repos()
         .iter()
         .map(|entry| entry.repo_name.clone())
         .collect();
@@ -886,7 +886,7 @@ fn test_deployment_source_keeps_its_legacy_tier() {
     let location = prod_location();
     let manifest_source = ManifestSource::deployment(handle, location, MononokeService::GIT_SERVER)
         .expect("the view loads");
-    assert_eq!(manifest_source.get().repos.len(), 1);
+    assert_eq!(manifest_source.get().repos().len(), 1);
     assert_eq!(manifest_source.version().as_deref(), Some("v0"));
 
     // A change to the service's repos is picked up.
@@ -897,7 +897,7 @@ fn test_deployment_source_keeps_its_legacy_tier() {
     publish(&deployment, 1, "v1");
     store.force_update_configs();
     let accepted = manifest_source.get();
-    assert_eq!(accepted.repos.len(), 2);
+    assert_eq!(accepted.repos().len(), 2);
     assert_eq!(manifest_source.version().as_deref(), Some("v1"));
 
     // A change to its legacy tier is refused: the last good view, version and
@@ -934,6 +934,6 @@ fn test_deployment_source_keeps_its_legacy_tier() {
         .legacy_tier = "gitimport_content".to_owned();
     publish(&deployment, 3, "v3");
     store.force_update_configs();
-    assert_eq!(manifest_source.get().repos.len(), 1);
+    assert_eq!(manifest_source.get().repos().len(), 1);
     assert_eq!(manifest_source.version().as_deref(), Some("v3"));
 }

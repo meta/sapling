@@ -266,7 +266,7 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
         let manifest = app.configs().manifest();
         let repo_names: HashMap<RepositoryId, String> = manifest
             .iter()
-            .flat_map(|manifest| &manifest.repos)
+            .flat_map(|manifest| manifest.repos())
             .map(|entry| (RepositoryId::new(entry.repo_id), entry.repo_name.clone()))
             .chain(
                 repo_configs
