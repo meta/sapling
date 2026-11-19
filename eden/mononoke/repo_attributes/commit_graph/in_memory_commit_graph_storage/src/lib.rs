@@ -169,6 +169,15 @@ impl CommitGraphStorage for InMemoryCommitGraphStorage {
         Ok(result)
     }
 
+    async fn maybe_fetch_many_edges_from_replica(
+        &self,
+        ctx: &CoreContext,
+        cs_ids: &[ChangesetId],
+        prefetch: Prefetch,
+    ) -> Result<HashMap<ChangesetId, FetchedChangesetEdges>> {
+        self.maybe_fetch_many_edges(ctx, cs_ids, prefetch).await
+    }
+
     async fn find_by_prefix(
         &self,
         _ctx: &CoreContext,

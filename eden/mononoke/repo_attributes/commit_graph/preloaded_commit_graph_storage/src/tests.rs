@@ -153,6 +153,17 @@ impl CommitGraphStorage for RecordingStorage {
             .await
     }
 
+    async fn maybe_fetch_many_edges_from_replica(
+        &self,
+        ctx: &CoreContext,
+        cs_ids: &[ChangesetId],
+        prefetch: Prefetch,
+    ) -> Result<HashMap<ChangesetId, FetchedChangesetEdges>> {
+        self.inner
+            .maybe_fetch_many_edges_from_replica(ctx, cs_ids, prefetch)
+            .await
+    }
+
     async fn prefetch_many_edges(
         &self,
         ctx: &CoreContext,

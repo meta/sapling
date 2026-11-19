@@ -112,6 +112,8 @@ pub struct EphemeralCommitGraphStorage {
     /// Another view of the MemWrites storage to allow traversing the commit graph
     /// (through CommitGraphWriter::add_recursive) to create ChangesetEdges.
     mem_writes_commit_graph_writer: BaseCommitGraphWriter,
+    /// The persistent commit graph storage that mem-writes wraps.
+    persistent_storage: Arc<dyn CommitGraphStorage>,
 }
 
 /// A storage that allows fetching snapshot changesets.
@@ -131,7 +133,8 @@ impl EphemeralCommitGraphStorage {
         connections: SqlConnections,
         persistent_storage: Arc<dyn CommitGraphStorage>,
     ) -> Self {
-        let mem_writes_storage = Arc::new(MemWritesCommitGraphStorage::new(persistent_storage));
+        let mem_writes_storage =
+            Arc::new(MemWritesCommitGraphStorage::new(persistent_storage.clone()));
         Self {
             ephemeral_only_storage: Arc::new(EphemeralOnlyChangesetStorage::new(
                 repo_id,
@@ -143,6 +146,7 @@ impl EphemeralCommitGraphStorage {
             mem_writes_commit_graph_writer: BaseCommitGraphWriter::new(CommitGraph::new(
                 mem_writes_storage,
             )),
+            persistent_storage,
         }
     }
 }
@@ -402,6 +406,20 @@ impl CommitGraphStorage for EphemeralCommitGraphStorage {
         Ok(fetched_edges)
     }
 
+    /// Looks up only persistent changesets. Mem-writes memory can hold bubble
+    /// changesets that `add_recursive` added before their bubble rows were
+    /// written, so it must not report them as stored.
+    async fn maybe_fetch_many_edges_from_replica(
+        &self,
+        ctx: &CoreContext,
+        cs_ids: &[ChangesetId],
+        prefetch: Prefetch,
+    ) -> Result<HashMap<ChangesetId, FetchedChangesetEdges>> {
+        self.persistent_storage
+            .maybe_fetch_many_edges_from_replica(ctx, cs_ids, prefetch)
+            .await
+    }
+
     async fn maybe_fetch_many_edges(
         &self,
         ctx: &CoreContext,
@@ -525,6 +543,7 @@ mod test {
     use commit_graph_types::edges::ChangesetNodeParents;
     use context::CoreContext;
     use fbinit::FacebookInit;
+    use in_memory_commit_graph_storage::InMemoryCommitGraphStorage;
     use memblob::Memblob;
     use metaconfig_types::BubbleDeletionMode;
     use mononoke_macros::mononoke;
@@ -536,6 +555,7 @@ mod test {
     use mononoke_types_mocks::repo::REPO_ONE;
     use mononoke_types_mocks::repo::REPO_ZERO;
     use repo_blobstore::RepoBlobstore;
+    use repo_identity::RepoIdentity;
     use scuba_ext::MononokeScubaSampleBuilder;
     use sql_construct::SqlConstruct;
 
@@ -614,6 +634,41 @@ mod test {
             subtree_source_skew_ancestor: None,
         }
         .freeze()
+    }
+
+    #[mononoke::fbinit_test]
+    async fn replica_lookup_ignores_unwritten_bubble_changesets(fb: FacebookInit) -> Result<()> {
+        let (ctx, repo_blobstore, eph) = bootstrap(fb)?;
+        let bubble = eph.create_bubble(&ctx, None, vec![]).await?;
+        let persistent = Arc::new(InMemoryCommitGraphStorage::new(Arc::new(
+            RepoIdentity::new(REPO_ZERO, "repo".to_string()),
+        )));
+        persistent
+            .add(&ctx, edges_with_parents(ONES_CSID, 1, vec![]))
+            .await?;
+        let storage = EphemeralCommitGraphStorage::new(
+            REPO_ZERO,
+            bubble.bubble_id(),
+            repo_blobstore,
+            bubble.sql_connections().clone(),
+            persistent,
+        );
+        // As `add_recursive` does for an ancestor before its bubble row is
+        // written.
+        storage
+            .mem_writes_storage
+            .add(&ctx, edges_with_parents(TWOS_CSID, 2, vec![ONES_CSID]))
+            .await?;
+
+        let found = storage
+            .maybe_fetch_many_edges_from_replica(&ctx, &[ONES_CSID, TWOS_CSID], Prefetch::None)
+            .await?;
+        assert_eq!(
+            found.into_keys().collect::<Vec<_>>(),
+            vec![ONES_CSID],
+            "only the persistent changeset counts as stored"
+        );
+        Ok(())
     }
 
     #[mononoke::fbinit_test]

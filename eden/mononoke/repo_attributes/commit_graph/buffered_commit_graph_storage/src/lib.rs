@@ -152,6 +152,34 @@ impl CommitGraphStorage for BufferedCommitGraphStorage {
         Ok(fetched_edges)
     }
 
+    async fn maybe_fetch_many_edges_from_replica(
+        &self,
+        ctx: &CoreContext,
+        cs_ids: &[ChangesetId],
+        prefetch: Prefetch,
+    ) -> Result<HashMap<ChangesetId, FetchedChangesetEdges>> {
+        let mut fetched_edges = self
+            .in_memory_storage
+            .maybe_fetch_many_edges(ctx, cs_ids, prefetch)
+            .await?;
+
+        let unfetched_ids = cs_ids
+            .iter()
+            .filter(|cs_id| !fetched_edges.contains_key(cs_id))
+            .copied()
+            .collect::<Vec<_>>();
+
+        if !unfetched_ids.is_empty() {
+            fetched_edges.extend(
+                self.persistent_storage
+                    .maybe_fetch_many_edges_from_replica(ctx, unfetched_ids.as_slice(), prefetch)
+                    .await?,
+            )
+        }
+
+        Ok(fetched_edges)
+    }
+
     async fn prefetch_many_edges(
         &self,
         ctx: &CoreContext,

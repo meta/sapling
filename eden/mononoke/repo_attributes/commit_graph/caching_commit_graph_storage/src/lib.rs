@@ -81,8 +81,19 @@ struct CacheRequest<'a> {
     ctx: &'a CoreContext,
     caching_storage: &'a CachingCommitGraphStorage,
     prefetch: Prefetch,
-    required: bool,
+    read: StorageRead,
     memcache_prefetch: bool,
+}
+
+/// How a cache miss reads the underlying storage.
+#[derive(Clone, Copy)]
+enum StorageRead {
+    /// Every changeset must be found.
+    Required,
+    /// Changesets not found are omitted.
+    Maybe,
+    /// Changesets not found are omitted, and the primary is not read.
+    MaybeFromReplica,
 }
 
 /// Origin of a value in the cachelib cache.
@@ -308,16 +319,23 @@ impl KeyedEntityStore<ChangesetId, CachedPrefetchedChangesetEdges> for CacheRequ
         keys: HashSet<ChangesetId>,
     ) -> Result<HashMap<ChangesetId, CachedPrefetchedChangesetEdges>> {
         let cs_ids: Vec<ChangesetId> = keys.iter().copied().collect();
-        let entries = if self.required {
-            self.caching_storage
-                .storage
-                .fetch_many_edges(self.ctx, &cs_ids, self.prefetch)
-                .await?
-        } else {
-            self.caching_storage
-                .storage
-                .maybe_fetch_many_edges(self.ctx, &cs_ids, self.prefetch)
-                .await?
+        let storage = &self.caching_storage.storage;
+        let entries = match self.read {
+            StorageRead::Required => {
+                storage
+                    .fetch_many_edges(self.ctx, &cs_ids, self.prefetch)
+                    .await?
+            }
+            StorageRead::Maybe => {
+                storage
+                    .maybe_fetch_many_edges(self.ctx, &cs_ids, self.prefetch)
+                    .await?
+            }
+            StorageRead::MaybeFromReplica => {
+                storage
+                    .maybe_fetch_many_edges_from_replica(self.ctx, &cs_ids, self.prefetch)
+                    .await?
+            }
         };
         if self.prefetch.is_include() {
             // We were asked to prefetch. We must separate out the prefetched
@@ -442,21 +460,11 @@ impl CachingCommitGraphStorage {
         (prefetch, true)
     }
 
-    fn request<'a>(&'a self, ctx: &'a CoreContext, prefetch: Prefetch) -> CacheRequest<'a> {
-        let (prefetch, memcache_prefetch) = Self::request_prefetch_params(prefetch);
-        CacheRequest {
-            ctx,
-            caching_storage: self,
-            prefetch,
-            memcache_prefetch,
-            required: false,
-        }
-    }
-
-    fn request_required<'a>(
+    fn request<'a>(
         &'a self,
         ctx: &'a CoreContext,
         prefetch: Prefetch,
+        read: StorageRead,
     ) -> CacheRequest<'a> {
         let (prefetch, memcache_prefetch) = Self::request_prefetch_params(prefetch);
         CacheRequest {
@@ -464,7 +472,7 @@ impl CachingCommitGraphStorage {
             caching_storage: self,
             prefetch,
             memcache_prefetch,
-            required: true,
+            read,
         }
     }
 
@@ -523,8 +531,11 @@ impl CommitGraphStorage for CachingCommitGraphStorage {
     }
 
     async fn fetch_edges(&self, ctx: &CoreContext, cs_id: ChangesetId) -> Result<ChangesetEdges> {
-        let mut found =
-            get_or_fill(&self.request_required(ctx, Prefetch::None), hashset![cs_id]).await?;
+        let mut found = get_or_fill(
+            &self.request(ctx, Prefetch::None, StorageRead::Required),
+            hashset![cs_id],
+        )
+        .await?;
         Ok(found
             .remove(&cs_id)
             .ok_or_else(|| anyhow!("Missing changeset from commit graph storage: {cs_id}"))?
@@ -536,7 +547,11 @@ impl CommitGraphStorage for CachingCommitGraphStorage {
         ctx: &CoreContext,
         cs_id: ChangesetId,
     ) -> Result<Option<ChangesetEdges>> {
-        let mut found = get_or_fill(&self.request(ctx, Prefetch::None), hashset![cs_id]).await?;
+        let mut found = get_or_fill(
+            &self.request(ctx, Prefetch::None, StorageRead::Maybe),
+            hashset![cs_id],
+        )
+        .await?;
         Ok(found
             .remove(&cs_id)
             .map(CachedPrefetchedChangesetEdges::take))
@@ -550,7 +565,7 @@ impl CommitGraphStorage for CachingCommitGraphStorage {
     ) -> Result<HashMap<ChangesetId, FetchedChangesetEdges>> {
         let cs_ids: HashSet<ChangesetId> = cs_ids.iter().copied().collect();
         let found = get_or_fill_chunked(
-            &self.request_required(ctx, prefetch),
+            &self.request(ctx, prefetch, StorageRead::Required),
             cs_ids.clone(),
             CHUNK_SIZE,
             PARALLEL_CHUNKS,
@@ -570,8 +585,28 @@ impl CommitGraphStorage for CachingCommitGraphStorage {
     ) -> Result<HashMap<ChangesetId, FetchedChangesetEdges>> {
         let cs_ids: HashSet<ChangesetId> = cs_ids.iter().copied().collect();
         let found = get_or_fill_chunked(
-            &self.request(ctx, prefetch),
+            &self.request(ctx, prefetch, StorageRead::Maybe),
             cs_ids.clone(),
+            CHUNK_SIZE,
+            PARALLEL_CHUNKS,
+        )
+        .await?;
+        Ok(found
+            .into_iter()
+            .map(|(cs_id, edges)| (cs_id, edges.take().into()))
+            .collect())
+    }
+
+    async fn maybe_fetch_many_edges_from_replica(
+        &self,
+        ctx: &CoreContext,
+        cs_ids: &[ChangesetId],
+        prefetch: Prefetch,
+    ) -> Result<HashMap<ChangesetId, FetchedChangesetEdges>> {
+        let cs_ids: HashSet<ChangesetId> = cs_ids.iter().copied().collect();
+        let found = get_or_fill_chunked(
+            &self.request(ctx, prefetch, StorageRead::MaybeFromReplica),
+            cs_ids,
             CHUNK_SIZE,
             PARALLEL_CHUNKS,
         )
@@ -588,7 +623,7 @@ impl CommitGraphStorage for CachingCommitGraphStorage {
         cs_ids: &[ChangesetId],
         scope: PrefetchScope,
     ) -> Result<()> {
-        let request = self.request(ctx, Prefetch::Hint(scope.target()));
+        let request = self.request(ctx, Prefetch::Hint(scope.target()), StorageRead::Maybe);
         if !request.prefetch.is_include() {
             return Ok(());
         }

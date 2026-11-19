@@ -27,6 +27,7 @@ sql_ext = { version = "0.1.0", path = "../../../common/rust/sql_ext" }
 vec1 = { version = "1.12.1", features = ["serde"] }
 
 [dev-dependencies]
+commit_graph = { version = "0.1.0", path = "../commit_graph" }
 commit_graph_testlib = { version = "0.1.0", path = "../commit_graph_testlib" }
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }

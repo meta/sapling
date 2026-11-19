@@ -604,6 +604,8 @@ rust_library(
         "//eden/mononoke/mercurial:mercurial_types-mocks",
         "//eden/mononoke/metaconfig:metaconfig_types",
         "//eden/mononoke/mononoke_types:mononoke_types-mocks",
+        "//eden/mononoke/repo_attributes/commit_graph/in_memory_commit_graph_storage:in_memory_commit_graph_storage",
+        "//eden/mononoke/repo_attributes/repo_identity:repo_identity",
     ],
     deps = [
         "fbsource//third-party/rust:anyhow",

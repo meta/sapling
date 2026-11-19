@@ -352,6 +352,32 @@ impl PreloadedCommitGraphStorage {
             persistent_storage,
         }))
     }
+
+    /// Returns the preloaded edges of `cs_ids`, and the changesets left to fetch.
+    fn preloaded_and_unfetched(
+        &self,
+        cs_ids: &[ChangesetId],
+    ) -> Result<(
+        HashMap<ChangesetId, FetchedChangesetEdges>,
+        Vec<ChangesetId>,
+    )> {
+        let preloaded_edges = self.preloaded_edges.load();
+        let fetched_edges: HashMap<_, _> = cs_ids
+            .iter()
+            .filter_map(|cs_id| {
+                preloaded_edges
+                    .get(cs_id)
+                    .map(|edges| edges.map(|edges| (*cs_id, edges.into())))
+                    .transpose()
+            })
+            .collect::<Result<_>>()?;
+        let unfetched_ids = cs_ids
+            .iter()
+            .filter(|cs_id| !fetched_edges.contains_key(cs_id))
+            .copied()
+            .collect();
+        Ok((fetched_edges, unfetched_ids))
+    }
 }
 
 #[async_trait]
@@ -408,23 +434,7 @@ impl CommitGraphStorage for PreloadedCommitGraphStorage {
         cs_ids: &[ChangesetId],
         prefetch: Prefetch,
     ) -> Result<HashMap<ChangesetId, FetchedChangesetEdges>> {
-        let preloaded_edges = self.preloaded_edges.load();
-        let mut fetched_edges: HashMap<_, _> = cs_ids
-            .iter()
-            .filter_map(|cs_id| {
-                preloaded_edges
-                    .get(cs_id)
-                    .map(|edges| edges.map(|edges| (*cs_id, edges.into())))
-                    .transpose()
-            })
-            .collect::<Result<_>>()?;
-
-        let unfetched_ids: Vec<_> = cs_ids
-            .iter()
-            .filter(|cs_id| !fetched_edges.contains_key(cs_id))
-            .copied()
-            .collect();
-
+        let (mut fetched_edges, unfetched_ids) = self.preloaded_and_unfetched(cs_ids)?;
         if !unfetched_ids.is_empty() {
             fetched_edges.extend(
                 self.persistent_storage
@@ -432,7 +442,23 @@ impl CommitGraphStorage for PreloadedCommitGraphStorage {
                     .await?,
             )
         }
+        Ok(fetched_edges)
+    }
 
+    async fn maybe_fetch_many_edges_from_replica(
+        &self,
+        ctx: &CoreContext,
+        cs_ids: &[ChangesetId],
+        prefetch: Prefetch,
+    ) -> Result<HashMap<ChangesetId, FetchedChangesetEdges>> {
+        let (mut fetched_edges, unfetched_ids) = self.preloaded_and_unfetched(cs_ids)?;
+        if !unfetched_ids.is_empty() {
+            fetched_edges.extend(
+                self.persistent_storage
+                    .maybe_fetch_many_edges_from_replica(ctx, unfetched_ids.as_slice(), prefetch)
+                    .await?,
+            )
+        }
         Ok(fetched_edges)
     }
 

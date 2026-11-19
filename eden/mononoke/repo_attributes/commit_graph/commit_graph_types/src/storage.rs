@@ -313,6 +313,17 @@ pub trait CommitGraphStorage: Send + Sync {
         prefetch: Prefetch,
     ) -> Result<HashMap<ChangesetId, FetchedChangesetEdges>>;
 
+    /// Same as maybe_fetch_many_edges, but never reads the primary: only
+    /// memory, caches and replicas. A changeset stored recently, or one a
+    /// storage cannot look up cheaply, may be missing. For callers that only
+    /// lose an optimisation when a stored changeset is missing.
+    async fn maybe_fetch_many_edges_from_replica(
+        &self,
+        ctx: &CoreContext,
+        cs_ids: &[ChangesetId],
+        prefetch: Prefetch,
+    ) -> Result<HashMap<ChangesetId, FetchedChangesetEdges>>;
+
     /// Warm any caches this storage has with edges below `cs_ids`, as far as
     /// `scope` says.  Storages without caches do nothing.
     async fn prefetch_many_edges(

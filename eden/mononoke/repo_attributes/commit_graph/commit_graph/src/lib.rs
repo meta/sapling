@@ -46,6 +46,7 @@ use futures::FutureExt;
 use futures::StreamExt;
 use futures::TryFutureExt;
 use futures::TryStreamExt;
+use futures::future::try_join;
 use futures::stream;
 use futures::stream::BoxStream;
 use futures::stream::FuturesUnordered;
@@ -169,26 +170,24 @@ impl CommitGraph {
         parents: ChangesetParents,
         subtree_sources: ChangesetSubtreeSources,
     ) -> Result<bool> {
-        let parent_edges = if subtree_sources.is_empty() {
+        let parents_and_sources = parents
+            .iter()
+            .chain(subtree_sources.iter())
+            .copied()
+            .collect::<Vec<_>>();
+        let (stored, parent_edges) = try_join(
+            self.stored_edges(ctx, &[cs_id]),
             self.storage
-                .fetch_many_edges(ctx, &parents, Prefetch::None)
-                .await?
-                .into_iter()
-                .map(|(k, v)| (k, v.into()))
-                .collect()
-        } else {
-            let parents_and_sources = parents
-                .iter()
-                .chain(subtree_sources.iter())
-                .copied()
-                .collect::<Vec<_>>();
-            self.storage
-                .fetch_many_edges(ctx, &parents_and_sources, Prefetch::None)
-                .await?
-                .into_iter()
-                .map(|(k, v)| (k, v.into()))
-                .collect()
-        };
+                .fetch_many_edges(ctx, &parents_and_sources, Prefetch::None),
+        )
+        .await?;
+        if stored.contains_key(&cs_id) {
+            return Ok(false);
+        }
+        let parent_edges = parent_edges
+            .into_iter()
+            .map(|(k, v)| (k, v.into()))
+            .collect();
 
         self.storage
             .add(
@@ -221,13 +220,21 @@ impl CommitGraph {
             .filter(|cs_id| !changesets_set.contains(cs_id))
             .copied()
             .collect::<Vec<_>>();
-        let mut edges_map: HashMap<ChangesetId, ChangesetEdges> = self
-            .storage
-            .fetch_many_edges(ctx, &parents_to_fetch, Prefetch::None)
-            .await
-            .with_context(|| "during commit_graph::add_many (fetch_many_edges)")?
+        let changesets_vec = changesets_set.iter().copied().collect::<Vec<_>>();
+        let (stored, parent_edges) = try_join(
+            self.stored_edges(ctx, &changesets_vec),
+            self.storage
+                .fetch_many_edges(ctx, &parents_to_fetch, Prefetch::None)
+                .map(|result| {
+                    result.with_context(|| "during commit_graph::add_many (fetch_many_edges)")
+                }),
+        )
+        .await?;
+        let stored_ids = stored.keys().copied().collect::<HashSet<_>>();
+        let mut edges_map: HashMap<ChangesetId, ChangesetEdges> = parent_edges
             .into_iter()
             .map(|(k, v)| (k, v.into()))
+            .chain(stored)
             .collect();
 
         // We use buffered storage here to be able to do all the writes in parallel.
@@ -236,6 +243,9 @@ impl CommitGraph {
             Arc::new(BufferedCommitGraphStorage::new(self.storage.clone(), 10000));
         let graph = CommitGraph::new(buffered_storage.clone());
         for (cs_id, parents, subtree_sources) in changesets {
+            if stored_ids.contains(&cs_id) {
+                continue;
+            }
             let edges = graph
                 .build_edges(ctx, cs_id, parents, subtree_sources, &edges_map)
                 .await?;
@@ -243,6 +253,31 @@ impl CommitGraph {
             buffered_storage.add(ctx, edges).await?;
         }
         buffered_storage.flush(ctx).await
+    }
+
+    /// Returns the edges of those of `cs_ids` that the cache or a replica
+    /// already has, when `commit_graph_skip_stored_changesets` is on, so that
+    /// writes can skip them without reading the primary.
+    async fn stored_edges(
+        &self,
+        ctx: &CoreContext,
+        cs_ids: &[ChangesetId],
+    ) -> Result<HashMap<ChangesetId, ChangesetEdges>> {
+        if !justknobs::eval(
+            "scm/mononoke:commit_graph_skip_stored_changesets",
+            None,
+            Some(self.storage.repo_name()),
+        ) {
+            return Ok(HashMap::new());
+        }
+        Ok(self
+            .storage
+            .maybe_fetch_many_edges_from_replica(ctx, cs_ids, Prefetch::None)
+            .await
+            .with_context(|| "during commit_graph::stored_edges")?
+            .into_iter()
+            .map(|(k, v)| (k, v.into()))
+            .collect())
     }
 
     /// Find all changeset ids with a given prefix.

@@ -2326,6 +2326,18 @@ impl CommitGraphStorage for SqlCommitGraphStorage {
         Ok(edges)
     }
 
+    async fn maybe_fetch_many_edges_from_replica(
+        &self,
+        ctx: &CoreContext,
+        cs_ids: &[ChangesetId],
+        prefetch: Prefetch,
+    ) -> Result<HashMap<ChangesetId, FetchedChangesetEdges>> {
+        ctx.perf_counters()
+            .increment_counter(PerfCounterType::SqlReadsReplica);
+        self.fetch_many_edges_impl(ctx, cs_ids, prefetch, &self.read_connection)
+            .await
+    }
+
     async fn find_by_prefix(
         &self,
         ctx: &CoreContext,
