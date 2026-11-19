@@ -36,6 +36,7 @@ bulk_derivation = { version = "0.1.0", path = "../../derived_data/bulk_derivatio
 bundle_uri = { version = "0.1.0", path = "../../git/bundle_uri" }
 bytes = { version = "1.12.1", features = ["serde"] }
 cacheblob = { version = "0.1.0", path = "../../blobstore/cacheblob" }
+cached_config = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 cas_client = { version = "0.1.0", path = "../../common/cas_client/client" }
 case_conflict_skeleton_manifest = { version = "0.1.0", path = "../../derived_data/case_conflict_skeleton_manifest" }
 changeset_info = { version = "0.1.0", path = "../../derived_data/changeset_info" }
@@ -99,6 +100,7 @@ metaconfig_types = { version = "0.1.0", path = "../../metaconfig/types" }
 metadata = { version = "0.1.0", path = "../../common/metadata" }
 mononoke_api = { version = "0.1.0", path = "../../mononoke_api" }
 mononoke_app = { version = "0.1.0", path = "../../cmdlib/mononoke_app" }
+mononoke_configs = { version = "0.1.0", path = "../../common/mononoke_configs" }
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
 mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
 movers = { version = "0.1.0", path = "../../features/commit_rewriting/movers" }

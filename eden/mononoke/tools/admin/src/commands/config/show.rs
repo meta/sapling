@@ -57,7 +57,13 @@ pub async fn run(app: MononokeApp, args: ShowArgs) -> Result<()> {
     let mut repo_config = serde_json::to_value(&config.value)?;
     let unions = union_paths(&config.value)?;
 
-    eprintln!("Resolved config of {} on tier {}", args.repo, loaded.tier);
+    match app.configs().service() {
+        Some(service) => eprintln!(
+            "Resolved config of {} as {service} sees it (legacy tier {})",
+            args.repo, loaded.tier
+        ),
+        None => eprintln!("Resolved config of {} on tier {}", args.repo, loaded.tier),
+    }
     if args.json {
         strip_nulls(&mut repo_config);
         if let Value::Object(fields) = &mut identity {

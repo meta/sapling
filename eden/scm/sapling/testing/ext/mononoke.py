@@ -1311,6 +1311,8 @@ def urlencode(args: List[str], stderr: BinaryIO) -> Union[str, int]:
 # rendered into the manifest + per-repo RepoSpec layout production reads,
 # under $LOCAL_CONFIGERATOR_PATH.
 MONONOKE_TEST_TIER = "test"
+# Every `MononokeService` value (repos.thrift), COMMAND included.
+MONONOKE_SERVICES = list(range(1, 26))
 # repos.thrift RawCommitIdentityScheme::HG
 RAW_COMMIT_IDENTITY_SCHEME_HG = 2
 
@@ -1405,6 +1407,29 @@ def render_mononoke_config(stderr: BinaryIO, fs: ShellFS, env: Env) -> int:
         "storage": _read_toml(fs, f"{src}/common/storage.toml"),
     }
     _write_json(fs, f"{dst}/scm/mononoke/repos/tiers/{tier}_manifest", manifest)
+
+    # The same repos as a deployment, `scm/mononoke/deployments/<tier>`, in
+    # which every service sees the tier: a program run with `--deployment
+    # <tier>` loads what one run with `--config-tier <tier>` loads.
+    deployment = {
+        "common": manifest["common"],
+        "storage": manifest["storage"],
+        "services": {
+            str(service): {"legacy_tier": tier} for service in MONONOKE_SERVICES
+        },
+        "service_groups": {tier: MONONOKE_SERVICES},
+        "repos": [
+            {
+                "repo_name": entry["repo_name"],
+                "repo_id": entry["repo_id"],
+                "spec_path": entry["config_path"].removeprefix("scm/mononoke/repos/"),
+                "is_deep_sharded": entry["is_deep_sharded"],
+                "service_groups": [tier],
+            }
+            for entry in entries
+        ],
+    }
+    _write_json(fs, f"{dst}/scm/mononoke/deployments/{tier}", deployment)
     return 0
 
 

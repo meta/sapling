@@ -120,3 +120,13 @@
   blob-repo0000.alias.sha256.559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd
   blob-repo0000.alias.sha256.6b23c0d5f35d1b11f9b683f0b0a617355deb11277d91ae091d399c655b87940d
   blob-repo0000.alias.sha256.df7e70e5021544f4834bbee64a9e3789febc4be81470df629cad6ddb03320a5c
+
+Aliasverify declares no service, so with a deployment it loads COMMAND's view,
+even of a deployment without an aliasverify service:
+  $ DEPLOYMENTS="$LOCAL_CONFIGERATOR_PATH/scm/mononoke/deployments"
+  $ jq 'del(.services["23"])' "$DEPLOYMENTS/$MONONOKE_CONFIG_TIER" > "$DEPLOYMENTS/no_aliasverify"
+  $ GLOG_minloglevel=5 "$MONONOKE_ALIAS_VERIFY" --repo-id $REPOID \
+  >   "${CACHE_ARGS[@]}" "${COMMON_ARGS[@]}" --deployment no_aliasverify \
+  >   --alias-type sha256 --mode verify --tracing-test-format 2>&1 | grep "Alias Verification"
+  [INFO] Alias Verification continues: 0 errors found
+  [INFO] Alias Verification finished: 0 errors found

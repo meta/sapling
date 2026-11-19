@@ -293,6 +293,19 @@ function mononoke_admin {
     "$@"
 }
 
+# Like mononoke_admin, but with the config flags given first instead of the
+# test tier: `mononoke_admin_with --deployment test <command>` loads the test
+# tier rendered as a deployment.
+function mononoke_admin_with {
+  render_mononoke_config
+  GLOG_minloglevel=5 "$MONONOKE_ADMIN" \
+    "${CACHE_ARGS[@]}" \
+    "${COMMON_ARGS[@]}" \
+    --log-level INFO \
+    --tracing-test-format \
+    "$@"
+}
+
 function mononoke_import {
   render_mononoke_config
   GLOG_minloglevel=5 "$MONONOKE_IMPORT" \

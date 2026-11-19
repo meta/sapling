@@ -293,6 +293,11 @@ impl MononokeConfigs {
         self.config_store.as_ref()
     }
 
+    /// The store in which a manifest entry's `config_path` names its spec.
+    pub fn repo_config_store(&self) -> Option<&ConfigStore> {
+        self.repo_config_store.as_ref()
+    }
+
     /// The deployment this job's current manifest came from and where it was
     /// read from; `None` when configs come from a tier.
     pub fn deployment(&self) -> Option<(DeploymentLocation, Arc<repos::Deployment>)> {
