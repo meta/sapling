@@ -586,6 +586,8 @@ pub struct EdenFsCheckout {
     #[serde(skip_serializing_if = "Option::is_none")]
     fuse_transport: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    nfs_transport: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     visible_in_daemon_namespace: Option<bool>,
     #[serde(skip)]
     pub(crate) redirections: Option<BTreeMap<PathBuf, RedirectionType>>,
@@ -621,7 +623,8 @@ impl EdenFsCheckout {
         };
 
         let transport_str = if verbose {
-            match (&self.fs_channel_type, &self.fuse_transport) {
+            let transport = self.fuse_transport.as_ref().or(self.nfs_transport.as_ref());
+            match (&self.fs_channel_type, transport) {
                 (Some(channel), Some(transport)) => format!(" ({channel}, {transport})"),
                 (Some(channel), None) => format!(" ({channel})"),
                 _ => String::new(),
@@ -788,6 +791,7 @@ impl EdenFsCheckout {
             },
             fs_channel_type: thrift_mount.fsChannelType,
             fuse_transport: thrift_mount.fuseTransport,
+            nfs_transport: thrift_mount.nfsTransport,
             visible_in_daemon_namespace: thrift_mount.visibleInDaemonNamespace,
             redirections: None,
             redirection_targets: None,
@@ -804,6 +808,7 @@ impl EdenFsCheckout {
             backing_repo: Some(config.repository.path.clone()),
             fs_channel_type: None,
             fuse_transport: None,
+            nfs_transport: None,
             visible_in_daemon_namespace: None,
             redirections: Some(config.redirections),
             redirection_targets: Some(config.redirection_targets),
@@ -1223,6 +1228,7 @@ mod tests {
             backing_repo: None,
             fs_channel_type: None,
             fuse_transport: None,
+            nfs_transport: None,
             visible_in_daemon_namespace: Some(false),
             redirections: None,
             redirection_targets: None,
@@ -1262,7 +1268,7 @@ mod tests {
     }
 
     #[test]
-    fn test_list_shows_fuse_transport_but_not_nfs_transport() {
+    fn test_list_shows_fs_channel_transport() {
         assert_eq!(
             (
                 "/tmp/mount (fuse, devfuse) (unconfigured)".to_string(),
@@ -1278,22 +1284,20 @@ mod tests {
             list_verbose_and_json("fuse", Some("devfuse"), None),
             "a FUSE mount should show its FUSE transport and have no nfs_transport key"
         );
-        // FIXME(T296623959): an NFS mount should show its NFS transport, as the
-        // Python CLI does: `/tmp/mount (nfs3, unix) (unconfigured)` and
-        // `"nfs_transport": "unix"`. Today the Rust CLI drops it.
         assert_eq!(
             (
-                "/tmp/mount (nfs3) (unconfigured)".to_string(),
+                "/tmp/mount (nfs3, unix) (unconfigured)".to_string(),
                 json!({
                     "data_dir": "/tmp/client",
                     "state": "RUNNING",
                     "configured": false,
                     "backing_repo": null,
                     "fs_channel_type": "nfs3",
+                    "nfs_transport": "unix",
                 })
             ),
             list_verbose_and_json("nfs3", None, Some("unix")),
-            "today an NFS mount's transport is dropped from `eden list -v` and `--json`"
+            "an NFS mount should show its NFS transport, as the Python CLI does"
         );
         assert_eq!(
             (
