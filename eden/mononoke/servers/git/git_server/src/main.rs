@@ -59,6 +59,7 @@ use mononoke_api::Repo;
 use mononoke_app::MononokeApp;
 use mononoke_app::MononokeAppBuilder;
 use mononoke_app::MononokeReposManager;
+use mononoke_app::MononokeService;
 use mononoke_app::ShutdownGracePeriod;
 use mononoke_app::args::McrouterAppExtension;
 use mononoke_app::args::ReadonlyArgs;
@@ -300,6 +301,7 @@ fn main(fb: FacebookInit) -> Result<(), Error> {
     };
 
     let app = MononokeAppBuilder::new(fb)
+        .with_default_service(MononokeService::GIT_SERVER)
         .with_default_scuba_dataset("mononoke_git_server")
         .with_entry_point(ClientEntryPoint::MononokeGitServer)
         .with_bookmarks_cache(BookmarkCacheOptions {

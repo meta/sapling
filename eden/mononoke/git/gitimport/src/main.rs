@@ -77,6 +77,7 @@ use mononoke_api::repo::git::TagMappingWrite;
 use mononoke_app::MononokeApp;
 use mononoke_app::MononokeAppBuilder;
 use mononoke_app::MononokeReposManager;
+use mononoke_app::MononokeService;
 use mononoke_app::args::RepoArgs;
 use mononoke_app::args::TLSArgs;
 use mononoke_app::monitoring::AliveService;
@@ -364,6 +365,7 @@ fn main(fb: FacebookInit) -> Result<(), Error> {
     }
     let lifecycle_timing = Arc::new(ImportLifecycleTiming::default());
     let app = MononokeAppBuilder::new(fb)
+        .with_default_service(MononokeService::GITIMPORT)
         .with_app_extension(MonitoringAppExtension {})
         .build::<GitimportArgs>()?;
 

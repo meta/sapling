@@ -22,6 +22,7 @@ use fbinit::FacebookInit;
 use metaconfig_types::ShardedService;
 use mononoke_app::MononokeAppBuilder;
 use mononoke_app::MononokeReposManager;
+use mononoke_app::MononokeService;
 use mononoke_app::args::RepoFilterAppExtension;
 use mononoke_app::args::ShutdownTimeoutArgs;
 use mononoke_app::monitoring::MonitoringAppExtension;
@@ -146,6 +147,7 @@ impl RepoShardedProcessExecutor for BookmarkServiceProcessExecutor {
 #[fbinit::main]
 fn main(fb: FacebookInit) -> Result<()> {
     let app = MononokeAppBuilder::new(fb)
+        .with_default_service(MononokeService::BOOKMARK_SERVICE)
         .with_bookmarks_cache(BookmarkCacheOptions {
             cache_kind: BookmarkCacheKind::Local,
             // The bookmark service must configure ALL warmers (Hg, Git, and any others)

@@ -27,6 +27,7 @@ use executor_lib::args::ShardedExecutorArgs;
 use fbinit::FacebookInit;
 use mononoke_app::MononokeApp;
 use mononoke_app::MononokeAppBuilder;
+use mononoke_app::MononokeService;
 use mononoke_app::args::RepoFilterAppExtension;
 use mononoke_app::args::TLSArgs;
 use mononoke_app::monitoring::AliveService;
@@ -228,6 +229,7 @@ fn parse_secs(arg: &str) -> Result<Duration> {
 #[fbinit::main]
 fn main(fb: FacebookInit) -> Result<()> {
     let app = MononokeAppBuilder::new(fb)
+        .with_default_service(MononokeService::P4_SYNC)
         .with_default_scuba_dataset("mononoke_p4_sync")
         .with_app_extension(MonitoringAppExtension {})
         .with_app_extension(RepoFilterAppExtension {})

@@ -18,6 +18,7 @@ use fbinit::FacebookInit;
 use metaconfig_types::RepoConfig;
 use mononoke_app::MononokeApp;
 use mononoke_app::MononokeAppBuilder;
+use mononoke_app::MononokeService;
 use mononoke_app::args::RepoFilterAppExtension;
 use mononoke_app::args::TLSArgs;
 use mononoke_app::monitoring::AliveService;
@@ -104,6 +105,7 @@ pub struct Repo {
 fn main(fb: FacebookInit) -> Result<()> {
     let subcommands = commands::subcommands();
     let app = MononokeAppBuilder::new(fb)
+        .with_default_service(MononokeService::MODERN_SYNC)
         .with_default_scuba_dataset("mononoke_modern_sync")
         .with_app_extension(MonitoringAppExtension {})
         .with_app_extension(RepoFilterAppExtension {})

@@ -45,6 +45,7 @@ use microwave::Snapshot;
 use microwave::SnapshotLocation;
 use mononoke_app::MononokeApp;
 use mononoke_app::MononokeAppBuilder;
+use mononoke_app::MononokeService;
 use mononoke_app::monitoring::AliveService;
 use mononoke_app::monitoring::MonitoringAppExtension;
 use mononoke_macros::mononoke;
@@ -279,6 +280,7 @@ struct LocalPath {
 #[fbinit::main]
 fn main(fb: FacebookInit) -> Result<(), Error> {
     let app = MononokeAppBuilder::new(fb)
+        .with_default_service(MononokeService::MICROWAVE)
         .with_app_extension(MonitoringAppExtension {})
         .with_arg_defaults(BlobstoreArgDefaults {
             put_behaviour: Some(PutBehaviour::Overwrite),

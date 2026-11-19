@@ -38,6 +38,7 @@ use mononoke_api::Repo;
 use mononoke_app::MononokeApp;
 use mononoke_app::MononokeAppBuilder;
 use mononoke_app::MononokeReposManager;
+use mononoke_app::MononokeService;
 use mononoke_app::args::HooksAppExtension;
 use mononoke_app::args::McrouterAppExtension;
 use mononoke_app::args::ReadonlyArgs;
@@ -230,6 +231,7 @@ impl RepoShardedProcessExecutor for MononokeServerProcessExecutor {
 #[fbinit::main]
 fn main(fb: FacebookInit) -> Result<()> {
     let app = MononokeAppBuilder::new(fb)
+        .with_default_service(MononokeService::SLAPI_SERVER)
         .with_default_scuba_dataset("mononoke_test_perf")
         .with_entry_point(ClientEntryPoint::SaplingRemoteApi)
         .with_bookmarks_cache(BookmarkCacheOptions {

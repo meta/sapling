@@ -26,6 +26,7 @@ use executor_lib::RepoShardedProcessExecutor;
 use fbinit::FacebookInit;
 use megarepo_api::MegarepoApi;
 use mononoke_app::MononokeAppBuilder;
+use mononoke_app::MononokeService;
 use mononoke_app::args::HooksAppExtension;
 use mononoke_app::args::ShutdownTimeoutArgs;
 use mononoke_app::args::WarmBookmarksCacheExtension;
@@ -64,6 +65,7 @@ struct BackfillWorkerArgs {
 #[fbinit::main]
 fn main(fb: FacebookInit) -> Result<()> {
     let app = MononokeAppBuilder::new(fb)
+        .with_default_service(MononokeService::BACKFILL_WORKER)
         .with_bookmarks_cache(BookmarkCacheOptions {
             cache_kind: BookmarkCacheKind::Local,
             derived_data: BookmarkCacheDerivedData::NoDerivation,

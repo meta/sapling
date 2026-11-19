@@ -15,6 +15,7 @@ use fbinit::FacebookInit;
 use land_service_if_services::*;
 use metaconfig_types::ShardedService;
 use mononoke_app::MononokeAppBuilder;
+use mononoke_app::MononokeService;
 use mononoke_app::args::RepoFilterAppExtension;
 use mononoke_app::args::ShutdownTimeoutArgs;
 use mononoke_thrift_server::DEFAULT_THRIFT_HOST;
@@ -59,6 +60,7 @@ struct LandServiceServerArgs {
 #[fbinit::main]
 fn main(fb: FacebookInit) -> Result<(), Error> {
     let app = MononokeAppBuilder::new(fb)
+        .with_default_service(MononokeService::LAND_SERVICE)
         .with_app_extension(RepoFilterAppExtension {})
         .build::<LandServiceServerArgs>()?;
 
