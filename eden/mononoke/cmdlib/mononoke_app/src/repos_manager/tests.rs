@@ -28,6 +28,7 @@ use justknobs::test_helpers::JustKnobsInMemory;
 use justknobs::test_helpers::KnobVal;
 use justknobs::test_helpers::with_just_knobs_async;
 use metaconfig_parser::RepoConfigs;
+use metaconfig_parser::ServiceManifest;
 use metaconfig_parser::StorageConfigs;
 use metaconfig_types::CommitIdentityScheme;
 use metaconfig_types::CommitIdentityScheme::GIT;
@@ -377,7 +378,7 @@ fn spawn_counting_loop(
     trigger: Arc<Notify>,
     interval: Duration,
 ) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(reconcile_loop(
+    mononoke::spawn_task(reconcile_loop(
         move || {
             let count = count.clone();
             let passed = passed.clone();
@@ -532,16 +533,16 @@ fn test_scheme_from_config_path_follows_the_tree_layout() {
 // manifest yields an empty map.
 #[mononoke::test]
 fn test_repo_names_from_manifest_lists_every_entry() {
-    let names = repo_names_from_manifest(&manifest_of(&[
+    let names = repo_names_from_manifest(&ServiceManifest::from(manifest_of(&[
         ("a", git_path("a")),
         ("fbsource", hg_path("fbsource")),
         ("odd", "elsewhere/odd".to_string()),
-    ]));
+    ])));
     assert_eq!(
         names,
         names_of(&[("a", GIT), ("fbsource", HG), ("odd", UNKNOWN)])
     );
-    assert!(repo_names_from_manifest(&manifest_of(&[])).is_empty());
+    assert!(repo_names_from_manifest(&ServiceManifest::from(manifest_of(&[]))).is_empty());
 }
 
 // --- MononokeConfigUpdateReceiver ------------------------------------------
@@ -1073,7 +1074,7 @@ async fn first_request_build_during_a_spec_change(
     repos.add_placeholder("a", 1);
     let first_request = {
         let repos = repos.clone();
-        tokio::spawn(async move { repos.get("a").await })
+        mononoke::spawn_task(async move { repos.get("a").await })
     };
     built.notified().await;
     if change {

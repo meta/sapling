@@ -11,11 +11,14 @@
 //! Internal organization:
 //! - [`ConfigUpdateReceiver`] trait is in `receiver`
 //! - The unified watcher task (single tokio task that owns the config source —
-//!   the tier manifest — plus the per-repo control channel and
+//!   the tier manifest or deployment — plus the per-repo control channel and
 //!   per-repo wait fan-in) is in `watcher`
+//! - Where the repo list comes from, a tier manifest or one service's view of a
+//!   deployment, is in `manifest_source`
 //!
 //! `MononokeConfigs` itself owns the `ArcSwap` state and the task handles.
 
+mod manifest_source;
 mod receiver;
 mod watcher;
 
@@ -23,6 +26,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::RwLock;
+use std::time::Duration;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -32,17 +36,20 @@ use cached_config::ConfigHandle;
 use cached_config::ConfigStore;
 use cached_config::ConfigVersionInfo;
 use cloned::cloned;
+use metaconfig_parser::ConfigRoot;
+use metaconfig_parser::DeploymentLocation;
 use metaconfig_parser::RepoConfigEntry;
 use metaconfig_parser::RepoConfigs;
+use metaconfig_parser::ServiceManifest;
 use metaconfig_parser::StorageConfigs;
 use metaconfig_parser::configerator_manifest_handle;
 use metaconfig_parser::configerator_repo_spec_handle;
-use metaconfig_parser::parse_manifest_common_and_storage;
+use metaconfig_parser::deployment_config_handle;
 use metaconfig_parser::parse_repo_spec;
 use metaconfig_types::RepoConfig;
 use metaconfig_types::RepoConfigSource;
+use repos::MononokeService;
 use repos::RepoSpec;
-use repos::TierManifest;
 use stats::prelude::*;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
@@ -51,6 +58,7 @@ use tracing::error;
 use tracing::info;
 use tracing::warn;
 
+use crate::manifest_source::ManifestSource;
 pub use crate::receiver::ConfigUpdateReceiver;
 use crate::watcher::ConfigSource;
 use crate::watcher::RepoHandleEvent;
@@ -61,6 +69,9 @@ use crate::watcher::unified_config_watcher;
 pub fn tier_manifest_path(tier: &str) -> String {
     format!("scm/mononoke/repos/tiers/{tier}_manifest")
 }
+
+/// How often configs read from files on disk are checked for changes.
+const FILE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Shorthand for a value swapped atomically via `arc_swap`. Used for the
 /// stateful slots inside `MononokeConfigs` that receivers read.
@@ -104,11 +115,14 @@ pub struct MononokeConfigs {
     maybe_config_updater: Option<JoinHandle<()>>,
     maybe_liveness_updater: Option<JoinHandle<()>>,
     // Per-repo split-loading fields
-    maybe_manifest_handle: Option<ConfigHandle<TierManifest>>,
+    manifest_source: Option<Arc<ManifestSource>>,
     repo_handles: Arc<RwLock<HashMap<String, ConfigHandle<RepoSpec>>>>,
     config_store: Option<ConfigStore>,
-    /// Tier name derived from the configerator config path.
-    /// Used for resolving tier_overrides in RepoSpec configs during split-loading.
+    /// The store specs are read from: `config_store`, or a file store over a
+    /// `--config` directory.
+    repo_config_store: Option<ConfigStore>,
+    /// The tier whose `tier_overrides` resolve repo configs: the tier, or the
+    /// service's legacy tier when configs come from a deployment.
     tier_name: Option<String>,
     /// Sender side of the control channel that notifies `unified_config_watcher`
     /// when a new per-repo `ConfigUpdateWatcher<RepoSpec>` has been created
@@ -123,15 +137,70 @@ impl MononokeConfigs {
     /// `config_store`: `scm/mononoke/repos/tiers/<tier>_manifest` plus the
     /// per-repo `RepoSpec` each manifest entry names, all watched for changes.
     pub fn new(tier: &str, config_store: &ConfigStore, runtime_handle: Handle) -> Result<Self> {
-        let update_receivers = Arc::new(ArcSwap::from_pointee(vec![]));
-
         let manifest_handle =
             configerator_manifest_handle(&tier_manifest_path(tier), config_store)?;
+        Self::from_source(
+            ManifestSource::tier(manifest_handle),
+            tier.to_owned(),
+            config_store,
+            config_store.clone(),
+            runtime_handle,
+        )
+    }
+
+    /// Create a new instance of MononokeConfigs for the deployment at
+    /// `location`, as `service` sees it: the repos that service serves, with
+    /// their `RepoSpec`s from the same root, all watched for changes.
+    pub fn new_from_deployment(
+        location: &DeploymentLocation,
+        service: MononokeService,
+        config_store: &ConfigStore,
+        runtime_handle: Handle,
+    ) -> Result<Self> {
+        let repo_config_store = match &location.root {
+            ConfigRoot::ConfigStore => config_store.clone(),
+            ConfigRoot::Directory(dir) => ConfigStore::file(
+                true,
+                dir.clone(),
+                ConfigRoot::DIRECTORY_EXTENSION.to_owned(),
+                FILE_POLL_INTERVAL,
+            ),
+        };
+        let handle = deployment_config_handle(&location.config_path(), &repo_config_store)
+            .with_context(|| format!("Failed to read the deployment at {location}"))?;
+        let source = ManifestSource::deployment(handle, location.clone(), service)
+            .with_context(|| format!("Failed to load the deployment at {location}"))?;
+        let (service, tier) = source
+            .deployment_service()
+            .map(|(service, tier)| (service, tier.to_owned()))
+            .context("A deployment source has a service")?;
+        info!(
+            "Loading the deployment at {location} as {service}, with repo configs resolved for \
+             tier {tier}",
+        );
+        Self::from_source(
+            source,
+            tier,
+            config_store,
+            repo_config_store,
+            runtime_handle,
+        )
+    }
+
+    fn from_source(
+        source: ManifestSource,
+        tier: String,
+        config_store: &ConfigStore,
+        repo_config_store: ConfigStore,
+        runtime_handle: Handle,
+    ) -> Result<Self> {
+        let update_receivers = Arc::new(ArcSwap::from_pointee(vec![]));
+
         // The manifest is the sole source of common/storage; fail closed at startup.
-        let manifest = manifest_handle.get();
-        let (common, storage) = parse_manifest_common_and_storage(&manifest).context(
-            "common/storage could not be parsed from the tier manifest; refusing to start",
-        )?;
+        let manifest = source.get();
+        let (common, storage) = manifest
+            .parse_common_and_storage()
+            .context("common/storage could not be parsed from the manifest; refusing to start")?;
         STATS::tier_blob_skipped.add_value(1);
         // Repos load on demand.
         let storage_configs = Arc::new(ArcSwap::from_pointee(storage));
@@ -139,8 +208,7 @@ impl MononokeConfigs {
             HashMap::new(),
             common,
         )));
-        let tier_name = Some(tier.to_owned());
-        let maybe_manifest_handle = Some(manifest_handle.clone());
+        let source = Arc::new(source);
 
         let repo_handles = Arc::new(RwLock::new(HashMap::new()));
 
@@ -151,8 +219,8 @@ impl MononokeConfigs {
         let repo_handle_event_tx = Some(repo_handle_event_tx);
 
         let config_source = ConfigSource {
-            handle: manifest_handle,
-            tier: tier.to_owned(),
+            manifest: source.clone(),
+            tier: tier.clone(),
         };
 
         let maybe_liveness_updater = Some(runtime_handle.spawn(liveness_updater()));
@@ -163,12 +231,12 @@ impl MononokeConfigs {
                 repo_configs,
                 storage_configs,
                 update_receivers,
+                repo_config_store,
             );
-            let config_store_clone = config_store.clone();
             Some(runtime_handle.spawn(unified_config_watcher(
                 config_source,
                 repo_handles,
-                config_store_clone,
+                repo_config_store,
                 repo_configs,
                 storage_configs,
                 update_receivers,
@@ -182,10 +250,11 @@ impl MononokeConfigs {
             update_receivers,
             maybe_config_updater,
             maybe_liveness_updater,
-            maybe_manifest_handle,
+            manifest_source: Some(source),
             repo_handles,
             config_store: Some(config_store.clone()),
-            tier_name,
+            repo_config_store: Some(repo_config_store),
+            tier_name: Some(tier),
             repo_handle_event_tx,
         })
     }
@@ -198,9 +267,10 @@ impl MononokeConfigs {
             update_receivers: Arc::new(ArcSwap::from_pointee(vec![])),
             maybe_config_updater: None,
             maybe_liveness_updater: None,
-            maybe_manifest_handle: None,
+            manifest_source: None,
             repo_handles: Arc::new(RwLock::new(HashMap::new())),
             config_store: None,
+            repo_config_store: None,
             tier_name: None,
             repo_handle_event_tx: None,
         }
@@ -223,23 +293,39 @@ impl MononokeConfigs {
         self.config_store.as_ref()
     }
 
-    /// Returns the current TierManifest, if split-loading is enabled.
-    pub fn manifest(&self) -> Option<Arc<TierManifest>> {
-        self.maybe_manifest_handle.as_ref().map(|h| h.get())
-    }
-
-    /// Configerator version of the tier manifest this task last loaded, when
-    /// configs come from configerator. Lets a caller tell "this task is at
-    /// or past my change" from "this task is stale".
-    pub fn manifest_version(&self) -> Option<String> {
-        self.maybe_manifest_handle
+    /// The deployment this job's current manifest came from and where it was
+    /// read from; `None` when configs come from a tier.
+    pub fn deployment(&self) -> Option<(DeploymentLocation, Arc<repos::Deployment>)> {
+        self.manifest_source
             .as_ref()
-            .and_then(|h| h.get_with_version().1)
-            .map(|info| info.version)
+            .and_then(|source| source.applied_deployment())
     }
 
-    /// The tier name (derived from the configerator config path), if split-
-    /// loading is enabled. The reconcile controller needs it to parse `RepoSpec`s.
+    /// The current manifest: the tier's, or this service's view of the
+    /// deployment. `None` for static configs.
+    pub fn manifest(&self) -> Option<Arc<ServiceManifest>> {
+        self.manifest_source.as_ref().map(|source| source.get())
+    }
+
+    /// The service whose view of a deployment this job loaded; `None` when
+    /// configs come from a tier.
+    pub fn service(&self) -> Option<MononokeService> {
+        self.manifest_source
+            .as_ref()
+            .and_then(|source| source.deployment_service())
+            .map(|(service, _)| service)
+    }
+
+    /// Configerator version of the config this task's manifest came from. A
+    /// refused deployment change is not reported.
+    pub fn manifest_version(&self) -> Option<String> {
+        self.manifest_source
+            .as_ref()
+            .and_then(|source| source.version())
+    }
+
+    /// The tier whose `tier_overrides` resolve repo configs: for a deployment,
+    /// the service's legacy tier.
     pub fn tier_name(&self) -> Option<&str> {
         self.tier_name.as_deref()
     }
@@ -341,7 +427,7 @@ impl MononokeConfigs {
         }
 
         let manifest = self
-            .maybe_manifest_handle
+            .manifest_source
             .as_ref()
             .context("No manifest handle available")?
             .get();
@@ -353,7 +439,7 @@ impl MononokeConfigs {
             .ok_or_else(|| anyhow!("Repo {repo_name} not found in manifest"))?;
 
         let config_store = self
-            .config_store
+            .repo_config_store
             .as_ref()
             .context("No config store available")?;
 
@@ -413,17 +499,17 @@ impl MononokeConfigs {
             return Ok(());
         }
 
-        let Some(manifest_handle) = self.maybe_manifest_handle.as_ref() else {
+        let Some(manifest_source) = self.manifest_source.as_ref() else {
             return Ok(());
         };
-        let manifest = manifest_handle.get();
+        let manifest = manifest_source.get();
 
         let Some(entry) = manifest.repos.iter().find(|e| e.repo_name == repo_name) else {
             return Ok(());
         };
 
         let config_store = self
-            .config_store
+            .repo_config_store
             .as_ref()
             .context("No config store available")?;
 
@@ -555,7 +641,7 @@ impl MononokeConfigs {
             .as_deref()
             .context("tier_name required for split-loading")?;
         let manifest = self
-            .maybe_manifest_handle
+            .manifest_source
             .as_ref()
             .context("manifest handle required for split-loading")?
             .get();
@@ -714,8 +800,8 @@ impl MononokeConfigs {
         // Slow path: search manifest for repo_id.
         // If no manifest is available (e.g. integration tests, file-backed configs),
         // fall back to the original "unknown repoid" error.
-        let manifest = match self.maybe_manifest_handle.as_ref() {
-            Some(handle) => handle.get(),
+        let manifest = match self.manifest_source.as_ref() {
+            Some(source) => source.get(),
             None => anyhow::bail!("unknown repoid: RepositoryId({repo_id})"),
         };
         let entry = manifest

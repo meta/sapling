@@ -41,6 +41,7 @@ use futures::stream::StreamExt;
 use futures::stream::TryStreamExt;
 use itertools::Itertools;
 use metaconfig_parser::RepoConfigs;
+use metaconfig_parser::ServiceManifest;
 use metaconfig_parser::SharedGenerations;
 use metaconfig_parser::StorageConfigs;
 use metaconfig_parser::parse_repo_spec;
@@ -61,7 +62,6 @@ use mononoke_repos::RepoLoader;
 use repo_factory::RepoFactory;
 use repo_factory::RepoFactoryBuilder;
 use repos::RepoSpec;
-use repos::TierManifest;
 use stats::prelude::*;
 use tokio::sync::Notify;
 use tokio::sync::Semaphore;
@@ -1146,7 +1146,7 @@ fn scheme_from_config_path(config_path: &str) -> CommitIdentityScheme {
 /// entry, no spec reads, no per-task state. The manifest is what the tier
 /// serves, so the map is complete by construction and cannot shrink with what
 /// this task happens to have cached.
-fn repo_names_from_manifest(manifest: &TierManifest) -> HashMap<String, CommitIdentityScheme> {
+fn repo_names_from_manifest(manifest: &ServiceManifest) -> HashMap<String, CommitIdentityScheme> {
     manifest
         .repos
         .iter()

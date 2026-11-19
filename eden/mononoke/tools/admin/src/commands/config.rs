@@ -13,10 +13,10 @@ use anyhow::Context;
 use anyhow::Result;
 use clap::Parser;
 use clap::Subcommand;
+use metaconfig_parser::ServiceManifest;
 use metaconfig_parser::configerator_repo_spec_handle;
 use mononoke_app::MononokeApp;
 use repos::RepoSpec;
-use repos::TierManifest;
 use serde_json::Value;
 
 mod check;
@@ -51,7 +51,7 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
 /// A repo's spec and the tier it was loaded for.
 struct LoadedSpec {
     tier: String,
-    manifest: Arc<TierManifest>,
+    manifest: Arc<ServiceManifest>,
     spec: RepoSpec,
 }
 

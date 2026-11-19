@@ -9,8 +9,8 @@
 //!
 //! The watcher is a single tokio task that owns three event sources:
 //!
-//! 1. **Config source** [`ConfigSource`] — fires on `TierManifest` changes
-//!    (repo add/remove, sharding mode flips)
+//! 1. **Config source** [`ConfigSource`] — fires on tier manifest or
+//!    deployment changes (repo add/remove, sharding mode flips)
 //! 2. **Per-repo control channel** `mpsc::UnboundedReceiver<RepoHandleEvent>` —
 //!    notifies the loop when a new per-repo `ConfigHandle<RepoSpec>` is installed
 //!    by `load_repo_config_handle` / `ensure_repo_config_handle` (ShardManager
@@ -39,16 +39,15 @@ use futures::stream::FuturesUnordered;
 use futures::stream::StreamExt;
 use metaconfig_parser::RepoConfigEntry;
 use metaconfig_parser::RepoConfigs;
+use metaconfig_parser::ServiceManifest;
 use metaconfig_parser::SharedGenerations;
 use metaconfig_parser::StorageConfigs;
 use metaconfig_parser::configerator_repo_spec_handle;
-use metaconfig_parser::parse_manifest_common_and_storage;
 use metaconfig_parser::parse_repo_spec;
 use metaconfig_types::CommonConfig;
 use metaconfig_types::RepoConfig;
 use metaconfig_types::RepoConfigSource;
 use repos::RepoSpec;
-use repos::TierManifest;
 use stats::prelude::*;
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -58,6 +57,7 @@ use tracing::warn;
 
 use crate::STATS;
 use crate::Swappable;
+use crate::manifest_source::ManifestSource;
 use crate::receiver::ConfigUpdateReceiver;
 use crate::source_of;
 
@@ -81,10 +81,11 @@ pub(crate) enum RepoHandleEvent {
     Added(String, ConfigUpdateWatcher<RepoSpec>),
 }
 
-/// Where the watcher sources bulk config from: the tier manifest is
-/// authoritative; `tier` resolves `tier_overrides`.
+/// Where the watcher sources bulk config from: the manifest (a tier's, or a
+/// service's view of a deployment) is authoritative; `tier` resolves
+/// `tier_overrides`.
 pub(crate) struct ConfigSource {
-    pub(crate) handle: ConfigHandle<TierManifest>,
+    pub(crate) manifest: Arc<ManifestSource>,
     pub(crate) tier: String,
 }
 
@@ -255,7 +256,7 @@ pub(crate) async fn unified_config_watcher(
     update_receivers: Swappable<Vec<Arc<dyn ConfigUpdateReceiver>>>,
     mut repo_handle_event_rx: Option<mpsc::UnboundedReceiver<RepoHandleEvent>>,
 ) {
-    let mut manifest_watcher = match config_source.handle.watcher() {
+    let mut manifest_watcher = match config_source.manifest.watcher() {
         Ok(watcher) => watcher,
         Err(e) => {
             error!("Failed to create manifest watcher, unified_config_watcher exiting: {e:?}");
@@ -349,7 +350,7 @@ pub(crate) async fn unified_config_watcher(
 #[derive(Default)]
 struct ReloadState {
     /// Last applied manifest; advanced only by a fully successful pass.
-    prev_manifest: Option<Arc<TierManifest>>,
+    prev_manifest: Option<Arc<ServiceManifest>>,
     /// Reused on equal re-parse to keep pointer identity stable.
     cached_manifest_storage: Option<Arc<StorageConfigs>>,
     /// Parse results from the last committed manifest pass, each valid against the shared configs
@@ -382,7 +383,7 @@ async fn run_reload_pass(
     per_repo_wait_futures: &mut FuturesUnordered<PerRepoFuture>,
 ) {
     run_manifest_reload_pass(
-        &config_source.handle,
+        &config_source.manifest,
         &config_source.tier,
         repo_handles,
         config_store,
@@ -404,7 +405,7 @@ async fn run_reload_pass(
               the arguments are the loop's captured environment"
 )]
 async fn run_manifest_reload_pass(
-    manifest_handle: &ConfigHandle<TierManifest>,
+    manifest_source: &ManifestSource,
     tier: &str,
     repo_handles: &RwLock<HashMap<String, ConfigHandle<RepoSpec>>>,
     config_store: &ConfigStore,
@@ -415,7 +416,7 @@ async fn run_manifest_reload_pass(
     prev_specs: &mut HashMap<String, Arc<RepoSpec>>,
     per_repo_wait_futures: &mut FuturesUnordered<PerRepoFuture>,
 ) {
-    let current_manifest = manifest_handle.get();
+    let current_manifest = manifest_source.get();
     if !content_changed(&state.prev_manifest, &current_manifest) {
         STATS::spurious_reload_suppressed.add_value(1);
         debug!("Config version bumped but content identical, skipping reload");
@@ -431,11 +432,11 @@ async fn run_manifest_reload_pass(
     }
 
     // Parse first: fail closed before any state mutation.
-    let (common, storage) = match parse_manifest_common_and_storage(&current_manifest) {
+    let (common, storage) = match current_manifest.parse_common_and_storage() {
         Ok(parsed) => parsed,
         Err(e) => {
             error!(
-                "Failed to parse common/storage from tier manifest, \
+                "Failed to parse common/storage from the manifest, \
                  keeping last known good config: {e:?}"
             );
             STATS::manifest_common_parse_failure.add_value(1);
@@ -658,7 +659,7 @@ async fn handle_per_repo_fire(
     watcher: ConfigUpdateWatcher<RepoSpec>,
     repo_handles: &RwLock<HashMap<String, ConfigHandle<RepoSpec>>>,
     tier_name: Option<&str>,
-    prev_manifest: Option<&TierManifest>,
+    prev_manifest: Option<&ServiceManifest>,
     repo_configs: &Swappable<RepoConfigs>,
     update_receivers: &Swappable<Vec<Arc<dyn ConfigUpdateReceiver>>>,
     per_repo_wait_futures: &mut FuturesUnordered<PerRepoFuture>,
@@ -767,7 +768,7 @@ async fn handle_per_repo_fire(
 /// and are skipped — they have no live channel to observe anyway, but the
 /// dataloss is observable in production via the warn log.
 pub(crate) fn sync_repo_handles(
-    manifest: &TierManifest,
+    manifest: &ServiceManifest,
     repo_handles: &RwLock<HashMap<String, ConfigHandle<RepoSpec>>>,
     config_store: &ConfigStore,
     bootstrap: bool,
@@ -852,7 +853,7 @@ pub(crate) fn sync_repo_handles(
 /// extracted to make the diff testable without a `ConfigStore`.
 fn compute_handles_to_remove(
     current_repos: &HashSet<String>,
-    manifest: &TierManifest,
+    manifest: &ServiceManifest,
 ) -> Vec<String> {
     let manifest_repo_names: HashSet<&str> = manifest
         .repos

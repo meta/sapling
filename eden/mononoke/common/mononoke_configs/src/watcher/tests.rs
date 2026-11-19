@@ -8,7 +8,9 @@
 use anyhow::anyhow;
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
+use metaconfig_parser::parse_manifest_common_and_storage;
 use mononoke_macros::mononoke;
+use repos::TierManifest;
 use repos::TierRepoEntry;
 
 use super::*;
@@ -21,11 +23,11 @@ fn tier_entry(name: &str, is_deep_sharded: bool) -> TierRepoEntry {
     }
 }
 
-fn manifest_with(entries: Vec<TierRepoEntry>) -> TierManifest {
-    TierManifest {
+fn manifest_with(entries: Vec<TierRepoEntry>) -> ServiceManifest {
+    ServiceManifest::from(TierManifest {
         repos: entries,
         ..Default::default()
-    }
+    })
 }
 
 // Regression: deep-sharded handles inserted on-demand by ShardManager
@@ -741,7 +743,7 @@ impl ReloadFixture {
 
     async fn run(&mut self) {
         let source = ConfigSource {
-            handle: self.manifest_handle.clone(),
+            manifest: Arc::new(ManifestSource::tier(self.manifest_handle.clone())),
             tier: "test_tier".to_string(),
         };
         run_reload_pass(
@@ -787,7 +789,7 @@ async fn test_manifest_reload_keeps_last_known_good_on_parse_failure() {
     );
     assert_eq!(
         fx.state.prev_manifest.as_deref(),
-        Some(&v0),
+        Some(&ServiceManifest::from(v0.clone())),
         "pass 1 must record the applied manifest"
     );
 
@@ -813,7 +815,7 @@ async fn test_manifest_reload_keeps_last_known_good_on_parse_failure() {
     );
     assert_eq!(
         fx.state.prev_manifest.as_deref(),
-        Some(&v0),
+        Some(&ServiceManifest::from(v0.clone())),
         "prev_manifest must not advance on parse failure, so per-repo \
          fires keep parsing against the last applied snapshot"
     );
@@ -843,7 +845,7 @@ async fn test_manifest_reload_keeps_last_known_good_on_parse_failure() {
     );
     assert_eq!(
         fx.state.prev_manifest.as_deref(),
-        Some(&v2),
+        Some(&ServiceManifest::from(v2.clone())),
         "recovery must advance prev_manifest"
     );
     assert_eq!(
