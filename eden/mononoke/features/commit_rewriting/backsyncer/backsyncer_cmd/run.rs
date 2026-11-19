@@ -19,17 +19,12 @@ use anyhow::format_err;
 use backsyncer::BacksyncLimit;
 use backsyncer::Repo;
 use backsyncer::backsync_deleted_by_prefix;
-use backsyncer::backsync_latest;
 use backsyncer::backsync_latest_by_prefix;
 use backsyncer::backsync_once_by_prefix;
-use backsyncer::format_counter;
 use backsyncer::open_backsyncer_dbs;
 use blobrepo_hg::BlobRepoHg;
 use bookmarks::BookmarkKey;
 use bookmarks::BookmarkPrefix;
-use bookmarks::BookmarkUpdateLogId;
-use bookmarks::BookmarkUpdateLogRef;
-use bookmarks::Freshness;
 use cloned::cloned;
 use cmdlib_cross_repo::create_single_direction_commit_syncer;
 use context::CoreContext;
@@ -60,7 +55,6 @@ use crate::cli::BacksyncerArgs;
 use crate::cli::BacksyncerCommand;
 use crate::cli::CommitsCommandArgs;
 
-const PREFIX_POLLING_JUST_KNOB: &str = "scm/mononoke:backsyncer_prefix_polling";
 const PREFIX_POLLING_BOOKMARK_CONCURRENCY: usize = 10;
 
 define_stats! {
@@ -293,9 +287,6 @@ async fn backsync_forever(
     cancellation_requested: Arc<AtomicBool>,
 ) -> Result<(), Error> {
     let target_repo_id = commit_sync_data.get_target_repo_id();
-    let mut commit_only_backsync_future: Box<dyn futures::Future<Output = ()> + Send + Unpin> =
-        Box::new(future::ready(()));
-    let mut previous_prefix_polling_state = None;
     let mut prefix_config_failures = PrefixPollingFailureState::default();
     let mut prefix_polling_failures = PrefixPollingFailureState::default();
     let mut previous_failed_bookmarks = 0;
@@ -334,63 +325,11 @@ async fn backsync_forever(
                 prefix_config_failures.reset();
                 prefix_polling_failures.reset();
                 previous_failed_bookmarks = 0;
-                // Compute stats without doing any sync work
-                let large_repo_id = commit_sync_data.get_source_repo().repo_identity().id();
-                let counter_name = format_counter(&large_repo_id);
-                let counter: BookmarkUpdateLogId = target_repo_dbs
-                    .counters
-                    .get_counter(ctx, &counter_name)
-                    .await?
-                    .unwrap_or(0)
-                    .try_into()?;
-
-                let remaining_entries = commit_sync_data
-                    .get_source_repo()
-                    .bookmark_update_log()
-                    .count_further_bookmark_log_entries(ctx.clone(), counter, None)
-                    .await?;
-
-                let delay_secs = commit_sync_data
-                    .get_source_repo()
-                    .bookmark_update_log()
-                    .read_next_bookmark_log_entries(ctx.clone(), counter, 1, Freshness::MostRecent)
-                    .try_next()
-                    .await?
-                    .map_or(0, |entry| entry.timestamp.since_seconds());
-
-                let delay = Delay {
-                    delay_secs,
-                    remaining_entries,
-                };
-                log_delay(ctx, &delay, &source_repo_name, &target_repo_name);
-                info!(
-                    "Backsyncer paused by JustKnob for {}, delay: {}s, remaining: {}",
-                    target_repo_name, delay_secs, remaining_entries,
-                );
+                info!("Backsyncer paused by JustKnob for {}", target_repo_name);
                 tokio::time::sleep(Duration::new(1, 0)).await;
             } else {
-                let prefix_polling_enabled = justknobs::eval(
-                    PREFIX_POLLING_JUST_KNOB,
-                    None,
-                    // The switch value is the small-repository name, allowing
-                    // the new path to be enabled independently per repo pair.
-                    Some(&target_repo_name),
-                );
-                if previous_prefix_polling_state != Some(prefix_polling_enabled) {
-                    info!(
-                        "Prefix-scoped backsync polling for {} is {}",
-                        target_repo_name,
-                        if prefix_polling_enabled {
-                            "enabled"
-                        } else {
-                            "disabled"
-                        }
-                    );
-                    previous_prefix_polling_state = Some(prefix_polling_enabled);
-                }
-                let prefix_config = if prefix_polling_enabled {
-                    let config = prefix_polling_config(&live_commit_sync_config, target_repo_id);
-                    match config {
+                let (bookmark_prefix, common_bookmarks) =
+                    match prefix_polling_config(&live_commit_sync_config, target_repo_id) {
                         Ok(config) => {
                             prefix_config_failures.record_recovery(&format!(
                                 "Prefix-polling config for {target_repo_name}"
@@ -400,7 +339,7 @@ async fn backsync_forever(
                                 0,
                                 (source_repo_name.clone(), target_repo_name.clone()),
                             );
-                            Some(config)
+                            config
                         }
                         Err(error) => {
                             STATS::prefix_config_failure.set_value(
@@ -415,80 +354,41 @@ async fn backsync_forever(
                                 &format!("Loading prefix-polling config for {target_repo_name}"),
                                 &error,
                             );
-                            // Falling back to the legacy path after observing the
-                            // prefix-polling switch would mix two cursor models in
-                            // a partially rolled-out fleet. Keep retrying in the
-                            // selected mode; operators can disable the rollout JK
-                            // explicitly if they need the legacy path.
                             tokio::time::sleep(Duration::new(1, 0)).await;
                             continue;
                         }
-                    }
-                } else {
-                    prefix_config_failures.reset();
-                    prefix_polling_failures.reset();
-                    STATS::prefix_config_failure.set_value(
-                        ctx.fb,
-                        0,
-                        (source_repo_name.clone(), target_repo_name.clone()),
-                    );
-                    None
-                };
+                    };
 
-                let delay_info = if let Some((bookmark_prefix, common_bookmarks)) = prefix_config {
-                    // Finish any commit-only work started by the legacy loop
-                    // before changing execution models.
-                    std::mem::replace(
-                        &mut commit_only_backsync_future,
-                        Box::new(future::ready(())),
-                    )
-                    .await;
-
-                    match backsync_latest_by_prefix(
-                        ctx.clone(),
-                        commit_sync_data.clone(),
-                        target_repo_dbs.clone(),
-                        bookmark_prefix,
-                        &common_bookmarks,
-                        BacksyncLimit::NoLimit,
-                        PREFIX_POLLING_BOOKMARK_CONCURRENCY,
-                        Arc::clone(&cancellation_requested),
-                        CommitSyncContext::Backsyncer,
-                        false,
-                    )
-                    .await
-                    {
-                        Ok(delay_info) => {
-                            prefix_polling_failures
-                                .record_recovery(&format!("Prefix polling for {target_repo_name}"));
-                            delay_info
-                        }
-                        Err(error) => {
-                            prefix_polling_failures.record_failure(
-                                ctx,
-                                &source_repo_name,
-                                &target_repo_name,
-                                &format!("Prefix polling for {target_repo_name}"),
-                                &error,
-                            );
-                            tokio::time::sleep(Duration::new(1, 0)).await;
-                            continue;
-                        }
+                let delay_info = match backsync_latest_by_prefix(
+                    ctx.clone(),
+                    commit_sync_data.clone(),
+                    target_repo_dbs.clone(),
+                    bookmark_prefix,
+                    &common_bookmarks,
+                    BacksyncLimit::NoLimit,
+                    PREFIX_POLLING_BOOKMARK_CONCURRENCY,
+                    Arc::clone(&cancellation_requested),
+                    CommitSyncContext::Backsyncer,
+                    false,
+                )
+                .await
+                {
+                    Ok(delay_info) => {
+                        prefix_polling_failures
+                            .record_recovery(&format!("Prefix polling for {target_repo_name}"));
+                        delay_info
                     }
-                } else {
-                    let (delay_info, new_future) = backsync_latest(
-                        ctx.clone(),
-                        commit_sync_data.clone(),
-                        target_repo_dbs.clone(),
-                        BacksyncLimit::NoLimit,
-                        Arc::clone(&cancellation_requested),
-                        CommitSyncContext::Backsyncer,
-                        false,
-                        commit_only_backsync_future,
-                    )
-                    .await?;
-                    commit_only_backsync_future = new_future;
-                    delay_info
+                    Err(error) => {
+                        prefix_polling_failures.record_failure(
+                            ctx,
+                            &source_repo_name,
+                            &target_repo_name,
+                            &format!("Prefix polling for {target_repo_name}"),
+                            &error,
+                        );
+                        tokio::time::sleep(Duration::new(1, 0)).await;
+                        continue;
+                    }
                 };
 
                 STATS::failed_bookmarks.set_value(
@@ -598,9 +498,7 @@ async fn backsync_deletions_forever(
             None,
             Some(&target_repo_name),
         );
-        let prefix_polling_enabled =
-            justknobs::eval(PREFIX_POLLING_JUST_KNOB, None, Some(&target_repo_name));
-        if !enabled || paused || !prefix_polling_enabled {
+        if !enabled || paused {
             failures.reset();
             previous_failed_bookmarks = 0;
             tokio::time::sleep(Duration::new(1, 0)).await;

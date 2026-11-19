@@ -427,10 +427,6 @@ function switch_source_of_truth_to_large_repo {
     "$MASTER_BOOKMARK_NAME" "heads/$MASTER_BOOKMARK_NAME" \
     "$source_commit" "$target_commit" || return
 
-  merge_just_knobs <<EOF
-{"bools": {"scm/mononoke:backsyncer_prefix_polling": true}}
-EOF
-
   # Start backsyncer in the background
   REPOIDSMALL=$SUBMODULE_REPO_ID REPOIDLARGE=$LARGE_REPO_ID \
     backsync_large_to_small_forever

@@ -21,9 +21,6 @@
   $ start_and_wait_for_scs_server --scuba-log-file "$TESTTMP/scuba.json"
 
 -- Start up the backsyncer in the background
-  $ merge_just_knobs <<EOF
-  > {"bools": {"scm/mononoke:backsyncer_prefix_polling": true}}
-  > EOF
   $ backsync_large_to_small_forever
 
 -- Push to a large repo
