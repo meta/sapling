@@ -91,6 +91,7 @@
     "scm/mononoke:defer_to_backsyncer_for_backsync": false,
     "scm/mononoke:sslv2_merge_resolution_enabled": false,
     "scm/mononoke:sslv2_always_atomic_branches": false,
+    "scm/mononoke:sslv2_hooks_run_as_pusher": false,
     "scm/mononoke:mrl_local_batch_git_derivation": true,
     "scm/mononoke:edenapi_disable_mutable_blame": false,
     "scm/mononoke:edenapi_qps_rim_shadow": true,
