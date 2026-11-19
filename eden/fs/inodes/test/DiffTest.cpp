@@ -1969,25 +1969,12 @@ TEST_P(StatusPublicationErrorTest, joinedPublicationError) {
       sequence, mount.getEdenMount()->getJournal().peekLatest()->sequenceID);
 
   if (std::string_view{GetParam()} == "blocking setValue") {
-    // The failed owner leaves its unsettled promise cached for this sequence.
-    EXPECT_FALSE(joiner.isReady());
-    EXPECT_FALSE(next.isReady());
-    EXPECT_FALSE(fresh.isReady());
-    // Only a journal advance evicts it, breaking the stranded promise.
-    mount.getEdenMount()->getJournal().recordChanged(
-        "src/file.txt"_relpath, dtype_t::Regular);
-    auto cleanup = startDiff();
-    mount.drainServerExecutor();
-    expectStatus(cleanup);
-    EXPECT_TRUE(joiner.isReady());
-    EXPECT_TRUE(next.isReady());
-    EXPECT_TRUE(fresh.isReady());
+    expectError(joiner);
   } else {
-    // The fulfilled promise stays cached, so later requests never retry.
     expectStatus(joiner);
-    expectStatus(next);
-    expectStatus(fresh);
   }
+  expectStatus(next);
+  expectError(fresh);
 }
 
 INSTANTIATE_TEST_SUITE_P(

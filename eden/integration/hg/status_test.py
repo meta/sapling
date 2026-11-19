@@ -661,7 +661,7 @@ class StatusTest(EdenHgTestCase):
             await self.counter_check(client, miss_cnt=2, hit_cnt=0)
 
     async def test_status_cache_publication_error(self) -> None:
-        """Bound the same-key request stranded by a pre-publication error."""
+        """A pre-publication error must not strand the same-key request."""
         if not self.enable_status_cache:
             self.skipTest("requires the status cache")
 
@@ -699,15 +699,21 @@ class StatusTest(EdenHgTestCase):
                     )
                     await self.counter_check(client, miss_cnt=1, hit_cnt=0)
 
-                    with self.assertRaises(TimeoutError):
-                        await asyncio.wait_for(client.getScmStatusV2(params), timeout=2)
-                    await self.counter_check(client, miss_cnt=1, hit_cnt=1)
+                    recovered = await asyncio.wait_for(
+                        client.getScmStatusV2(params), timeout=2
+                    )
+                    self.assertEqual(
+                        {b"world.txt": ScmFileStatus.ADDED},
+                        dict(recovered.status.entries),
+                    )
+                    self.assertEqual({}, dict(recovered.status.errors))
+                    await self.counter_check(client, miss_cnt=2, hit_cnt=0)
                     after = await client.getCurrentJournalPosition(
                         self.mount_path_bytes
                     )
                     self.assertEqual(before, after)
         finally:
-            # Client cancellation cannot settle the stranded server coroutine.
+            # Kill by PID: portable on Windows.
             if daemon_pid is not None:
                 kill_signal = (
                     signal.SIGTERM if sys.platform == "win32" else signal.SIGKILL

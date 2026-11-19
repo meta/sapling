@@ -2370,62 +2370,65 @@ folly::coro::now_task<std::unique_ptr<ScmStatus>> EdenMount::co_diff(
       if (promise.get() != nullptr) {
         try {
           co_await doInnerDiff();
-        } catch (...) {
-          promise->setTry(
-              folly::Try<ScmStatus>{
-                  folly::exception_wrapper{std::current_exception()}});
-          {
-            auto lockedCachePtr = scmStatusCache_.wlock();
-            (*lockedCachePtr)->dropPromise(key, promise);
+
+          if (ctxPtr->isCancelled()) {
+            promise->setException(folly::OperationCancelled{});
+            {
+              auto lockedCachePtr = scmStatusCache_.wlock();
+              (*lockedCachePtr)->dropPromise(key, promise);
+            }
+            co_return std::make_unique<ScmStatus>(callback->extractStatus());
           }
-          throw;
-        }
 
-        if (ctxPtr->isCancelled()) {
-          promise->setException(folly::OperationCancelled{});
-          {
-            auto lockedCachePtr = scmStatusCache_.wlock();
-            (*lockedCachePtr)->dropPromise(key, promise);
+          bool shouldInsert = true;
+
+          ScmStatus newStatus = callbackPtr->peekStatus();
+
+          if (newStatus.errors()->size() > 0) {
+            shouldInsert = false;
           }
-          co_return std::make_unique<ScmStatus>(callback->extractStatus());
-        }
 
-        bool shouldInsert = true;
-
-        ScmStatus newStatus = callbackPtr->peekStatus();
-
-        if (newStatus.errors()->size() > 0) {
-          shouldInsert = false;
-        }
-
-        if (newStatus.entries().value().size() >
-            getEdenConfig()->scmStatusCacheMaxEntriesPerItem.getValue()) {
-          getStats()->increment(&JournalStats::journalStatusCacheSkip);
-          shouldInsert = false;
-        }
-
-        // FaultInjector check point: for testing only
-        serverState_->getFaultInjector().check(
-            "scmStatusCache", "blocking setValue");
-
-        promise->setValue(newStatus);
-
-        // FaultInjector check point: for testing only
-        serverState_->getFaultInjector().check(
-            "scmStatusCache", "blocking insert");
-        {
-          auto lockedCachePtr = scmStatusCache_.wlock();
-          if (shouldInsert) {
-            (*lockedCachePtr)->insert(key, curSequenceID, std::move(newStatus));
+          if (newStatus.entries().value().size() >
+              getEdenConfig()->scmStatusCacheMaxEntriesPerItem.getValue()) {
+            getStats()->increment(&JournalStats::journalStatusCacheSkip);
+            shouldInsert = false;
           }
 
           // FaultInjector check point: for testing only
           serverState_->getFaultInjector().check(
-              "scmStatusCache", "blocking dropPromise");
+              "scmStatusCache", "blocking setValue");
 
-          (*lockedCachePtr)->dropPromise(key, promise);
+          promise->setValue(newStatus);
+
+          // FaultInjector check point: for testing only
+          serverState_->getFaultInjector().check(
+              "scmStatusCache", "blocking insert");
+          {
+            auto lockedCachePtr = scmStatusCache_.wlock();
+            if (shouldInsert) {
+              (*lockedCachePtr)
+                  ->insert(key, curSequenceID, std::move(newStatus));
+            }
+
+            // FaultInjector check point: for testing only
+            serverState_->getFaultInjector().check(
+                "scmStatusCache", "blocking dropPromise");
+
+            (*lockedCachePtr)->dropPromise(key, promise);
+          }
+          co_return std::make_unique<ScmStatus>(callback->extractStatus());
+        } catch (...) {
+          {
+            auto lockedCachePtr = scmStatusCache_.wlock();
+            (*lockedCachePtr)->dropPromise(key, promise);
+          }
+          if (!promise->isFulfilled()) {
+            promise->setTry(
+                folly::Try<ScmStatus>{
+                    folly::exception_wrapper{std::current_exception()}});
+          }
+          throw;
         }
-        co_return std::make_unique<ScmStatus>(callback->extractStatus());
       }
       XLOGF(
           ERR,
