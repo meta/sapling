@@ -610,69 +610,9 @@ pub trait IdDagAlgorithm: IdDagStore {
     /// ```plain,ignore
     /// union(ancestors(i) for i in set)
     /// ```
-    fn ancestors(&self, mut set: IdSet) -> Result<IdSet> {
-        fn trace(msg: &dyn Fn() -> String) {
-            trace!(target: "dag::algo::ancestors", "{}", msg());
-        }
+    fn ancestors(&self, set: IdSet) -> Result<IdSet> {
         debug!(target: "dag::algo::ancestors", "ancestors({:?})", &set);
-        if set.count() > 2 {
-            // Try to (greatly) reduce the size of the `set` to make calculation cheaper.
-            set = self.heads_ancestors(set)?;
-            trace(&|| format!("simplified to {set:?}"));
-        }
-        let mut result = IdSet::empty();
-        let mut to_visit: BinaryHeap<_> = set.iter_desc().collect();
-        let max_level = self.max_level()?;
-        'outer: while let Some(id) = to_visit.pop() {
-            if result.contains(id) {
-                // If `id` is in `result`, then `ancestors(id)` are all in `result`.
-                continue;
-            }
-            trace(&|| format!(" lookup {id:?}"));
-            let flat_seg = self.find_flat_segment_including_id(id)?;
-            if let Some(ref s) = flat_seg {
-                if s.only_head()? {
-                    // Fast path.
-                    trace(&|| format!(" push ..={id:?} (only head fast path)"));
-                    result.push_span((Id::MIN..=id).into());
-                    break 'outer;
-                }
-            }
-            for level in (1..=max_level).rev() {
-                let seg = self.find_segment_by_head_and_level(id, level)?;
-                if let Some(seg) = seg {
-                    let span = seg.span()?;
-                    trace(&|| format!(" push lv{level} {span:?}"));
-                    result.push_span(span);
-                    let parents = seg.parents()?;
-                    trace(&|| format!(" follow parents {parents:?}"));
-                    for parent in parents {
-                        to_visit.push(parent);
-                    }
-                    continue 'outer;
-                }
-            }
-            if let Some(seg) = flat_seg {
-                let span = (seg.span()?.low..=id).into();
-                trace(&|| format!(" push lv0 {span:?}"));
-                result.push_span(span);
-                let parents = seg.parents()?;
-                trace(&|| format!(" follow parents {parents:?}"));
-                for parent in parents {
-                    to_visit.push(parent);
-                }
-            } else {
-                // The current design requires flat segments to cover all Ids.
-                // Potentially they can be made lazy. But that would be a large change.
-                return bug(format!(
-                    "flat segments should cover all Ids but {id:?} is not covered"
-                ));
-            }
-        }
-
-        trace(&|| format!(" result: {result:?}"));
-
-        Ok(result)
+        ancestors_impl(self, set)
     }
 
     /// Like `ancestors` but follows only the first parents.
@@ -1767,6 +1707,71 @@ pub trait IdDagAlgorithm: IdDagStore {
 }
 
 impl<S: IdDagStore> IdDagAlgorithm for S {}
+
+/// Calculate the ancestors of `set`, like [`IdDagAlgorithm::ancestors`].
+fn ancestors_impl<S: IdDagAlgorithm + ?Sized>(dag: &S, mut set: IdSet) -> Result<IdSet> {
+    fn trace(msg: &dyn Fn() -> String) {
+        trace!(target: "dag::algo::ancestors", "{}", msg());
+    }
+    if set.count() > 2 {
+        // Try to (greatly) reduce the size of the `set` to make calculation cheaper.
+        set = dag.heads_ancestors(set)?;
+        trace(&|| format!("simplified to {set:?}"));
+    }
+    let mut result = IdSet::empty();
+    let mut to_visit: BinaryHeap<_> = set.iter_desc().collect();
+    let max_level = dag.max_level()?;
+    'outer: while let Some(id) = to_visit.pop() {
+        if result.contains(id) {
+            // If `id` is in `result`, then `ancestors(id)` are all in `result`.
+            continue;
+        }
+        trace(&|| format!(" lookup {id:?}"));
+        let flat_seg = dag.find_flat_segment_including_id(id)?;
+        if let Some(ref s) = flat_seg {
+            if s.only_head()? {
+                // Fast path.
+                trace(&|| format!(" push ..={id:?} (only head fast path)"));
+                result.push_span((Id::MIN..=id).into());
+                break 'outer;
+            }
+        }
+        for level in (1..=max_level).rev() {
+            let seg = dag.find_segment_by_head_and_level(id, level)?;
+            if let Some(seg) = seg {
+                let span = seg.span()?;
+                trace(&|| format!(" push lv{level} {span:?}"));
+                result.push_span(span);
+                let parents = seg.parents()?;
+                trace(&|| format!(" follow parents {parents:?}"));
+                for parent in parents {
+                    to_visit.push(parent);
+                }
+                continue 'outer;
+            }
+        }
+        if let Some(seg) = flat_seg {
+            let span = (seg.span()?.low..=id).into();
+            trace(&|| format!(" push lv0 {span:?}"));
+            result.push_span(span);
+            let parents = seg.parents()?;
+            trace(&|| format!(" follow parents {parents:?}"));
+            for parent in parents {
+                to_visit.push(parent);
+            }
+        } else {
+            // The current design requires flat segments to cover all Ids.
+            // Potentially they can be made lazy. But that would be a large change.
+            return bug(format!(
+                "flat segments should cover all Ids but {id:?} is not covered"
+            ));
+        }
+    }
+
+    trace(&|| format!(" result: {result:?}"));
+
+    Ok(result)
+}
 
 impl<Store: IdDagStore> Deref for IdDag<Store> {
     type Target = dyn IdDagAlgorithm;
