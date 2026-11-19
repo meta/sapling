@@ -10,6 +10,7 @@ import asyncio
 import binascii
 import os
 import random
+import signal
 import socket
 import stat
 import sys
@@ -658,6 +659,61 @@ class StatusTest(EdenHgTestCase):
 
             # no cache should be hit since the sequence number is advanced
             await self.counter_check(client, miss_cnt=2, hit_cnt=0)
+
+    async def test_status_cache_publication_error(self) -> None:
+        """Bound the same-key request stranded by a pre-publication error."""
+        if not self.enable_status_cache:
+            self.skipTest("requires the status cache")
+
+        params = GetScmStatusParams(
+            mountPoint=self.mount_path_bytes,
+            commit=binascii.unhexlify(self.repo.get_head_hash()),
+            listIgnored=False,
+        )
+        daemon_pid = None
+        try:
+            async with asyncio.timeout(15):
+                async with self.eden.get_async_thrift_client(timeout=5) as client:
+                    daemon_pid = await client.getPid()
+                    self.touch("world.txt")
+                    await client.synchronizeWorkingCopy(
+                        self.mount_path_bytes, SynchronizeWorkingCopyParams()
+                    )
+                    before = await client.getCurrentJournalPosition(
+                        self.mount_path_bytes
+                    )
+                    await client.injectFault(
+                        FaultDefinition(
+                            keyClass="scmStatusCache",
+                            keyValueRegex="blocking setValue",
+                            count=1,
+                            errorType="runtime_error",
+                            errorMessage="status publication failed",
+                        )
+                    )
+                    with self.assertRaises(ApplicationError) as error:
+                        await client.getScmStatusV2(params)
+                    self.assertEqual(
+                        f"{WINDOWS_RUNTIME_ERR_PREFIX}std::runtime_error: status publication failed",
+                        error.exception.message,
+                    )
+                    await self.counter_check(client, miss_cnt=1, hit_cnt=0)
+
+                    with self.assertRaises(TimeoutError):
+                        await asyncio.wait_for(client.getScmStatusV2(params), timeout=2)
+                    await self.counter_check(client, miss_cnt=1, hit_cnt=1)
+                    after = await client.getCurrentJournalPosition(
+                        self.mount_path_bytes
+                    )
+                    self.assertEqual(before, after)
+        finally:
+            # Client cancellation cannot settle the stranded server coroutine.
+            if daemon_pid is not None:
+                kill_signal = (
+                    signal.SIGTERM if sys.platform == "win32" else signal.SIGKILL
+                )
+                os.kill(daemon_pid, kill_signal)
+                self.eden.wait_for_exit(timeout=10)
 
     async def test_status_cache_error_handlilng(self) -> None:
         """Test that when there is error computing the diff, we don't cache the error

@@ -98,6 +98,7 @@ eden_add_test(eden_fs_inodes_test_diff
     Folly::folly_test_test_utils
     eden_fs_config
     eden_fs_inodes
+    eden_fs_journal
     eden_fs_model_git_gitignore
     eden_fs_store
     eden_fs_testharness_fake_backing_store_and_tree_builder
@@ -105,6 +106,7 @@ eden_add_test(eden_fs_inodes_test_diff
     eden_fs_testharness_test_checks
     eden_fs_testharness_test_mount
     eden_fs_testharness_test_util
+    edencommon::edencommon_utils
 )
 
 eden_add_test(eden_fs_inodes_test_eden_dispatcher

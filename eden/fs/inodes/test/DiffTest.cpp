@@ -12,9 +12,11 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include "eden/common/utils/FaultInjector.h"
 #include "eden/fs/config/CheckoutConfig.h"
 #include "eden/fs/inodes/FileInode.h"
 #include "eden/fs/inodes/TreeInode.h"
+#include "eden/fs/journal/Journal.h"
 #include "eden/fs/model/git/TopLevelIgnores.h"
 #include "eden/fs/store/DiffContext.h"
 #include "eden/fs/store/ObjectStore.h"
@@ -1842,6 +1844,159 @@ TEST(DiffTest, cancelledDiffDoesNotPoisonStatusCache) {
       UnorderedElementsAre(
           std::make_pair("src/file.txt", ScmFileStatus::MODIFIED)));
 }
+
+class StatusPublicationTest : public ::testing::Test {
+ protected:
+  TestMount mount;
+  FakeTreeBuilder current;
+  FakeTreeBuilder target;
+  RootId commitId;
+  StoredTree* targetSrc;
+  ObjectId srcId;
+
+  void SetUp() override {
+    current.setFile("src/file.txt", "old\n");
+    target = current.clone();
+    target.replaceFile("src/file.txt", "new\n");
+    mount.initialize(current);
+    mount.updateEdenConfig({
+        {"hg:enable-scm-status-cache", "true"},
+        // @lint-ignore SPELL
+        {"hg:scm-status-cache-max-entires-per-item", "0"},
+    });
+    auto* targetRoot = target.finalize(mount.getBackingStore(), false);
+    commitId = mount.nextCommitId();
+    auto* commit = mount.getBackingStore()->putCommit(
+        commitId, targetRoot->get().getObjectId());
+    commit->setReady();
+    targetRoot->setReady();
+    targetSrc = target.getStoredTree("src"_relpath);
+    srcId = targetSrc->get().getObjectId();
+  }
+
+  folly::Future<std::unique_ptr<ScmStatus>> startDiff(
+      folly::CancellationToken cancellation = {}) {
+    return diffTask(
+               mount.getEdenMount(),
+               mount.getRootInode(),
+               commitId,
+               std::move(cancellation),
+               false,
+               false)
+        .semi()
+        .via(mount.getServerExecutor().get());
+  }
+
+  void expectStatus(folly::Future<std::unique_ptr<ScmStatus>>& future) {
+    ASSERT_TRUE(future.isReady());
+    auto result = std::move(future).get();
+    EXPECT_THAT(*result->errors(), UnorderedElementsAre());
+    EXPECT_THAT(
+        *result->entries(),
+        UnorderedElementsAre(
+            std::make_pair("src/file.txt", ScmFileStatus::MODIFIED)));
+  }
+
+  void expectError(folly::Future<std::unique_ptr<ScmStatus>>& future) {
+    ASSERT_TRUE(future.isReady());
+    EXPECT_THROW(std::move(future).get(), std::runtime_error);
+  }
+};
+
+TEST_F(StatusPublicationTest, cancelledJoinerDoesNotDisturbOwner) {
+  const auto baseline = mount.getBackingStore()->getAccessCount(srcId);
+  auto owner = startDiff();
+  mount.drainServerExecutor();
+  ASSERT_FALSE(owner.isReady());
+  ASSERT_EQ(baseline + 1, mount.getBackingStore()->getAccessCount(srcId));
+
+  folly::CancellationSource joinerCancellation;
+  auto joiner = startDiff(joinerCancellation.getToken());
+  mount.drainServerExecutor();
+  ASSERT_FALSE(joiner.isReady());
+  ASSERT_EQ(baseline + 1, mount.getBackingStore()->getAccessCount(srcId));
+
+  joinerCancellation.requestCancellation();
+  target.setAllReady();
+  mount.drainServerExecutor();
+  expectStatus(owner);
+  expectStatus(joiner);
+
+  auto next = startDiff();
+  mount.drainServerExecutor();
+  expectStatus(next);
+}
+
+class StatusPublicationErrorTest
+    : public StatusPublicationTest,
+      public ::testing::WithParamInterface<const char*> {};
+
+TEST_P(StatusPublicationErrorTest, joinedPublicationError) {
+  const auto sequence =
+      mount.getEdenMount()->getJournal().peekLatest()->sequenceID;
+  const auto baseline = mount.getBackingStore()->getAccessCount(srcId);
+  auto owner = startDiff();
+  mount.drainServerExecutor();
+  ASSERT_FALSE(owner.isReady());
+  ASSERT_EQ(baseline + 1, mount.getBackingStore()->getAccessCount(srcId));
+
+  auto joiner = startDiff();
+  mount.drainServerExecutor();
+  ASSERT_FALSE(joiner.isReady());
+  ASSERT_EQ(baseline + 1, mount.getBackingStore()->getAccessCount(srcId));
+
+  auto& faults = mount.getServerState()->getFaultInjector();
+  faults.injectError(
+      "scmStatusCache",
+      GetParam(),
+      folly::make_exception_wrapper<std::runtime_error>("publication failed"),
+      1);
+  target.setAllReady();
+  mount.drainServerExecutor();
+  expectError(owner);
+
+  auto next = startDiff();
+  mount.drainServerExecutor();
+  faults.injectError(
+      "scmStatusCache",
+      "blocking setValue",
+      folly::make_exception_wrapper<std::runtime_error>("fresh producer"),
+      1);
+  auto fresh = startDiff();
+  mount.drainServerExecutor();
+  faults.removeFault("scmStatusCache", "blocking setValue");
+  EXPECT_EQ(
+      sequence, mount.getEdenMount()->getJournal().peekLatest()->sequenceID);
+
+  if (std::string_view{GetParam()} == "blocking setValue") {
+    // The failed owner leaves its unsettled promise cached for this sequence.
+    EXPECT_FALSE(joiner.isReady());
+    EXPECT_FALSE(next.isReady());
+    EXPECT_FALSE(fresh.isReady());
+    // Only a journal advance evicts it, breaking the stranded promise.
+    mount.getEdenMount()->getJournal().recordChanged(
+        "src/file.txt"_relpath, dtype_t::Regular);
+    auto cleanup = startDiff();
+    mount.drainServerExecutor();
+    expectStatus(cleanup);
+    EXPECT_TRUE(joiner.isReady());
+    EXPECT_TRUE(next.isReady());
+    EXPECT_TRUE(fresh.isReady());
+  } else {
+    // The fulfilled promise stays cached, so later requests never retry.
+    expectStatus(joiner);
+    expectStatus(next);
+    expectStatus(fresh);
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    Checkpoints,
+    StatusPublicationErrorTest,
+    ::testing::Values(
+        "blocking setValue",
+        "blocking insert",
+        "blocking dropPromise"));
 
 class DiffTestNonMateralized : public ::testing::Test {
  protected:
