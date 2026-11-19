@@ -76,6 +76,7 @@ use mononoke_types::ContentManifestId;
 use mononoke_types::FileChange;
 pub use mononoke_types::Generation;
 use mononoke_types::NonRootMPath;
+use mononoke_types::P4_FILE_REVS_EXTRA;
 use mononoke_types::P4ChangelistId;
 use mononoke_types::SkeletonManifestId;
 use mononoke_types::SubtreeChange;
@@ -793,12 +794,15 @@ impl<R: RepoDerivedDataRef + RepoDerivedDataArc + RepoBlobstoreArc> ChangesetCon
         Ok(self.changeset_info().await?.message().to_string())
     }
 
-    /// All mercurial commit extras as (name, value) pairs.
+    /// Mercurial commit extras as (name, value) pairs, without p4-file-revs: megabytes on a
+    /// big changelist, and it lists every path, bypassing path ACLs. Read it through
+    /// `p4_file_revisions`.
     pub async fn hg_extras(&self) -> Result<Vec<(String, Vec<u8>)>, MononokeError> {
         Ok(self
             .changeset_info()
             .await?
             .hg_extra()
+            .filter(|(name, _)| *name != P4_FILE_REVS_EXTRA)
             .map(|(name, value)| (name.to_string(), Vec::from(value)))
             .collect())
     }

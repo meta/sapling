@@ -347,6 +347,28 @@ async fn test_p4_file_revisions_serve_several_paths(fb: FacebookInit) -> Result<
     Ok(())
 }
 
+#[mononoke::fbinit_test]
+async fn test_hg_extras_hide_the_file_revisions(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let m = mirror(&ctx).await?;
+    let c1 = m.repo.changeset(m.c1).await?.expect("commit exists");
+    let extras = c1.hg_extras().await?;
+    assert!(
+        extras.iter().all(|(name, _)| name != P4_FILE_REVS_EXTRA),
+        "{extras:?}"
+    );
+    let changelist =
+        P4ChangelistId::from_hg_extras(extras.iter().map(|(k, v)| (k.as_str(), v.as_slice())))?;
+    assert_eq!(
+        changelist,
+        P4ChangelistId::new(100),
+        "the other Perforce extras stay"
+    );
+    let revisions = c1.p4_file_revisions().await?.expect("still stored");
+    assert_eq!(revisions.revision(&NonRootMPath::new("a.txt")?)?, Some(1));
+    Ok(())
+}
+
 impl Mirror {
     async fn find(
         &self,
