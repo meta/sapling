@@ -36,7 +36,7 @@ from .generate import (
     shape_signature,
     Stratum,
 )
-from .history import History, OK
+from .history import History, INFO, OK
 from .jsonio import digest
 from .property import (
     is_core,
@@ -601,13 +601,19 @@ def _leaked_run_dir(seed: int, result: _ExplorationResult) -> list[dict[str, Any
 
 
 def _lease_landed(history: History, lease_id: str) -> bool:
-    """Return whether a lease ran inside a nemesis window other than its own."""
+    """Return whether a lease ran inside a nemesis window other than its own.
+
+    The lease's own window is the one `nemesis_windows` opens for it: it
+    never closes when the lease completed `info`.
+    """
     interval = history.interval(lease_id)
-    if interval is None:
+    completion = history.completion(lease_id)
+    if interval is None or completion is None:
         return False
+    own = (interval[0], float("inf") if completion.type == INFO else interval[1])
     windows = history.nemesis_windows()
-    if interval in windows:
-        windows.remove(interval)
+    if own in windows:
+        windows.remove(own)
     return any(start <= interval[1] and interval[0] <= end for start, end in windows)
 
 
@@ -661,22 +667,31 @@ def _family_witnesses(
 def _family_table(
     rows: list[CampaignAttempt], target: Target, runs: Mapping[str, _Loaded | None]
 ) -> dict[str, dict[str, int]]:
-    """Tabulate specs, completed runs, and witnessed runs per target-published input family."""
+    """Tabulate specs, completed, witnessed, and exit-unobserved runs per input family.
+
+    An instance's exit is unobserved when it completed `info`.
+    """
     table = {
-        family: {"specs": 0, "completed": 0, "witnessed": 0}
+        family: {"specs": 0, "completed": 0, "witnessed": 0, "exit_unobserved": 0}
         for family in (*lease_kinds(target), *(h.stream for h in held_inputs(target)))
     }
     for row in rows:
         loaded = runs[row.result.dir]
         if loaded is None:
             continue
-        for family, witnessed in _family_witnesses(
-            loaded[0], loaded[1], target
-        ).items():
+        spec, history = loaded[0], loaded[1]
+        unobserved = {
+            action.kind
+            for action in spec.actions
+            if (completion := history.completion(action.id)) is not None
+            and completion.type == INFO
+        }
+        for family, witnessed in _family_witnesses(spec, history, target).items():
             counts = table[family]
             counts["specs"] += 1
             counts["completed"] += row.result.execution.status == _COMPLETED
             counts["witnessed"] += witnessed
+            counts["exit_unobserved"] += family in unobserved
     return table
 
 

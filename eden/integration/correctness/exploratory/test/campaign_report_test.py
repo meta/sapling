@@ -213,6 +213,7 @@ class CampaignReportTest(unittest.TestCase):
         landed: bool,
         stream_failed: bool = False,
         resume_failed: bool = False,
+        lease_info: bool = False,
     ) -> None:
         """Write a run whose stream and lease witnesses are chosen per flag."""
         times = {
@@ -227,7 +228,16 @@ class CampaignReportTest(unittest.TestCase):
         events = []
         for action, (invoke, done) in times.items():
             events.append({"type": history.INVOKE, "time": invoke, "action": action})
-            if action != "d1" or resumed:
+            if action == "l0" and lease_info:
+                events.append(
+                    {
+                        "type": history.INFO,
+                        "time": done,
+                        "action": action,
+                        "reason": "r",
+                    }
+                )
+            elif action != "d1" or resumed:
                 outcome = history.FAIL if failed.get(action) else history.OK
                 events.append({"type": outcome, "time": done, "action": action})
         os.makedirs(path, exist_ok=True)
@@ -286,11 +296,40 @@ class CampaignReportTest(unittest.TestCase):
             },
         )
         expected = {
-            "background_read": {"specs": 3, "completed": 2, "witnessed": 2},
-            "readdir_stream": {"specs": 3, "completed": 2, "witnessed": 1},
+            "background_read": {
+                "specs": 3,
+                "completed": 2,
+                "witnessed": 2,
+                "exit_unobserved": 0,
+            },
+            "readdir_stream": {
+                "specs": 3,
+                "completed": 2,
+                "witnessed": 1,
+                "exit_unobserved": 0,
+            },
         }
         self.assertEqual(expected, report.input_families)
         self.assertEqual(expected, document["input_families"])
+
+    def test_lease_completing_info_counts_its_exit_unobserved(self) -> None:
+        """An `info` lease is witnessed only by another window; its exit is counted unobserved.
+
+        Its own window never closes, so it must not witness the lease itself.
+        """
+        witnessed = {"paused_early": True, "resumed": True, "landed": True}
+        report, document = self._family_campaign(
+            3,
+            {
+                0: {**witnessed, "lease_info": True},
+                1: {**witnessed, "lease_info": True, "landed": False},
+                2: witnessed,
+            },
+        )
+        expected = {"specs": 3, "completed": 3, "witnessed": 2, "exit_unobserved": 2}
+        self.assertEqual(expected, report.input_families["background_read"])
+        self.assertEqual(expected, document["input_families"]["background_read"])
+        self.assertEqual(0, report.input_families["readdir_stream"]["exit_unobserved"])
 
     def test_stream_not_witnessed_unless_pause_and_resume_complete_ok(self) -> None:
         """A resume or stream that completes `fail` in the right order is not a witness.
@@ -306,7 +345,7 @@ class CampaignReportTest(unittest.TestCase):
                 1: {**witnessed, "stream_failed": True},
             },
         )
-        expected = {"specs": 2, "completed": 2, "witnessed": 0}
+        expected = {"specs": 2, "completed": 2, "witnessed": 0, "exit_unobserved": 0}
         self.assertEqual(expected, report.input_families["readdir_stream"])
         self.assertEqual(expected, document["input_families"]["readdir_stream"])
         self.assertEqual(2, report.input_families["background_read"]["witnessed"])
