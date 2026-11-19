@@ -145,4 +145,36 @@ binary patch with --eol
   c\r (esc)
   d (no-eol)
   $ sl st
+
+a binary file ending in CRLF is written back unchanged
+
+  $ printf "a\0\nc\r\n" > b
+  $ sl diff --git > bin2.diff
+  $ sl revert --no-backup b
+  $ sl import --config patch.eol='CRLF' -m changeb2 bin2.diff
+  applying bin2.diff
+# BUG: patch.eol=CRLF adds a CR before the last LF, fixed in the next diff
+  $ $PYTHON -c "print(repr(open('b', 'rb').read()))"
+  b'a\x00\nc\r\r\n'
+  $ sl st
+
+a binary delta applies to the exact bytes, CRLFs included: this one turns
+"za\r\nb\r\n" into "za\r\nXb\r\n"
+
+  $ printf "za\r\nb\r\n" > c
+  $ sl ci -Aqm addc
+  $ cat > delta.diff <<'EOF'
+  > diff --git a/c b/c
+  > GIT binary patch
+  > delta 9
+  > Qc-mv<n83mqF_DEC00*-Hl>h($
+  > 
+  > EOF
+  $ sl import --config patch.eol='auto' -m changec delta.diff
+  applying delta.diff
+# BUG: patch.eol=auto turns the CRLFs into LFs before the delta copies from the
+# file, so the copies come from the wrong offsets, fixed in the next diff
+  $ $PYTHON -c "print(repr(open('c', 'rb').read()))"
+  b'za\nbX\r\n'
+  $ sl st
   $ cd ..
