@@ -10,6 +10,8 @@
 use std::collections::HashMap;
 use std::pin::pin;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -161,7 +163,7 @@ fn symlink_target(size: u64, mut printed: Vec<u8>) -> Result<Bytes> {
     Ok(Bytes::from(printed))
 }
 
-/// How to import: what to derive, and how much runs at once.
+/// How to import: what to derive, how much runs at once, and where to count progress.
 #[derive(Clone, Debug)]
 pub struct ImportOptions {
     /// Derived for every imported changeset before the bookmark moves, among the types
@@ -180,6 +182,9 @@ pub struct ImportOptions {
     /// for the next import. A batch dropped before it commits, as a job restart does, loses
     /// about this much work plus one changelist at most.
     pub max_build_time: Duration,
+    /// Incremented for each file stored and each changeset built, so a caller can tell that
+    /// a long batch is moving. A failed batch's steps stay counted.
+    pub progress: Arc<AtomicU64>,
 }
 
 impl Default for ImportOptions {
@@ -189,6 +194,7 @@ impl Default for ImportOptions {
             file_concurrency: 16,
             changelist_lookahead: 2,
             max_build_time: Duration::from_mins(10),
+            progress: Arc::default(),
         }
     }
 }
@@ -210,7 +216,7 @@ fn in_depot<'a>(
 
 /// Stores the content of every revision in `changelist` that leaves content in the depot
 /// at `depot_root`, `concurrency` at a time, keyed by depot path as
-/// `p4_transform::changeset` takes it.
+/// `p4_transform::changeset` takes it. Adds one to `progress` per file stored.
 pub async fn upload_changelist_contents(
     ctx: &CoreContext,
     repo: &(impl RepoBlobstoreRef + FilestoreConfigRef),
@@ -218,6 +224,7 @@ pub async fn upload_changelist_contents(
     depot_root: &str,
     changelist: &Changelist,
     concurrency: usize,
+    progress: &AtomicU64,
 ) -> Result<HashMap<String, ContentMetadataV2>> {
     let revisions = in_depot(depot_root, changelist, |revision| {
         revision.action.has_content()
@@ -238,6 +245,9 @@ pub async fn upload_changelist_contents(
             anyhow::Ok((revision.depot_path.clone(), metadata))
         })
         .buffer_unordered(concurrency)
+        .inspect_ok(|_| {
+            progress.fetch_add(1, Ordering::Relaxed);
+        })
         .try_collect()
         .await
 }
@@ -424,12 +434,20 @@ async fn fetch_changelist(
     depot_root: &str,
     change: u64,
     concurrency: usize,
+    progress: &AtomicU64,
 ) -> Result<FetchedChangelist> {
     let (describe, changelist) = source.describe(change).try_timed().await?;
-    let (upload, contents) =
-        upload_changelist_contents(ctx, repo, source, depot_root, &changelist, concurrency)
-            .try_timed()
-            .await?;
+    let (upload, contents) = upload_changelist_contents(
+        ctx,
+        repo,
+        source,
+        depot_root,
+        &changelist,
+        concurrency,
+        progress,
+    )
+    .try_timed()
+    .await?;
     let (integrations, (copy_sources, ambiguous_copy_sources)) =
         copy_sources(source, depot_root, &changelist)
             .try_timed()
@@ -550,9 +568,17 @@ pub async fn build_changesets(
         let mut fetched = pin!(
             stream::iter(changes.iter().copied())
                 .map(|change| async move {
-                    fetch_changelist(ctx, repo, source, depot_root, change, concurrency)
-                        .await
-                        .with_context(|| BuildingChangelist(change))
+                    fetch_changelist(
+                        ctx,
+                        repo,
+                        source,
+                        depot_root,
+                        change,
+                        concurrency,
+                        &options.progress,
+                    )
+                    .await
+                    .with_context(|| BuildingChangelist(change))
                 })
                 .buffered(options.changelist_lookahead.max(1))
         );
@@ -584,6 +610,7 @@ pub async fn build_changesets(
             .await
             .with_context(|| BuildingChangelist(change))?;
             built.push(changeset);
+            options.progress.fetch_add(1, Ordering::Relaxed);
         }
         anyhow::Ok(built)
     };

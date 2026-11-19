@@ -63,9 +63,10 @@ define_stats! {
     stuck: dynamic_singleton_counter("stuck.{}", (repo: String)),
 }
 
-/// The repo's gauge, set every `FRESHNESS_INTERVAL` while the shard runs and removed when it
-/// stops. Not in `define_stats!`, whose key must be a literal, so that setting and removing it
-/// share this one name.
+/// The repo's gauge of the seconds since its last progress (see `LastProgress`), set every
+/// `FRESHNESS_INTERVAL` while the shard runs and removed when it stops. Not in
+/// `define_stats!`, whose key must be a literal, so that setting and removing it share this
+/// one name.
 pub(crate) fn secs_since_success_key(repo_name: &str) -> String {
     format!("mononoke.p4_sync.secs_since_success.{repo_name}")
 }
@@ -126,23 +127,57 @@ impl BatchSize {
     }
 }
 
-/// When the shard last had a successful pass: imported a batch, found nothing new, or was
-/// switched off by JK on purpose. Starts at the shard's start, so a shard that never
-/// succeeds, held ones included, reports a growing value.
-pub(crate) struct LastSuccess {
+/// When the shard last made progress: a successful pass (imported a batch, found nothing
+/// new, or was switched off by JK on purpose), or a step of the running batch (see
+/// `ImportOptions::progress`). Starts at the shard's start, so a shard that never progresses,
+/// held ones included, reports a growing value.
+pub(crate) struct LastProgress {
     start: Instant,
     secs_after_start: AtomicU64,
+    /// The running batch's steps, counted by p4_import.
+    steps: Arc<AtomicU64>,
+    /// The most steps of any batch since the last success. A retry repeats the failed
+    /// attempts' steps, so only steps past them count: a batch that keeps failing at the
+    /// same point still shows as a growing value.
+    furthest_steps: AtomicU64,
 }
 
-impl LastSuccess {
+impl LastProgress {
     pub(crate) fn new(now: Instant) -> Self {
         Self {
             start: now,
             secs_after_start: AtomicU64::new(0),
+            steps: Arc::default(),
+            furthest_steps: AtomicU64::new(0),
         }
     }
 
-    pub(crate) fn record(&self, now: Instant) {
+    /// For `ImportOptions::progress`.
+    pub(crate) fn steps(&self) -> Arc<AtomicU64> {
+        self.steps.clone()
+    }
+
+    pub(crate) fn succeeded(&self, now: Instant) {
+        self.record(now);
+        self.steps.store(0, Ordering::Relaxed);
+        self.furthest_steps.store(0, Ordering::Relaxed);
+    }
+
+    pub(crate) fn failed(&self, now: Instant) {
+        self.note_steps(now);
+        self.steps.store(0, Ordering::Relaxed);
+    }
+
+    /// Records progress if the running batch has gone further than any since the last
+    /// success.
+    pub(crate) fn note_steps(&self, now: Instant) {
+        let steps = self.steps.load(Ordering::Relaxed);
+        if steps > self.furthest_steps.fetch_max(steps, Ordering::Relaxed) {
+            self.record(now);
+        }
+    }
+
+    fn record(&self, now: Instant) {
         self.secs_after_start
             .store(self.secs_to(now), Ordering::Relaxed);
     }
@@ -158,12 +193,13 @@ impl LastSuccess {
 }
 
 /// Runs `work`, setting `secs_since_success` every `FRESHNESS_INTERVAL` beside it, so a
-/// batch that never returns shows as a growing value. Removes the counter when `work` ends
-/// or is dropped: a stale value would read as fresh on a task that no longer has the shard.
+/// batch that never returns and makes no progress shows as a growing value. Removes the
+/// counter when `work` ends or is dropped: a stale value would read as fresh on a task that
+/// no longer has the shard.
 pub(crate) async fn report_freshness<T>(
     fb: FacebookInit,
     repo_name: &str,
-    last_success: &LastSuccess,
+    last_progress: &LastProgress,
     work: impl Future<Output = T>,
 ) -> T {
     let gauge = RemoveFreshnessOnDrop {
@@ -176,8 +212,10 @@ pub(crate) async fn report_freshness<T>(
         tokio::select! {
             output = &mut work => return output,
             _ = ticker.tick() => {
+                let now = Instant::now();
+                last_progress.note_steps(now);
                 get_service_data_singleton(fb)
-                    .set_counter(&gauge.key, last_success.secs_since(Instant::now()) as i64);
+                    .set_counter(&gauge.key, last_progress.secs_since(now) as i64);
             }
         }
     }
@@ -374,12 +412,12 @@ impl P4SyncProcessExecutor {
 impl RepoShardedProcessExecutor for P4SyncProcessExecutor {
     async fn execute(&self) -> Result<()> {
         let repo_name = self.repo.repo_identity().name();
-        let last_success = LastSuccess::new(Instant::now());
+        let last_progress = LastProgress::new(Instant::now());
         report_freshness(
             self.app.fb,
             repo_name,
-            &last_success,
-            self.import_loop(repo_name, &last_success),
+            &last_progress,
+            self.import_loop(repo_name, &last_progress),
         )
         .await
     }
@@ -392,9 +430,12 @@ impl RepoShardedProcessExecutor for P4SyncProcessExecutor {
 }
 
 impl P4SyncProcessExecutor {
-    async fn import_loop(&self, repo_name: &str, last_success: &LastSuccess) -> Result<()> {
+    async fn import_loop(&self, repo_name: &str, last_progress: &LastProgress) -> Result<()> {
         let bookmark = BookmarkKey::new(BOOKMARK)?;
-        let options = self.settings.import_options.clone();
+        let options = ImportOptions {
+            progress: last_progress.steps(),
+            ..self.settings.import_options.clone()
+        };
 
         let mut state = None;
         let mut failures = 0;
@@ -415,7 +456,7 @@ impl P4SyncProcessExecutor {
                 }
             };
             if !import_enabled(repo_name) {
-                last_success.record(Instant::now());
+                last_progress.succeeded(Instant::now());
                 log_state(&mut state, State::Disabled, || {
                     format!("{repo_name}: {ENABLED_JUST_KNOB} is off, importing nothing")
                 });
@@ -446,13 +487,14 @@ impl P4SyncProcessExecutor {
             };
             match &result {
                 Ok(_) => {
-                    last_success.record(Instant::now());
+                    last_progress.succeeded(Instant::now());
                     batch_size.succeeded()
                 }
                 Err(error) if p4_import::failed_stage(error) != Some(p4_import::Stage::Prepare) => {
+                    last_progress.failed(Instant::now());
                     batch_size.failed()
                 }
-                Err(_) => {}
+                Err(_) => last_progress.failed(Instant::now()),
             }
             STATS::stuck.set_value(
                 self.app.fb,

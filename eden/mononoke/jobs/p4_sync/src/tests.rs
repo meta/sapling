@@ -6,6 +6,7 @@
  */
 
 use std::future::Future;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use justknobs::test_helpers::JustKnobsInMemory;
@@ -26,7 +27,7 @@ use tokio::time::Instant;
 use super::*;
 use crate::sharded::BatchSize;
 use crate::sharded::ConfiguredDepot;
-use crate::sharded::LastSuccess;
+use crate::sharded::LastProgress;
 use crate::sharded::configured_depot;
 use crate::sharded::import_enabled;
 use crate::sharded::report_freshness;
@@ -336,7 +337,7 @@ fn reported(fb: FacebookInit, repo: &str) -> Option<i64> {
 async fn reported_after(
     fb: FacebookInit,
     repo: &str,
-    last_success: &LastSuccess,
+    last_progress: &LastProgress,
     work: impl Future<Output = ()>,
     after: Duration,
 ) -> Option<i64> {
@@ -345,7 +346,7 @@ async fn reported_after(
         reported(fb, repo)
     };
     tokio::select! {
-        _ = report_freshness(fb, repo, last_success, work) => panic!("work ended early"),
+        _ = report_freshness(fb, repo, last_progress, work) => panic!("work ended early"),
         value = read => value,
     }
 }
@@ -353,13 +354,13 @@ async fn reported_after(
 #[mononoke::fbinit_test]
 async fn test_a_wedged_batch_shows_as_a_growing_value_until_the_shard_stops(fb: FacebookInit) {
     tokio::time::pause();
-    let last_success = LastSuccess::new(Instant::now());
+    let last_progress = LastProgress::new(Instant::now());
     let wedged = std::future::pending::<()>();
     assert_eq!(
         reported_after(
             fb,
             "wedged",
-            &last_success,
+            &last_progress,
             wedged,
             Duration::from_secs(1801)
         )
@@ -376,7 +377,7 @@ async fn test_a_wedged_batch_shows_as_a_growing_value_until_the_shard_stops(fb: 
 #[mononoke::fbinit_test]
 async fn test_a_held_shard_grows_from_its_start(fb: FacebookInit) {
     tokio::time::pause();
-    let last_success = LastSuccess::new(Instant::now());
+    let last_progress = LastProgress::new(Instant::now());
     // A pass every 30 s, none of them a success.
     let held = async {
         loop {
@@ -384,7 +385,7 @@ async fn test_a_held_shard_grows_from_its_start(fb: FacebookInit) {
         }
     };
     assert_eq!(
-        reported_after(fb, "held", &last_success, held, Duration::from_secs(3601)).await,
+        reported_after(fb, "held", &last_progress, held, Duration::from_secs(3601)).await,
         Some(3600)
     );
 }
@@ -392,18 +393,18 @@ async fn test_a_held_shard_grows_from_its_start(fb: FacebookInit) {
 #[mononoke::fbinit_test]
 async fn test_a_success_or_a_switched_off_pass_resets_it(fb: FacebookInit) {
     tokio::time::pause();
-    let last_success = LastSuccess::new(Instant::now());
+    let last_progress = LastProgress::new(Instant::now());
     // Failing for 30 min, then one success.
     let recovers = async {
         tokio::time::sleep(Duration::from_secs(1800)).await;
-        last_success.record(Instant::now());
+        last_progress.succeeded(Instant::now());
         std::future::pending::<()>().await
     };
     assert_eq!(
         reported_after(
             fb,
             "recovers",
-            &last_success,
+            &last_progress,
             recovers,
             Duration::from_secs(1831)
         )
@@ -411,18 +412,18 @@ async fn test_a_success_or_a_switched_off_pass_resets_it(fb: FacebookInit) {
         Some(30)
     );
 
-    let last_success = LastSuccess::new(Instant::now());
+    let last_progress = LastProgress::new(Instant::now());
     // Switched off by JK: each idle pass counts as a success.
     let switched_off = async {
         loop {
-            last_success.record(Instant::now());
+            last_progress.succeeded(Instant::now());
             tokio::time::sleep(Duration::from_secs(30)).await;
         }
     };
     let value = reported_after(
         fb,
         "switched_off",
-        &last_success,
+        &last_progress,
         switched_off,
         Duration::from_secs(3601),
     )
@@ -430,5 +431,86 @@ async fn test_a_success_or_a_switched_off_pass_resets_it(fb: FacebookInit) {
     assert!(
         matches!(value, Some(0..=30)),
         "never more than one idle pass old, got {value:?}"
+    );
+}
+
+#[mononoke::fbinit_test]
+async fn test_steps_inside_a_long_batch_keep_it_low(fb: FacebookInit) {
+    tokio::time::pause();
+    let last_progress = LastProgress::new(Instant::now());
+    let steps = last_progress.steps();
+    // A 2 h batch that never finishes, storing a file every 7 s.
+    let long_batch = async {
+        loop {
+            tokio::time::sleep(Duration::from_secs(7)).await;
+            steps.fetch_add(1, Ordering::Relaxed);
+        }
+    };
+    assert_eq!(
+        reported_after(
+            fb,
+            "long_batch",
+            &last_progress,
+            long_batch,
+            Duration::from_secs(7201)
+        )
+        .await,
+        Some(0)
+    );
+}
+
+#[mononoke::fbinit_test]
+async fn test_retries_that_fail_where_the_first_attempt_did_still_grow(fb: FacebookInit) {
+    tokio::time::pause();
+    let last_progress = LastProgress::new(Instant::now());
+    let steps = last_progress.steps();
+    // Every minute, an attempt that takes 10 steps in 10 s, then fails.
+    let failing = async {
+        loop {
+            for _ in 0..10 {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                steps.fetch_add(1, Ordering::Relaxed);
+            }
+            last_progress.failed(Instant::now());
+            tokio::time::sleep(Duration::from_secs(50)).await;
+        }
+    };
+    assert_eq!(
+        reported_after(
+            fb,
+            "failing",
+            &last_progress,
+            failing,
+            Duration::from_secs(3601)
+        )
+        .await,
+        Some(3590),
+        "only the first attempt's steps, at 10 s, were new"
+    );
+
+    let last_progress = LastProgress::new(Instant::now());
+    let steps = last_progress.steps();
+    // Each attempt gets one step further than the one before, then fails.
+    let getting_further = async {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            steps.fetch_add(attempt, Ordering::Relaxed);
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            last_progress.failed(Instant::now());
+            tokio::time::sleep(Duration::from_secs(50)).await;
+        }
+    };
+    let value = reported_after(
+        fb,
+        "getting_further",
+        &last_progress,
+        getting_further,
+        Duration::from_secs(3601),
+    )
+    .await;
+    assert!(
+        matches!(value, Some(0..=60)),
+        "never more than one attempt old, got {value:?}"
     );
 }

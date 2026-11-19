@@ -607,6 +607,7 @@ async fn test_changelist_contents_are_stored_by_depot_path(fb: FacebookInit) -> 
         "//test1/",
         &changelist,
         ImportOptions::default().file_concurrency,
+        &AtomicU64::new(0),
     )
     .await?;
 
@@ -2002,6 +2003,30 @@ async fn test_files_are_fetched_at_most_file_concurrency_at_once(fb: FacebookIni
     assert_eq!((3, 1), (concurrent.prints.max(), concurrent.filelogs.max()));
     assert_eq!(one_at_a_time, three_at_a_time);
     assert_eq!(10, three_at_a_time[2].file_changes().count());
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_progress_counts_each_file_stored_and_each_changeset_built(
+    fb: FacebookInit,
+) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+    let options = ImportOptions::default();
+
+    build_changesets(
+        &ctx,
+        &repo,
+        &two_changelists(),
+        DEPOT,
+        None,
+        &[7, 9],
+        &options,
+    )
+    .await?;
+
+    // 7 stores a.txt and gone.txt, 9 a.txt and b.txt (its deletion stores nothing).
+    assert_eq!(4 + 2, options.progress.load(Ordering::Relaxed));
     Ok(())
 }
 
