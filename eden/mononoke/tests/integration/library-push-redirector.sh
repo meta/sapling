@@ -588,6 +588,23 @@ pushrebase =
 EOF
 }
 
+function qualify_backsync_cursor_at_fixture_checkpoint {
+  local source_repo_id=$1 target_repo_id=$2 source_bookmark=$3 target_bookmark=$4
+  local source_commit=$5 target_commit=$6 initialized
+  initialized=$(sqlite3 "$TESTTMP/monsql/sqlite_dbs" "
+    INSERT INTO mutable_counters (repo_id, name, value)
+    SELECT $target_repo_id, 'backsync_by_bookmark_v1_${source_repo_id}_branch_${source_bookmark}', l.id
+    FROM bookmarks_update_log l
+    JOIN bookmarks source ON source.repo_id = l.repo_id AND source.name = l.name AND source.category = l.category AND source.log_id = l.id
+    JOIN bookmarks target ON target.repo_id = $target_repo_id AND CAST(target.name AS TEXT) = '$target_bookmark' AND target.category = source.category
+    WHERE l.repo_id = $source_repo_id AND CAST(l.name AS TEXT) = '$source_bookmark' AND CAST(l.category AS TEXT) = 'branch'
+      AND source.changeset_id = X'$source_commit' AND l.to_changeset_id = X'$source_commit' AND target.changeset_id = X'$target_commit'
+      AND EXISTS (SELECT 1 FROM synced_commit_mapping m WHERE m.large_repo_id = $source_repo_id AND m.small_repo_id = $target_repo_id AND m.large_bcs_id = X'$source_commit' AND m.small_bcs_id = X'$target_commit')
+    ON CONFLICT(repo_id, name) DO UPDATE SET value = excluded.value WHERE mutable_counters.value <= excluded.value;
+    SELECT changes();")
+  [[ "$initialized" == 1 ]] || { echo "fixture's declared bookmark checkpoint did not qualify an exact cursor" >&2; return 1; }
+}
+
 function start_large_small_repo {
   echo "Starting Mononoke server"
   mononoke "$@"
@@ -598,6 +615,9 @@ function start_large_small_repo {
     sqlite3 "$TESTTMP/monsql/sqlite_dbs" "INSERT INTO mutable_counters (repo_id, name, value) SELECT $REPOIDLARGE, 'xreposync_from_$REPOIDSMALL', COALESCE(MAX(id), 0) FROM bookmarks_update_log WHERE repo_id = $REPOIDSMALL";
   else
     sqlite3 "$TESTTMP/monsql/sqlite_dbs" "INSERT INTO mutable_counters (repo_id, name, value) SELECT $REPOIDSMALL, 'backsync_from_$REPOIDLARGE', COALESCE(MAX(id), 0) FROM bookmarks_update_log WHERE repo_id = $REPOIDLARGE";
+    qualify_backsync_cursor_at_fixture_checkpoint "$REPOIDLARGE" "$REPOIDSMALL" \
+      "${MASTER_BOOKMARK:-master_bookmark}" "${MASTER_BOOKMARK:-master_bookmark}" \
+      "$LARGE_MASTER_BONSAI" "$SMALL_MASTER_BONSAI"
   fi
 }
 

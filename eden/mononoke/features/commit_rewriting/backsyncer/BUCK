@@ -8,6 +8,7 @@ rust_library(
     srcs = [
         "src/lib.rs",
         "src/tests.rs",
+        "src/tests/bookmark_cursor_tests.rs",
         "src/tests/ensure_backsynced_tests.rs",
     ],
     test_deps = [
