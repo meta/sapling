@@ -537,6 +537,7 @@ def _applycloudchanges(repo, remotepath, lastsyncstate, cloudrefs, maxage, state
     omittedremotebookmarks = []
 
     newvisibleheads = None
+    mergevisible = False
     if visibility.tracking(repo):
         localheads = _getheads(repo)
         localheadsset = set(localheads)
@@ -548,15 +549,25 @@ def _applycloudchanges(repo, remotepath, lastsyncstate, cloudrefs, maxage, state
                 for head in lastsyncstate.heads
                 if head not in lastsyncstate.omittedheads
             ]
-            newvisibleheads = util.removeduplicates(
-                oldvisibleheads + cloudheads + localheads
-            )
-            toremove = {
-                head
-                for head in oldvisibleheads
-                if head not in localheadsset or head not in cloudheadsset
-            }
-            newvisibleheads = [head for head in newvisibleheads if head not in toremove]
+            # developer config: commitcloud.merge-visible-commits
+            if repo.ui.configbool(
+                "commitcloud", "merge-visible-commits", True
+            ) and repo.ui.configbool("experimental", "narrow-heads"):
+                # Defer the visibility merge until pullheadgroups() has pulled
+                # missing cloud commits
+                mergevisible = True
+            else:
+                newvisibleheads = util.removeduplicates(
+                    oldvisibleheads + cloudheads + localheads
+                )
+                toremove = {
+                    head
+                    for head in oldvisibleheads
+                    if head not in localheadsset or head not in cloudheadsset
+                }
+                newvisibleheads = [
+                    head for head in newvisibleheads if head not in toremove
+                ]
 
     remotebookmarknewnames = {}
     remotebookmarkupdates = {}
@@ -586,6 +597,14 @@ def _applycloudchanges(repo, remotepath, lastsyncstate, cloudrefs, maxage, state
     if _isremotebookmarkssyncenabled(repo.ui):
         omittedremotebookmarks = _updateremotebookmarks(repo, tr, remotebookmarkupdates)
         newremotebookmarks = cloudrefs.remotebookmarks
+
+    if mergevisible:
+        omittedparents = _fetchomittedparents(
+            repo, oldvisibleheads, cloudheads, omittedheads
+        )
+        newvisibleheads = _mergevisibleheads(
+            repo, oldvisibleheads, localheads, cloudheads, omittedparents
+        )
 
     if newvisibleheads is not None:
         visibility.setvisibleheads(repo, [nodemod.bin(n) for n in newvisibleheads])
@@ -629,6 +648,61 @@ def _applycloudchanges(repo, remotepath, lastsyncstate, cloudrefs, maxage, state
         newomittedbookmarks=omittedbookmarks,
         newomittedremotebookmarks=omittedremotebookmarks,
     )
+
+
+def _drafts(repo, heads, publicheads):
+    """Return the draft commits that `heads` make visible"""
+    cl = repo.changelog
+    nodes = cl.filternodes([nodemod.bin(head) for head in heads])
+    return cl.dag.only(nodes, publicheads)
+
+
+def _fetchomittedparents(repo, baseheads, cloudheads, omittedheads):
+    """Return the local commits that omitted cloud heads are based on
+
+    Omitted heads are older than `commitcloud.max_sync_age` and are not pulled,
+    so this fetches only their commit graph.  The merge needs it only for
+    commits that were visible at the last sync and are no longer visible
+    through the cloud's other heads.
+    """
+    if not omittedheads:
+        return []
+    cl = repo.changelog
+    publicheads = repo.heads(includepublic=True, includedraft=False)
+    dropped = _drafts(repo, baseheads, publicheads) - _drafts(
+        repo, cloudheads, publicheads
+    )
+    if not dropped:
+        return []
+    common = list(publicheads) + list(cl.dag.heads(dropped))
+    entries = repo.edenapi.commitgraph(
+        [nodemod.bin(head) for head in omittedheads], common
+    )
+    return cl.filternodes([parent for entry in entries for parent in entry["parents"]])
+
+
+def _mergevisibleheads(repo, baseheads, localheads, cloudheads, omittedparents):
+    """Merge the draft commits visible at the last sync, locally and in the cloud
+
+    A commit is visible after the merge if it was visible at the last sync and
+    neither side has hidden it since, or if either side has made it visible
+    since the last sync.  Merging commits rather than heads matters when a
+    commit's children are hidden: it becomes a head without being added.
+
+    `omittedparents` come from `_fetchomittedparents`: the cloud's omitted
+    heads keep them and their ancestors visible in the cloud.
+
+    Returns the merged heads.
+    """
+    cl = repo.changelog
+    publicheads = repo.heads(includepublic=True, includedraft=False)
+    base = _drafts(repo, baseheads, publicheads)
+    local = _drafts(repo, localheads, publicheads)
+    cloud = _drafts(repo, cloudheads, publicheads)
+    if omittedparents:
+        cloud = cloud | (cl.dag.only(omittedparents, publicheads) & base)
+    merged = (local & cloud) | (local - base) | (cloud - base)
+    return [nodemod.hex(node) for node in cl.dag.headsancestors(merged)]
 
 
 def pullheadgroups(repo, remotepath, headgroups):
