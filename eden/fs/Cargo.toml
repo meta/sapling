@@ -72,6 +72,7 @@ plexi-core = { version = "0.1.2", git = "https://github.com/markbt/plexi", rev =
 postgres = { git = "https://github.com/neondatabase/rust-postgres", rev = "f3cf448febde5fd298071d54d568a9c875a7a62b" }
 prettytable-rs = { git = "https://github.com/asm89/prettytable-rs", rev = "d5e2a480c02b0c4be8d61f4f3a9039c841376433" }
 protobuf-build = { git = "https://github.com/fbsource/protobuf-build", rev = "5dd65b7da5da2e30b3eb7490832477e9c456f5cc" }
+quiche = { git = "https://github.com/shayne-fletcher/quiche", rev = "5b2fd7d463c17184673eea7db1e65076aa0952c3" }
 quickcheck_async = { git = "https://github.com/markbt/quickcheck_async", rev = "76b13525ca93e0725e757f841fc6ccab8bae1913" }
 re_redap_browser = { git = "https://github.com/a7or/rerun.git", rev = "679573aa62eafedf9eace32cd0af6fb858d96bcb" }
 re_redap_browser-0-40 = { package = "re_redap_browser", git = "https://github.com/a7or/rerun.git", rev = "84d2dc3c159fb832c48aa90d3305f36da3b58312" }
