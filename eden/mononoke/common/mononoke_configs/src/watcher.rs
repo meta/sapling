@@ -39,6 +39,7 @@ use futures::stream::FuturesUnordered;
 use futures::stream::StreamExt;
 use metaconfig_parser::RepoConfigEntry;
 use metaconfig_parser::RepoConfigs;
+use metaconfig_parser::SharedGenerations;
 use metaconfig_parser::StorageConfigs;
 use metaconfig_parser::configerator_repo_spec_handle;
 use metaconfig_parser::parse_manifest_common_and_storage;
@@ -351,7 +352,8 @@ struct ReloadState {
     prev_manifest: Option<Arc<TierManifest>>,
     /// Reused on equal re-parse to keep pointer identity stable.
     cached_manifest_storage: Option<Arc<StorageConfigs>>,
-    /// Parse results from the last committed manifest pass, valid against `prev_manifest.storage`.
+    /// Parse results from the last committed manifest pass, each valid against the shared configs
+    /// its spec names in `prev_manifest`.
     parsed_specs: HashMap<String, ParsedSpec>,
 }
 
@@ -485,18 +487,34 @@ async fn run_manifest_reload_pass(
         };
         // Served snapshot for per-repo keep-last-known-good below.
         let served = repo_configs.load_full();
-        // Every parse depends on the manifest's storage, so a storage change invalidates them all.
-        let previous_parses = (justknobs::eval(INCREMENTAL_RELOAD_KNOB, None, None)
-            && state
-                .prev_manifest
-                .as_ref()
-                .is_some_and(|prev| prev.storage == current_manifest.storage))
-        .then_some(&state.parsed_specs);
+        // A parse depends on its spec and the shared configs the spec names, so it
+        // stays valid while the spec and its shared generation are unchanged.
+        let shared_generations = if justknobs::eval(INCREMENTAL_RELOAD_KNOB, None, None) {
+            state.prev_manifest.as_ref().and_then(|prev| {
+                match (
+                    SharedGenerations::new(&prev.storage),
+                    SharedGenerations::new(&current_manifest.storage),
+                ) {
+                    (Ok(before), Ok(after)) => Some((before, after)),
+                    (Err(e), _) | (_, Err(e)) => {
+                        warn!("Failed to hash shared configs, so parsing every repo again: {e:?}");
+                        None
+                    }
+                }
+            })
+        } else {
+            None
+        };
         let mut repos = RepoConfigs::new(HashMap::new(), CommonConfig::default()).repos;
         for entry in &current_manifest.repos {
             if let Some(handle) = handles.get(&entry.repo_name) {
                 let (spec, version_info) = handle.get_with_version();
-                let previous = previous_parses.and_then(|parses| parses.get(&entry.repo_name));
+                // The previous parse, if the shared configs its spec names are unchanged.
+                let previous = shared_generations.as_ref().and_then(|(before, after)| {
+                    state.parsed_specs.get(&entry.repo_name).filter(|parsed| {
+                        before.of_repo(&parsed.spec, tier) == after.of_repo(&parsed.spec, tier)
+                    })
+                });
                 // Reuse only a parse that is still the one served: the per-repo path and on-demand
                 // loads replace served configs without going through this cache.
                 let reusable = previous.filter(|parsed| {

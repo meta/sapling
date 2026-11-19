@@ -1026,9 +1026,9 @@ async fn test_manifest_reload_reparses_changed_spec() {
     );
 }
 
-// Every parse resolves against the manifest's storage, so a storage change invalidates all reuse.
+// A parse depends on the storage config its spec names, so only a change to that one re-parses.
 #[mononoke::test]
-async fn test_manifest_reload_reparses_all_on_storage_change() {
+async fn test_manifest_reload_reparses_on_a_named_storage_change_only() {
     const X_PATH: &str = "test/repos/x";
 
     let v0 = good_manifest("tier_v0", vec![spec_entry("repo/x", 1, X_PATH)]);
@@ -1042,10 +1042,27 @@ async fn test_manifest_reload_reparses_all_on_storage_change() {
     v1.storage.insert("other_storage".to_string(), extra);
     fx.swap_manifest(&v1, 1);
     fx.run().await;
-
+    let x_after_add = served_entry(&fx, "repo/x");
     assert!(
-        !Arc::ptr_eq(&x_before, &served_entry(&fx, "repo/x")),
-        "a storage change must re-parse repo/x even though its spec is unchanged"
+        Arc::ptr_eq(&x_before, &x_after_add),
+        "adding a storage config repo/x does not name must reuse its parse"
+    );
+
+    let mut v2 = v1.clone();
+    v2.storage.insert(
+        TEST_STORAGE.to_string(),
+        repos::RawStorageConfig {
+            metadata: repos::RawMetadataConfig::local(repos::RawDbLocal {
+                local_db_path: "/tmp/other_db".to_string(),
+            }),
+            ..v1.storage[TEST_STORAGE].clone()
+        },
+    );
+    fx.swap_manifest(&v2, 2);
+    fx.run().await;
+    assert!(
+        !Arc::ptr_eq(&x_after_add, &served_entry(&fx, "repo/x")),
+        "a change to the storage config repo/x names must re-parse it"
     );
 }
 
