@@ -432,13 +432,26 @@ impl RepoEphemeralStoreInner {
     ) -> Result<Option<BubbleId>> {
         ctx.perf_counters()
             .increment_counter(PerfCounterType::SqlReadsReplica);
-        let rows = SelectBubbleFromChangeset::query(
+        let mut rows = SelectBubbleFromChangeset::query(
             &self.connections.read_connection,
             ctx.sql_query_telemetry(),
             repo_id,
             cs_id,
         )
         .await?;
+        if rows.is_empty() {
+            // The snapshot may have been written so recently that the replica
+            // has not caught up yet.
+            ctx.perf_counters()
+                .increment_counter(PerfCounterType::SqlReadsMaster);
+            rows = SelectBubbleFromChangeset::query(
+                &self.connections.read_master_connection,
+                ctx.sql_query_telemetry(),
+                repo_id,
+                cs_id,
+            )
+            .await?;
+        }
         Ok(rows.into_iter().next().map(|b| b.0))
     }
 
@@ -1098,6 +1111,7 @@ mod test {
     use metaconfig_types::PackFormat;
     use mononoke_macros::mononoke;
     use mononoke_types_mocks::changesetid as bonsai;
+    use mononoke_types_mocks::changesetid::ONES_CSID;
     use mononoke_types_mocks::repo::REPO_ONE;
     use mononoke_types_mocks::repo::REPO_ZERO;
     use packblob::PackBlob;
@@ -3127,6 +3141,58 @@ mod test {
             .enumerate(&ctx, &BlobstoreKeyParam::from(..))
             .await?;
         assert!(enumerated.keys.is_empty(), "No bubble data should remain");
+        Ok(())
+    }
+
+    mononoke_queries! {
+        write InsertBubbleChangeset(
+            repo_id: RepositoryId,
+            cs_id: ChangesetId,
+            bubble_id: BubbleId,
+        ) {
+            none,
+            "INSERT INTO ephemeral_bubble_changeset_mapping (repo_id, cs_id, bubble_id, gen)
+             VALUES ({repo_id}, {cs_id}, {bubble_id}, 1)"
+        }
+    }
+
+    #[mononoke::fbinit_test]
+    async fn bubble_from_changeset_reads_primary_when_replica_lags(fb: FacebookInit) -> Result<()> {
+        // Given a store whose replica has not yet seen a snapshot that was
+        // just written to the primary
+        let initial = Duration::from_hours(30 * 24);
+        let grace = Duration::from_hours(6);
+        let mode = BubbleDeletionMode::MarkAndDelete;
+        let (ctx, blobstore, _, primary) = bootstrap(fb, initial, grace, mode)?;
+        let (_, _, _, replica) = bootstrap(fb, initial, grace, mode)?;
+        let primary_connections = &primary.inner()?.connections;
+        let eph = RepoEphemeralStore::new(
+            REPO_ZERO,
+            SqlConnections {
+                write_connection: primary_connections.write_connection.clone(),
+                read_master_connection: primary_connections.read_master_connection.clone(),
+                read_connection: replica.inner()?.connections.read_connection.clone(),
+            },
+            blobstore,
+            initial,
+            grace,
+            mode,
+        );
+        let bubble = eph.create_bubble(&ctx, None, vec![]).await?;
+        InsertBubbleChangeset::query(
+            &primary_connections.write_connection,
+            ctx.sql_query_telemetry(),
+            &REPO_ZERO,
+            &ONES_CSID,
+            &bubble.bubble_id(),
+        )
+        .await?;
+
+        // When the snapshot's bubble is looked up
+        let found = eph.bubble_from_changeset(&ctx, &ONES_CSID).await?;
+
+        // Then it is found on the primary
+        assert_eq!(found, Some(bubble.bubble_id()));
         Ok(())
     }
 }
