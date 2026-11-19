@@ -35,6 +35,7 @@ use edenapi_types::UploadTokenMetadata;
 use edenapi_types::UploadTokensResponse;
 use edenapi_types::wire::ToWire;
 use ephemeral_blobstore::BubbleId;
+use ephemeral_blobstore::bubble_hg_mapping_enabled;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::TryStreamExt;
@@ -49,6 +50,7 @@ use gotham_ext::handler::SlapiCommitIdentityScheme;
 use gotham_ext::middleware::request_context::RequestContext;
 use gotham_ext::response::TryIntoResponse;
 use http_body_util::BodyExt as _;
+use mercurial_types::HgChangesetId;
 use mercurial_types::HgFileNodeId;
 use mercurial_types::HgNodeHash;
 use mercurial_types::blobs::File;
@@ -98,6 +100,9 @@ pub struct UploadFileParams {
 #[derive(Debug, Deserialize, StateData, StaticResponseExtender)]
 pub struct UploadFileQueryString {
     bubble_id: Option<NonZeroU64>,
+    /// Stores the file in the bubble of this snapshot, named by its hg
+    /// changeset id in hex.
+    snapshot: Option<String>,
     content_size: u64,
     compression: Option<String>,
 }
@@ -297,6 +302,31 @@ pub async fn upload_file(state: &mut State) -> Result<impl TryIntoResponse + use
 
     let repo: HgRepoContext<Repo> = get_repo(sctx, &rctx, &params.repo, None).await?;
 
+    let bubble_id = match (query_string.bubble_id, query_string.snapshot) {
+        (Some(_), Some(_)) => {
+            return Err(HttpError::e400(anyhow!(
+                "Name either a bubble or a snapshot, not both"
+            )));
+        }
+        (bubble_id, None) => bubble_id.map(BubbleId::new),
+        (None, Some(snapshot)) => {
+            let repo_name = repo.repo_ctx().name();
+            if !bubble_hg_mapping_enabled(repo_name) {
+                return Err(HttpError::e400(anyhow!(
+                    "Bubble hg mapping is disabled for repo {repo_name}, so snapshots cannot be named by hg id"
+                )));
+            }
+            let hg_cs_id = HgChangesetId::from_str(&snapshot).map_err(HttpError::e400)?;
+            let bubble_id = repo
+                .ephemeral_store()
+                .bubble_from_hg_changeset(repo.ctx(), hg_cs_id)
+                .await
+                .map_err(HttpError::e500)?
+                .ok_or_else(|| HttpError::e404(anyhow!("Snapshot {hg_cs_id} not found")))?;
+            Some(bubble_id)
+        }
+    };
+
     let id = AnyFileContentId::from_str(&format!("{}/{}", params.idtype, params.id))
         .map_err(HttpError::e400)?;
     let body = Body::take_from(state)
@@ -331,17 +361,11 @@ pub async fn upload_file(state: &mut State) -> Result<impl TryIntoResponse + use
     } else {
         false
     };
-    repo.store_file(
-        id,
-        content_size,
-        body,
-        query_string.bubble_id.map(BubbleId::new),
-        bypass_redaction,
-    )
-    .await
-    .map_err(HttpError::e500)?;
+    repo.store_file(id, content_size, body, bubble_id, bypass_redaction)
+        .await
+        .map_err(HttpError::e500)?;
 
-    let token = generate_upload_token(repo, id, content_size, query_string.bubble_id)
+    let token = generate_upload_token(repo, id, content_size, bubble_id.map(NonZeroU64::from))
         .await
         .map(|v| v.to_wire());
 
