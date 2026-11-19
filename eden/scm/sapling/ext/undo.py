@@ -410,6 +410,13 @@ def _readindex(repo, reverseindex, prefetchedrevlog=None):
     return indexdict
 
 
+def _readindexorabort(repo, reverseindex):
+    try:
+        return _readindex(repo, reverseindex)
+    except IndexError:
+        raise error.Abort(_("index out of bounds"))
+
+
 def _readnode(repo, filename, hexnode):
     rlog = _getrevlog(repo, filename)
     return rlog.revision(bin(hexnode)).decode()
@@ -569,7 +576,7 @@ def _getolddrafts(repo, reverseindex):
     # convert reverseindex to node
     # this makes caching guaranteed correct
     # bc immutable history
-    nodedict = _readindex(repo, reverseindex)
+    nodedict = _readindexorabort(repo, reverseindex)
     return _cachedgetolddrafts(repo, nodedict)
 
 
@@ -649,7 +656,7 @@ def _getoldworkingcopyparent(repo, reverseindex):
     # convert reverseindex to node
     # this makes caching guaranteed correct
     # bc immutable history
-    nodedict = _readindex(repo, reverseindex)
+    nodedict = _readindexorabort(repo, reverseindex)
     return _cachedgetoldworkingcopyparent(repo, nodedict["workingparent"])
 
 
@@ -729,7 +736,7 @@ def showdonecommits(context, mapping, args):
 
 
 def _oldmarks(repo, reverseindex):
-    nodedict = _readindex(repo, reverseindex)
+    nodedict = _readindexorabort(repo, reverseindex)
     bookstring = _readnode(repo, "bookmarks.i", nodedict["bookmarks"])
     oldmarks = bookstring.split("\n")
     result = []
@@ -1146,7 +1153,10 @@ def _undoto(ui, repo, reverseindex, keep=False, branch=None):
     time = _readnode(repo, "date.i", nodedict["date"])
     time = util.datestr([float(x) for x in time.split(" ")])
 
-    nodedict = _readindex(repo, reverseindex - 1)
+    try:
+        nodedict = _readindex(repo, reverseindex - 1)
+    except IndexError:
+        raise error.Abort(_("most recent state: undoing here won't change anything"))
     commandstr = _readnode(repo, "command.i", nodedict["command"])
     commandlist = commandstr.split("\0")[1:]
     commandstr = " ".join(commandlist)
