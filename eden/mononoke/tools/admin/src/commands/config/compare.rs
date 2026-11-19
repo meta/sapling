@@ -170,7 +170,7 @@ fn resolve(
 fn spec_fields(spec: &RepoSpec) -> Result<Value> {
     let mut value = serde_json::to_value(spec)?;
     if let Value::Object(fields) = &mut value {
-        for layer in ["repo_config", "tier_overrides"] {
+        for layer in ["repo_config", "tier_overrides", "preset"] {
             fields.remove(layer);
         }
     }
