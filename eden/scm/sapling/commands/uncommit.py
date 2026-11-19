@@ -163,28 +163,32 @@ def commitfilteredctx(repo, ctx, match, allowempty):
         )
         return mctx
 
-    extra = dict(ctx.extra())
-    mutinfo = mutation.record(repo, extra, [ctx.node()], "uncommit")
-    loginfo = {"predecessors": ctx.hex(), "mutation": "uncommit"}
+    return _recommit(repo, ctx, files, filectxfn)
+
+
+def _recommit(repo, old, files, filectxfn):
+    """Commit a new version of ``old`` on its parent with ``files``, whose
+    content ``filectxfn`` gives as for a memctx, recorded as an uncommit.
+    Return the new node."""
+    extra = dict(old.extra())
+    mutinfo = mutation.record(repo, extra, [old.node()], "uncommit")
+    loginfo = {"predecessors": old.hex(), "mutation": "uncommit"}
 
     new = context.memctx(
         repo,
-        parents=[base],
-        text=ctx.description(),
+        parents=[old.p1()],
+        text=old.description(),
         files=files,
         filectxfn=filectxfn,
-        user=ctx.user(),
-        date=ctx.date(),
+        user=old.user(),
+        date=old.date(),
         extra=extra,
         loginfo=loginfo,
         mutinfo=mutinfo,
     )
-    # phase handling
-    commitphase = ctx.phase()
-    overrides = {("phases", "new-commit"): commitphase}
+    overrides = {("phases", "new-commit"): old.phase()}
     with repo.ui.configoverride(overrides, "uncommit"):
-        newid = repo.commitctx(new)
-    return newid
+        return repo.commitctx(new)
 
 
 def fixdirstate(repo, oldctx, newctx, status) -> None:
