@@ -259,8 +259,11 @@ def _sync(
 
                 # Apply any changes from the cloud to the local repo.
                 if cloudrefs.version != fetchversion:
+                    fetched = _fetchcloudchanges(
+                        repo, remotepath, lastsyncstate, cloudrefs, maxage
+                    )
                     _applycloudchanges(
-                        repo, remotepath, lastsyncstate, cloudrefs, maxage, state, tr
+                        repo, lastsyncstate, cloudrefs, maxage, state, tr, fetched
                     )
                 elif (
                     _isremotebookmarkssyncenabled(repo.ui)
@@ -450,8 +453,14 @@ def _prefetchexpensivebookmarks(repo, remotepath, remotebookmarknewnames):
     return remotebookmarknewnames
 
 
-@perftrace.tracefunc("Apply Cloud Changes")
-def _applycloudchanges(repo, remotepath, lastsyncstate, cloudrefs, maxage, state, tr):
+@perftrace.tracefunc("Fetch Cloud Changes")
+def _fetchcloudchanges(repo, remotepath, lastsyncstate, cloudrefs, maxage):
+    """Pull the commits and remote bookmarks that the cloud workspace adds
+
+    Returns the new heads, the heads omitted because they are older than
+    `maxage`, the local commits those heads are based on and the remote
+    bookmark updates, for `_applycloudchanges`.
+    """
     main = bookmarks.mainbookmark(repo)
     if (
         main
@@ -533,41 +542,6 @@ def _applycloudchanges(repo, remotepath, lastsyncstate, cloudrefs, maxage, state
         newheads = [head for head in newheads if head not in omittedheads]
     else:
         omittedheads = set()
-    omittedbookmarks = []
-    omittedremotebookmarks = []
-
-    newvisibleheads = None
-    mergevisible = False
-    if visibility.tracking(repo):
-        localheads = _getheads(repo)
-        localheadsset = set(localheads)
-        cloudheads = [head for head in cloudrefs.heads if head not in omittedheads]
-        cloudheadsset = set(cloudheads)
-        if localheadsset != cloudheadsset:
-            oldvisibleheads = [
-                head
-                for head in lastsyncstate.heads
-                if head not in lastsyncstate.omittedheads
-            ]
-            # developer config: commitcloud.merge-visible-commits
-            if repo.ui.configbool(
-                "commitcloud", "merge-visible-commits", True
-            ) and repo.ui.configbool("experimental", "narrow-heads"):
-                # Defer the visibility merge until pullheadgroups() has pulled
-                # missing cloud commits
-                mergevisible = True
-            else:
-                newvisibleheads = util.removeduplicates(
-                    oldvisibleheads + cloudheads + localheads
-                )
-                toremove = {
-                    head
-                    for head in oldvisibleheads
-                    if head not in localheadsset or head not in cloudheadsset
-                }
-                newvisibleheads = [
-                    head for head in newvisibleheads if head not in toremove
-                ]
 
     remotebookmarknewnames = {}
     remotebookmarkupdates = {}
@@ -587,27 +561,40 @@ def _applycloudchanges(repo, remotepath, lastsyncstate, cloudrefs, maxage, state
         )
         pullheadgroups(repo, remotepath, headgroups)
 
-    omittedbookmarks.extend(
-        _mergebookmarks(
-            repo, tr, cloudrefs.bookmarks, lastsyncstate, omittedheads, maxage
+    omittedparents = []
+    if visibility.tracking(repo) and _mergevisibleenabled(repo):
+        omittedparents = _fetchomittedparents(
+            repo,
+            [h for h in lastsyncstate.heads if h not in lastsyncstate.omittedheads],
+            [h for h in cloudrefs.heads if h not in omittedheads],
+            omittedheads,
         )
+
+    return newheads, omittedheads, omittedparents, remotebookmarkupdates
+
+
+@perftrace.tracefunc("Apply Cloud Changes")
+def _applycloudchanges(repo, lastsyncstate, cloudrefs, maxage, state, tr, fetched):
+    """Merge the cloud workspace's changes, fetched by `_fetchcloudchanges`"""
+    newheads, omittedheads, omittedparents, remotebookmarkupdates = fetched
+    localheads = _getheads(repo) if visibility.tracking(repo) else None
+
+    omittedbookmarks = _mergebookmarks(
+        repo, tr, cloudrefs.bookmarks, lastsyncstate, omittedheads, maxage
     )
 
     newremotebookmarks = {}
+    omittedremotebookmarks = []
     if _isremotebookmarkssyncenabled(repo.ui):
         omittedremotebookmarks = _updateremotebookmarks(repo, tr, remotebookmarkupdates)
         newremotebookmarks = cloudrefs.remotebookmarks
 
-    if mergevisible:
-        omittedparents = _fetchomittedparents(
-            repo, oldvisibleheads, cloudheads, omittedheads
+    if localheads is not None:
+        newvisibleheads = _newvisibleheads(
+            repo, lastsyncstate, cloudrefs, omittedheads, omittedparents, localheads
         )
-        newvisibleheads = _mergevisibleheads(
-            repo, oldvisibleheads, localheads, cloudheads, omittedparents
-        )
-
-    if newvisibleheads is not None:
-        visibility.setvisibleheads(repo, [nodemod.bin(n) for n in newvisibleheads])
+        if newvisibleheads is not None:
+            visibility.setvisibleheads(repo, [nodemod.bin(n) for n in newvisibleheads])
 
     # We have now synced the repo to the cloud version.  Store this.
     logsyncop(
@@ -648,6 +635,38 @@ def _applycloudchanges(repo, remotepath, lastsyncstate, cloudrefs, maxage, state
         newomittedbookmarks=omittedbookmarks,
         newomittedremotebookmarks=omittedremotebookmarks,
     )
+
+
+def _mergevisibleenabled(repo):
+    # developer config: commitcloud.merge-visible-commits
+    return repo.ui.configbool(
+        "commitcloud", "merge-visible-commits", True
+    ) and repo.ui.configbool("experimental", "narrow-heads")
+
+
+def _newvisibleheads(
+    repo, lastsyncstate, cloudrefs, omittedheads, omittedparents, localheads
+):
+    """Return the visible heads after the sync, or None if they don't change"""
+    cloudheads = [head for head in cloudrefs.heads if head not in omittedheads]
+    if set(localheads) == set(cloudheads):
+        return None
+    oldvisibleheads = [
+        head for head in lastsyncstate.heads if head not in lastsyncstate.omittedheads
+    ]
+    if _mergevisibleenabled(repo):
+        return _mergevisibleheads(
+            repo, oldvisibleheads, localheads, cloudheads, omittedparents
+        )
+    newvisibleheads = util.removeduplicates(oldvisibleheads + cloudheads + localheads)
+    localheadsset = set(localheads)
+    cloudheadsset = set(cloudheads)
+    toremove = {
+        head
+        for head in oldvisibleheads
+        if head not in localheadsset or head not in cloudheadsset
+    }
+    return [head for head in newvisibleheads if head not in toremove]
 
 
 def _drafts(repo, heads, publicheads):
