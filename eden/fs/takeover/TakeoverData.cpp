@@ -477,7 +477,7 @@ TakeoverData TakeoverData::deserializeThrift(IOBuf* buf) {
       CompactSerializer::deserialize<SerializedTakeoverResult>(buf);
   switch (serialized.getType()) {
     case SerializedTakeoverResult::Type::errorReason:
-      throw std::runtime_error(serialized.get_errorReason());
+      throw std::runtime_error(serialized.errorReason().as_const().value());
 
     case SerializedTakeoverResult::Type::takeoverData: {
       auto takeoverData =
