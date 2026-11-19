@@ -994,14 +994,15 @@ class localrepository:
             and all(n in self for n in headnodes)
             and all(n in self for n in headnames)
         ):
-            # Ensure unnamed commits are visible (i.e. draft, not secret).
-            nodes = []
-            for n in sorted(set(headnodes) | set(headnames)):
-                ctx = self[n]
-                if ctx.phase() == phases.secret:
-                    nodes.append(ctx.node())
-            if nodes:
-                visibility.add(self, nodes)
+            if visible:
+                # Ensure unnamed commits are visible (i.e. draft, not secret).
+                nodes = []
+                for n in sorted(set(headnodes) | set(headnames)):
+                    ctx = self[n]
+                    if ctx.phase() == phases.secret:
+                        nodes.append(ctx.node())
+                if nodes:
+                    visibility.add(self, nodes)
             return
 
         configoverride = {}
