@@ -17,6 +17,7 @@ import unittest
 from typing import Any
 
 from eden.integration.correctness.exploratory.core import checker, effects
+from eden.integration.correctness.exploratory.core.facts import HistoryFacts
 from eden.integration.correctness.exploratory.core.runspec import from_json
 from eden.integration.correctness.exploratory.edenfs.contracts import (
     checkout as contracts_checkout,
@@ -31,6 +32,7 @@ from eden.integration.correctness.exploratory.edenfs.test.judging import (
     contract_run,
     judge,
     judge_isolated,
+    obligations_of,
     status_of,
 )
 from eden.integration.correctness.exploratory.edenfs.test.recorded_count import (
@@ -137,6 +139,98 @@ class ConflictCountTest(unittest.TestCase):
         self.assertEqual("violated", status_of(claimed, "checkout.conflict-count", "c"))
         derived = contract_run(self._count(1, dirty=False), CONTRACT_RULES)
         self.assertEqual([], [o for o in derived.observations if "conflicts" in o.id])
+
+    def _prestart_count(
+        self, conflicts: int, ordinal: int = 1, via: str = "thrift"
+    ) -> Run:
+        """Synthetic clean fixture: a first-hit failure restores state (D129789564)."""
+        run = Run("t", "prestart-count", "Failed checkout then counted NORMAL")
+        run.act(
+            "n",
+            "f",
+            "fault_install",
+            fault_id="F",
+            site="checkout-begin",
+            target_action="c1",
+            behavior="error",
+            ordinal=ordinal,
+        )
+        run.act(
+            "a",
+            "c1",
+            "checkout",
+            revision=1,
+            via=via,
+            mode="force" if via == "thrift" else "normal",
+            requires=[("f", "finished")],
+        )
+        run.act("n", "x", "fault_remove", fault_id="F", requires=[("c1", "finished")])
+        run.act(
+            "a",
+            "c",
+            "checkout",
+            revision=2,
+            via="thrift",
+            mode="normal",
+            requires=[("x", "finished")],
+        )
+        run.call("f", "ok", fault_id="F", ordinal=ordinal)
+        failure = (
+            {"source": "thrift", "error_type": "GENERIC_ERROR"}
+            if via == "thrift"
+            else {
+                "returncode": 255,
+                "stdout": "",
+                "stderr": "abort: EdenError: fault\n",
+            }
+        )
+        run.call("c1", "fail", reason="checkout: fault", **failure)
+        run.call("x", "ok", fault_id="F", removed=0 if ordinal == 1 else 1)
+        run.call("c", "ok", **thrift_checkout(2, conflicts=conflicts))
+        run.finish()
+        return run
+
+    def test_known_prestart_failure_keeps_clean_counts_decidable(self) -> None:
+        for conflicts, expected in ((0, "satisfied"), (1, "violated")):
+            with self.subTest(conflicts=conflicts):
+                run = self._prestart_count(conflicts)
+                spec = from_json(run.spec_text(), EDENFS_TARGET)
+                facts = HistoryFacts.build(spec, run.events, EDENFS_TARGET)
+                self.assertTrue(
+                    contracts_checkout.known_prestart(facts, facts.action("c1"))
+                )
+                result = obligations_of(judge(run))[("checkout.conflict-count", "c")]
+                self.assertEqual("checkout:c", result.subject.token)
+                self.assertEqual(
+                    [("mode", "normal")], [(w.role, w.value) for w in result.witnesses]
+                )
+                self.assertEqual(expected, str(result.status))
+                self.assertIsNone(result.not_evaluated_reason)
+
+    def test_unknown_phase_keeps_count_gap_and_compound_goto_state(self) -> None:
+        for via in ("thrift", "goto"):
+            with self.subTest(via=via):
+                run = self._prestart_count(0, ordinal=2, via=via)
+                spec = from_json(run.spec_text(), EDENFS_TARGET)
+                facts = HistoryFacts.build(spec, run.events, EDENFS_TARGET)
+                self.assertFalse(
+                    contracts_checkout.known_prestart(facts, facts.action("c1"))
+                )
+                result = obligations_of(judge(run))[("checkout.conflict-count", "c")]
+                self.assertEqual("not-evaluated", str(result.status))
+                self.assertEqual(
+                    "checkout.conflict-count-unmodeled", result.not_evaluated_reason
+                )
+                if via == "goto":
+                    self.assertTrue(
+                        any(
+                            effect.cell == contracts_checkout.updatestate_cell()
+                            and effect.value == contracts_model.rev_value(1)
+                            for group in contract_run(run).groups
+                            if group.action == "c1"
+                            for effect in group.effects
+                        )
+                    )
 
     def test_a_settled_dirty_register_is_counted_by_the_engine(self) -> None:
         """The write ends before the checkout starts; the count is still an

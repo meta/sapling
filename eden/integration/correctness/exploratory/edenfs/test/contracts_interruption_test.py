@@ -29,7 +29,7 @@ from eden.integration.correctness.exploratory.core.runspec import RunSpec
 from eden.integration.correctness.exploratory.core.spec_types import SpecError
 from eden.integration.correctness.exploratory.core.test.testing import ev
 from eden.integration.correctness.exploratory.edenfs.contracts.checkout import (
-    known_interrupted,
+    known_prestart,
     updatestate_cell,
 )
 from eden.integration.correctness.exploratory.edenfs.contracts.model import (
@@ -163,7 +163,14 @@ class RejectionContractTest(unittest.TestCase):
         self.assertTrue(is_explained(spec, events))
 
     def _interrupted(
-        self, revision: int, via: str = "thrift", mode: str = "normal"
+        self,
+        revision: int,
+        via: str = "thrift",
+        mode: str = "normal",
+        *,
+        installed: float = 0.1,
+        reported: bool = True,
+        ordinal: int | None = None,
     ) -> HistoryFacts:
         spec = run_spec(
             {
@@ -173,10 +180,12 @@ class RejectionContractTest(unittest.TestCase):
                     site="checkout-begin",
                     target_action="c",
                     behavior="error",
+                    requires=[["c", "started"]] if installed > 1.0 else [],
+                    **({"ordinal": ordinal} if ordinal is not None else {}),
                 ),
                 "c": {
                     **checkout_op(1, via=via, mode=mode),
-                    "requires": [["f", "finished"]],
+                    "requires": [] if installed > 1.0 else [["f", "finished"]],
                 },
                 "x": {
                     **action_payload("fault_remove", fault_id="F"),
@@ -195,28 +204,42 @@ class RejectionContractTest(unittest.TestCase):
                 "stderr": "abort: EdenError: fault\n",
             }
         events = [
-            ev("invoke", "f", 0.0),
-            ev("ok", "f", 0.1, fault_id="F"),
+            ev("invoke", "f", 1.05 if installed > 1.0 else 0.0),
+            ev("ok", "f", installed, fault_id="F"),
             ev("invoke", "c", 1.0),
-            ev("fail", "c", 2.0, **failure),
+            ev("fail", "c", 2.0, **failure) if reported else ev("info", "c", 2.0),
             ev("invoke", "x", 2.1),
             ev("ok", "x", 2.2, fault_id="F", removed=1),
             ev("invoke", "d", 3.0),
             ev("ok", "d", 4.0, revision=revision, node="n", via="thrift", conflicts=0),
         ]
-        return HistoryFacts.build(spec, events, VOCAB_TARGET)
+        return HistoryFacts.build(
+            spec, sorted(events, key=lambda e: e.time), VOCAB_TARGET
+        )
 
-    def test_a_checkout_without_dry_run_failing_on_the_begin_fault_is_known_interrupted(
+    def test_an_exclusively_armed_begin_error_is_prestart(self) -> None:
+        for via, mode in (
+            ("thrift", "normal"),
+            ("thrift", "force"),
+            ("goto", "force"),
+            ("goto", "normal"),
+        ):
+            with self.subTest(via=via, mode=mode):
+                facts = self._interrupted(1, via=via, mode=mode)
+                self.assertTrue(known_prestart(facts, facts.action("c")))
+        first = self._interrupted(1, ordinal=1)
+        self.assertTrue(known_prestart(first, first.action("c")))
+
+    def test_begin_error_phase_stays_ambiguous_without_exclusive_prearming(
         self,
     ) -> None:
-        """Thrift and `sl goto --clean` (FORCE) are; a plain `sl goto`'s DRY_RUN
-        restores the prior state."""
-        facts = self._interrupted(1)
-        self.assertTrue(known_interrupted(facts, facts.action("c")))
-        clean = self._interrupted(2, via="goto", mode="force")
-        self.assertTrue(known_interrupted(clean, clean.action("c")))
-        sl = self._interrupted(2, via="goto")
-        self.assertFalse(known_interrupted(sl, sl.action("c")))
+        for facts in (
+            self._interrupted(1, installed=1.1),
+            self._interrupted(1, reported=False),
+            self._interrupted(1, ordinal=2),
+        ):
+            with self.subTest(installed=facts.action("f").completed):
+                self.assertFalse(known_prestart(facts, facts.action("c")))
 
 
 class InterruptedCheckoutTest(unittest.TestCase):

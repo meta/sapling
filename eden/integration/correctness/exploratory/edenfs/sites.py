@@ -558,8 +558,9 @@ def _engage_inodemap_load(rng: random.Random, ctx: Mapping[str, Any]) -> EngageP
 # (`OverlayFileAccess.cpp:345-356`), so an error there lands nothing;
 # journal-record checks after the bytes are in the overlay
 # (`FileInode.cpp:1493-1508`, `Journal.cpp:128-134`). checkout-begin fires
-# after `beginCheckout` entered CheckoutInProgress, and tree-checkout inside
-# a checkout's walk, so a checkout they fail may have applied in part;
+# after `beginCheckout` entered CheckoutInProgress but before start; errors
+# restore prior state (D129789564). tree-checkout is inside the started walk,
+# so a checkout it fails may have applied in part;
 # fuse-lookup fires only on a FUSE_LOOKUP request (`FuseChannel::fuseLookup`),
 # never inside a checkout's walk, and is the first statement of
 # `FuseDispatcherImpl::lookup`, so an error there loads nothing; the

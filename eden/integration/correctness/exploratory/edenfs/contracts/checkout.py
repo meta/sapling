@@ -52,13 +52,11 @@ directory, a directory the run moves, or, below a removed directory, a
 path neither revision holds is not derived: how EdenFS types conflicts
 for those is not modeled (`_untyped`).
 
-The `interrupted` cell names the checkout EdenFS holds interrupted. A
-checkout's parent group, which only a checkout past the guard has, sets
-it: to the checkout's own key when EdenFS reported its failure, else to
-`absent`. A checkout that may have failed unreported (a transport error,
-a client timeout) may set it to its key later (one optional group,
-`_interruption_groups`). A resume is therefore possible only while the
-cell names the resumed checkout, and a resume past the guard ends it.
+The `interrupted` cell names a checkout known or chosen to have failed
+following its parent/start group. Known pre-start failures preserve prior
+state and have no parent/path groups. Unreported failures may name themselves
+later through `_interruption_groups`. Only a same-target checkout can resume;
+starting it ends the prior interruption.
 
 A checkout the guard rejected records its would-be groups as
 indeterminate, each requiring the impossible under the attempt's
@@ -484,6 +482,8 @@ def resolution(facts: ActionFacts, history: HistoryFacts | None = None) -> Resol
     if facts.outcome == Outcome.OK:
         return Resolution.ACKED
     if facts.kind == "checkout":
+        if history is not None and known_prestart(history, facts):
+            return Resolution.NONE
         return _checkout_resolution(facts)
     if _post_effect_fault(facts, history):
         return Resolution.INDETERMINATE
@@ -677,7 +677,9 @@ def _context(
     )
 
 
-def _parent_window(facts: ActionFacts, boundary: float) -> Window | None:
+def _parent_window(
+    facts: ActionFacts, boundary: float, history: HistoryFacts
+) -> Window | None:
     """Return where a checkout's parent group may lie, or None when it has none.
 
     A typed rejection records its would-be groups inside its own interval.
@@ -688,7 +690,7 @@ def _parent_window(facts: ActionFacts, boundary: float) -> Window | None:
         return (
             None if facts.completed is None else Window(facts.invoked, facts.completed)
         )
-    status = resolution(facts)
+    status = resolution(facts, history)
     if status == Resolution.NONE:
         return None
     return effect_window(facts, status, boundary)
@@ -719,7 +721,7 @@ def _plans(
     movers = [
         (item, window)
         for item in checkouts
-        if (window := _parent_window(item, boundary)) is not None
+        if (window := _parent_window(item, boundary, facts)) is not None
     ]
     observers = [
         window
@@ -730,7 +732,7 @@ def _plans(
     keys = checkout_keys(facts)
     plans: dict[str, _Plan] = {}
     for checkout in checkouts:
-        own = _parent_window(checkout, boundary) or _interval(checkout, boundary)
+        own = _parent_window(checkout, boundary, facts) or _interval(checkout, boundary)
         if own is None:
             continue
         others = [(item, w) for item, w in movers if item.id != checkout.id]
@@ -742,13 +744,15 @@ def _plans(
             and other.payload["revision"] == checkout.payload["revision"]
             and other.invoked is not None
             and other.invoked <= own.hi
-            and _may_interrupt(other)
+            and _may_interrupt(other, facts)
         )
         settled = None
         # Whether an indeterminate checkout moved the parent at all stays
         # open after its window, so every later observer watches it.
         seen = (
-            Window(own.lo, max(own.hi, boundary)) if _may_interrupt(checkout) else own
+            Window(own.lo, max(own.hi, boundary))
+            if _may_interrupt(checkout, facts)
+            else own
         )
         watched = sum(w.meets(seen) for w in observers) > (
             1 if _interval(checkout, boundary) is not None else 0
@@ -1095,20 +1099,12 @@ def _dryrun_group(ctx: _Context, checkout: _Checkout, path: str) -> EffectGroup 
 
 
 def _parent_group(ctx: _Context, checkout: _Checkout) -> EffectGroup:
-    """The EdenFS parent moves to the destination before any path changes.
+    """Move the parent at CheckoutContext.start, before path effects.
 
-    EdenFS moves it at `CheckoutContext::start`, after the `checkout`
-    fault, the root tree fetch, the pending-writes wait, and the diff; a
-    failure before that leaves an InterruptedCheckout at the old parent,
-    and a DRY_RUN failure restores the prior state. Unless the checkout is settled, the same group marks which candidate
-    revision it starts from (`_source_choices`), so per-path guards can
-    name the source manifest. The checkout got past the guard, so the
-    group ends any interruption: it clears the `interrupted` cell, or,
-    when EdenFS reported the checkout's own failure (`_reported_failure`),
-    which past the guard leaves the mount InterruptedCheckout
-    (EdenMount.cpp:1648-1716), names this checkout there. Any
-    other may-interrupt checkout sets it in a separate optional group
-    (`_interruption_groups`).
+    Pre-start failures restore prior state (`known_prestart`); ambiguous
+    failures may omit this group. A reported failure after start names its
+    interruption here; otherwise it clears the cell. Source marks guard
+    per-path manifests when the checkout is not settled.
     """
     action = checkout.action
     marks = []
@@ -1153,7 +1149,8 @@ def _guard_passed(ctx: _Context, action: Action) -> tuple[Requirement, ...]:
         interrupted_value(ctx.checkout_keys[other.id])
         for other in ctx.facts.actions_of("checkout")
         if other.payload["revision"] != target
-        and (_reported_failure(other) or known_interrupted(ctx.facts, other))
+        and _reported_failure(other)
+        and _may_interrupt(other, ctx.facts)
     }
     if ref is None or not ctx.interruptible or not others:
         return ()
@@ -1667,7 +1664,7 @@ def _tracks_parent(ctx: _Context, path: str) -> bool:
     if path in named or any(ancestor in named for ancestor in _ancestors(path)):
         return False
     return all(
-        resolution(other) != Resolution.INDETERMINATE
+        resolution(other, ctx.facts) != Resolution.INDETERMINATE
         for other in ctx.facts.actions_of("checkout")
     )
 
@@ -1714,7 +1711,10 @@ def _open_domain(ctx: _Context, action_id: str) -> str | None:
     if ctx.weights:
         return None
     for other in ctx.facts.actions_of("checkout"):
-        if other.id != action_id and resolution(other) == Resolution.INDETERMINATE:
+        if (
+            other.id != action_id
+            and resolution(other, ctx.facts) == Resolution.INDETERMINATE
+        ):
             return (
                 f"{other.id} may have applied in part, so an untouched path may "
                 "differ from its parent"
@@ -1916,14 +1916,10 @@ def _interruption_groups(ctx: _Context, action: Action) -> tuple[EffectGroup, ..
     (`_parent_group`).
     """
     recorded = ctx.facts.action(action.id)
-    if known_interrupted(ctx.facts, recorded):
-        assert recorded.invoked is not None and recorded.completed is not None
-        status, window = Status.ACKED, Window(recorded.invoked, recorded.completed)
-    elif not _may_interrupt(recorded) or _reported_failure(recorded):
+    if not _may_interrupt(recorded, ctx.facts) or _reported_failure(recorded):
         return ()
-    else:
-        status = Status.INDETERMINATE
-        window = effect_window(recorded, Resolution.INDETERMINATE, ctx.boundary)
+    status = Status.INDETERMINATE
+    window = effect_window(recorded, Resolution.INDETERMINATE, ctx.boundary)
     value = interrupted_value(ctx.checkout_keys[action.id])
     return (
         _group(
@@ -2084,7 +2080,7 @@ def rejection_observation(ctx: _Context, action: Action) -> Observation | None:
     others = frozenset(
         interrupted_value(ctx.checkout_keys[other.id])
         for other in ctx.facts.actions_of("checkout")
-        if other.payload["revision"] != target and _may_interrupt(other)
+        if other.payload["revision"] != target and _may_interrupt(other, ctx.facts)
     )
     return Observation(
         id=f"o:{action.id}:refused",
@@ -2320,7 +2316,7 @@ def _superseding_gaps(
     """Return every overlap of a write through `paths` with a checkout changing that path."""
     gaps: list[DescriptorGap] = []
     for checkout in ctx.facts.actions_of("checkout"):
-        status = resolution(checkout)
+        status = resolution(checkout, ctx.facts)
         if status == Resolution.NONE:
             continue
         window = effect_window(checkout, status, ctx.boundary)
@@ -2627,14 +2623,17 @@ def _reported_failure(facts: ActionFacts) -> bool:
     )
 
 
-def _may_interrupt(facts: ActionFacts) -> bool:
-    """Return whether a checkout may have failed after it got past the guard.
+def _may_interrupt(facts: ActionFacts, history: HistoryFacts | None = None) -> bool:
+    """Return whether a checkout may have reached start and then failed.
 
     Any checkout whose effects are indeterminate may have: a failure
     mid-walk, a transport error, a killed `sl`, or a client timeout while
     the daemon kept running.
     """
-    return facts.kind == "checkout" and resolution(facts) == Resolution.INDETERMINATE
+    return (
+        facts.kind == "checkout"
+        and resolution(facts, history) == Resolution.INDETERMINATE
+    )
 
 
 def guard_holders(facts: HistoryFacts, action: ActionFacts) -> tuple[str, ...]:
@@ -2656,28 +2655,42 @@ def guard_holders(facts: HistoryFacts, action: ActionFacts) -> tuple[str, ...]:
     )
 
 
-def known_interrupted(facts: HistoryFacts, checkout: ActionFacts) -> bool:
-    """Return whether a checkout's failure is known to have left the mount interrupted.
+def known_prestart(facts: HistoryFacts, checkout: ActionFacts) -> bool:
+    """An exclusive, fully prearmed begin-error guarantees failure before start.
 
-    An injected `error` at the `checkout` site fires after `beginCheckout`
-    set CheckoutInProgress (fs/inodes/EdenMount.cpp:1813), and the guard
-    (`CheckoutInProgressGuard::applyResetState`) then leaves a failed
-    non-dry-run checkout InterruptedCheckout. A Thrift checkout and
-    `sl goto --clean` (FORCE, no DRY_RUN) qualify; a plain `sl goto`
-    first calls a DRY_RUN checkout, whose guard restores the prior state.
-    Read from source, not observed live.
+    EdenMount restores oldState before start (D129789564). Other possible
+    consumers, removals or unreported outcomes leave the phase ambiguous.
     """
-    if checkout.outcome != Outcome.FAIL or is_in_progress_rejection(checkout):
+    if not _reported_failure(checkout):
         return False
-    if (
-        checkout.payload.get("via") != "thrift"
-        and checkout.payload.get("mode") != CHECKOUT_FORCE
-    ):
-        return False
-    return any(
-        install.outcome == Outcome.OK
-        and install.payload.get("site") == CHECKOUT_BEGIN_SITE
-        and install.payload.get("behavior") == "error"
-        and install.payload.get("target_action") == checkout.id
-        for install in facts.actions_of("fault_install")
-    )
+    assert checkout.invoked is not None and checkout.completed is not None
+    boundary = resolution_boundary(facts)
+    for install in facts.actions_of("fault_install"):
+        if (
+            install.outcome != Outcome.OK
+            or install.payload.get("site") != CHECKOUT_BEGIN_SITE
+            or install.payload.get("behavior") != "error"
+            or install.payload.get("ordinal", 1) != 1
+            or install.payload.get("target_action") != checkout.id
+            or install.completed is None
+            or install.completed >= checkout.invoked
+        ):
+            continue
+        assert install.invoked is not None
+        armed = Window(install.invoked, checkout.completed)
+        if any(
+            other.id != checkout.id
+            and (window := _window_of(other, boundary)) is not None
+            and window.meets(armed)
+            for other in facts.actions_of("checkout")
+        ):
+            continue
+        if any(
+            remove.payload.get("fault_id") == install.payload.get("fault_id")
+            and remove.invoked is not None
+            and install.invoked <= remove.invoked <= checkout.completed
+            for remove in facts.actions_of("fault_remove")
+        ):
+            continue
+        return True
+    return False

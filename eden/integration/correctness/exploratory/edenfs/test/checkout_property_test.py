@@ -12,6 +12,7 @@ target. Complements the interrupted and sl goto cases of the corpus family
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 
 from eden.integration.correctness.exploratory.core import checker
 from eden.integration.correctness.exploratory.edenfs.contracts.checkout import (
@@ -21,51 +22,178 @@ from eden.integration.correctness.exploratory.edenfs.target import EDENFS_TARGET
 from eden.integration.correctness.exploratory.edenfs.test.judging import (
     judge,
     judge_isolated,
+    obligations_of,
     status_of,
 )
 from eden.integration.correctness.exploratory.test.corpus import loader
 from eden.integration.correctness.exploratory.test.corpus.author import (
+    committed,
+    R0,
+    read_ok,
     Run,
     sl_status,
     thrift_checkout,
     thrift_status,
+    TIP,
+    value,
 )
 
 
-class InterruptionTest(unittest.TestCase):
-    def _interrupted(self, name: str) -> Run:
-        """c1 (Thrift to rev2) fails on an injected checkout-begin error."""
-        run = Run("t", name, "c1 is interrupted")
+class PrestartFailureTest(unittest.TestCase):
+    def _run(self) -> Run:
+        """Synthetic six-action reduction of retained155476, not a recorded history."""
+        run = Run("t", "prestart", "An exclusively prearmed FORCE fails before start")
         run.act(
-            "nemesis",
+            "a0",
+            "n0",
+            "fault_install",
+            fault_id="F",
+            site="checkout-begin",
+            target_action="i0",
+            behavior="error",
+        )
+        run.act(
+            "a1",
+            "i0",
+            "checkout",
+            revision=1,
+            via="thrift",
+            mode="force",
+            requires=[("n0", "finished")],
+        )
+        run.act("a0", "n1", "fault_remove", fault_id="F", requires=[("i0", "finished")])
+        run.act("a1", "i1", "status", channel="sl", requires=[("n1", "finished")])
+        run.act("a1", "i3", "checkout", revision=1, via="goto", mode="continue")
+        run.act("a1", "i6", "read", path=R0, channel="fuse")
+        run.call("n0", "ok", fault_id="F")
+        run.call(
+            "i0",
+            "fail",
+            reason="checkout: fault",
+            source="thrift",
+            error_type="GENERIC_ERROR",
+        )
+        run.call("n1", "ok", fault_id="F", removed=0)
+        run.call("i1", "ok", **sl_status({}))
+        run.call(
+            "i3",
+            "fail",
+            reason="goto: not in an interrupted goto state",
+            returncode=255,
+            stdout="",
+            stderr="abort: not in an interrupted goto state\n",
+        )
+        run.call("i6", "ok", **read_ok(committed(R0, TIP)))
+        run.finish()
+        return run
+
+    def test_prestart_failure_restores_old_state(self) -> None:
+        verdict = judge(self._run())
+        self.assertEqual("satisfied", status_of(verdict, "checkout.sl-abort", "i3"))
+        self.assertEqual("satisfied", status_of(verdict, "bytes.stale-read", "i6"))
+        refusal = obligations_of(verdict)[("checkout.interrupted-refusal", "i1")]
+        self.assertEqual(
+            [("action-kind", "status")], [(w.role, w.value) for w in refusal.witnesses]
+        )
+        self.assertEqual(
+            "satisfied", str(refusal.status), "checkout.interrupted-refusal/i1"
+        )
+        self.assertEqual(checker.ACCEPT, verdict.kind)
+
+    def test_prestart_checkout_cannot_produce_destination_bytes(self) -> None:
+        run = self._run()
+        destination = read_ok(committed(R0, 1))
+        run.events[:] = [
+            replace(event, data={**event.data, **destination})
+            if event.type == "ok" and event.data.get("action") == "i6"
+            else event
+            for event in run.events
+        ]
+        verdict = judge(run)
+        self.assertEqual("violated", status_of(verdict, "bytes.stale-read", "i6"))
+        self.assertEqual(
+            "satisfied", status_of(verdict, "checkout.interrupted-refusal", "i1")
+        )
+
+
+class PrestartDescriptorTest(unittest.TestCase):
+    def _run(self, observed_old: bool, ordinal: int = 1) -> Run:
+        """A held inode cannot be replaced by a checkout that failed before start."""
+        run = Run("t", "prestart-fd", "Write overlaps failed checkout; read held fd")
+        run.act("r", "o", "open", path=R0)
+        run.act(
+            "n",
             "f",
             "fault_install",
             fault_id="F",
             site="checkout-begin",
-            target_action="c1",
+            target_action="c",
             behavior="error",
+            ordinal=ordinal,
         )
         run.act(
-            "a",
-            "c1",
+            "c",
+            "c",
             "checkout",
-            revision=2,
+            revision=1,
             via="thrift",
-            mode="normal",
+            mode="force",
             requires=[("f", "finished")],
         )
+        run.act("w", "w", "write", path=R0, value_id="W", requires=[("c", "started")])
+        run.act("n", "x", "fault_remove", fault_id="F", requires=[("c", "finished")])
         run.act(
-            "nemesis", "x", "fault_remove", fault_id="F", requires=[("c1", "finished")]
+            "r", "r", "read_fd", fd="o", requires=[("w", "finished"), ("x", "finished")]
         )
-        run.call("f", "ok", fault_id="F")
-        run.call(
-            "c1",
+        run.act("r", "z", "close", fd="o")
+        run.call("o", "ok", fd=3)
+        run.call("f", "ok", fault_id="F", ordinal=ordinal)
+        run.inv("c")
+        written = value("w", "W")
+        run.call("w", "ok", bytes_written=len(written))
+        run.done(
+            "c",
             "fail",
-            reason="checkout: EdenError: exploratory fault F",
+            reason="checkout: failure",
             source="thrift",
             error_type="GENERIC_ERROR",
         )
-        run.call("x", "ok", fault_id="F", removed=1)
+        run.call("x", "ok", fault_id="F", removed=0 if ordinal == 1 else 1)
+        run.call("r", "ok", **read_ok(committed(R0, TIP) if observed_old else written))
+        run.call("z", "ok", fd=3)
+        run.finish()
+        return run
+
+    def test_prestart_failure_does_not_hide_descriptor_write(self) -> None:
+        for old, expected in ((True, "violated"), (False, "satisfied")):
+            with self.subTest(observed_old=old):
+                verdict = judge(self._run(old))
+                result = obligations_of(verdict)[("fd.stale-read", "r")]
+                self.assertEqual("descriptor:o", result.subject.token)
+                self.assertEqual(expected, str(result.status))
+                self.assertIsNone(result.not_evaluated_reason)
+
+    def test_possible_started_checkout_keeps_descriptor_gap(self) -> None:
+        for old in (True, False):
+            with self.subTest(observed_old=old):
+                verdict = judge(self._run(old, ordinal=2))
+                result = obligations_of(verdict)[("fd.stale-read", "r")]
+                self.assertEqual("not-evaluated", str(result.status))
+                self.assertEqual("fd.unmodeled-object", result.not_evaluated_reason)
+
+
+class InterruptionTest(unittest.TestCase):
+    def _interrupted(self, name: str) -> Run:
+        """c1 (Thrift to rev2) fails at an unknown phase."""
+        run = Run("t", name, "c1 may be interrupted")
+        run.act("a", "c1", "checkout", revision=2, via="thrift", mode="normal")
+        run.call(
+            "c1",
+            "fail",
+            reason="checkout: EdenError: failure",
+            source="thrift",
+            error_type="GENERIC_ERROR",
+        )
         run.act("a", "c2", "checkout", revision=2, via="thrift", mode="normal")
         run.act("b", "s", "status", channel="thrift", revision=2)
         return run
@@ -182,6 +310,33 @@ class InterruptedCellTest(unittest.TestCase):
                 self.assertEqual(
                     expected, status_of(verdict, "core.input-legality", "s")
                 )
+
+    def test_prestart_resume_preserves_the_prior_interruption(self) -> None:
+        found = loader.case("checkout/interrupted-failed-resume-then-status-served")
+        events = tuple(
+            replace(
+                event,
+                type="fail",
+                data={
+                    "action": "s",
+                    "actor": event.data["actor"],
+                    "reason": _INTERRUPTED_ADVICE,
+                    "source": "thrift",
+                    "error_type": "CHECKOUT_IN_PROGRESS",
+                },
+            )
+            if event.type == "ok" and event.data.get("action") == "s"
+            else event
+            for event in found.events()
+        )
+        verdict = checker.check(
+            EDENFS_TARGET,
+            found.spec(EDENFS_TARGET),
+            events,
+            execution={"status": "completed"},
+        )
+        self.assertEqual(checker.ACCEPT, verdict.kind)
+        self.assertEqual("satisfied", status_of(verdict, "core.input-legality", "s"))
 
 
 class ActivityTest(unittest.TestCase):

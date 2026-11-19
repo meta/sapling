@@ -125,42 +125,63 @@ INTERRUPTED_REFUSALS = (
 
 
 def _known_interrupted(name: str, description: str, *, basis: list[str]) -> Run:
-    """An injected `error` at checkout-begin leaves the mount interrupted."""
+    """A destination-byte witness proves the reported failure got past start."""
     run = Run(
         "checkout",
         name,
         description,
         basis=[CHECKOUT_GUARD, INTERRUPTED_REFUSALS, *basis],
     )
-    run.act(
-        "nemesis",
-        "f",
-        "fault_install",
-        fault_id="F",
-        site="checkout-begin",
-        target_action="c1",
-        behavior="error",
-    )
-    run.act(
-        "a",
-        "c1",
-        "checkout",
-        revision=2,
-        via="thrift",
-        mode="normal",
-        requires=[("f", "finished")],
-    )
-    run.act("nemesis", "x", "fault_remove", fault_id="F", requires=[("c1", "finished")])
-    run.call("f", "ok", fault_id="F")
+    run.act("a", "c1", "checkout", revision=2, via="thrift", mode="normal")
     run.call(
         "c1",
         "fail",
-        reason="checkout: EdenError: exploratory fault F",
+        reason="checkout: EdenError: mid-walk failure",
         source="thrift",
         error_type="GENERIC_ERROR",
     )
-    run.call("x", "ok", fault_id="F", removed=1)
+    run.act("a", "started", "read", path=R0, channel="fuse")
+    run.call("started", "ok", **read_ok(committed(R0, 2)))
     return run
+
+
+def _start_proof(run: Run, outcome: str) -> None:
+    reason = (
+        "the destination-byte witness requires c1's start and standing interruption"
+    )
+    stale_read(run, "started", R0, outcome, reason)
+    run.expect(
+        "checkout.parent-before-paths",
+        "c1",
+        outcome,
+        reason,
+        identity={"via": "thrift"},
+    )
+
+
+def _empty_thrift_status_proof(run: Run) -> None:
+    """The empty status participates in the contradiction of c1's proven start."""
+    for path in (
+        "tree/a0/000/00002.dat",
+        "tree/a0/r1/00000.dat",
+        "tree/a0/r3/00002.dat",
+        "tree/a1/r2/00001.dat",
+        "tree/churn/c0",
+        "tree/churn/c1",
+        "tree/churn/c2",
+        "tree/churn/c3",
+        R0,
+        R1,
+        R2,
+    ):
+        run.expect(
+            "status.thrift-model-stale-status",
+            "s",
+            VIOLATED,
+            "the empty status requires effects whose start would refuse it",
+            path=path,
+            identity={"observed": "absent", "producer-kinds": "checkout"},
+        )
 
 
 def interrupted_runs() -> list[Run]:
@@ -192,7 +213,6 @@ def interrupted_runs() -> list[Run]:
                 source="thrift",
                 error_type="CHECKOUT_IN_PROGRESS",
             )
-        run.fault_removed("F")
         run.finish()
         if served:
             run.expect(
@@ -217,6 +237,7 @@ def interrupted_runs() -> list[Run]:
                 SATISFIED,
                 "c1 may have left the mount interrupted",
             )
+        _start_proof(run, VIOLATED if served else SATISFIED)
         runs.append(run)
 
     for served in (False, True):
@@ -246,7 +267,6 @@ def interrupted_runs() -> list[Run]:
                 + INTERRUPTED_ADVICE.format(node="corpus")
                 + "\n",
             )
-        run.fault_removed("F")
         run.finish()
         if served:
             run.expect(
@@ -256,13 +276,16 @@ def interrupted_runs() -> list[Run]:
                 "status is refused while c1's interruption stands",
                 identity={"action-kind": "status"},
             )
-        else:
             run.expect(
-                "checkout.interrupted-refusal",
-                "c1",
-                SATISFIED,
-                "c1 got past the guard before its interruption",
+                "status.sl-fuse-stale-status",
+                "s",
+                VIOLATED,
+                "the destination-byte witness contradicts this empty served status",
+                path=R0,
+                attribution="undetermined",
+                identity={"observed": "absent", "producer-kinds": "checkout"},
             )
+        _start_proof(run, VIOLATED if served else SATISFIED)
         runs.append(run)
     return runs
 
@@ -523,44 +546,15 @@ def timeout_runs() -> list[Run]:
 def collector_runs() -> list[Run]:
     found: list[Run] = []
 
-    run = Run(
-        "checkout",
+    run = _known_interrupted(
         "status-served-before-any-resume-is-violated",
         "A status served before any resume is violated.",
         basis=[
             "edenfs/properties/checkout.py: checkout.conflict-count, checkout.interrupted-refusal, checkout.parent-before-paths, status.thrift-model-stale-status"
         ],
     )
-    run.act(
-        "nemesis",
-        "f",
-        "fault_install",
-        fault_id="F",
-        site="checkout-begin",
-        target_action="c1",
-        behavior="error",
-    )
-    run.act(
-        "a",
-        "c1",
-        "checkout",
-        requires=[("f", "finished")],
-        revision=2,
-        via="thrift",
-        mode="normal",
-    )
-    run.act("nemesis", "x", "fault_remove", requires=[("c1", "finished")], fault_id="F")
     run.act("a", "c2", "checkout", revision=2, via="thrift", mode="normal")
     run.act("b", "s", "status", channel="thrift", revision=2)
-    run.call("f", "ok", fault_id="F")
-    run.call(
-        "c1",
-        "fail",
-        reason="checkout: EdenError: exploratory fault F",
-        source="thrift",
-        error_type="GENERIC_ERROR",
-    )
-    run.call("x", "ok", fault_id="F", removed=1)
     run.call("s", "ok", **thrift_status({}, revision=2))
     run.call("c2", "ok", **thrift_checkout(2, conflicts=0))
     run.finish()
@@ -578,22 +572,8 @@ def collector_runs() -> list[Run]:
         "checkout/interrupted-refusal: s was served while c1's interruption stood",
         identity={"action-kind": "status"},
     )
-    run.expect(
-        "status.thrift-model-stale-status",
-        "s",
-        VIOLATED,
-        "no explanation of the run's effects allows the observations",
-        path="tree/a0/000/00002.dat",
-        identity={"observed": "absent", "producer-kinds": "checkout"},
-    )
-    run.expect(
-        "status.thrift-model-stale-status",
-        "s",
-        VIOLATED,
-        "no explanation of the run's effects allows the observations",
-        path="tree/a0/r3/00002.dat",
-        identity={"observed": "absent", "producer-kinds": "checkout"},
-    )
+    _start_proof(run, VIOLATED)
+    _empty_thrift_status_proof(run)
     found.append(run)
 
     run = Run(
@@ -752,15 +732,38 @@ def served_while_interrupted_runs() -> list[Run]:
 
     resumed = _known_interrupted(
         "interrupted-failed-resume-then-status-served",
-        "After a known interruption, a same-target Thrift checkout fails with an "
-        "EdenError, so the mount stays interrupted; a later status is served.",
-        basis=["a failed resume leaves the mount interrupted"],
+        "After a known interruption, a same-target Thrift checkout fails before "
+        "start; the prior interruption remains and a later status is served.",
+        basis=["D129789564: a failed pre-start resume restores the prior interruption"],
     )
-    resumed.act("a", "c2", "checkout", revision=2, via="thrift", mode="normal")
     resumed.act(
-        "b", "s", "status", channel="thrift", revision=2, requires=[("c2", "finished")]
+        "nemesis",
+        "f",
+        "fault_install",
+        fault_id="F",
+        site="checkout-begin",
+        target_action="c2",
+        behavior="error",
+        requires=[("started", "finished")],
+    )
+    resumed.call("f", "ok", fault_id="F")
+    resumed.act(
+        "a",
+        "c2",
+        "checkout",
+        revision=2,
+        via="thrift",
+        mode="normal",
+        requires=[("f", "finished")],
     )
     resumed.call("c2", "fail", **_GENERIC)
+    resumed.act(
+        "nemesis", "x", "fault_remove", fault_id="F", requires=[("c2", "finished")]
+    )
+    resumed.call("x", "ok", fault_id="F", removed=0)
+    resumed.act(
+        "b", "s", "status", channel="thrift", revision=2, requires=[("x", "finished")]
+    )
     resumed.call("s", "ok", **thrift_status({}, 2))
     resumed.fault_removed("F")
     resumed.finish()
@@ -768,9 +771,12 @@ def served_while_interrupted_runs() -> list[Run]:
         "checkout.interrupted-refusal",
         "s",
         VIOLATED,
-        "c2 failed after the guard, so the interruption still stands at s",
+        "c2 failed before start, so c1's prior interruption still stands at s",
         identity={"action-kind": "status"},
     )
+
+    _start_proof(resumed, VIOLATED)
+    _empty_thrift_status_proof(resumed)
 
     transport = Run(
         "checkout",
@@ -811,7 +817,33 @@ def served_while_interrupted_runs() -> list[Run]:
         subject=transport.input_subject("s1"),
         identity={"input-kind": "status", "errno": "CHECKOUT_IN_PROGRESS"},
     )
-    return [other, resumed, transport]
+    completed = _known_interrupted(
+        "interrupted-resume-then-status-served",
+        "After a proven interruption, a same-target Thrift resume completes; "
+        "a subsequent status is served legally.",
+        basis=["a completed same-target resume ends the interruption"],
+    )
+    completed.act("a", "c2", "checkout", revision=2, via="thrift", mode="normal")
+    completed.call("c2", "ok", **thrift_checkout(2, conflicts=0))
+    completed.act(
+        "a",
+        "s",
+        "status",
+        channel="thrift",
+        revision=2,
+        requires=[("c2", "finished")],
+    )
+    completed.call("s", "ok", **thrift_status({}, 2))
+    completed.finish()
+    _start_proof(completed, SATISFIED)
+    completed.expect(
+        "checkout.interrupted-refusal",
+        "s",
+        SATISFIED,
+        "the completed same-target resume ended c1's interruption before status",
+        identity={"action-kind": "status"},
+    )
+    return [other, resumed, transport, completed]
 
 
 def runs() -> list[Run]:
