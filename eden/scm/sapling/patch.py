@@ -1807,6 +1807,21 @@ def parsepatch(originalchunks, maxcontext=None):
     @@ -8,1 +9,2 @@
      8
     +9
+
+    Hunks with no context between them are kept apart:
+
+    >>> rawpatch = b'''diff --git a/f b/f
+    ... --- a/f
+    ... +++ b/f
+    ... @@ -1,1 +1,1 @@
+    ... -a
+    ... +A
+    ... @@ -3,1 +3,1 @@
+    ... -b
+    ... +B'''
+    >>> [(h.fromline, h.toline, h.removed, h.added)
+    ...  for h in parsepatch([rawpatch])[0].hunks]
+    [(1, 1, 1, 1), (3, 3, 1, 1)]
     """
 
     class parser:
@@ -1823,6 +1838,9 @@ def parsepatch(originalchunks, maxcontext=None):
             self.headers = []
 
         def addrange(self, limits):
+            # A hunk can be followed by the next range without context lines
+            # between them (as with `diff -U0`).
+            self.addcontext([])
             fromstart, fromend, tostart, toend, proc = limits
             self.fromline = int(fromstart)
             self.toline = int(tostart)

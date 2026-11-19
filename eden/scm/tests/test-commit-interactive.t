@@ -1701,3 +1701,33 @@ Test that filemode changes work on interactive
   diff --git a/subdir/f1 b/subdir/f1
   old mode 100644
   new mode 100755
+
+Hunks with no context lines between them (diff.unified=0) are offered
+separately.
+
+  $ newclientrepo zerocontext
+  $ printf 'a\nkeep\nb\n' > f
+  $ sl commit -qAm base
+  $ printf 'A\nkeep\nB\n' > f
+  $ sl commit -i -m second --config diff.unified=0 --config ui.interface=text <<EOF
+  > y
+  > n
+  > y
+  > EOF
+  diff --git a/f b/f
+  2 hunks, 2 lines changed
+  examine changes to 'f'? [Ynesfdaq?] y
+  
+  @@ -1,1 +1,1 @@
+  -a
+  +A
+  record change 1/2 to 'f'? [Ynesfdaq?] n
+  
+  @@ -3,1 +3,1 @@ keep
+  -b
+  +B
+  record change 2/2 to 'f'? [Ynesfdaq?] y
+  $ sl cat -r . f
+  a
+  keep
+  B
