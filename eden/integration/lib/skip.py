@@ -84,6 +84,13 @@ if sys.platform == "win32":
         ],
         "redirect_test.RedirectTestHg": ["test_disallow_bind_mount_outside_repo"],
         "remount_test.RemountTestHg": True,
+        # On Windows, a bind redirection is a symlink.
+        # `eden rm` removes the symlink. It does not unmount a file system.
+        # So `eden rm` cannot hang on a busy redirection.
+        "remove_test.RemoveTest": [
+            "test_remove_with_busy_bind_mount_0_rust",
+            "test_remove_with_busy_bind_mount_1_python",
+        ],
         "rename_test.RenameTestHg": True,
         "restart_test.RestartTestAdHoc": True,
         "restart_test.RestartTestManaged": True,
