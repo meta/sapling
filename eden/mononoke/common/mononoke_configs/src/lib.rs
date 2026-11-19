@@ -650,8 +650,12 @@ impl MononokeConfigs {
             .as_ref()
             .context("manifest handle required for split-loading")?
             .get();
-        let repo_config =
-            parse_repo_spec(Arc::unwrap_or_clone(repo_spec), tier, &manifest.storage)?;
+        let repo_config = parse_repo_spec(
+            Arc::unwrap_or_clone(repo_spec),
+            tier,
+            &manifest.storage,
+            manifest.presets.as_ref(),
+        )?;
         // Provenance comes only from the ConfigHandle accessor, never from thrift RepoSpec fields.
         Ok((repo_config, source_of(version_info)))
     }

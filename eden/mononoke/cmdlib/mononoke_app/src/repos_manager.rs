@@ -727,8 +727,12 @@ where
         let spec_hash = spec_hash(&spec)?;
         let shared_gen = self.shared.of_repo(&spec, &self.tier);
         let manifest = self.configs.manifest().context("reconcile: no manifest")?;
-        let mut repo_config =
-            parse_repo_spec(Arc::unwrap_or_clone(spec), &self.tier, &manifest.storage)?;
+        let mut repo_config = parse_repo_spec(
+            Arc::unwrap_or_clone(spec),
+            &self.tier,
+            &manifest.storage,
+            manifest.presets.as_ref(),
+        )?;
         if self.redaction_disabled {
             repo_config.redaction = Redaction::Disabled;
         }
@@ -847,7 +851,10 @@ where
                 .configs
                 .manifest()
                 .context("reconcile: no manifest for shared generations")?;
-            let shared = Arc::new(SharedGenerations::new(&manifest.storage)?);
+            let shared = Arc::new(SharedGenerations::new(
+                &manifest.storage,
+                manifest.presets.as_ref(),
+            )?);
             let config = ReconcileConfigSource {
                 configs: self.configs.clone(),
                 tier: tier.clone(),

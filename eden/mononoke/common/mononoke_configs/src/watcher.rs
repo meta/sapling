@@ -493,8 +493,11 @@ async fn run_manifest_reload_pass(
         let shared_generations = if justknobs::eval(INCREMENTAL_RELOAD_KNOB, None, None) {
             state.prev_manifest.as_ref().and_then(|prev| {
                 match (
-                    SharedGenerations::new(&prev.storage),
-                    SharedGenerations::new(&current_manifest.storage),
+                    SharedGenerations::new(&prev.storage, prev.presets.as_ref()),
+                    SharedGenerations::new(
+                        &current_manifest.storage,
+                        current_manifest.presets.as_ref(),
+                    ),
                 ) {
                     (Ok(before), Ok(after)) => Some((before, after)),
                     (Err(e), _) | (_, Err(e)) => {
@@ -539,7 +542,12 @@ async fn run_manifest_reload_pass(
                     continue;
                 }
                 STATS::bulk_reload_spec_parsed.add_value(1);
-                match parse_repo_spec(RepoSpec::clone(&spec), tier, &current_manifest.storage) {
+                match parse_repo_spec(
+                    RepoSpec::clone(&spec),
+                    tier,
+                    &current_manifest.storage,
+                    current_manifest.presets.as_ref(),
+                ) {
                     Ok(config) => {
                         let parsed_entry = Arc::new(RepoConfigEntry {
                             config,
@@ -724,6 +732,7 @@ async fn handle_per_repo_fire(
         Arc::unwrap_or_clone(spec),
         tier,
         &manifest_for_storage.storage,
+        manifest_for_storage.presets.as_ref(),
     ) {
         Ok(c) => c,
         Err(e) => {

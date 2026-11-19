@@ -29,6 +29,7 @@ use repos::RawStorageConfig;
 use repos::TierManifest;
 use repos::TierRepoEntry;
 
+use crate::Presets;
 use crate::config::StorageConfigs;
 use crate::config::parse_common_and_storage;
 
@@ -43,6 +44,9 @@ pub struct ServiceManifest {
     pub common: RawCommonConfig,
     /// Named storage configs, which repo configs refer to by name.
     pub storage: HashMap<String, RawStorageConfig>,
+    /// Named presets, which repo configs refer to by name. Only a deployment
+    /// has them.
+    pub presets: Option<Presets>,
 }
 
 impl ServiceManifest {
@@ -58,6 +62,7 @@ impl From<TierManifest> for ServiceManifest {
             repos: manifest.repos,
             common: manifest.common,
             storage: manifest.storage,
+            presets: None,
         }
     }
 }
@@ -144,6 +149,7 @@ pub fn service_view(
             repos,
             common,
             storage: deployment.storage.clone().into_iter().collect(),
+            presets: deployment.presets.clone(),
         },
         legacy_tier: service_config.legacy_tier.clone(),
     })
@@ -361,7 +367,8 @@ mod tests {
 
     #[mononoke::test]
     fn test_service_view() -> Result<()> {
-        let deployment = deployment();
+        let mut deployment = deployment();
+        deployment.presets = Some([("standard".to_owned(), Default::default())].into());
         let location = prod();
 
         let git = service_view(&deployment, MononokeService::GIT_SERVER, &location)?;
@@ -381,6 +388,7 @@ mod tests {
             git.manifest.storage,
             deployment.storage.clone().into_iter().collect()
         );
+        assert_eq!(git.manifest.presets, deployment.presets);
         // The service's field replaces the deployment's; the rest is shared.
         assert_eq!(
             git.manifest.common.global_allowlist.as_ref().map(Vec::len),

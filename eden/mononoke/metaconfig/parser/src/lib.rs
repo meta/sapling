@@ -42,3 +42,6 @@ pub use crate::deployment::deployment_config_handle;
 pub use crate::deployment::repo_services;
 pub use crate::deployment::service_view;
 pub use crate::errors::ConfigurationError;
+
+/// A deployment's presets by name.
+pub type Presets = std::collections::BTreeMap<String, repos::RawRepoConfig>;

@@ -27,6 +27,8 @@ use repos::RepoSpec;
 use serde::Serialize;
 use serde::Serializer;
 
+use crate::Presets;
+
 /// A stable, content-addressed hash of a `RepoSpec`. Two specs with equal
 /// content hash equal regardless of map ordering; a version bump with unchanged
 /// content yields the same hash. Used by the reconcile controller as the
@@ -42,31 +44,57 @@ pub fn spec_hash(spec: &RepoSpec) -> Result<u64> {
 /// version bump (the S684063 shape).
 pub struct SharedGenerations {
     storage: HashMap<String, u64>,
+    /// Each hash includes the storage config the preset names.
+    repo_config_presets: HashMap<String, u64>,
 }
 
 impl SharedGenerations {
-    /// From the manifest's named storage configs.
-    pub fn new(storage: &HashMap<String, RawStorageConfig>) -> Result<Self> {
-        let storage = storage
+    /// From the manifest's named storage configs and, for a deployment, its
+    /// presets.
+    pub fn new(
+        storage: &HashMap<String, RawStorageConfig>,
+        presets: Option<&Presets>,
+    ) -> Result<Self> {
+        let storage: HashMap<String, u64> = storage
             .iter()
             .map(|(name, config)| {
-                let json = serde_json::to_value(config)
-                    .with_context(|| format!("serializing storage config {name} for hashing"))?;
-                Ok((name.clone(), hash_canonical_json(&json)))
+                Ok((
+                    name.clone(),
+                    hash_serialized("storage config", name, config)?,
+                ))
             })
             .collect::<Result<_>>()?;
-        Ok(Self { storage })
+        let repo_config_presets = presets
+            .into_iter()
+            .flatten()
+            .map(|(name, preset)| {
+                let content = hash_serialized("preset", name, preset)?;
+                let named_storage = named(&storage, preset.storage_config.as_deref());
+                Ok((name.clone(), hash_of((content, named_storage))))
+            })
+            .collect::<Result<_>>()?;
+        Ok(Self {
+            storage,
+            repo_config_presets,
+        })
     }
 
-    /// The shared generation of `spec` on `tier`: a hash of every storage config
-    /// that the spec's own config or its override for `tier` names, even one
-    /// the override replaces. A storage config the manifest lacks hashes as
-    /// missing, so the repo drifts when it is added.
+    /// A hash of the shared configs named by `spec`'s layers on `tier`,
+    /// including layers that others override.
     pub fn of_repo(&self, spec: &RepoSpec, tier: &str) -> u64 {
-        hash_of(repo_layers(spec, tier).map(|layer| {
-            layer.map(|config| named(&self.storage, config.storage_config.as_deref()))
-        }))
+        hash_of((
+            named(&self.repo_config_presets, spec.preset.as_deref()),
+            repo_layers(spec, tier).map(|layer| {
+                layer.map(|config| named(&self.storage, config.storage_config.as_deref()))
+            }),
+        ))
     }
+}
+
+fn hash_serialized(kind: &str, name: &str, config: &impl Serialize) -> Result<u64> {
+    let json = serde_json::to_value(config)
+        .with_context(|| format!("serializing {kind} {name} for hashing"))?;
+    Ok(hash_canonical_json(&json))
 }
 
 /// `None` if no shared config is named, `Some(None)` if the named one is missing.

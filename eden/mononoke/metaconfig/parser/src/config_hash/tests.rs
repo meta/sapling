@@ -13,6 +13,7 @@ use mononoke_macros::mononoke;
 use repos::RawRepoConfig;
 
 use super::*;
+use crate::Presets;
 
 #[mononoke::test]
 fn spec_hash_is_content_addressed() {
@@ -61,7 +62,7 @@ fn shared_generation_covers_only_the_named_storage() {
         ..Default::default()
     };
     let generations = |storage: HashMap<String, RawStorageConfig>| {
-        SharedGenerations::new(&storage).expect("storage configs hash")
+        SharedGenerations::new(&storage, None).expect("storage configs hash")
     };
     let before = generations(
         hashmap! { "a".to_string() => plain.clone(), "b".to_string() => plain.clone() },
@@ -117,6 +118,60 @@ fn shared_generation_covers_only_the_named_storage() {
         generations(hashmap! { "missing".to_string() => RawStorageConfig::default() })
             .of_repo(&on_missing, "tier"),
         "a storage config the manifest lacks changes the generation when it is added",
+    );
+}
+
+fn presets(callsign: &str, storage: Option<&str>) -> Presets {
+    [(
+        "git".to_string(),
+        RawRepoConfig {
+            phabricator_callsign: Some(callsign.to_string()),
+            storage_config: storage.map(str::to_string),
+            ..Default::default()
+        },
+    )]
+    .into()
+}
+
+#[mononoke::test]
+fn shared_generation_covers_the_named_preset() {
+    let storage: HashMap<String, RawStorageConfig> = hashmap! {
+        "a".to_string() => RawStorageConfig::default(),
+        "b".to_string() => RawStorageConfig::default(),
+    };
+    let generations = |presets: Presets, storage: &HashMap<String, RawStorageConfig>| {
+        SharedGenerations::new(storage, Some(&presets)).expect("presets hash")
+    };
+    let with_preset = RepoSpec {
+        preset: Some("git".to_string()),
+        ..spec_on("a", None)
+    };
+    let without_preset = spec_on("a", None);
+
+    let base = generations(presets("A", None), &storage);
+    let changed = generations(presets("B", None), &storage);
+    assert_ne!(
+        base.of_repo(&with_preset, "tier"),
+        changed.of_repo(&with_preset, "tier"),
+        "a change to the preset the spec names must change the generation",
+    );
+    assert_eq!(
+        base.of_repo(&without_preset, "tier"),
+        changed.of_repo(&without_preset, "tier"),
+        "a repo that names no preset is not affected by preset changes",
+    );
+
+    let changed_storage: HashMap<String, RawStorageConfig> = hashmap! {
+        "a".to_string() => RawStorageConfig::default(),
+        "b".to_string() => RawStorageConfig {
+            ephemeral_blobstore: Some(Default::default()),
+            ..Default::default()
+        },
+    };
+    assert_ne!(
+        generations(presets("A", Some("b")), &storage).of_repo(&with_preset, "tier"),
+        generations(presets("A", Some("b")), &changed_storage).of_repo(&with_preset, "tier"),
+        "the storage config the preset names counts, even where the spec names another",
     );
 }
 

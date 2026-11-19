@@ -44,6 +44,7 @@ use repos::RawStorageConfig;
 use repos::RepoSpec;
 use repos::TierManifest;
 
+use crate::Presets;
 use crate::convert::Convert;
 use crate::errors::ConfigurationError;
 use crate::layering::ConfigSource;
@@ -151,7 +152,8 @@ pub fn load_repo_configs_from_manifest(
                     )
                 })?
                 .get();
-            let repo_config = parse_repo_spec((*repo_spec).clone(), tier, &manifest.storage)
+            // Tier manifests have no presets.
+            let repo_config = parse_repo_spec((*repo_spec).clone(), tier, &manifest.storage, None)
                 .with_context(|| {
                     format!("Failed to parse RepoSpec for repo {}", entry.repo_name)
                 })?;
@@ -318,11 +320,13 @@ fn repo_config_layers<'a>(repo_spec: &'a RepoSpec, tier_name: &str) -> Vec<Layer
 /// [`resolve_repo_spec_with_provenance`] does. Uses the RepoSpec's identity
 /// fields (hipster_acl, enabled, readonly, etc.) instead of hardcoded defaults.
 ///
-/// `named_storage_configs` typically comes from `TierManifest.storage`.
+/// `named_storage_configs` and `presets` come from the manifest the repo was
+/// listed in; only a deployment has presets.
 pub fn parse_repo_spec(
     repo_spec: RepoSpec,
     tier_name: &str,
     named_storage_configs: &HashMap<String, RawStorageConfig>,
+    _presets: Option<&Presets>,
 ) -> Result<RepoConfig> {
     let resolved = resolve_repo_spec(&repo_spec, tier_name, named_storage_configs)?;
 
@@ -960,7 +964,7 @@ mod test {
                 repo_config: Some(repo_config),
                 ..Default::default()
             };
-            let repo_config = parse_repo_spec(spec, TEST_TIER, &manifest.storage)?;
+            let repo_config = parse_repo_spec(spec, TEST_TIER, &manifest.storage, None)?;
             if !seen_repo_ids.insert(repo_config.repoid) {
                 return Err(ConfigurationError::DuplicatedRepoId(repo_config.repoid).into());
             }
@@ -3112,19 +3116,20 @@ mod test {
             ..Default::default()
         };
 
-        let error = parse_repo_spec(spec(true, None), "scs", &named_storage)
+        let error = parse_repo_spec(spec(true, None), "scs", &named_storage, None)
             .expect_err("bundle-uri on without its config must fail");
         assert!(
             error.to_string().contains("git_bundle_uri_config"),
             "{error:?}"
         );
-        let off = parse_repo_spec(spec(false, None), "scs", &named_storage)
+        let off = parse_repo_spec(spec(false, None), "scs", &named_storage, None)
             .expect("bundle-uri off needs no config");
         assert!(off.git_configs.git_bundle_uri.is_none());
         let on = parse_repo_spec(
             spec(true, Some(local_bundle_uri_configs())),
             "scs",
             &named_storage,
+            None,
         )
         .expect("bundle-uri on with its config parses");
         assert!(on.git_configs.git_bundle_uri.is_some());
@@ -3261,7 +3266,7 @@ mod test {
         };
 
         let result =
-            parse_repo_spec(repo_spec, "scs", &named_storage).expect("parse should succeed");
+            parse_repo_spec(repo_spec, "scs", &named_storage, None).expect("parse should succeed");
 
         assert_eq!(result.repoid, RepositoryId::new(42));
         assert!(result.enabled);
@@ -3329,12 +3334,13 @@ mod test {
         };
 
         // Parse for the "scs" tier — should get the overridden callsign
-        let scs_result = parse_repo_spec(repo_spec.clone(), "scs", &named_storage)
+        let scs_result = parse_repo_spec(repo_spec.clone(), "scs", &named_storage, None)
             .expect("parse for scs should succeed");
 
         // Parse for the "gitimport" tier — no override, should get base callsign
-        let gitimport_result = parse_repo_spec(repo_spec.clone(), "gitimport", &named_storage)
-            .expect("parse for gitimport should succeed");
+        let gitimport_result =
+            parse_repo_spec(repo_spec.clone(), "gitimport", &named_storage, None)
+                .expect("parse for gitimport should succeed");
 
         // SCS tier should use the overridden callsign
         assert_eq!(
@@ -3376,7 +3382,7 @@ mod test {
         };
 
         let result =
-            parse_repo_spec(repo_spec, "scs", &named_storage).expect("parse should succeed");
+            parse_repo_spec(repo_spec, "scs", &named_storage, None).expect("parse should succeed");
 
         assert!(!result.enabled, "enabled should come from RepoSpec");
         assert_eq!(
@@ -3431,7 +3437,7 @@ mod test {
         };
 
         // This should fail because default RawRepoConfig has no storage_config
-        let result = parse_repo_spec(repo_spec, "scs", &named_storage);
+        let result = parse_repo_spec(repo_spec, "scs", &named_storage, None);
         assert!(
             result.is_err(),
             "RepoSpec with no repo_config should fail (missing storage_config)"
@@ -3474,6 +3480,7 @@ mod test {
             p4_repo_spec("//swarm_playground/"),
             "p4_sync",
             &named_storage,
+            None,
         )
         .expect("parse should succeed");
         assert_eq!(
@@ -3489,7 +3496,7 @@ mod test {
         let mut no_p4 = p4_repo_spec("//swarm_playground/");
         no_p4.repo_config.as_mut().unwrap().p4_source = None;
         let result =
-            parse_repo_spec(no_p4, "p4_sync", &named_storage).expect("parse should succeed");
+            parse_repo_spec(no_p4, "p4_sync", &named_storage, None).expect("parse should succeed");
         assert_eq!(result.p4_source, None);
     }
 
@@ -3508,7 +3515,7 @@ mod test {
             "///",
             "",
         ] {
-            let result = parse_repo_spec(p4_repo_spec(depot), "p4_sync", &named_storage);
+            let result = parse_repo_spec(p4_repo_spec(depot), "p4_sync", &named_storage, None);
             assert!(
                 result.is_err(),
                 "depot {depot:?} is not a depot root and must be rejected"

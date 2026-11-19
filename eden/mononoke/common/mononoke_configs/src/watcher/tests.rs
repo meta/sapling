@@ -674,7 +674,7 @@ impl ConfigUpdateReceiver for BulkRecordingReceiver {
 struct ReloadFixture {
     source: Arc<TestSource>,
     store: ConfigStore,
-    manifest_handle: ConfigHandle<TierManifest>,
+    manifest: Arc<ManifestSource>,
     repo_handles: Arc<RwLock<HashMap<String, ConfigHandle<RepoSpec>>>>,
     repo_configs: Swappable<RepoConfigs>,
     storage_configs: Swappable<StorageConfigs>,
@@ -686,19 +686,50 @@ struct ReloadFixture {
 }
 
 impl ReloadFixture {
+    /// A tier manifest at `MANIFEST_PATH`.
     fn new(initial_manifest: &TierManifest, seeded_repos: &[&str]) -> Self {
+        let json = serde_json::to_string(initial_manifest).expect("manifest serializes");
+        Self::with_source(&json, seeded_repos, |store| {
+            ManifestSource::tier(
+                store
+                    .get_config_handle::<TierManifest>(MANIFEST_PATH.to_string())
+                    .expect("manifest handle for inserted path"),
+            )
+        })
+    }
+
+    /// A deployment at `MANIFEST_PATH`, seen as the SCS server.
+    fn new_deployment(initial: &repos::Deployment, seeded_repos: &[&str]) -> Self {
+        let json = serde_json::to_string(initial).expect("deployment serializes");
+        Self::with_source(&json, seeded_repos, |store| {
+            ManifestSource::deployment(
+                metaconfig_parser::deployment_config_handle(MANIFEST_PATH, store)
+                    .expect("deployment handle for inserted path"),
+                metaconfig_parser::DeploymentLocation {
+                    root: metaconfig_parser::ConfigRoot::ConfigStore,
+                    name: "prod".to_owned(),
+                },
+                repos::MononokeService::SCS_SERVER,
+            )
+            .expect("the deployment has the SCS server")
+        })
+    }
+
+    fn with_source(
+        initial_json: &str,
+        seeded_repos: &[&str],
+        manifest: impl FnOnce(&ConfigStore) -> ManifestSource,
+    ) -> Self {
         let source = Arc::new(TestSource::new());
         source.insert_config(
             MANIFEST_PATH,
-            &serde_json::to_string(initial_manifest).expect("manifest serializes"),
+            initial_json,
             ModificationTime::UnixTimestamp(0),
         );
         source.insert_to_refresh(MANIFEST_PATH.to_string());
         // Poll interval is irrelevant: tests refresh via force_update_configs.
         let store = ConfigStore::new(source.clone(), Duration::from_secs(3600), None);
-        let manifest_handle = store
-            .get_config_handle::<TierManifest>(MANIFEST_PATH.to_string())
-            .expect("manifest handle for inserted path");
+        let manifest = Arc::new(manifest(&store));
         let receiver = Arc::new(BulkRecordingReceiver {
             commons: tokio::sync::Mutex::new(Vec::new()),
         });
@@ -709,7 +740,7 @@ impl ReloadFixture {
         Self {
             source,
             store,
-            manifest_handle,
+            manifest,
             repo_handles: make_repo_handles(seeded_repos),
             repo_configs: empty_repo_configs(),
             storage_configs: Arc::new(ArcSwap::from_pointee(StorageConfigs {
@@ -725,9 +756,24 @@ impl ReloadFixture {
 
     /// Replace the manifest content and propagate it to the handle.
     fn swap_manifest(&self, manifest: &TierManifest, timestamp: u64) {
+        self.swap_json(
+            &serde_json::to_string(manifest).expect("manifest serializes"),
+            timestamp,
+        );
+    }
+
+    /// Replace the deployment content and propagate it to the handle.
+    fn swap_deployment(&self, deployment: &repos::Deployment, timestamp: u64) {
+        self.swap_json(
+            &serde_json::to_string(deployment).expect("deployment serializes"),
+            timestamp,
+        );
+    }
+
+    fn swap_json(&self, json: &str, timestamp: u64) {
         self.source.insert_config(
             MANIFEST_PATH,
-            &serde_json::to_string(manifest).expect("manifest serializes"),
+            json,
             ModificationTime::UnixTimestamp(timestamp),
         );
         self.store.force_update_configs();
@@ -743,7 +789,7 @@ impl ReloadFixture {
 
     async fn run(&mut self) {
         let source = ConfigSource {
-            manifest: Arc::new(ManifestSource::tier(self.manifest_handle.clone())),
+            manifest: self.manifest.clone(),
             tier: "test_tier".to_string(),
         };
         run_reload_pass(
@@ -1065,6 +1111,71 @@ async fn test_manifest_reload_reparses_on_a_named_storage_change_only() {
     assert!(
         !Arc::ptr_eq(&x_after_add, &served_entry(&fx, "repo/x")),
         "a change to the storage config repo/x names must re-parse it"
+    );
+}
+
+// A parse depends on the presets its spec names, so only a change to one of those re-parses.
+#[mononoke::test]
+async fn test_manifest_reload_reparses_on_a_named_preset_change_only() {
+    const X_PATH: &str = "scm/mononoke/repos/x";
+
+    let manifest = good_manifest("tier_v0", vec![]);
+    let deployment = |git_preset: repos::RawRepoConfig, other: Option<&str>| repos::Deployment {
+        common: manifest.common.clone(),
+        storage: manifest.storage.clone().into_iter().collect(),
+        services: [(
+            repos::MononokeService::SCS_SERVER,
+            repos::ServiceConfig {
+                legacy_tier: "test_tier".to_owned(),
+                ..Default::default()
+            },
+        )]
+        .into_iter()
+        .collect(),
+        repos: vec![repos::DeploymentRepo {
+            repo_name: "repo/x".to_owned(),
+            repo_id: 1,
+            spec_path: "x".to_owned(),
+            services: Some([(repos::MononokeService::SCS_SERVER, true)].into()),
+            ..Default::default()
+        }],
+        presets: Some(
+            std::iter::once(("git".to_string(), git_preset))
+                .chain(other.map(|name| (name.to_string(), Default::default())))
+                .collect(),
+        ),
+        ..Default::default()
+    };
+    let v0 = deployment(Default::default(), None);
+    let mut fx = ReloadFixture::new_deployment(&v0, &[]);
+    let mut spec: repos::RepoSpec =
+        serde_json::from_str(&valid_repo_spec_json(1, "repo/x")).expect("spec parses");
+    spec.preset = Some("git".to_string());
+    fx.put_spec(
+        X_PATH,
+        &serde_json::to_string(&spec).expect("spec serializes"),
+        0,
+    );
+    fx.run().await;
+    let x_before = served_entry(&fx, "repo/x");
+
+    fx.swap_deployment(&deployment(Default::default(), Some("other")), 1);
+    fx.run().await;
+    let x_after_add = served_entry(&fx, "repo/x");
+    assert!(
+        Arc::ptr_eq(&x_before, &x_after_add),
+        "adding a preset repo/x does not name must reuse its parse"
+    );
+
+    let changed = repos::RawRepoConfig {
+        hook_max_file_size: Some(1),
+        ..Default::default()
+    };
+    fx.swap_deployment(&deployment(changed, Some("other")), 2);
+    fx.run().await;
+    assert!(
+        !Arc::ptr_eq(&x_after_add, &served_entry(&fx, "repo/x")),
+        "a change to the preset repo/x names must re-parse it"
     );
 }
 
