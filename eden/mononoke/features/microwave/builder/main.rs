@@ -39,7 +39,6 @@ use filenodes_derivation::FilenodesOnlyPublic;
 use futures::channel::mpsc;
 use futures::future;
 use mercurial_derivation::MappedHgChangesetId;
-use metaconfig_types::CacheWarmupParams;
 use metaconfig_types::RepoConfigSource;
 use microwave::Snapshot;
 use microwave::SnapshotLocation;
@@ -201,18 +200,12 @@ async fn async_main(app: MononokeApp) -> Result<(), Error> {
                     // warmup requires filenodes to be present.
                     let req = match cache_warmup {
                         Some(params) => {
-                            let CacheWarmupParams {
-                                bookmark,
-                                commit_limit,
-                                microwave_preload,
-                            } = params;
-
-                            let target = cache_warmup_target(&warmup_ctx, &repo, &bookmark).await?;
+                            let target =
+                                cache_warmup_target(&warmup_ctx, &repo, &params.bookmark).await?;
 
                             Some(CacheWarmupRequest {
                                 target,
-                                commit_limit,
-                                microwave_preload,
+                                commit_limit: params.commit_limit,
                             })
                         }
                         None => None,

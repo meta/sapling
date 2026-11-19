@@ -26,7 +26,6 @@ manifest = { version = "0.1.0", path = "../../manifest" }
 mercurial_derivation = { version = "0.1.0", path = "../../derived_data/mercurial_derivation" }
 mercurial_types = { version = "0.1.0", path = "../../mercurial/types" }
 metaconfig_types = { version = "0.1.0", path = "../../metaconfig/types" }
-microwave = { version = "0.1.0", path = "../microwave/features/microwave" }
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
 mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
 mutable_blobstore = { version = "0.1.0", path = "../../repo_attributes/mutable_blobstore" }

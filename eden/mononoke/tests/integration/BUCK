@@ -174,20 +174,6 @@ dott_test(
 )
 
 dott_test(
-    name = "microwave",
-    dott_files = [
-        "test-cache-warmup-microwave.t",
-    ],
-    enable_remote_execution = True,
-    deps = [
-        "//eden/mononoke:mononoke",
-        "//eden/mononoke/features/microwave:builder",
-        "//eden/mononoke/tools/admin:admin",
-        "//eden/mononoke/tools/testtool:testtool",
-    ],
-)
-
-dott_test(
     name = "packer",
     dott_files = [
         "test-packer.t",

@@ -33,7 +33,6 @@ use mercurial_types::HgFileNodeId;
 use mercurial_types::RepoPath;
 use mercurial_types::sharded_augmented_manifest::list_all_hg_entries;
 use metaconfig_types::CacheWarmupParams;
-use microwave::SnapshotLocation;
 use mononoke_macros::mononoke;
 use mononoke_types::ChangesetId;
 use mutable_blobstore::MutableRepoBlobstoreRef;
@@ -86,21 +85,13 @@ pub enum CacheWarmupKind {
 pub struct CacheWarmupRequest {
     pub target: CacheWarmupTarget,
     pub commit_limit: usize,
-    pub microwave_preload: bool,
 }
 
 impl From<CacheWarmupParams> for CacheWarmupRequest {
     fn from(other: CacheWarmupParams) -> Self {
-        let CacheWarmupParams {
-            bookmark,
-            commit_limit,
-            microwave_preload,
-        } = other;
-
         Self {
-            target: CacheWarmupTarget::Bookmark(bookmark),
-            commit_limit,
-            microwave_preload,
+            target: CacheWarmupTarget::Bookmark(other.bookmark),
+            commit_limit: other.commit_limit,
         }
     }
 }
@@ -281,19 +272,6 @@ async fn do_cache_warmup(
     Ok(())
 }
 
-async fn microwave_preload(ctx: &CoreContext, repo: &impl Repo, req: &CacheWarmupRequest) {
-    if req.microwave_preload {
-        match microwave::prime_cache(ctx, repo, SnapshotLocation::Blobstore).await {
-            Ok(_) => {
-                warn!("microwave: successfully primed cache");
-            }
-            Err(e) => {
-                warn!("microwave: cache warmup failed: {:#?}", e);
-            }
-        }
-    }
-}
-
 /// Fetch all manifest entries for a bookmark, and fetches up to `commit_warmup_limit`
 /// ancestors of the bookmark.
 pub async fn cache_warmup<T: Into<CacheWarmupRequest>>(
@@ -304,8 +282,6 @@ pub async fn cache_warmup<T: Into<CacheWarmupRequest>>(
 ) -> Result<(), Error> {
     if let Some(req) = cache_warmup {
         let req = req.into();
-
-        microwave_preload(ctx, repo, &req).await;
 
         do_cache_warmup(ctx, repo, req.target, cache_warmup_kind)
             .await

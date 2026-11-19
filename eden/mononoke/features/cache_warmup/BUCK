@@ -29,7 +29,6 @@ rust_library(
         "//eden/mononoke/common/rust/justknobs_ext:justknobs",
         "//eden/mononoke/derived_data/filenodes_derivation:filenodes_derivation",
         "//eden/mononoke/derived_data/mercurial_derivation:mercurial_derivation",
-        "//eden/mononoke/features/microwave:microwave",
         "//eden/mononoke/manifest:manifest",
         "//eden/mononoke/mercurial:mercurial_types",
         "//eden/mononoke/metaconfig:metaconfig_types",
