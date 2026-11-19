@@ -693,6 +693,9 @@ class nameset(abstractsmartset):
             # NameSet does not contain virtual "null" ids.
             # Do not bother looking up remotely.
             return False
+        # The Rust IdMap only takes i64 revision numbers; no revision lies outside.
+        if isinstance(rev, int) and not -(1 << 63) <= rev < (1 << 63):
+            return False
         try:
             node = self._tonode(rev)
         except error.CommitLookupError:

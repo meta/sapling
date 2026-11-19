@@ -26,44 +26,15 @@ including nullrev, wdirrev and the i64 bounds, are absent.
 
 Numbers outside the i64 range are absent too, not a crash.
 
-# FIXME(T296478177): should be the empty set, not crash; the next diff fixes it.
-  $ sl log -r "_intlist('9223372036854775808')" -T '[{desc}]\n' 2>&1 | grep -v '^  '
-  ** Sapling SCM (version *) has crashed: (glob)
-  Traceback (most recent call last):
-  OverflowError: * (glob)
-
-# FIXME(T296478177): should be the empty set, not crash; the next diff fixes it.
-  $ sl log -r "_intlist('-9223372036854775809')" -T '[{desc}]\n' 2>&1 | grep -v '^  '
-  ** Sapling SCM (version *) has crashed: (glob)
-  Traceback (most recent call last):
-  OverflowError: * (glob)
-
-# FIXME(T296478177): should list [A] and [B], not crash; the next diff fixes it.
-  $ sl log -r "all() - _intlist('9223372036854775808')" -T '[{desc}]\n' 2>&1 | grep -v '^  '
-  ** Sapling SCM (version *) has crashed: (glob)
-  Traceback (most recent call last):
-  OverflowError: * (glob)
-
-# FIXME(T296478177): should be the empty set, not crash; the next diff fixes it.
-  $ sl log -r "draft() & _intlist('9223372036854775808')" -T '[{desc}]\n' 2>&1 | grep -v '^  '
-  ** Sapling SCM (version *) has crashed: (glob)
-  Traceback (most recent call last):
-  OverflowError: * (glob)
-
-# FIXME(T296478177): should print [], not crash; the next diff fixes it.
-  $ sl log -r 'desc(B)' -T '[{revset("%d", 9223372036854775808)}]\n' 2>&1 | grep -v '^  '
-  ** Sapling SCM (version *) has crashed: (glob)
-  Traceback (most recent call last):
-  OverflowError: * (glob)
-
-# FIXME(T296478177): should print [n], not crash; the next diff fixes it.
-  $ sl log -r 'desc(B)' -T '[{ifcontains(9223372036854775808, revset("all()"), "y", "n")}]\n' 2>&1 | grep -v '^  '
-  ** Sapling SCM (version *) has crashed: (glob)
-  Traceback (most recent call last):
-  OverflowError: * (glob)
-
-# FIXME(T296478177): should print [n], not crash; the next diff fixes it.
-  $ sl log -r 'desc(B)' -T '[{ifcontains(-9223372036854775809, revset("all()"), "y", "n")}]\n' 2>&1 | grep -v '^  '
-  ** Sapling SCM (version *) has crashed: (glob)
-  Traceback (most recent call last):
-  OverflowError: * (glob)
+  $ sl log -r "_intlist('9223372036854775808')" -T '[{desc}]\n'
+  $ sl log -r "_intlist('-9223372036854775809')" -T '[{desc}]\n'
+  $ sl log -r "all() - _intlist('9223372036854775808')" -T '[{desc}]\n'
+  [A]
+  [B]
+  $ sl log -r "draft() & _intlist('9223372036854775808')" -T '[{desc}]\n'
+  $ sl log -r 'desc(B)' -T '[{revset("%d", 9223372036854775808)}]\n'
+  []
+  $ sl log -r 'desc(B)' -T '[{ifcontains(9223372036854775808, revset("all()"), "y", "n")}]\n'
+  [n]
+  $ sl log -r 'desc(B)' -T '[{ifcontains(-9223372036854775809, revset("all()"), "y", "n")}]\n'
+  [n]
