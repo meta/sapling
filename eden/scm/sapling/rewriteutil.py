@@ -14,7 +14,7 @@ from contextlib import contextmanager
 
 from bindings import agentdetect
 
-from . import error, mutation, node, slacl
+from . import error, extensions, hintutil, mutation, node, slacl
 from .i18n import _
 from .node import short
 
@@ -203,6 +203,43 @@ def _checkobsolete(
 
     repo.ui.metrics.inc(actormetric(prefix, "warned"), 1)
     return [ctx for ctx, _fates in obsolete]
+
+
+def restackdescendants(ui, repo, oldnode, descendants, source) -> None:
+    """Rebase ``descendants`` of rewritten commits onto the new versions if
+    ``amend.autorestack`` restacks changed commits, or hint that they were
+    left behind on ``oldnode``.
+
+    The rebase is done in memory and never stops for a conflict, since the
+    working copy may hold changes: descendants that would conflict stay
+    where they are. ``source`` names the command for config overrides.
+    """
+    try:
+        amend = extensions.find("amend")
+    except KeyError:
+        return
+    if amend.autorestackconf(ui) not in (
+        amend.RESTACK_NO_CONFLICT,
+        amend.RESTACK_ALWAYS,
+    ) or not ui.configbool("rebase", "experimental.inmemory"):
+        hintutil.trigger("amend-restack", oldnode)
+        return
+    # internal config: amend.autorestackmsg
+    msg = ui.config(
+        "amend",
+        "autorestackmsg",
+        _("restacking children automatically (unless they conflict)"),
+    )
+    if msg:
+        ui.status("%s\n" % msg)
+    noconflictmsg = _(
+        "restacking would create conflicts (%s in %s), so you must run it manually\n"
+        "(run `@prog@ restack` manually to restack this commit's children)"
+    )
+    with ui.configoverride({("rebase", "noconflictmsg"): noconflictmsg}, source):
+        amend.restack.restack(
+            ui, repo, rev=[node.hex(n) for n in descendants], noconflict=True
+        )
 
 
 @contextmanager

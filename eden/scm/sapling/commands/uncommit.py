@@ -28,15 +28,13 @@ from .. import (
     context,
     copies,
     error,
-    extensions,
-    hintutil,
     mutation,
     rewriteutil,
     scmutil,
     treestate,
 )
 from ..i18n import _
-from ..node import hex, nullid
+from ..node import nullid
 from .cmdtable import command
 
 
@@ -115,7 +113,9 @@ def uncommit(ui, repo, *pats, **opts) -> Optional[int]:
                 fixdirstate(repo, old, repo[newid], s)
 
         if descendants and newid != old.p1().node():
-            _restack(ui, repo, old, descendants)
+            rewriteutil.restackdescendants(
+                ui, repo, old.node(), descendants, "uncommit"
+            )
 
 
 def _removalabort():
@@ -124,43 +124,6 @@ def _removalabort():
         _("cannot uncommit every change of a commit that has descendants"),
         hint=_("use --keep to leave the commit in the stack, empty"),
     )
-
-
-def _restack(ui, repo, old, descendants) -> None:
-    """Rebase ``descendants`` of the rewritten commit ``old`` onto its new
-    version if ``amend.autorestack`` restacks changed commits, or hint that
-    they were left behind.
-
-    The working copy holds the uncommitted changes, so the rebase is done in
-    memory and never stops for a conflict: descendants that would conflict
-    stay on ``old``.
-    """
-    try:
-        amend = extensions.find("amend")
-    except KeyError:
-        return
-    if amend.autorestackconf(ui) not in (
-        amend.RESTACK_NO_CONFLICT,
-        amend.RESTACK_ALWAYS,
-    ) or not ui.configbool("rebase", "experimental.inmemory"):
-        hintutil.trigger("amend-restack", old.node())
-        return
-    # internal config: amend.autorestackmsg
-    msg = ui.config(
-        "amend",
-        "autorestackmsg",
-        _("restacking children automatically (unless they conflict)"),
-    )
-    if msg:
-        ui.status("%s\n" % msg)
-    noconflictmsg = _(
-        "restacking would create conflicts (%s in %s), so you must run it manually\n"
-        "(run `@prog@ restack` manually to restack this commit's children)"
-    )
-    with ui.configoverride({("rebase", "noconflictmsg"): noconflictmsg}, "uncommit"):
-        amend.restack.restack(
-            ui, repo, rev=[hex(node) for node in descendants], noconflict=True
-        )
 
 
 def commitfilteredctx(repo, ctx, match, allowempty):
