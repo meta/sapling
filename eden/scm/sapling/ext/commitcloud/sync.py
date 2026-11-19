@@ -577,9 +577,8 @@ def _fetch(repo, remotepath, lastsyncstate, cloudrefs, maxage):
         omittedheads = set()
 
     remotebookmarknewnames = {}
-    remotebookmarkupdates = {}
     if _isremotebookmarkssyncenabled(repo.ui):
-        (remotebookmarkupdates, remotebookmarknewnames) = _processremotebookmarks(
+        remotebookmarknewnames = _remotebookmarkstopull(
             repo, cloudrefs.remotebookmarks, lastsyncstate
         )
 
@@ -604,13 +603,15 @@ def _fetch(repo, remotepath, lastsyncstate, cloudrefs, maxage):
         )
 
     bookmarknodes, bookmarkdates = _bookmarknodes(repo, cloudrefs.bookmarks)
+    remotebookmarknodes = set()
+    if _isremotebookmarkssyncenabled(repo.ui):
+        remotebookmarknodes = _knownnodes(repo, cloudrefs.remotebookmarks.values())
 
     return _FetchedChanges(
         newheads=newheads,
         omittedheads=omittedheads,
         omittedparents=omittedparents,
-        remotebookmarkupdates=remotebookmarkupdates,
-        remotebookmarknodes=_knownnodes(repo, remotebookmarkupdates.values()),
+        remotebookmarknodes=remotebookmarknodes,
         bookmarknodes=bookmarknodes,
         bookmarkdates=bookmarkdates,
     )
@@ -622,9 +623,8 @@ class _FetchedChanges(NamedTuple):
     newheads: list
     omittedheads: set
     omittedparents: list
-    remotebookmarkupdates: dict
-    # What the repo knew at fetch time: remote bookmark targets, cloud bookmark
-    # targets, and the dates of the public cloud bookmark targets.
+    # What the repo knew at fetch time: cloud remote bookmark targets, cloud
+    # bookmark targets, and the dates of the public cloud bookmark targets.
     remotebookmarknodes: set
     bookmarknodes: set
     bookmarkdates: dict
@@ -697,14 +697,12 @@ def _applycloudchanges(repo, lastsyncstate, cloudrefs, maxage, state, tr, fetche
     newremotebookmarks = {}
     omittedremotebookmarks = []
     if _isremotebookmarkssyncenabled(repo.ui):
-        remotebookmarknodes, _public = _recheckknown(
+        omittedremotebookmarks = _applyremotebookmarks(
             repo,
-            fetched.remotebookmarkupdates.values(),
+            tr,
+            cloudrefs.remotebookmarks,
+            lastsyncstate,
             fetched.remotebookmarknodes,
-            set(),
-        )
-        omittedremotebookmarks = _updateremotebookmarks(
-            repo, tr, fetched.remotebookmarkupdates, remotebookmarknodes
         )
         newremotebookmarks = cloudrefs.remotebookmarks
 
@@ -877,29 +875,27 @@ def partitionheads(ui, heads):
     return list(iter(lambda: tuple(itertools.islice(it, sizelimit)), ()))
 
 
-def _processremotebookmarks(repo, cloudremotebooks, lastsyncstate):
+def _processremotebookmarks(repo, cloudremotebooks, lastsyncstate, known):
     """calculate new state between the cloud remote bookmarks and the local
     remote bookmarks
 
     Performs a 3-way diff between the last sync remote bookmark state, new cloud
-    state and local remote bookmarks.
+    state and local remote bookmarks.  `known` is the set of hex nodes the repo
+    has among them.
 
-    Returns (updates, newnodes) where:
-    - updates is a dict {remotebookmark: newnode} representing the updates
-      to the remote bookmarks
-    - newnodes is a set of nodes that are not in the repository and must be pulled
+    Returns a dict {remotebookmark: newnode} representing the updates to the
+    remote bookmarks.
     """
 
     def usecloudnode(cloudnode, localnode):
         """returns True if cloudnode should be a new state for the remote bookmark
 
         Both cloudnode and localnode are public commits."""
-        unfi = repo
-        if localnode not in unfi:
+        if localnode not in known:
             # we somehow don't have the localnode in the repo, probably may want
             # to fetch it
             return False
-        if cloudnode not in unfi:
+        if cloudnode not in known:
             # we don't have cloudnode in the repo, assume that cloudnode is newer
             # than the local
             return True
@@ -957,19 +953,49 @@ def _processremotebookmarks(repo, cloudremotebooks, lastsyncstate):
             # Use the local node
             updates[remotename] = localnode
 
+    return updates
+
+
+def _remotebookmarkstopull(repo, cloudremotebooks, lastsyncstate):
+    """Return the cloud remote bookmark targets to pull: {name: node}
+
+    These are the public targets the workspace changed since the last sync, or
+    that were omitted then, that the repo doesn't have.  This doesn't depend on
+    the local remote bookmarks, so whatever `_processremotebookmarks` later
+    picks is in the repo, or isn't available.
+    """
+    omitted = set(lastsyncstate.omittedremotebookmarks)
+    oldcloudremotebooks = lastsyncstate.remotebookmarks
     scratchmatcher = ccutil.scratchbranchmatcher(repo.ui)
-
-    def ispublic(name):
-        remote, name = bookmarks.splitremotename(name)
-        return not scratchmatcher.match(name)
-
-    unfi = repo
-    newnames = {
+    targets = {
         name: node
-        for name, node in updates.items()
-        if node != nodemod.nullhex and node not in unfi and ispublic(name)
+        for name, node in cloudremotebooks.items()
+        if (node != oldcloudremotebooks.get(name) or name in omitted)
+        and not scratchmatcher.match(bookmarks.splitremotename(name)[1])
     }
-    return (updates, newnames)
+    known = _knownnodes(repo, targets.values())
+    return {name: node for name, node in targets.items() if node not in known}
+
+
+def _applyremotebookmarks(repo, tr, cloudremotebooks, lastsyncstate, fetchedknown):
+    """Merge the workspace's remote bookmarks into the repo's
+
+    This reads the local remote bookmarks in the same transaction that writes
+    them.  A concurrent pull that moves a remote bookmark is then either seen,
+    or merged by the metalog, which keeps its value for every name this
+    leaves unchanged.  Lookups are local only; `fetchedknown` has the cloud
+    targets the server resolved at fetch time.
+
+    Returns the omitted remote bookmark names.
+    """
+    nodes = (
+        set(cloudremotebooks.values())
+        | set(lastsyncstate.remotebookmarks.values())
+        | set(_getremotebookmarks(repo).values())
+    )
+    known, _public = _recheckknown(repo, nodes, fetchedknown, set())
+    updates = _processremotebookmarks(repo, cloudremotebooks, lastsyncstate, known)
+    return _updateremotebookmarks(repo, tr, updates, known)
 
 
 def _updateremotebookmarks(repo, tr, updates, knownnodes=None):
@@ -1005,13 +1031,17 @@ def _updateremotebookmarks(repo, tr, updates, knownnodes=None):
 
 def _forcesyncremotebookmarks(repo, cloudrefs, lastsyncstate, remotepath, tr):
     cloudremotebookmarks = cloudrefs.remotebookmarks or {}
-    (updates, newnames) = _processremotebookmarks(
-        repo, cloudremotebookmarks, lastsyncstate
-    )
+    newnames = _remotebookmarkstopull(repo, cloudremotebookmarks, lastsyncstate)
     newnames = _prefetchexpensivebookmarks(repo, remotepath, newnames)
     if newnames:
         pullheadgroups(repo, remotepath, partitionheads(repo.ui, newnames.values()))
-    omittedremotebookmarks = _updateremotebookmarks(repo, tr, updates)
+    omittedremotebookmarks = _applyremotebookmarks(
+        repo,
+        tr,
+        cloudremotebookmarks,
+        lastsyncstate,
+        _knownnodes(repo, cloudremotebookmarks.values()),
+    )
 
     # We have now synced the repo to the cloud version.  Store this.
     lastsyncstate.update(

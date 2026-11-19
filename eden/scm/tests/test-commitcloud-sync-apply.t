@@ -223,3 +223,59 @@ brings in P too, so pulling P finds it already there.
   $ sl log -r 'sort(draft(), desc)' -T '{desc}\n'
   C
   P
+
+A pull that runs while a sync is fetching keeps the remote bookmark it moved.
+
+  $ newclientrepo c12 server5 master <<'EOS'
+  > M  # bookmark master = M
+  > EOS
+  $ setconfig remotefilelog.reponame=server5
+  $ sl cloud join -q -w remote
+  $ newclientrepo c13 server5 master
+  $ setconfig remotefilelog.reponame=server5
+  $ sl cloud join -q -w remote
+  $ cd $TESTTMP/server5
+  $ drawdag <<EOS
+  > N  # bookmark master = N
+  > |
+  > $M
+  > EOS
+
+Client 12 adds a commit to the workspace.  Client 13 pulls master to N while
+its sync is fetching the commit.
+
+  $ cd $TESTTMP/c12
+  $ drawdag <<EOS
+  > X
+  > |
+  > $M
+  > EOS
+  $ sl cloud sync -q
+  $ cd $TESTTMP/c13
+  $ sl cloud sync -q --config applytest.pull-master=true
+  $ sl log -r remote/master -T '{desc}\n'
+  N
+
+If the workspace and the pull both move it, the sync keeps the newer commit.
+
+  $ cd $TESTTMP/c12
+  $ sl cloud sync -q
+  $ cd $TESTTMP/server5
+  $ drawdag <<EOS
+  > N1  # bookmark master = N1
+  > |
+  > $N
+  > EOS
+  $ cd $TESTTMP/c12
+  $ sl pull -q -B master
+  $ sl cloud sync -q
+  $ cd $TESTTMP/server5
+  $ drawdag <<EOS
+  > N2  # bookmark master = N2
+  > |
+  > $N1
+  > EOS
+  $ cd $TESTTMP/c13
+  $ sl cloud sync -q --config applytest.pull-master=true
+  $ sl log -r remote/master -T '{desc}\n'
+  N2
