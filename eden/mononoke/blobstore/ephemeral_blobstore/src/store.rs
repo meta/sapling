@@ -7,6 +7,7 @@
 
 //! Ephemeral Store
 
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,6 +21,8 @@ use futures::Stream;
 use futures::StreamExt;
 use futures::stream;
 use futures_lazy_shared::LazyShared;
+use governor::Quota;
+use governor::RateLimiter;
 use mercurial_types::HgChangesetId;
 use metaconfig_types::BubbleDeletionMode;
 use mononoke_types::ChangesetId;
@@ -35,8 +38,7 @@ use crate::bubble::Bubble;
 use crate::bubble::BubbleId;
 use crate::bubble::ExpiryStatus;
 use crate::error::EphemeralBlobstoreError;
-use crate::unlink::UnlinkPolicy;
-use crate::unlink::Unlinker;
+use crate::unlink::UnlinkRetry;
 
 mod hg_mapping;
 
@@ -61,6 +63,12 @@ pub enum ExtendBubbleTtlOutcome {
 pub struct DeleteBubbleOutcome {
     pub keys_deleted: usize,
     pub keys_already_deleted: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DeleteBubblesPolicy {
+    pub max_bubbles_per_sec: Option<NonZeroU32>,
+    pub unlink_retry: Option<UnlinkRetry>,
 }
 
 /// Ephemeral Store.
@@ -564,7 +572,7 @@ impl RepoEphemeralStoreInner {
         &self,
         ctx: &CoreContext,
         bubble_id: BubbleId,
-        unlinker: &Unlinker,
+        unlink_retry: Option<UnlinkRetry>,
     ) -> Result<DeleteBubbleOutcome> {
         // Step 0: Validate if bubble deletion is enabled.
         if let BubbleDeletionMode::Disabled = self.bubble_deletion_mode {
@@ -586,7 +594,7 @@ impl RepoEphemeralStoreInner {
         }
         // Step 2: Delete the blob content within the expired bubble.
         let bubble = self.open_bubble_raw(ctx, bubble_id, false).await?;
-        let outcome = bubble.delete_blobs_in_bubble(ctx, unlinker).await?;
+        let outcome = bubble.delete_blobs_in_bubble(ctx, unlink_retry).await?;
 
         // Step 3: Delete the metadata associated with the bubble from
         // the backing SQL store.
@@ -873,18 +881,18 @@ impl RepoEphemeralStore {
         ctx: &CoreContext,
         bubble_id: BubbleId,
     ) -> Result<DeleteBubbleOutcome> {
-        let unlinker = Unlinker::new(UnlinkPolicy::default());
-        self.delete_bubble_with_unlinker(ctx, bubble_id, &unlinker)
-            .await
+        self.delete_bubble_with_retry(ctx, bubble_id, None).await
     }
 
-    async fn delete_bubble_with_unlinker(
+    async fn delete_bubble_with_retry(
         &self,
         ctx: &CoreContext,
         bubble_id: BubbleId,
-        unlinker: &Unlinker,
+        unlink_retry: Option<UnlinkRetry>,
     ) -> Result<DeleteBubbleOutcome> {
-        self.inner()?.delete_bubble(ctx, bubble_id, unlinker).await
+        self.inner()?
+            .delete_bubble(ctx, bubble_id, unlink_retry)
+            .await
     }
 
     /// Deletes the given bubbles, running up to `concurrency` deletions at a time,
@@ -896,19 +904,26 @@ impl RepoEphemeralStore {
         ctx: &CoreContext,
         bubble_ids: Vec<BubbleId>,
         concurrency: usize,
-        unlink_policy: UnlinkPolicy,
+        policy: DeleteBubblesPolicy,
     ) -> impl Stream<Item = (BubbleId, Result<DeleteBubbleOutcome>)> + Send + 'static {
         let store = self.clone();
         let ctx = ctx.clone();
-        let unlinker = Arc::new(Unlinker::new(unlink_policy));
+        let rate_limiter = policy.max_bubbles_per_sec.map(|rate| {
+            Arc::new(RateLimiter::direct(
+                Quota::per_second(rate).allow_burst(NonZeroU32::MIN),
+            ))
+        });
         stream::iter(bubble_ids)
             .map(move |bubble_id| {
                 let store = store.clone();
                 let ctx = ctx.clone();
-                let unlinker = unlinker.clone();
+                let rate_limiter = rate_limiter.clone();
                 async move {
+                    if let Some(rate_limiter) = rate_limiter {
+                        rate_limiter.until_ready().await;
+                    }
                     let outcome = store
-                        .delete_bubble_with_unlinker(&ctx, bubble_id, &unlinker)
+                        .delete_bubble_with_retry(&ctx, bubble_id, policy.unlink_retry)
                         .await;
                     (bubble_id, outcome)
                 }
@@ -1055,7 +1070,6 @@ impl RepoEphemeralStore {
 mod test {
     use std::collections::HashMap;
     use std::fmt;
-    use std::num::NonZeroU32;
     use std::num::NonZeroUsize;
     use std::sync::Mutex;
     use std::time::Instant;
@@ -1076,6 +1090,7 @@ mod test {
     use bonsai_hg_mapping::BonsaiHgMappingEntry;
     use context::CoreContext;
     use fbinit::FacebookInit;
+    use futures::future::try_join_all;
     use maplit::hashset;
     use memblob::Memblob;
     use mercurial_types_mocks::nodehash as hg;
@@ -1092,7 +1107,6 @@ mod test {
 
     use super::*;
     use crate::builder::RepoEphemeralStoreBuilder;
-    use crate::unlink::UnlinkRetry;
 
     mononoke_queries! {
         read CountBubbleHgMappingRows(bubble_id: BubbleId) -> (u64) {
@@ -2039,7 +2053,7 @@ mod test {
                     missing_bubble,
                 ],
                 2,
-                UnlinkPolicy::default(),
+                DeleteBubblesPolicy::default(),
             )
             .collect::<Vec<_>>()
             .await;
@@ -2945,10 +2959,10 @@ mod test {
         Ok(())
     }
 
-    fn retrying_unlink_policy(max_attempts: usize) -> UnlinkPolicy {
-        UnlinkPolicy {
-            max_unlinks_per_sec: None,
-            retry: Some(UnlinkRetry {
+    fn retrying_unlink_policy(max_attempts: usize) -> DeleteBubblesPolicy {
+        DeleteBubblesPolicy {
+            max_bubbles_per_sec: None,
+            unlink_retry: Some(UnlinkRetry {
                 max_attempts: NonZeroUsize::new(max_attempts)
                     .expect("max_attempts should be positive"),
                 initial_delay: Duration::from_millis(1),
@@ -3003,7 +3017,7 @@ mod test {
             bubble_with_keys_in_faulty_store(fb, UnlinkFault::UnlinkFailsOnce).await?;
 
         let results = eph
-            .delete_bubbles(&ctx, vec![bubble_id], 1, UnlinkPolicy::default())
+            .delete_bubbles(&ctx, vec![bubble_id], 1, DeleteBubblesPolicy::default())
             .collect::<Vec<_>>()
             .await;
 
@@ -3059,41 +3073,55 @@ mod test {
     }
 
     #[mononoke::fbinit_test]
-    async fn delete_bubbles_respects_unlink_rate_limit_test(fb: FacebookInit) -> Result<()> {
+    async fn delete_bubbles_respects_bubble_rate_limit_test(fb: FacebookInit) -> Result<()> {
         let initial = Duration::from_hours(30 * 24);
         let grace = Duration::from_hours(6);
         let (ctx, blobstore, repo_blobstore, eph) =
             bootstrap(fb, initial, grace, BubbleDeletionMode::MarkAndDelete)?;
-        let bubble = eph.create_bubble(&ctx, None, vec![]).await?;
-        let bubble_repo = bubble.wrap_repo_blobstore(repo_blobstore);
-        for i in 1..=6 {
-            bubble_repo
-                .put(
-                    &ctx,
-                    format!("test_key_{i}"),
-                    BlobstoreBytes::from_bytes(format!("test data {i}")),
-                )
-                .await?;
-        }
-        let policy = UnlinkPolicy {
-            max_unlinks_per_sec: NonZeroU32::new(20),
-            retry: None,
+        let bubble_ids = try_join_all((1..=5).map(|i| {
+            let eph = &eph;
+            let ctx = &ctx;
+            let repo_blobstore = repo_blobstore.clone();
+            async move {
+                let bubble = eph.create_bubble(ctx, None, vec![]).await?;
+                bubble
+                    .wrap_repo_blobstore(repo_blobstore)
+                    .put(
+                        ctx,
+                        format!("test_key_{i}"),
+                        BlobstoreBytes::from_bytes(format!("test data {i}")),
+                    )
+                    .await?;
+                anyhow::Ok(bubble.bubble_id())
+            }
+        }))
+        .await?;
+        let policy = DeleteBubblesPolicy {
+            max_bubbles_per_sec: NonZeroU32::new(20),
+            unlink_retry: None,
         };
 
         let started = Instant::now();
         let results = eph
-            .delete_bubbles(&ctx, vec![bubble.bubble_id()], 1, policy)
+            .delete_bubbles(&ctx, bubble_ids, 5, policy)
             .collect::<Vec<_>>()
             .await;
         let elapsed = started.elapsed();
 
-        assert!(
-            matches!(results.as_slice(), [(_, Ok(outcome))] if outcome.keys_deleted == 6),
-            "All 6 keys should be deleted under the rate limit, got {results:?}"
+        assert_eq!(
+            results.len(),
+            5,
+            "Every requested bubble should be reported"
         );
         assert!(
-            elapsed >= Duration::from_millis(150),
-            "At 20 unlinks/s with a burst of 2, the 4 unlinks after the burst need at least 200ms, took {elapsed:?}"
+            results
+                .iter()
+                .all(|(_, result)| matches!(result, Ok(outcome) if outcome.keys_deleted == 1)),
+            "Every bubble should be deleted with its key under the rate limit, got {results:?}"
+        );
+        assert!(
+            elapsed >= Duration::from_millis(190),
+            "At 20 bubbles/s with a burst of 1, the 5th bubble cannot start before 200ms even with concurrency 5 (a burst of 2 would allow 150ms), took {elapsed:?}"
         );
         let enumerated = blobstore
             .enumerate(&ctx, &BlobstoreKeyParam::from(..))

@@ -66,7 +66,7 @@ use crate::error::EphemeralBlobstoreError;
 use crate::handle::EphemeralHandle;
 use crate::store::DeleteBubbleOutcome;
 use crate::store::SqlBubbleHgMapping;
-use crate::unlink::Unlinker;
+use crate::unlink::UnlinkRetry;
 use crate::view::EphemeralRepoView;
 
 pub enum StorageLocation {
@@ -329,7 +329,7 @@ impl Bubble {
     pub(crate) async fn delete_blobs_in_bubble(
         &self,
         ctx: &CoreContext,
-        unlinker: &Unlinker,
+        unlink_retry: Option<UnlinkRetry>,
     ) -> Result<DeleteBubbleOutcome> {
         let key_stream = self.get_keys_in_bubble(ctx, None).await;
         let mut outcome = DeleteBubbleOutcome::default();
@@ -340,7 +340,7 @@ impl Bubble {
             // concurrently and terminate early on the first error encountered.
             let unlink_outcomes = try_join_all(
                 keys.iter()
-                    .map(|key| self.ensure_unlinked(ctx, key, unlinker)),
+                    .map(|key| self.ensure_unlinked(ctx, key, unlink_retry)),
             )
             .await?;
             for unlink_outcome in unlink_outcomes {
@@ -359,19 +359,15 @@ impl Bubble {
         &self,
         ctx: &CoreContext,
         key: &str,
-        unlinker: &Unlinker,
+        unlink_retry: Option<UnlinkRetry>,
     ) -> Result<UnlinkOutcome> {
-        let Some(retry_policy) = unlinker.retry() else {
-            unlinker.until_ready().await;
+        let Some(retry_policy) = unlink_retry else {
             return self.unlink_or_confirm_absent(ctx, key).await;
         };
         let bubble_id = self.bubble_id;
         let max_attempts = retry_policy.max_attempts.get();
         let (outcome, _attempts) = retry(
-            move |_attempt| async move {
-                unlinker.until_ready().await;
-                self.unlink_or_confirm_absent(ctx, key).await
-            },
+            move |_attempt| self.unlink_or_confirm_absent(ctx, key),
             retry_policy.initial_delay,
         )
         .binary_exponential_backoff()
