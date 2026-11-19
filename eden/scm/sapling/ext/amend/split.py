@@ -183,15 +183,7 @@ def split(ui, repo, *revs, **opts):
             raise
 
         if newcommits:
-            phabdiffs = {}
-            for c in newcommits:
-                phabdiff = diffprops.parserevfromcommitmsg(repo[c].description())
-                if phabdiff:
-                    phabdiffs.setdefault(phabdiff, []).append(c)
-            if any(len(commits) > 1 for commits in phabdiffs.values()):
-                hintutil.trigger(
-                    "split-phabricator", ui.config("split", "phabricatoradvice")
-                )
+            _hintduplicatediffs(ui, repo, [c.node() for c in newcommits])
 
             tip = repo[newcommits[-1]]
             with repo.transaction("post-split"):
@@ -204,3 +196,14 @@ def split(ui, repo, *revs, **opts):
             unfi = repo
             with repo.transaction("post-split-hide"):
                 visibility.remove(repo, [unfi[r].node()])
+
+
+def _hintduplicatediffs(ui, repo, nodes):
+    """Hint about Phabricator if several of ``nodes`` name the same diff"""
+    phabdiffs = {}
+    for node in nodes:
+        phabdiff = diffprops.parserevfromcommitmsg(repo[node].description())
+        if phabdiff:
+            phabdiffs.setdefault(phabdiff, []).append(node)
+    if any(len(commits) > 1 for commits in phabdiffs.values()):
+        hintutil.trigger("split-phabricator", ui.config("split", "phabricatoradvice"))
