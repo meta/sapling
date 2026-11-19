@@ -94,6 +94,33 @@ invalid diff.unified
   abort: diff context lines count must be an integer, not 'foo'
   [255]
 
+diff.unified or -U of 2**63 or more crashes, while 2**63-1 shows the whole file
+FIXME(T297594558): it should show the whole file too
+
+  $ sl --config diff.unified=9223372036854775807 diff --nodates
+  diff -r cf9f4ba66af2 a
+  --- a/a
+  +++ b/a
+  @@ -1,9 +1,9 @@
+   c
+   c
+   a
+   a
+  -b
+  +dd
+   a
+   a
+   c
+   c
+  $ sl --config diff.unified=9223372036854775808 diff --nodates 2>&1 | grep -E '^\*\* |^Traceback|^OverflowError'
+  ** Sapling SCM (version *) has crashed: (glob)
+  Traceback (most recent call last):
+  OverflowError: Python int too large to convert to C ssize_t
+  $ sl diff --nodates -U 18446744073709551616 2>&1 | grep -E '^\*\* |^Traceback|^OverflowError'
+  ** Sapling SCM (version *) has crashed: (glob)
+  Traceback (most recent call last):
+  OverflowError: Python int too large to convert to C ssize_t
+
 noprefix config and option
 
   $ sl --config diff.noprefix=True diff --nodates
