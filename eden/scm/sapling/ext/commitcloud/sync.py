@@ -9,6 +9,7 @@ import itertools
 import re
 import socket
 import time
+from typing import NamedTuple
 
 import bindings
 from sapling import (
@@ -246,6 +247,7 @@ def _sync(
             attempt += 1
 
             repo.invalidatemetalog()
+            fetched = None
             with repo.transaction("cloudsync download", lockfree=lockfree) as tr:
                 if besteffort and _hashrepostate(repo) != origrepostate:
                     # Another transaction changed the repository while we were backing
@@ -257,13 +259,10 @@ def _sync(
                         ui, _("repo changed while backing up")
                     )
 
-                # Apply any changes from the cloud to the local repo.
+                # Fetch any changes from the cloud.
                 if cloudrefs.version != fetchversion:
                     fetched = _fetchcloudchanges(
                         repo, remotepath, lastsyncstate, cloudrefs, maxage
-                    )
-                    _applycloudchanges(
-                        repo, lastsyncstate, cloudrefs, maxage, state, tr, fetched
                     )
                 elif (
                     _isremotebookmarkssyncenabled(repo.ui)
@@ -281,12 +280,32 @@ def _sync(
                         repo, cloudrefs, lastsyncstate, remotepath, tr
                     )
 
-                # Check if any omissions are now included in the repo
-                _checkomissions(repo, lastsyncstate, tr, maxage)
+            if fetched is not None:
+                # Apply the changes under the repo lock.  A lock-free
+                # transaction that races a local command resolves the conflict
+                # by merging visible heads, which can lose or resurrect commits.
+                with (
+                    repo.lock(wait=not besteffort),
+                    repo.ui.timesection("commitcloud_sync_apply"),
+                ):
+                    # Pick up local changes made while fetching.  Inside the
+                    # global transaction the lock has been held throughout.
+                    if not repo.currenttransaction():
+                        repo.invalidatemetalog()
+                    # Metadata only: an ordinary transaction would restore the
+                    # dirstate on abort, undoing working copy changes made
+                    # under the working copy lock, which sync doesn't hold.
+                    with repo.transaction("cloudsync apply", lockfree=True) as tr:
+                        _applycloudchanges(
+                            repo, lastsyncstate, cloudrefs, maxage, state, tr, fetched
+                        )
 
             # We committed the transaction so that data downloaded from the cloud is
             # committed.  Start a new transaction for uploading the local changes.
             with repo.transaction("cloudsync upload", lockfree=lockfree) as tr:
+                # Check if any omissions are now included in the repo
+                _checkomissions(repo, lastsyncstate, tr, maxage)
+
                 # Send updates to the cloud.  If this fails then we have lost the race
                 # to update the server and must start again.
                 synced, cloudrefs = _submitlocalchanges(
@@ -460,7 +479,21 @@ def _fetchcloudchanges(repo, remotepath, lastsyncstate, cloudrefs, maxage):
     Returns the new heads, the heads omitted because they are older than
     `maxage`, the local commits those heads are based on and the remote
     bookmark updates, for `_applycloudchanges`.
+
+    Visible heads are left unchanged: the pulled commits become visible in
+    `_applycloudchanges`, together with the sync state that records them.
     """
+    visibleheads = visibility.heads(repo)
+    if visibleheads is not None:
+        visibleheads = list(visibleheads)
+    fetched = _fetch(repo, remotepath, lastsyncstate, cloudrefs, maxage)
+    # The pulls make their commits visible, so that later pulls find them.
+    if visibleheads is not None and visibility.heads(repo) != visibleheads:
+        visibility.setvisibleheads(repo, visibleheads)
+    return fetched
+
+
+def _fetch(repo, remotepath, lastsyncstate, cloudrefs, maxage):
     main = bookmarks.mainbookmark(repo)
     if (
         main
@@ -570,28 +603,119 @@ def _fetchcloudchanges(repo, remotepath, lastsyncstate, cloudrefs, maxage):
             omittedheads,
         )
 
-    return newheads, omittedheads, omittedparents, remotebookmarkupdates
+    bookmarknodes, bookmarkdates = _bookmarknodes(repo, cloudrefs.bookmarks)
+
+    return _FetchedChanges(
+        newheads=newheads,
+        omittedheads=omittedheads,
+        omittedparents=omittedparents,
+        remotebookmarkupdates=remotebookmarkupdates,
+        remotebookmarknodes=_knownnodes(repo, remotebookmarkupdates.values()),
+        bookmarknodes=bookmarknodes,
+        bookmarkdates=bookmarkdates,
+    )
+
+
+class _FetchedChanges(NamedTuple):
+    """What `_applycloudchanges` needs from the server, so it can run locally"""
+
+    newheads: list
+    omittedheads: set
+    omittedparents: list
+    remotebookmarkupdates: dict
+    # What the repo knew at fetch time: remote bookmark targets, cloud bookmark
+    # targets, and the dates of the public cloud bookmark targets.
+    remotebookmarknodes: set
+    bookmarknodes: set
+    bookmarkdates: dict
+
+
+def _knownnodes(repo, nodes, local=False):
+    """Return the hex nodes in `nodes` that the repo knows
+
+    Unless `local` is set, this asks the server about names it can't resolve.
+    """
+    nodes = [nodemod.bin(n) for n in nodes if n != nodemod.nullhex]
+    return {nodemod.hex(n) for n in repo.changelog.filternodes(nodes, local=local)}
+
+
+def _recheckknown(repo, nodes, fetchedknown, fetchedpublic):
+    """Return the hex nodes in `nodes` that the repo knows, and the public ones
+
+    A concurrent pull can add commits, or make them public, after fetch, so
+    check again locally.  Fetch's answers cover commits whose names only the
+    server can resolve: commits stay known, and stay public.
+    """
+    localknown = _knownnodes(repo, nodes, local=True)
+    localnodes = [nodemod.bin(n) for n in localknown]
+    localpublic = {nodemod.hex(n) for n in repo.dageval(lambda: localnodes & public())}
+    return localknown | fetchedknown, localpublic | (fetchedpublic - localknown)
+
+
+def _bookmarknodes(repo, cloudbookmarks):
+    """Return the cloud bookmark targets the repo knows, and the dates of the public ones"""
+    known = list(
+        repo.changelog.filternodes([nodemod.bin(n) for n in cloudbookmarks.values()])
+    )
+    knownpublic = repo.dageval(lambda: known & public())
+    # Fetch the dates in one batch.
+    dates = {
+        nodemod.hex(c.node()): c.date()[0]
+        for c in repo.revs("%ln", knownpublic).prefetch("text").iterctx()
+    }
+    return {nodemod.hex(n) for n in known}, dates
 
 
 @perftrace.tracefunc("Apply Cloud Changes")
 def _applycloudchanges(repo, lastsyncstate, cloudrefs, maxage, state, tr, fetched):
-    """Merge the cloud workspace's changes, fetched by `_fetchcloudchanges`"""
-    newheads, omittedheads, omittedparents, remotebookmarkupdates = fetched
+    """Merge the cloud workspace's changes, fetched by `_fetchcloudchanges`
+
+    This runs under the repo lock, so it must not need the server.
+    """
+    newheads = fetched.newheads
+    omittedheads = fetched.omittedheads
     localheads = _getheads(repo) if visibility.tracking(repo) else None
 
+    bookmarknodes, publicbookmarknodes = _recheckknown(
+        repo,
+        cloudrefs.bookmarks.values(),
+        fetched.bookmarknodes,
+        set(fetched.bookmarkdates),
+    )
     omittedbookmarks = _mergebookmarks(
-        repo, tr, cloudrefs.bookmarks, lastsyncstate, omittedheads, maxage
+        repo,
+        tr,
+        cloudrefs.bookmarks,
+        lastsyncstate,
+        omittedheads,
+        maxage,
+        bookmarknodes,
+        publicbookmarknodes,
+        fetched.bookmarkdates,
     )
 
     newremotebookmarks = {}
     omittedremotebookmarks = []
     if _isremotebookmarkssyncenabled(repo.ui):
-        omittedremotebookmarks = _updateremotebookmarks(repo, tr, remotebookmarkupdates)
+        remotebookmarknodes, _public = _recheckknown(
+            repo,
+            fetched.remotebookmarkupdates.values(),
+            fetched.remotebookmarknodes,
+            set(),
+        )
+        omittedremotebookmarks = _updateremotebookmarks(
+            repo, tr, fetched.remotebookmarkupdates, remotebookmarknodes
+        )
         newremotebookmarks = cloudrefs.remotebookmarks
 
     if localheads is not None:
         newvisibleheads = _newvisibleheads(
-            repo, lastsyncstate, cloudrefs, omittedheads, omittedparents, localheads
+            repo,
+            lastsyncstate,
+            cloudrefs,
+            omittedheads,
+            fetched.omittedparents,
+            localheads,
         )
         if newvisibleheads is not None:
             visibility.setvisibleheads(repo, [nodemod.bin(n) for n in newvisibleheads])
@@ -616,7 +740,9 @@ def _applycloudchanges(repo, lastsyncstate, cloudrefs, maxage, state, tr, fetche
         # not only the pulled commits that are missing locally (newheads)
         # Some commits could be in the repo already, so the pull would skip them.
         state.update(
-            repo.changelog.filternodes([nodemod.bin(n) for n in cloudrefs.heads]),
+            repo.changelog.filternodes(
+                [nodemod.bin(n) for n in cloudrefs.heads], local=True
+            ),
             tr,
         )
     else:
@@ -672,7 +798,7 @@ def _newvisibleheads(
 def _drafts(repo, heads, publicheads):
     """Return the draft commits that `heads` make visible"""
     cl = repo.changelog
-    nodes = cl.filternodes([nodemod.bin(head) for head in heads])
+    nodes = cl.filternodes([nodemod.bin(head) for head in heads], local=True)
     return cl.dag.only(nodes, publicheads)
 
 
@@ -846,13 +972,18 @@ def _processremotebookmarks(repo, cloudremotebooks, lastsyncstate):
     return (updates, newnames)
 
 
-def _updateremotebookmarks(repo, tr, updates):
-    """updates the remote bookmarks to point their new nodes"""
+def _updateremotebookmarks(repo, tr, updates, knownnodes=None):
+    """updates the remote bookmarks to point their new nodes
+
+    `knownnodes` are the new nodes that are in the repo.  Pass them in when
+    holding the repo lock, as finding them may need the server.
+    """
+    if knownnodes is None:
+        knownnodes = _knownnodes(repo, updates.values())
     oldremotebookmarks = _getremotebookmarks(repo)
     protectednames = _getprotectedremotebookmarks(repo)
     newremotebookmarks = {}
     omittedremotebookmarks = []
-    unfi = repo
 
     # Filter out any deletions of default names.  These are protected and shouldn't
     # be deleted if this is the default remote
@@ -862,7 +993,7 @@ def _updateremotebookmarks(repo, tr, updates):
             newremotebookmarks[remotename] = oldremotebookmarks.get(
                 remotename, nodemod.nullhex
             )
-        elif node != nodemod.nullhex and node not in unfi:
+        elif node != nodemod.nullhex and node not in knownnodes:
             omittedremotebookmarks.append(name)
             newremotebookmarks[remotename] = nodemod.nullhex
         else:
@@ -890,7 +1021,17 @@ def _forcesyncremotebookmarks(repo, cloudrefs, lastsyncstate, remotepath, tr):
     )
 
 
-def _mergebookmarks(repo, tr, cloudbookmarks, lastsyncstate, omittedheads, maxage):
+def _mergebookmarks(
+    repo,
+    tr,
+    cloudbookmarks,
+    lastsyncstate,
+    omittedheads,
+    maxage,
+    knownlocallynodes,
+    knownlocallypublicnodes,
+    node_date_map,
+):
     """merge any changes to the cloud bookmarks with any changes to local ones
 
     This performs a 3-way diff between the old cloud bookmark state, the new
@@ -905,6 +1046,10 @@ def _mergebookmarks(repo, tr, cloudbookmarks, lastsyncstate, omittedheads, maxag
     Some of the bookmarks unknown locally are for the public commits,
     we apply them according to the requested maxage. If they are too old, they are omitted.
 
+    `knownlocallynodes` and `knownlocallypublicnodes` are the cloud bookmark
+    targets the repo knows, and the public ones.  `node_date_map` has the dates
+    of the public ones fetched by `_bookmarknodes`.
+
     Returns a list of the omitted bookmark names.
     """
     localbookmarks = _getbookmarks(repo)
@@ -914,26 +1059,6 @@ def _mergebookmarks(repo, tr, cloudbookmarks, lastsyncstate, omittedheads, maxag
     newnames = set()
     mindate = (time.time() - maxage * 86400) if maxage is not None else 0
     oldbookmarks = {}
-
-    # select list of nodes for the cloud bookmarks that are present in the local graph
-    # so, locally they are known
-    knownlocally = list(
-        repo.changelog.filternodes([nodemod.bin(n) for n in cloudbookmarks.values()])
-    )
-    # select nodes that are public from the above
-    knownlocallypublic = repo.dageval(lambda: knownlocally & public())
-
-    # convert to set of hashes
-    knownlocallynodes = {nodemod.hex(n) for n in knownlocally}
-    knownlocallypublicnodes = {nodemod.hex(n) for n in knownlocallypublic}
-
-    # prefetch times in a single request for known locally public nodes
-    # tell the revset to batch text fetching, text includes date
-    batched_revset = repo.revs("%ln", knownlocallypublic).prefetch("text")
-    # iterate through the revset
-    node_date_map = {
-        nodemod.hex(c.node()): c.date()[0] for c in batched_revset.iterctx()
-    }
 
     for name in allnames:
         # We are doing a 3-way diff between the local bookmark and the cloud
@@ -968,12 +1093,19 @@ def _mergebookmarks(repo, tr, cloudbookmarks, lastsyncstate, omittedheads, maxag
                 if cloudnode is not None:
                     # The cloud bookmark has been set to point to a new commit.
                     if cloudnode in knownlocallynodes:
-                        # The cloud bookmark is for a public commit but older than the requested age.
-                        if (
-                            localnode is None
+                        date = node_date_map.get(cloudnode)
+                        agecheck = (
+                            maxage is not None
+                            and localnode is None
                             and cloudnode in knownlocallypublicnodes
-                            and node_date_map[cloudnode] < mindate
-                        ):
+                        )
+                        if agecheck and date is None:
+                            # The commit became known or public after fetch,
+                            # so its date wasn't fetched.  `_checkomissions`
+                            # restores the bookmark if the commit is recent.
+                            omittedbookmarks.add(name)
+                        elif agecheck and date < mindate:
+                            # The cloud bookmark is for a public commit but older than the requested age.
                             oldbookmarks[name] = cloudnode
                             omittedbookmarks.add(name)
                         else:
