@@ -874,17 +874,11 @@ def overlaydiffcontext(ctx, chunks):
     return overlaycontext(memworkingcopy, ctx)
 
 
-def absorb(ui, repo, stack=None, targetctx=None, pats=None, opts=None):
-    """pick fixup chunks from targetctx, apply them to stack.
-
-    if targetctx is None, the working copy context will be used.
-    if stack is None, the current draft stack will be used.
-    return fixupstate.
-    """
-    if opts is None:
-        opts = {}
+def _preparestack(ui, repo, stack, opts):
+    """Check that absorb can run, and return the stack it changes: ``stack``,
+    or by default the draft stack up to the working copy parent. Parses
+    ``opts["date"]`` in place."""
     cmdutil.checkunfinished(repo)
-
     if stack is None:
         limit = ui.configint("absorb", "maxstacksize", 50)
         stack = getdraftstack(repo["."], limit, opts.get("immutable"))
@@ -894,16 +888,25 @@ def absorb(ui, repo, stack=None, targetctx=None, pats=None, opts=None):
             )
     if not stack:
         raise error.Abort(_("no changeset to change"))
+    date = opts.get("date")
+    opts["date"] = util.parsedate(date) if date else None
+    return stack
+
+
+def absorb(ui, repo, stack=None, targetctx=None, pats=None, opts=None):
+    """pick fixup chunks from targetctx, apply them to stack.
+
+    if targetctx is None, the working copy context will be used.
+    if stack is None, the current draft stack will be used.
+    return fixupstate.
+    """
+    if opts is None:
+        opts = {}
+    stack = _preparestack(ui, repo, stack, opts)
     if targetctx is None:  # default to working copy
         targetctx = repo[None]
     if pats is None:
         pats = ()
-
-    date = opts.get("date")
-    if date:
-        opts["date"] = util.parsedate(date)
-    else:
-        opts["date"] = None
 
     state = fixupstate(stack, ui=ui, opts=opts)
     matcher = scmutil.match(targetctx, pats, opts)
