@@ -20,20 +20,9 @@ mononoke  local commit cloud backend
   > amend =
   > commitcloud =
   > rebase =
-  > share =
   > [commitcloud]
-  > hostname = testhost
   > servicetype = local
   > servicelocation = $TESTTMP
-  > owner_team = The Test Team
-  > [visibility]
-  > enabled = True
-  > [mutation]
-  > record = True
-  > enabled = True
-  > date = 0 0
-  > [remotefilelog]
-  > reponame=repo
   > EOF
 
 setup repo

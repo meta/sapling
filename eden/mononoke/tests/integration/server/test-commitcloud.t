@@ -20,14 +20,9 @@ mononoke + local commit cloud backend
   > amend =
   > commitcloud =
   > rebase =
-  > share =
-  > [infinitepush]
-  > server=False
   > [commitcloud]
-  > hostname = testhost
   > servicetype = local
   > servicelocation = $TESTTMP
-  > owner_team = The Test Team
   > updateonmove = true
   > EOF
 

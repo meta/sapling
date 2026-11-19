@@ -17,24 +17,10 @@ Set up local hgrc and Mononoke config, with commit cloud, http pull and upload.
   >   setup_common_config
   $ cd $TESTTMP
   $ cat >> $HGRCPATH <<EOF
-  > [extensions]
-  > amend =
-  > commitcloud =
-  > rebase =
-  > share =
   > [commitcloud]
-  > hostname = testhost
   > servicetype = local
-  > servicelocation = $TESTTMP
-  > owner_team = The Test Team
-  > [visibility]
-  > enabled = True
   > [mutation]
   > record = True
-  > enabled = True
-  > date = 0 0
-  > [remotefilelog]
-  > reponame=repo
   > [pull]
   > httphashprefix = true
   > EOF

@@ -23,22 +23,8 @@ Record augmented manifest ids under the restricted `stack/` root.
 
 Use a local commit cloud backend.
   $ cat >> $HGRCPATH <<EOF
-  > [extensions]
-  > amend =
-  > commitcloud =
   > [commitcloud]
-  > hostname = testhost
   > servicetype = local
-  > servicelocation = $TESTTMP
-  > owner_team = The Test Team
-  > [visibility]
-  > enabled = True
-  > [mutation]
-  > record = True
-  > enabled = True
-  > date = 0 0
-  > [remotefilelog]
-  > reponame=repo
   > EOF
 
 Disable serving-time derivation and augmented routing until envelopes exist.
