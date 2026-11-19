@@ -447,6 +447,17 @@ def _value_key(value: Value) -> str:
     return json.dumps(value.document(), sort_keys=True)
 
 
+def _live_values(
+    values: Sequence[Value], live: int, indices: dict[int, tuple[int, ...]]
+) -> tuple[Value, ...]:
+    """Project onto live cells, caching their indices for one component."""
+    positions = indices.get(live)
+    if positions is None:
+        positions = tuple(k for k in range(live.bit_length()) if live >> k & 1)
+        indices[live] = positions
+    return tuple(values[k] for k in positions)
+
+
 def _holds(rows: _Rows, values: Sequence[Value]) -> bool:
     for row in rows:
         for index, atom in row:
@@ -1565,6 +1576,8 @@ class _Decider:
                     return True
             return False
 
+        live_indices: dict[int, tuple[int, ...]] = {}
+
         def key(state: State) -> Any:
             """Everything a state's completions depend on.
 
@@ -1572,14 +1585,12 @@ class _Decider:
             remaining group's variable is committed exactly when a sibling
             is placed, and then the sibling is not remaining) and which
             Exclusive partners are gone; cells no remaining node reads
-            never matter again.
+            never matter again. The live mask is fixed by the remaining
+            nodes, so dead-cell placeholders do not distinguish states.
             """
             placed, dropped, _committed, values = state
             remaining, live, _frontier, _required = summary(placed, dropped)
-            return (
-                remaining,
-                tuple(v if live >> k & 1 else None for k, v in enumerate(values)),
-            )
+            return remaining, _live_values(values, live, live_indices)
 
         rank: list[int] | None = None
 

@@ -15,6 +15,7 @@ every writer, per-component budget shares, and the groups a proof names.
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import math
 import unittest
 
@@ -821,6 +822,48 @@ class TerminalObservationTest(unittest.TestCase):
                             for p in solution.proofs
                         ),
                     )
+
+
+class LiveValuesTest(unittest.TestCase):
+    def test_projection_preserves_memo_key_equivalence(self) -> None:
+        indices = {}
+        for live in range(8):
+            compact_to_full = {}
+            full_to_compact = {}
+            for values in itertools.product((ABSENT, V1, V2), repeat=3):
+                full = tuple(
+                    value if live >> k & 1 else None for k, value in enumerate(values)
+                )
+                compact = solver._live_values(values, live, indices)
+                self.assertEqual(
+                    full, compact_to_full.setdefault(compact, full), (live, values)
+                )
+                self.assertEqual(
+                    compact, full_to_compact.setdefault(full, compact), (live, values)
+                )
+            self.assertEqual(3 ** live.bit_count(), len(compact_to_full))
+
+    def test_only_live_values_distinguish_states(self) -> None:
+        indices = {}
+        original = solver._live_values((V1, ABSENT, V2), 0b101, indices)
+        self.assertEqual((V1, V2), original)
+        self.assertEqual(original, solver._live_values((V1, V2, V2), 0b101, indices))
+        self.assertNotEqual(
+            original, solver._live_values((V2, ABSENT, V2), 0b101, indices)
+        )
+        self.assertNotEqual(
+            original, solver._live_values((V1, ABSENT, V1), 0b101, indices)
+        )
+
+    def test_empty_and_sparse_masks_share_no_value_cache(self) -> None:
+        indices = {}
+        values = (V1,) * 128
+        self.assertEqual((), solver._live_values(values, 0, indices))
+        self.assertEqual((V1,), solver._live_values(values, 1 << 127, indices))
+        changed = (*values[:-1], V2)
+        self.assertEqual((V2,), solver._live_values(changed, 1 << 127, indices))
+        self.assertEqual((), solver._live_values(changed, 0, indices))
+        self.assertEqual({0: (), 1 << 127: (127,)}, indices)
 
 
 class ComponentBudgetTest(unittest.TestCase):
