@@ -15,6 +15,7 @@ import base64
 import collections
 import re
 import struct
+import sys
 import zlib
 from hashlib import sha1
 from typing import Iterator, List, Optional, Pattern, Sized, Tuple, Union
@@ -116,6 +117,10 @@ class diffopts:
             )
         if self.context < 0:
             self.context = self.defaults["context"]
+        elif self.context > sys.maxsize:
+            # `deque(maxlen=)` in `_unidiff` needs a C ssize_t. No file has
+            # more lines than this.
+            self.context = sys.maxsize
 
     def copy(self, **kwargs):
         opts = dict((k, getattr(self, k)) for k in self.defaults)
