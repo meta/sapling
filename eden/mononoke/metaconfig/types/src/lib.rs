@@ -932,8 +932,6 @@ pub struct CacheWarmupParams {
     /// Max number to fetch during commit warmup. If not set in the config, then set to a default
     /// value.
     pub commit_limit: usize,
-    /// Whether to use microwave to accelerate cache warmup.
-    pub microwave_preload: bool,
 }
 
 /// Configuration for the hook manager

@@ -185,7 +185,6 @@ impl Convert for RawCacheWarmupConfig {
                 .map(|v| v.try_into())
                 .transpose()?
                 .unwrap_or(200000),
-            microwave_preload: self.microwave_preload.unwrap_or(false),
         })
     }
 }
