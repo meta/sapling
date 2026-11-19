@@ -20,6 +20,7 @@ mod server_status;
 pub use app::MononokeApp;
 pub use builder::MononokeAppBuilder;
 pub use extension::AppExtension;
+pub use repos::MononokeService;
 pub use repos_manager::MononokeReposManager;
 pub use running::ShutdownGracePeriod;
 #[cfg(fbcode_build)]

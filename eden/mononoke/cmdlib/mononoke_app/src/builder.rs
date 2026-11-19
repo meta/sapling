@@ -51,6 +51,7 @@ use permission_checker::DefaultAclProvider;
 use permission_checker::InternalAclProvider;
 use rendezvous::RendezVousArgs;
 use repo_derivation_queues::DerivationQueueArgs;
+use repos::MononokeService;
 use sql_ext::facebook::MysqlOptions;
 use sql_ext::facebook::PoolConfig;
 use sql_ext::facebook::ReadConnectionType;
@@ -84,6 +85,7 @@ pub struct MononokeAppBuilder {
     paged_help: bool,
     with_logging: bool,
     lazy_acl_provider: bool,
+    default_service: Option<MononokeService>,
 }
 
 #[derive(Args, Debug)]
@@ -161,7 +163,16 @@ impl MononokeAppBuilder {
             paged_help: false,
             with_logging: true,
             lazy_acl_provider: false,
+            default_service: None,
         }
+    }
+
+    /// The service this program runs, whose view of a deployment it loads
+    /// unless `--service` names another. A program that serves no single
+    /// service leaves it unset and loads `COMMAND`'s.
+    pub fn with_default_service(mut self, service: MononokeService) -> Self {
+        self.default_service = Some(service);
+        self
     }
 
     pub fn with_arg_defaults(mut self, arg_defaults: impl ArgDefaults + 'static) -> Self {
@@ -327,6 +338,7 @@ impl MononokeAppBuilder {
         MononokeApp::new(
             self.fb,
             config_mode,
+            self.default_service,
             args,
             runtime,
             env,

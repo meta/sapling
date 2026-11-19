@@ -5,12 +5,17 @@ oncall("scm_server_infra")
 rust_library(
     name = "config_args",
     srcs = glob(["src/**/*.rs"]),
+    test_deps = [
+        "//eden/mononoke/common/mononoke_macros:mononoke_macros",
+    ],
     deps = [
         "fbsource//third-party/rust:anyhow",
         "fbsource//third-party/rust:clap",
         "fbsource//third-party/rust:tokio",
         "//common/rust/shed/cached_config:cached_config",
         "//common/rust/shed/fbinit:fbinit",
+        "//configerator/structs/scm/mononoke/repos:repos-rust",
         "//eden/mononoke/common/mononoke_configs:mononoke_configs",
+        "//eden/mononoke/metaconfig:metaconfig_parser",
     ],
 )

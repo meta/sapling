@@ -60,6 +60,7 @@ use redactedblobstore::RedactionConfigBlobstore;
 use repo_blobstore::RepoBlobstore;
 use repo_factory::RepoFactory;
 use repo_factory::RepoFactoryBuilder;
+use repos::MononokeService;
 use running::ShutdownGracePeriod;
 use running::run_until_terminated;
 use scuba_ext::MononokeScubaSampleBuilder;
@@ -117,14 +118,18 @@ impl MononokeApp {
     pub(crate) fn new(
         fb: FacebookInit,
         config_mode: ConfigMode,
+        default_service: Option<MononokeService>,
         args: ArgMatches,
         runtime: Runtime,
         env: MononokeEnvironment,
         extension_args: HashMap<TypeId, Box<dyn BoxedAppExtensionArgs>>,
     ) -> Result<Self> {
         let env = Arc::new(env);
-        let configs = ConfigArgs::from_arg_matches(&args)?
-            .create_mononoke_configs(runtime.handle().clone(), &env.as_ref().config_store)?;
+        let configs = ConfigArgs::from_arg_matches(&args)?.create_mononoke_configs(
+            runtime.handle().clone(),
+            &env.as_ref().config_store,
+            default_service,
+        )?;
 
         let repo_factory = Arc::new(RepoFactory::new(env.clone(), configs.clone()));
 
