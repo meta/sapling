@@ -118,6 +118,8 @@ pub use crate::wire::commit::WireHgMutationEntryContent;
 pub use crate::wire::commit::WireUploadBonsaiChangesetRequest;
 pub use crate::wire::commit::WireUploadHgChangeset;
 pub use crate::wire::commit::WireUploadHgChangesetsRequest;
+pub use crate::wire::commit::WireUploadHgSnapshotRequest;
+pub use crate::wire::commit::WireUploadHgSnapshotResponse;
 pub use crate::wire::errors::WireError;
 pub use crate::wire::errors::WireResult;
 pub use crate::wire::file::WireFileEntry;

@@ -42,6 +42,8 @@ pub use crate::commit::WireHgMutationEntryContent;
 pub use crate::commit::WireUploadBonsaiChangesetRequest;
 pub use crate::commit::WireUploadHgChangeset;
 pub use crate::commit::WireUploadHgChangesetsRequest;
+pub use crate::commit::WireUploadHgSnapshotRequest;
+pub use crate::commit::WireUploadHgSnapshotResponse;
 use crate::wire::ToApi;
 use crate::wire::ToWire;
 use crate::wire::WireFileType;
@@ -679,6 +681,8 @@ mod tests {
                 WireFetchSnapshotResponse,
                 WireCommitMutationsRequest,
                 WireCommitMutationsResponse,
+                WireUploadHgSnapshotRequest,
+                WireUploadHgSnapshotResponse,
             ],
             [
                 3473352940809767921,
@@ -699,7 +703,9 @@ mod tests {
                 13872628972001337347,
                 13532639155927051556,
                 3944835397023904073,
-                6607109132335058288
+                6607109132335058288,
+                13965057521499469606,
+                4915736226190061855
             ]
         );
     }
