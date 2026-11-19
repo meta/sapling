@@ -34,6 +34,7 @@
     "scm/mononoke:ignore_change_xrepo_mapping_extra": false,
     "scm/mononoke:scs_commit_find_files_disable_bssm": false,
     "scm/mononoke:scs_thriftcache_nocache_for_non_kcb_identities": false,
+    "scm/mononoke:scs_thriftcache_nocache_for_proxied_callers": true,
     "scm/mononoke:sql_disable_auto_cache": false,
     "scm/mononoke:use_local_wbc_for_git_repos": false,
     "scm/mononoke:sql_disable_auto_retries": false,

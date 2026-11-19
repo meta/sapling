@@ -1064,6 +1064,18 @@ fn maybe_root_trace(fb: FacebookInit, method: &str) -> Option<ArtilleryTraceGuar
     start_trace(fb, ROOT_OPERATION_NAME, root_trace_endpoint(method))
 }
 
+/// Kill switch for keeping a proxied caller's responses out of ThriftCache.
+const THRIFTCACHE_NOCACHE_FOR_PROXIED_CALLERS_JK: &str =
+    "scm/mononoke:scs_thriftcache_nocache_for_proxied_callers";
+
+/// A trusted proxy forwarded this caller's identities, so ThriftCache keys the
+/// response on the proxy and would serve it to the proxy's other callers,
+/// whatever their access to the repo or to its restricted paths.
+fn nocache_for_proxied_caller(ctx: &CoreContext) -> bool {
+    ctx.metadata().original_identities().is_some()
+        && justknobs::eval(THRIFTCACHE_NOCACHE_FOR_PROXIED_CALLERS_JK, None, None)
+}
+
 // Define a macro to construct a CoreContext based on the thrift parameters.
 macro_rules! create_ctx {
     ( $service_impl:expr, $method_name:ident, $req_ctxt:ident, $params_name:ident ) => {
@@ -1138,8 +1150,11 @@ macro_rules! impl_thrift_methods {
                     // response header. A partial response must not be served from
                     // cache to an entitled caller (who would silently receive
                     // incomplete data); the exact verdict travels in the typed
-                    // response instead.
-                    if ctx.nocache_thriftcache() || ctx.partial_response() {
+                    // response instead. A proxied caller is not in the cache key.
+                    if ctx.nocache_thriftcache()
+                        || ctx.partial_response()
+                        || nocache_for_proxied_caller(&ctx)
+                    {
                         platform::set_nocache_header(req_ctxt);
                     }
 
@@ -1232,9 +1247,11 @@ macro_rules! impl_thrift_stream_methods {
                     // initial response goes out (items are produced lazily), so when
                     // filtering is active the potential flag sets `nocache` up front,
                     // pessimistically; the exact verdict arrives on the terminal item.
+                    // A proxied caller is not in the cache key.
                     if ctx.nocache_thriftcache()
                         || ctx.partial_response()
                         || ctx.potential_partial_response()
+                        || nocache_for_proxied_caller(&ctx)
                     {
                         platform::set_nocache_header(req_ctxt);
                     }
@@ -1877,6 +1894,44 @@ mod tests {
             Some("CUSTOM_ACL_TYPE"),
             &path_types
         ));
+    }
+
+    // What it tests: which callers' responses the proxied-caller rule keeps
+    // out of ThriftCache.
+    // Expected: a caller whose identities a proxy forwarded, while the kill
+    // switch is on. A direct caller is never affected.
+    #[mononoke::fbinit_test]
+    fn test_nocache_for_proxied_caller(fb: fbinit::FacebookInit) {
+        let direct = CoreContext::test_mock(fb);
+        let mut metadata = Metadata::default();
+        metadata.add_original_identities(Default::default());
+        let proxied = CoreContext::test_mock_session(
+            SessionContainer::builder(fb)
+                .metadata(Arc::new(metadata))
+                .build(),
+        );
+        let knob = |enabled| {
+            JustKnobsInMemory::new(hashmap![
+                THRIFTCACHE_NOCACHE_FOR_PROXIED_CALLERS_JK.to_string() => KnobVal::Bool(enabled)
+            ])
+        };
+
+        with_just_knobs(knob(true), || {
+            assert!(
+                nocache_for_proxied_caller(&proxied),
+                "the cache key is the proxy's, not this caller's",
+            );
+            assert!(
+                !nocache_for_proxied_caller(&direct),
+                "a direct caller is in its own cache key",
+            );
+        });
+        with_just_knobs(knob(false), || {
+            assert!(
+                !nocache_for_proxied_caller(&proxied),
+                "the kill switch restores caching",
+            );
+        });
     }
 
     // ---- Tests for maybe_set_nocache_thriftcache with JustKnobs ----
