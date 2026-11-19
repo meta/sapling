@@ -1080,8 +1080,10 @@ mod tests {
     use edenfs_error::EdenFsError;
     use edenfs_error::Result;
     use edenfs_error::ResultExt;
+    use serde_json::json;
     use tempfile::TempDir;
     use tempfile::tempdir;
+    use thrift_types::edenfs::MountInfo;
     use thrift_types::edenfs::MountState;
 
     use crate::checkout::CheckoutConfig;
@@ -1234,6 +1236,78 @@ mod tests {
         assert_eq!(
             Some(&serde_json::Value::Bool(false)),
             value.get("visible_in_daemon_namespace")
+        );
+    }
+
+    /// Returns the `eden list -v` line and the `eden list --json` entry for a running mount.
+    fn list_verbose_and_json(
+        fs_channel_type: &str,
+        fuse_transport: Option<&str>,
+        nfs_transport: Option<&str>,
+    ) -> (String, serde_json::Value) {
+        let mount = MountInfo {
+            mountPoint: b"/tmp/mount".to_vec(),
+            edenClientPath: b"/tmp/client".to_vec(),
+            state: MountState::RUNNING,
+            fsChannelType: Some(fs_channel_type.to_string()),
+            fuseTransport: fuse_transport.map(str::to_string),
+            nfsTransport: nfs_transport.map(str::to_string),
+            ..Default::default()
+        };
+        let checkout = EdenFsCheckout::from_mount_info(PathBuf::from("/tmp/mount"), mount)
+            .expect("mount info should convert");
+        let display = checkout.display(true);
+        let value = serde_json::to_value(checkout).expect("failed to serialize checkout");
+        (display, value)
+    }
+
+    #[test]
+    fn test_list_shows_fuse_transport_but_not_nfs_transport() {
+        assert_eq!(
+            (
+                "/tmp/mount (fuse, devfuse) (unconfigured)".to_string(),
+                json!({
+                    "data_dir": "/tmp/client",
+                    "state": "RUNNING",
+                    "configured": false,
+                    "backing_repo": null,
+                    "fs_channel_type": "fuse",
+                    "fuse_transport": "devfuse",
+                })
+            ),
+            list_verbose_and_json("fuse", Some("devfuse"), None),
+            "a FUSE mount should show its FUSE transport and have no nfs_transport key"
+        );
+        // FIXME(T296623959): an NFS mount should show its NFS transport, as the
+        // Python CLI does: `/tmp/mount (nfs3, unix) (unconfigured)` and
+        // `"nfs_transport": "unix"`. Today the Rust CLI drops it.
+        assert_eq!(
+            (
+                "/tmp/mount (nfs3) (unconfigured)".to_string(),
+                json!({
+                    "data_dir": "/tmp/client",
+                    "state": "RUNNING",
+                    "configured": false,
+                    "backing_repo": null,
+                    "fs_channel_type": "nfs3",
+                })
+            ),
+            list_verbose_and_json("nfs3", None, Some("unix")),
+            "today an NFS mount's transport is dropped from `eden list -v` and `--json`"
+        );
+        assert_eq!(
+            (
+                "/tmp/mount (nfs3) (unconfigured)".to_string(),
+                json!({
+                    "data_dir": "/tmp/client",
+                    "state": "RUNNING",
+                    "configured": false,
+                    "backing_repo": null,
+                    "fs_channel_type": "nfs3",
+                })
+            ),
+            list_verbose_and_json("nfs3", None, None),
+            "a mount without a transport should show only its channel and have no transport keys"
         );
     }
 
