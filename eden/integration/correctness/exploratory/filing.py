@@ -30,8 +30,9 @@ findings must be judged by the current checker, and every check line
 `findings` recorded (campaign health, daemon provenance on every seed, each
 red control) must be a PASS. A dry run reads the tasks and writes only
 `filing.json` beside `findings.json`. With `max_new`, a run that would create
-more subtasks than that files nothing. A write that fails is recorded on its
-decision, and the rest still run. Every task access goes through `Tasks`.
+more subtasks than that files nothing. A predecision task read failure is
+recorded before any writes. A write that fails is recorded on its decision,
+and the rest still run. Every task access goes through `Tasks`.
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -72,6 +74,10 @@ FILING_SCHEMA_VERSION = 1
 KEY_BLOCK_HEADER = "edenfs-exploratory task key"
 SIGHTING_HEADER = "edenfs-exploratory sighting"
 COMMENT_LIMIT = 500
+READ_ATTEMPTS = 3
+READ_TIMEOUT_SECONDS = 60
+READ_RETRY_DELAY_SECONDS = 1
+_READ_COMMANDS = (("tasks.task", "describe"), ("tasks.comment", "list"))
 
 NEW = "NEW"
 DUPLICATE = "DUPLICATE"
@@ -82,6 +88,28 @@ _FENCE: re.Pattern[str] = re.compile(r"^```[^\n]*\n(.*?)\n```[ \t]*$", re.M | re
 
 class TasksError(RuntimeError):
     """A task read or write failed; the message names the command and its error."""
+
+
+def _transient_read_failure(completed: subprocess.CompletedProcess[str]) -> bool:
+    """Recognize the failed CAT-mint receive timeout observed in the nightly job."""
+    if completed.stdout.strip():
+        return False
+    stderr = completed.stderr.lower()
+    if any(
+        denied in stderr
+        for denied in ("access denied", "permission denied", "metaclitrustexception")
+    ):
+        return False
+    _prefix, mint, cause = stderr.rpartition("failed to mint delegated cat")
+    return bool(mint) and all(
+        marker in cause
+        for marker in (
+            "c++ runtime error during cat request: (recv_timeout)",
+            "for tier 'token.service'",
+            "ttransportexception: timed out",
+            "classified as infrastructure/transient",
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -134,10 +162,10 @@ class Tasks(Protocol):
 
 
 class MetaTasks:
-    """`Tasks` through the `meta` CLI: one subprocess per call, JSON output.
+    """`Tasks` through the `meta` CLI, with bounded retries of CAT-mint read timeouts.
 
-    With `crewmate` set, every call (read or write) runs as that crewmate
-    identity through the global `meta --act-as-crewmate` flag.
+    Writes are attempted once. With `crewmate` set, every attempt runs as
+    that crewmate identity through the global `meta --act-as-crewmate` flag.
     """
 
     def __init__(self, crewmate: str | None = None) -> None:
@@ -146,23 +174,33 @@ class MetaTasks:
         )
 
     def _call(self, args: list[str], stdin: str | None = None) -> Any:
-        completed = subprocess.run(
-            ["meta", *self._identity, *args, "--output=json"],
-            input=stdin,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
         command = f"meta {' '.join(args[:2])}"
-        if completed.returncode != 0:
-            raise TasksError(
-                f"{command} exited {completed.returncode}: "
-                f"{completed.stderr.strip()[-2000:]}"
-            )
-        try:
-            return json.loads(completed.stdout)
-        except json.JSONDecodeError as error:
-            raise TasksError(f"{command} printed no JSON: {error}") from error
+        read = tuple(args[:2]) in _READ_COMMANDS
+        attempts = READ_ATTEMPTS if read else 1
+        for attempt in range(attempts):
+            try:
+                completed = subprocess.run(
+                    ["meta", *self._identity, *args, "--output=json"],
+                    input=stdin,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=READ_TIMEOUT_SECONDS if read else None,
+                )
+            except (OSError, subprocess.TimeoutExpired) as error:
+                raise TasksError(f"{command} failed: {error}") from error
+            if completed.returncode == 0:
+                try:
+                    return json.loads(completed.stdout)
+                except json.JSONDecodeError as error:
+                    raise TasksError(f"{command} printed no JSON: {error}") from error
+            if attempt + 1 == attempts or not _transient_read_failure(completed):
+                raise TasksError(
+                    f"{command} exited {completed.returncode}: "
+                    f"{completed.stderr.strip()[-2000:]}"
+                )
+            time.sleep(READ_RETRY_DELAY_SECONDS)
+        raise TasksError(f"{command} was not attempted")
 
     def subtasks(self, parent: str) -> list[str]:
         found = self._call(
@@ -595,8 +633,8 @@ def file_findings(
     """Gate, classify, and (unless a dry run) file one campaign's findings.
 
     Returns the exit code and the printed lines; `filing.json` records the
-    same. The code is 1 when a gate failed (nothing was read or filed) or
-    any decision's write failed.
+    same. The code is 1 when a gate or predecision read failed (nothing was
+    filed), or any decision's write failed.
     """
     document = read_findings(findings_dir / FINDINGS_NAME)
     gates = gate_failures(document, target)
@@ -606,11 +644,17 @@ def file_findings(
             *(f"GATE FAIL {g}" for g in gates),
             f"filing: nothing filed; wrote {path}",
         ]
-    subtasks = read_subtasks(tasks, options.parent)
-    context = _Context(findings_dir, document["campaign_id"], options)
-    decisions = [
-        decide(entry, subtasks, tasks, context) for entry in document["findings"]
-    ]
+    _write(findings_dir, document, options, ["filing: not completed"], (), ())
+    try:
+        subtasks = read_subtasks(tasks, options.parent)
+        context = _Context(findings_dir, document["campaign_id"], options)
+        decisions = [
+            decide(entry, subtasks, tasks, context) for entry in document["findings"]
+        ]
+    except (TasksError, OSError) as error:
+        failure = f"predecision: {type(error).__name__}: {error}"
+        path = _write(findings_dir, document, options, [failure], (), ())
+        return 1, [f"GATE FAIL {failure}", f"filing: nothing filed; wrote {path}"]
     new = sum(d.action == NEW for d in decisions)
     if not options.dry_run and options.max_new is not None and new > options.max_new:
         cap = f"max-new: {new} new keys, more than {options.max_new}"

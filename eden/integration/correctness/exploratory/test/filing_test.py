@@ -175,7 +175,7 @@ def refuse_replay(run: Path, artifacts: Path) -> Replayed:
 
 def file(
     directory: Path,
-    tasks: FakeTasks,
+    tasks: filing.Tasks,
     options: Options = OPTIONS,
     replay: filing.Replay = refuse_replay,
 ) -> tuple[int, list[str], dict[str, Any]]:
@@ -413,6 +413,53 @@ class FilingTest(unittest.TestCase):
         self.assertIn("/campaign/artifacts/seed-5", first_note)
         self.assertIn("campaign `sha256:campaign`", first_note)
 
+    def test_predecision_read_failures_leave_a_fail_closed_receipt(self) -> None:
+        for operation in ("subtasks", "task", "comments"):
+            with self.subTest(operation=operation):
+                directory = write_findings(self.root / operation, [entry()])
+                tasks = FakeTasks()
+                tasks.add("T300", block())
+                failure = TasksError(f"{operation} lookup transport failed")
+                with mock.patch.object(tasks, operation, side_effect=failure):
+                    code, lines, document = file(directory, tasks, FILE)
+                self.assertEqual(1, code)
+                self.assertEqual([], tasks.writes())
+                self.assertEqual([], document["decisions"])
+                self.assertIn(str(failure), document["gates"][0])
+                self.assertTrue(lines[0].startswith("GATE FAIL predecision:"), lines)
+                self.assertEqual("sha256:campaign", document["campaign_id"])
+                self.assertFalse(document["dry_run"])
+
+    def test_the_receipt_exists_before_task_reads_and_replaces_stale_success(
+        self,
+    ) -> None:
+        directory = write_findings(self.root, [entry()])
+        file(directory, FakeTasks(), FILE, REPRODUCED)
+        tasks = FakeTasks()
+
+        def interrupted(parent: str) -> list[str]:
+            document = json.loads((directory / filing.FILING_NAME).read_text())
+            self.assertEqual(["filing: not completed"], document["gates"])
+            self.assertEqual([], document["decisions"])
+            self.assertEqual(PARENT, parent)
+            raise KeyboardInterrupt()
+
+        with mock.patch.object(tasks, "subtasks", interrupted):
+            with self.assertRaises(KeyboardInterrupt):
+                file(directory, tasks, FILE)
+        self.assertEqual([], tasks.writes())
+
+    def test_a_recovered_read_failure_does_not_keep_a_failed_receipt(self) -> None:
+        directory = write_findings(self.root, [entry()])
+        tasks = FakeTasks()
+        with mock.patch.object(tasks, "subtasks", side_effect=TasksError("lookup")):
+            code, _lines, _document = file(directory, tasks, FILE)
+        self.assertEqual(1, code)
+        code, _lines, document = file(directory, tasks, FILE, REPRODUCED)
+        self.assertEqual(0, code)
+        self.assertEqual([], document["gates"])
+        self.assertEqual(["T901"], document["decisions"][0]["filed"])
+
     def test_a_failed_write_is_recorded_and_the_rest_still_run(self) -> None:
         directory = write_findings(self.root, [entry(), entry(THRIFT)])
         tasks = FakeTasks(failing={"T300"})
@@ -554,7 +601,134 @@ _META_OUTPUT: dict[tuple[str, str], Any] = {
 }
 
 
+_CAT_TIMEOUT = (
+    "Failed to mint delegated CAT for CREWMATE\nCaused by:\n"
+    "C++ runtime error during CAT request: (RECV_TIMEOUT) Receive Timeout "
+    "for tier 'token.service'. TTransportException: Timed out\n"
+    "Error detected but classified as infrastructure/transient"
+)
+
+
 class MetaTasksTest(unittest.TestCase):
+    def test_only_read_calls_retry_the_observed_cat_mint_timeout(self) -> None:
+        for operation, platform in (
+            ("subtasks", "tasks.task"),
+            ("task", "tasks.task"),
+            ("comments", "tasks.comment"),
+        ):
+            with self.subTest(operation=operation):
+                output = _META_OUTPUT[
+                    (platform, "list" if operation == "comments" else "describe")
+                ]
+                failure = subprocess.CompletedProcess([], 1, "", _CAT_TIMEOUT)
+                success = subprocess.CompletedProcess([], 0, json.dumps(output), "")
+                with (
+                    mock.patch.object(
+                        subprocess, "run", side_effect=[failure, success]
+                    ) as run,
+                    mock.patch.object(filing.time, "sleep") as sleep,
+                ):
+                    tasks = filing.MetaTasks("crewmate")
+                    result = getattr(tasks, operation)("T100")
+                self.assertIsNotNone(result)
+                self.assertEqual(2, run.call_count)
+                first, second = run.call_args_list
+                self.assertEqual(first, second)
+                self.assertEqual(
+                    ["meta", "--act-as-crewmate", "crewmate"], first.args[0][:3]
+                )
+                self.assertEqual(filing.READ_TIMEOUT_SECONDS, first.kwargs["timeout"])
+                sleep.assert_called_once_with(filing.READ_RETRY_DELAY_SECONDS)
+
+    def test_read_retries_are_bounded_and_leave_a_failure_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = write_findings(Path(temporary), [entry()])
+            failure = subprocess.CompletedProcess([], 1, "", _CAT_TIMEOUT)
+            with (
+                mock.patch.object(subprocess, "run", return_value=failure) as run,
+                mock.patch.object(filing.time, "sleep") as sleep,
+            ):
+                code, _lines, document = file(directory, filing.MetaTasks(), FILE)
+            self.assertEqual(1, code)
+            self.assertEqual(filing.READ_ATTEMPTS, run.call_count)
+            self.assertEqual(filing.READ_ATTEMPTS - 1, sleep.call_count)
+            self.assertEqual([], document["decisions"])
+            self.assertIn("Failed to mint delegated CAT", document["gates"][0])
+
+    def test_unrecognized_errors_denials_and_malformed_results_are_not_retried(
+        self,
+    ) -> None:
+        cases = [
+            (1, "", "unknown transport failure"),
+            (1, "", "(RECV_TIMEOUT) Receive Timeout"),
+            (1, "", _CAT_TIMEOUT + "\nAccess denied"),
+            (1, "", _CAT_TIMEOUT + "\nMetaCLITrustException"),
+            (1, '{"error":"denied"}', _CAT_TIMEOUT),
+            (0, "not json", _CAT_TIMEOUT),
+            (0, '{"error":"denied"}', ""),
+            (
+                1,
+                "",
+                "dCAT mint failed in transport: (RECV_TIMEOUT)\n"
+                "Failed to mint delegated CAT: permission denied",
+            ),
+        ]
+        for returncode, stdout, stderr in cases:
+            with self.subTest(returncode=returncode, stdout=stdout, stderr=stderr):
+                completed = subprocess.CompletedProcess([], returncode, stdout, stderr)
+                with (
+                    mock.patch.object(subprocess, "run", return_value=completed) as run,
+                    mock.patch.object(filing.time, "sleep") as sleep,
+                ):
+                    with self.assertRaises(TasksError):
+                        filing.MetaTasks().subtasks("T100")
+                self.assertEqual(1, run.call_count)
+                sleep.assert_not_called()
+
+    def test_creates_and_comments_never_retry_even_a_cat_mint_timeout(self) -> None:
+        for operation in ("create", "comment"):
+            with self.subTest(operation=operation):
+                failure = subprocess.CompletedProcess([], 1, "", _CAT_TIMEOUT)
+                with (
+                    mock.patch.object(subprocess, "run", return_value=failure) as run,
+                    mock.patch.object(filing.time, "sleep") as sleep,
+                ):
+                    tasks = filing.MetaTasks()
+                    with self.assertRaises(TasksError):
+                        if operation == "create":
+                            tasks.create(TaskDraft("t", "d", "owner", "T100", "tag"))
+                        else:
+                            tasks.comment("T100", "text")
+                self.assertEqual(1, run.call_count)
+                sleep.assert_not_called()
+
+    def test_a_local_or_subprocess_timeout_failure_is_recorded_without_retry(
+        self,
+    ) -> None:
+        for failure in (
+            OSError("cannot start meta"),
+            subprocess.TimeoutExpired(["meta", "tasks.task", "describe"], 60),
+        ):
+            with self.subTest(failure=failure):
+                with tempfile.TemporaryDirectory() as temporary:
+                    directory = write_findings(Path(temporary), [entry()])
+                    with (
+                        mock.patch.object(
+                            subprocess, "run", side_effect=failure
+                        ) as run,
+                        mock.patch.object(filing.time, "sleep") as sleep,
+                    ):
+                        code, _lines, document = file(
+                            directory, filing.MetaTasks(), FILE
+                        )
+                    self.assertEqual(1, code)
+                    self.assertEqual([], document["decisions"])
+                    self.assertIn(
+                        "meta tasks.task describe failed", document["gates"][0]
+                    )
+                    self.assertEqual(1, run.call_count)
+                    sleep.assert_not_called()
+
     def _argvs(self, tasks: filing.MetaTasks) -> list[list[str]]:
         """Run every `MetaTasks` call against a recording `subprocess.run`; return each argv."""
         argvs: list[list[str]] = []
