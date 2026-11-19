@@ -6,7 +6,7 @@ Test that `sl pr submit --open` opens created PRs in the browser.
   $ enable github
   $ export SL_TEST_GH_URL=https://github.com/facebook/test_github_repo.git
   $ . $TESTDIR/git.sh
-  $ configure github.pr-workflow=overlap
+  $ setconfig github.pr-workflow=overlap
 
 build up a github repo
 

@@ -80,17 +80,17 @@ class SubmitWorkflow(Enum):
         workflow = ui.config(
             "github", "pr-workflow", ui.config("github", "pr_workflow")
         )
-        if not workflow or workflow == "overlap":
-            # For now, default to OVERLAP.
-            return SubmitWorkflow.OVERLAP
-        elif workflow == "single":
+        if not workflow or workflow == "single":
+            # Default to SINGLE.
             return SubmitWorkflow.SINGLE
+        elif workflow == "overlap":
+            return SubmitWorkflow.OVERLAP
         else:
             # Note that "classic" is not recognized yet.
             ui.warn(
                 _("unrecognized config for github.pr_workflow: defaulting to 'overlap'")
             )
-            return SubmitWorkflow.OVERLAP
+            return SubmitWorkflow.SINGLE
 
 
 @dataclass
@@ -165,8 +165,6 @@ async def update_commits_in_stack(
 
     store = PullRequestStore(repo)
 
-    workflow = SubmitWorkflow.from_config(ui)
-
     partitions = await get_partitions(ui, repo, store, "sort(. %% public(), -rev)")
     if not partitions:
         ui.status_err(_("no commits to submit\n"))
@@ -216,6 +214,14 @@ async def update_commits_in_stack(
         return 0
 
     repository = params.repository
+    if not repository:
+        repository = await get_repository_for_origin(origin, github_repo.hostname)
+
+    if repository.upstream is not None:
+        # Always use OVERLAP workflow for forked repositories
+        workflow = SubmitWorkflow.OVERLAP
+    else:
+        workflow = SubmitWorkflow.from_config(ui)
 
     # For the SINGLE workflow, we must update the base branch on existing PRs
     # BEFORE pushing the new branch contents. Otherwise, when commits are
@@ -228,10 +234,6 @@ async def update_commits_in_stack(
             p for p in partitions if p[0].pr and p[0].pr.state == PullRequestState.OPEN
         ]
         if existing_prs:
-            if not repository:
-                repository = await get_repository_for_origin(
-                    origin, github_repo.hostname
-                )
             # Update base branches on existing PRs before pushing.
             # Process from bottom of stack to top so bases are set correctly.
             for index in range(len(partitions)):
@@ -259,8 +261,6 @@ async def update_commits_in_stack(
     run_git_command(git_push_args, gitdir)
 
     if params.pull_requests_to_create:
-        if not repository:
-            repository = await get_repository_for_origin(origin, github_repo.hostname)
         if use_placeholder_strategy:
             assert isinstance(params, PlaceholderStrategyParams)
             await create_pull_requests_from_placeholder_issues(
@@ -291,8 +291,6 @@ async def update_commits_in_stack(
     # Add the head of the stack to the sapling-pr-archive branch.
     tip = hex(partitions[0][0].node)
 
-    if not repository:
-        repository = await get_repository_for_origin(origin, github_repo.hostname)
     rewrite_and_archive_requests = [
         rewrite_pull_request_body(
             partitions, index, workflow, pr_numbers_and_num_commits, repository, ui
