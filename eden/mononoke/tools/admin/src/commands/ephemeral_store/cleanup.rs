@@ -79,7 +79,7 @@ pub async fn clean_bubbles(
 
 /// Deletes the given bubbles regardless of their expiry status, printing the
 /// outcome of each one and a final summary. Fails if any deletion failed.
-async fn delete_bubbles_and_report(
+pub(super) async fn delete_bubbles_and_report(
     ctx: &CoreContext,
     repo: &Repo,
     bubbles: Vec<BubbleId>,
@@ -112,11 +112,11 @@ async fn delete_bubbles_and_report(
         );
     let (finished, already_deleted, failed) = mononoke::spawn_task(deletions).await?;
     println!(
-        "Deleted {finished} of {total} expired bubbles in {:.1?}, {already_deleted} of them had blob keys that were already deleted, {failed} failed",
+        "Deleted {finished} of {total} bubbles in {:.1?}, {already_deleted} of them had blob keys that were already deleted, {failed} failed",
         started.elapsed()
     );
     if failed > 0 {
-        bail!("Failed to clean up {failed} of {total} expired bubbles");
+        bail!("Failed to clean up {failed} of {total} bubbles");
     }
     Ok(())
 }

@@ -70,7 +70,7 @@ Cleanup expired bubbles with no cut-off
   Cleaned up bubble * and deleted * blob keys contained in it (glob)
   Cleaned up bubble * and deleted * blob keys contained in it (glob)
   Cleaned up bubble * and deleted * blob keys contained in it (glob)
-  Deleted 4 of 4 expired bubbles in *, 0 of them had blob keys that were already deleted, 0 failed (glob)
+  Deleted 4 of 4 bubbles in *, 0 of them had blob keys that were already deleted, 0 failed (glob)
 
 # Since deletion_mode=MARK_AND_DELETE, the blob keys within the bubbles
 # need to be actually deleted.
