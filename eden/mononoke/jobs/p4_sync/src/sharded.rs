@@ -11,8 +11,8 @@ use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -61,8 +61,13 @@ define_stats! {
     prefix = "mononoke.p4_sync";
     // 1 while the repo is stuck on a changelist it can't import, for alerts.
     stuck: dynamic_singleton_counter("stuck.{}", (repo: String)),
-    // Set every `FRESHNESS_INTERVAL` while the shard runs, removed when it stops.
-    secs_since_success: dynamic_singleton_counter("secs_since_success.{}", (repo: String)),
+}
+
+/// The repo's gauge, set every `FRESHNESS_INTERVAL` while the shard runs and removed when it
+/// stops. Not in `define_stats!`, whose key must be a literal, so that setting and removing it
+/// share this one name.
+pub(crate) fn secs_since_success_key(repo_name: &str) -> String {
+    format!("mononoke.p4_sync.secs_since_success.{repo_name}")
 }
 
 pub(crate) struct Settings {
@@ -124,20 +129,31 @@ impl BatchSize {
 /// When the shard last had a successful pass: imported a batch, found nothing new, or was
 /// switched off by JK on purpose. Starts at the shard's start, so a shard that never
 /// succeeds, held ones included, reports a growing value.
-pub(crate) struct LastSuccess(Mutex<Instant>);
+pub(crate) struct LastSuccess {
+    start: Instant,
+    secs_after_start: AtomicU64,
+}
 
 impl LastSuccess {
     pub(crate) fn new(now: Instant) -> Self {
-        Self(Mutex::new(now))
+        Self {
+            start: now,
+            secs_after_start: AtomicU64::new(0),
+        }
     }
 
     pub(crate) fn record(&self, now: Instant) {
-        *self.0.lock().expect("poisoned") = now;
+        self.secs_after_start
+            .store(self.secs_to(now), Ordering::Relaxed);
     }
 
     pub(crate) fn secs_since(&self, now: Instant) -> u64 {
-        now.saturating_duration_since(*self.0.lock().expect("poisoned"))
-            .as_secs()
+        self.secs_to(now)
+            .saturating_sub(self.secs_after_start.load(Ordering::Relaxed))
+    }
+
+    fn secs_to(&self, now: Instant) -> u64 {
+        now.saturating_duration_since(self.start).as_secs()
     }
 }
 
@@ -150,35 +166,31 @@ pub(crate) async fn report_freshness<T>(
     last_success: &LastSuccess,
     work: impl Future<Output = T>,
 ) -> T {
-    let _remove = RemoveFreshnessOnDrop {
+    let gauge = RemoveFreshnessOnDrop {
         fb,
-        repo_name: repo_name.to_owned(),
+        key: secs_since_success_key(repo_name),
     };
     let mut ticker = tokio::time::interval(FRESHNESS_INTERVAL);
     tokio::pin!(work);
     loop {
         tokio::select! {
             output = &mut work => return output,
-            _ = ticker.tick() => STATS::secs_since_success.set_value(
-                fb,
-                last_success.secs_since(Instant::now()) as i64,
-                (repo_name.to_owned(),),
-            ),
+            _ = ticker.tick() => {
+                get_service_data_singleton(fb)
+                    .set_counter(&gauge.key, last_success.secs_since(Instant::now()) as i64);
+            }
         }
     }
 }
 
 struct RemoveFreshnessOnDrop {
     fb: FacebookInit,
-    repo_name: String,
+    key: String,
 }
 
 impl Drop for RemoveFreshnessOnDrop {
     fn drop(&mut self) {
-        get_service_data_singleton(self.fb).clear_counter(&format!(
-            "mononoke.p4_sync.secs_since_success.{}",
-            self.repo_name
-        ));
+        get_service_data_singleton(self.fb).clear_counter(&self.key);
     }
 }
 

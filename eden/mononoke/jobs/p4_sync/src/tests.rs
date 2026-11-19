@@ -31,6 +31,7 @@ use crate::sharded::configured_depot;
 use crate::sharded::import_enabled;
 use crate::sharded::report_freshness;
 use crate::sharded::retry_delay;
+use crate::sharded::secs_since_success_key;
 
 #[mononoke::test]
 fn test_a_repo_gets_the_entry_of_the_server_its_config_names() {
@@ -328,8 +329,7 @@ fn test_stuck_after_failing_alone_three_times_in_a_row() {
 }
 
 fn reported(fb: FacebookInit, repo: &str) -> Option<i64> {
-    get_service_data_singleton(fb)
-        .get_counter(&format!("mononoke.p4_sync.secs_since_success.{repo}"))
+    get_service_data_singleton(fb).get_counter(&secs_since_success_key(repo))
 }
 
 /// Runs `work` beside the reporter and reads the counter `after` in, while both still run.
