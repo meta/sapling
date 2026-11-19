@@ -599,7 +599,8 @@ function qualify_backsync_cursor_at_fixture_checkpoint {
     JOIN bookmarks target ON target.repo_id = $target_repo_id AND CAST(target.name AS TEXT) = '$target_bookmark' AND target.category = source.category
     WHERE l.repo_id = $source_repo_id AND CAST(l.name AS TEXT) = '$source_bookmark' AND CAST(l.category AS TEXT) = 'branch'
       AND source.changeset_id = X'$source_commit' AND l.to_changeset_id = X'$source_commit' AND target.changeset_id = X'$target_commit'
-      AND EXISTS (SELECT 1 FROM synced_commit_mapping m WHERE m.large_repo_id = $source_repo_id AND m.small_repo_id = $target_repo_id AND m.large_bcs_id = X'$source_commit' AND m.small_bcs_id = X'$target_commit')
+      AND (EXISTS (SELECT 1 FROM synced_commit_mapping m WHERE m.large_repo_id = $source_repo_id AND m.small_repo_id = $target_repo_id AND m.large_bcs_id = X'$source_commit' AND m.small_bcs_id = X'$target_commit')
+        OR EXISTS (SELECT 1 FROM synced_working_copy_equivalence e WHERE e.large_repo_id = $source_repo_id AND e.small_repo_id = $target_repo_id AND e.large_bcs_id = X'$source_commit' AND e.small_bcs_id = X'$target_commit'))
     ON CONFLICT(repo_id, name) DO UPDATE SET value = excluded.value WHERE mutable_counters.value <= excluded.value;
     SELECT changes();")
   [[ "$initialized" == 1 ]] || { echo "fixture's declared bookmark checkpoint did not qualify an exact cursor" >&2; return 1; }

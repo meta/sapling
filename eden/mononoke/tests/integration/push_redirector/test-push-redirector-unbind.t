@@ -125,6 +125,11 @@
 
 -- Step 6. Rebind repositories and wait until it propagates
   $ mononoke_admin cross-repo --source-repo-name large-mon --target-repo-name small-mon pushredirection prepare-rollout &> /dev/null
+-- The legacy admin command sets only a global cursor. Explicitly qualify this
+-- bookmark stream at the reconciliation checkpoint established in steps 3-5.
+  $ LARGE_REBINDING_BONSAI="$(mononoke_admin convert --repo-id 0 --from hg --to bonsai "$LARGE_REBINDING")"
+  $ SMALL_REBINDING_BONSAI="$(mononoke_admin convert --repo-id 1 --from hg --to bonsai "$SMALL_REBINDING")"
+  $ qualify_backsync_cursor_at_fixture_checkpoint 0 1 master_bookmark master_bookmark "$LARGE_REBINDING_BONSAI" "$SMALL_REBINDING_BONSAI"
   $ enable_pushredirect 1
   $ force_update_configerator
 

@@ -147,6 +147,7 @@ start mononoke server
 Make sure mapping is set up and we know what we don't have to sync initial entries
   $ add_synced_commit_mapping_entry $REPOIDSMALL1 $SMALL1_MASTER_BONSAI $REPOIDLARGE $LARGE_MASTER_BONSAI TEST_VERSION_NAME_LIVE_V1
   $ sqlite3 "$TESTTMP/monsql/sqlite_dbs" "INSERT INTO mutable_counters (repo_id, name, value) SELECT $REPOIDSMALL1, 'backsync_from_$REPOIDLARGE', COALESCE(MAX(id), 0) FROM bookmarks_update_log WHERE repo_id = $REPOIDLARGE";
+  $ qualify_backsync_cursor_at_fixture_checkpoint "$REPOIDLARGE" "$REPOIDSMALL1" master_bookmark master_bookmark "$LARGE_MASTER_BONSAI" "$SMALL1_MASTER_BONSAI"
 
 setup hg client repos
   $ function init_client() {

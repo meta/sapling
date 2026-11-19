@@ -26,7 +26,8 @@
   $ merge_just_knobs <<EOF
   > {
   >   "bools": {
-  >     "scm/mononoke:cross_repo_skip_backsyncing_ordinary_empty_commits": true
+  >     "scm/mononoke:cross_repo_skip_backsyncing_ordinary_empty_commits": true,
+  >     "scm/mononoke:backsyncer_prefix_polling": true
   >   }
   > }
   > EOF

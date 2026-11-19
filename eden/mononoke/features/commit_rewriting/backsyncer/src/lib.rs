@@ -317,6 +317,63 @@ where
     }
 }
 
+/// Backsync one explicitly selected source bookmark, including a stream whose
+/// current source and target bookmarks are both absent.
+///
+/// Initialization races retry immediately for one-shot/eager callers. Errors
+/// propagate; best-effort commit-only work remains chained in the returned
+/// future and need not be awaited.
+pub async fn backsync_bookmark_once<R>(
+    ctx: CoreContext,
+    commit_sync_data: CommitSyncData<R>,
+    target_repo_dbs: Arc<TargetRepoDbs>,
+    bookmark: BookmarkKey,
+    limit: BacksyncLimit,
+    cancellation_requested: Arc<AtomicBool>,
+    sync_context: CommitSyncContext,
+    disable_lease: bool,
+    commit_only_backsync_future: Box<dyn Future<Output = ()> + Send + Unpin>,
+) -> Result<
+    (
+        BacksyncDelayInfo,
+        Box<dyn Future<Output = ()> + Send + Unpin>,
+    ),
+    Error,
+>
+where
+    R: RepoLike + Send + Sync + Clone + 'static,
+{
+    let mut commit_only_backsync_future = commit_only_backsync_future;
+    loop {
+        if cancellation_requested.load(Ordering::Relaxed) {
+            return Ok((
+                BacksyncDelayInfo {
+                    delay_secs: 0,
+                    remaining_entries: 0,
+                    failed_bookmarks: 0,
+                },
+                commit_only_backsync_future,
+            ));
+        }
+        let (delay_info, future) = backsync_bookmark_through(
+            ctx.clone(),
+            commit_sync_data.clone(),
+            target_repo_dbs.clone(),
+            bookmark.clone(),
+            limit,
+            Arc::clone(&cancellation_requested),
+            sync_context,
+            disable_lease,
+            commit_only_backsync_future,
+        )
+        .await?;
+        commit_only_backsync_future = future;
+        if let Some(delay_info) = delay_info {
+            return Ok((delay_info, commit_only_backsync_future));
+        }
+    }
+}
+
 /// Read a bookmark cursor, or initialize it atomically from a legacy cursor.
 ///
 /// The initial value is used only when the counter is absent. Once present,
@@ -402,7 +459,7 @@ pub async fn backsync_latest_for_bookmark<R>(
 where
     R: RepoLike + Send + Sync + Clone + 'static,
 {
-    backsync_bookmark_through(
+    let (delay_info, future) = backsync_bookmark_through(
         ctx,
         commit_sync_data,
         target_repo_dbs,
@@ -411,8 +468,15 @@ where
         cancellation_requested,
         sync_context,
         disable_lease,
+        Box::new(future::ready(())),
     )
-    .await
+    .await?;
+    future.await;
+    Ok(delay_info.unwrap_or(BacksyncDelayInfo {
+        delay_secs: 0,
+        remaining_entries: 1,
+        failed_bookmarks: 0,
+    }))
 }
 
 async fn get_backsync_bookmark_counter_or_initialize<R>(
@@ -483,7 +547,14 @@ async fn backsync_bookmark_through<R>(
     cancellation_requested: Arc<AtomicBool>,
     sync_context: CommitSyncContext,
     disable_lease: bool,
-) -> Result<BacksyncDelayInfo, Error>
+    commit_only_backsync_future: Box<dyn Future<Output = ()> + Send + Unpin>,
+) -> Result<
+    (
+        Option<BacksyncDelayInfo>,
+        Box<dyn Future<Output = ()> + Send + Unpin>,
+    ),
+    Error,
+>
 where
     R: RepoLike + Send + Sync + Clone + 'static,
 {
@@ -498,12 +569,11 @@ where
     )
     .await?
     else {
-        return Ok(BacksyncDelayInfo {
-            delay_secs: 0,
-            remaining_entries: 1,
-            failed_bookmarks: 0,
-        });
+        // The losing initializer must retry from the durable cursor. Daemon
+        // polling returns a retry sentinel; one-shot callers retry immediately.
+        return Ok((None, commit_only_backsync_future));
     };
+
     let log_entries_limit = match limit {
         BacksyncLimit::Limit(limit) => limit,
         BacksyncLimit::NoLimit => u64::MAX,
@@ -528,27 +598,25 @@ where
         remaining_entries: entries.len() as u64,
         failed_bookmarks: 0,
     };
-    if cancellation_requested.load(Ordering::Relaxed) {
-        return Ok(delay_info);
+    if cancellation_requested.load(Ordering::Relaxed) || entries.is_empty() {
+        return Ok((Some(delay_info), commit_only_backsync_future));
     }
-    if !entries.is_empty() {
-        sync_entries(
-            ctx,
-            &commit_sync_data,
-            target_repo_dbs,
-            entries,
-            counter,
-            &counter_name,
-            None,
-            cancellation_requested,
-            sync_context,
-            disable_lease,
-            Box::new(future::ready(())),
-        )
-        .await?
-        .await;
-    }
-    Ok(delay_info)
+
+    let future = sync_entries(
+        ctx,
+        &commit_sync_data,
+        target_repo_dbs,
+        entries,
+        counter,
+        &counter_name,
+        None,
+        cancellation_requested,
+        sync_context,
+        disable_lease,
+        commit_only_backsync_future,
+    )
+    .await?;
+    Ok((Some(delay_info), future))
 }
 
 pub async fn list_publishing_bookmarks<R>(
@@ -694,6 +762,7 @@ async fn backsync_bookmarks<R>(
     cancellation_requested: Arc<AtomicBool>,
     sync_context: CommitSyncContext,
     disable_lease: bool,
+    retry_initialization: bool,
 ) -> Result<BacksyncDelayInfo, Error>
 where
     R: RepoLike + Send + Sync + Clone + 'static,
@@ -707,17 +776,39 @@ where
                 cancellation_requested
             );
             async move {
-                let result = backsync_latest_for_bookmark(
-                    ctx,
-                    commit_sync_data,
-                    target_repo_dbs,
-                    bookmark.clone(),
-                    limit,
-                    cancellation_requested,
-                    sync_context,
-                    disable_lease,
-                )
-                .await;
+                let result = if retry_initialization {
+                    match backsync_bookmark_once(
+                        ctx,
+                        commit_sync_data,
+                        target_repo_dbs,
+                        bookmark.clone(),
+                        limit,
+                        cancellation_requested,
+                        sync_context,
+                        disable_lease,
+                        Box::new(future::ready(())),
+                    )
+                    .await
+                    {
+                        Ok((delay, future)) => {
+                            future.await;
+                            Ok(delay)
+                        }
+                        Err(error) => Err(error),
+                    }
+                } else {
+                    backsync_latest_for_bookmark(
+                        ctx,
+                        commit_sync_data,
+                        target_repo_dbs,
+                        bookmark.clone(),
+                        limit,
+                        cancellation_requested,
+                        sync_context,
+                        disable_lease,
+                    )
+                    .await
+                };
                 (bookmark, result)
             }
         })
@@ -784,24 +875,59 @@ where
         cancellation_requested,
         sync_context,
         disable_lease,
+        false,
     )
     .await
 }
 
-/// Backsync source bookmarks that are absent from the source bookmark table but
-/// still present in the target bookmark table.
-pub async fn backsync_deleted_by_prefix<R>(
+/// Run one configured prefix/common/deletion pass, retrying initialization races.
+///
+/// Selection is the same scoped snapshot used by the daemon, not a historical
+/// repo-wide commit-only sweep. Use the explicit Commits command for historical
+/// commit sync, or `backsync_bookmark_once` when a particular source key is known.
+pub async fn backsync_once_by_prefix<R>(
     ctx: CoreContext,
     commit_sync_data: CommitSyncData<R>,
     target_repo_dbs: Arc<TargetRepoDbs>,
     bookmark_prefix: BookmarkPrefix,
     common_bookmarks: &[BookmarkKey],
-    limit: BacksyncLimit,
     bookmark_concurrency: usize,
     cancellation_requested: Arc<AtomicBool>,
     sync_context: CommitSyncContext,
     disable_lease: bool,
 ) -> Result<BacksyncDelayInfo, Error>
+where
+    R: RepoLike + Send + Sync + Clone + 'static,
+{
+    let mut bookmarks =
+        list_publishing_bookmarks(&ctx, commit_sync_data.get_source_repo(), &bookmark_prefix)
+            .await?;
+    bookmarks.extend(common_bookmarks.iter().cloned());
+    bookmarks.extend(
+        deleted_bookmarks_by_prefix(&ctx, &commit_sync_data, bookmark_prefix, common_bookmarks)
+            .await?,
+    );
+    backsync_bookmarks(
+        ctx,
+        commit_sync_data,
+        target_repo_dbs,
+        bookmarks,
+        BacksyncLimit::NoLimit,
+        bookmark_concurrency,
+        cancellation_requested,
+        sync_context,
+        disable_lease,
+        true,
+    )
+    .await
+}
+
+async fn deleted_bookmarks_by_prefix<R>(
+    ctx: &CoreContext,
+    commit_sync_data: &CommitSyncData<R>,
+    bookmark_prefix: BookmarkPrefix,
+    common_bookmarks: &[BookmarkKey],
+) -> Result<HashSet<BookmarkKey>, Error>
 where
     R: RepoLike + Send + Sync + Clone + 'static,
 {
@@ -821,8 +947,8 @@ where
     // Common source bookmarks are always scheduled by the ordinary backsync
     // loop, including after deletion, so exclude them here.
     let bookmarks = discover_deleted_bookmarks(
-        &ctx,
-        &commit_sync_data,
+        ctx,
+        commit_sync_data,
         (source_repo_id, bookmark_prefix),
         (target_repo_id, BookmarkPrefix::empty()),
         |_, _| true,
@@ -842,6 +968,29 @@ where
         },
     )
     .await?;
+    Ok(bookmarks)
+}
+
+/// Backsync source bookmarks that are absent from the source bookmark table but
+/// still present in the target bookmark table.
+pub async fn backsync_deleted_by_prefix<R>(
+    ctx: CoreContext,
+    commit_sync_data: CommitSyncData<R>,
+    target_repo_dbs: Arc<TargetRepoDbs>,
+    bookmark_prefix: BookmarkPrefix,
+    common_bookmarks: &[BookmarkKey],
+    limit: BacksyncLimit,
+    bookmark_concurrency: usize,
+    cancellation_requested: Arc<AtomicBool>,
+    sync_context: CommitSyncContext,
+    disable_lease: bool,
+) -> Result<BacksyncDelayInfo, Error>
+where
+    R: RepoLike + Send + Sync + Clone + 'static,
+{
+    let bookmarks =
+        deleted_bookmarks_by_prefix(&ctx, &commit_sync_data, bookmark_prefix, common_bookmarks)
+            .await?;
     // This difference only schedules exact per-bookmark log streams; it does
     // not directly delete target bookmarks. Each worker still reads and
     // applies every source-log entry after its durable bookmark cursor, so an
@@ -857,6 +1006,7 @@ where
         cancellation_requested,
         sync_context,
         disable_lease,
+        false,
     )
     .await
 }
@@ -952,20 +1102,6 @@ where
     Ok(commit_only_backsync_future)
 }
 
-/// Let the legacy global loop acknowledge an entry already committed by the
-/// per-bookmark path. This is what makes a JustKnob rollback safe after only a
-/// subset of the parallel bookmark workers completed.
-///
-/// `sync_entries` invokes this for the globally ordered log entries one at a
-/// time. Advancing to `entry.id` therefore acknowledges only the current row;
-/// every earlier row for this repository has already been handled. Numeric ID
-/// gaps can belong to other repositories because the database sequence is
-/// shared.
-///
-/// A per-bookmark cursor is the same completion boundary used by the normal
-/// worker: mapped bookmarks advance it only after commit sync and the atomic
-/// bookmark/counter transaction complete. For an unmapped bookmark it records
-/// the legacy best-effort commit-only behavior after that task is scheduled.
 async fn advance_global_counter_for_completed_bookmark<R>(
     ctx: &CoreContext,
     commit_sync_data: &CommitSyncData<R>,

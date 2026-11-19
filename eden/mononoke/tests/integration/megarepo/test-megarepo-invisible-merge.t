@@ -115,6 +115,7 @@ Setup commit sync mapping
   $ add_synced_commit_mapping_entry $OVR_REPOID $OVRSOURCE_MASTER_BONSAI $MEG_REPOID $MEGAREPO_MERGE_BONSAI TEST_VERSION_NAME
 -- tell backsyncer that we're all caught up in ovrsource
   $ sqlite3 "$TESTTMP/monsql/sqlite_dbs" "INSERT INTO mutable_counters (repo_id, name, value) SELECT $OVR_REPOID, 'backsync_from_$MEG_REPOID', COALESCE(MAX(id), 0) FROM bookmarks_update_log WHERE repo_id = $MEG_REPOID";
+  $ qualify_backsync_cursor_at_fixture_checkpoint "$MEG_REPOID" "$OVR_REPOID" master_bookmark master_bookmark "$MEGAREPO_MERGE_BONSAI" "$OVRSOURCE_MASTER_BONSAI"
 
 
 Perform ovrsource pushrebase, make sure it is push-redirected into Megarepo
@@ -346,6 +347,7 @@ Set working copy equivalence between ovrsource master and fbsource master
   >    (small_repo_id, small_bcs_id, large_repo_id, large_bcs_id, sync_map_version_name) \
   >  VALUES \
   >    ($OVR_REPOID, X'$OVRSOURCE_MASTER_BONSAI', $FBS_REPOID, X'$FBSOURCE_MASTER_BONSAI', 'TEST_VERSION_NAME_FLIPPED')"
+  $ qualify_backsync_cursor_at_fixture_checkpoint "$FBS_REPOID" "$OVR_REPOID" master_bookmark master_bookmark "$FBSOURCE_MASTER_BONSAI" "$OVRSOURCE_MASTER_BONSAI"
 
 Set current version of CommitSyncConfig to be push-redirecting ovrsource
 into fbsource

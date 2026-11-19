@@ -30,6 +30,7 @@ use super::delete_bookmark;
 use super::init_repos;
 use super::move_bookmark;
 use crate::BacksyncLimit;
+use crate::backsync_bookmark_once;
 use crate::backsync_latest_for_bookmark;
 use crate::format_bookmark_counter;
 use crate::format_counter;
@@ -474,6 +475,74 @@ async fn shared_initializer_retains_insert_if_absent_race_contract(
         get_bookmark_counter_or_initialize(&ctx, &dbs.counters, &counter, BookmarkUpdateLogId(99))
             .await?,
         Some(stored)
+    );
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn once_wrapper_uses_bookmark_cursors_and_processes_deletions(
+    fb: FacebookInit,
+) -> Result<(), Error> {
+    let (data, dbs) = init_repos(fb, MoverType::Noop, BookmarkRenamerType::Noop).await?;
+    let ctx = CoreContext::test_mock(fb);
+    let dbs = Arc::new(dbs);
+    let bookmark = BookmarkKey::new("anotherbookmark")?;
+    assert!(
+        dbs.counters
+            .set_counter(
+                &ctx,
+                &format_counter(&data.get_source_repo_id()),
+                1000,
+                Some(0)
+            )
+            .await?
+    );
+    backsync_bookmark_once(
+        ctx.clone(),
+        data.clone(),
+        dbs.clone(),
+        bookmark.clone(),
+        BacksyncLimit::NoLimit,
+        Arc::new(AtomicBool::new(false)),
+        CommitSyncContext::Tests,
+        false,
+        Box::new(future::ready(())),
+    )
+    .await?
+    .1
+    .await;
+    assert!(
+        dbs.bookmarks
+            .get(ctx.clone(), &bookmark, Freshness::MostRecent)
+            .await?
+            .is_some()
+    );
+    delete_bookmark(ctx.clone(), data.get_source_repo().clone(), &bookmark).await?;
+    backsync_bookmark_once(
+        ctx.clone(),
+        data.clone(),
+        dbs.clone(),
+        bookmark.clone(),
+        BacksyncLimit::NoLimit,
+        Arc::new(AtomicBool::new(false)),
+        CommitSyncContext::Tests,
+        false,
+        Box::new(future::ready(())),
+    )
+    .await?
+    .1
+    .await;
+    assert_eq!(
+        dbs.bookmarks
+            .get(ctx.clone(), &bookmark, Freshness::MostRecent)
+            .await?,
+        None
+    );
+    assert_eq!(
+        dbs.counters
+            .get_counter(&ctx, &format_counter(&data.get_source_repo_id()))
+            .await?,
+        Some(1000)
     );
     Ok(())
 }

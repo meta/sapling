@@ -21,7 +21,7 @@ use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::format_err;
 use backsyncer::BacksyncLimit;
-use backsyncer::backsync_latest;
+use backsyncer::backsync_bookmark_once;
 use backsyncer::open_backsyncer_dbs;
 use blobstore::Loadable;
 use bookmarks::BookmarkKey;
@@ -486,10 +486,11 @@ async fn move_bookmark(
             };
 
             info!("Back syncing bookmark movement to small repo");
-            backsync_latest(
+            backsync_bookmark_once(
                 ctx.clone(),
                 small_repo_back_sync_vars.large_to_small_syncer.clone(),
                 Arc::new(small_repo_back_sync_vars.target_repo_dbs.clone()),
+                bookmark.clone(),
                 BacksyncLimit::NoLimit,
                 Arc::new(AtomicBool::new(false)),
                 CommitSyncContext::RepoImport,

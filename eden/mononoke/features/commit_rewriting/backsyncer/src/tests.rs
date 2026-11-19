@@ -50,6 +50,7 @@ use cross_repo_sync::unsafe_sync_commit;
 use fbinit::FacebookInit;
 use fixtures::Linear;
 use fixtures::TestRepoFixture;
+use futures::Future;
 use futures::FutureExt;
 use futures::TryFutureExt;
 use futures::TryStreamExt;
@@ -103,11 +104,13 @@ use tests_utils::store_rename;
 use wireproto_handler::TargetRepoDbs;
 
 use crate::BOOKMARK_DISCOVERY_PAGE_SIZE_JUST_KNOB;
+use crate::BacksyncDelayInfo;
 use crate::BacksyncLimit;
 use crate::MAX_DISCOVERED_BOOKMARKS_JUST_KNOB;
 use crate::advance_global_counter_for_completed_bookmark;
+use crate::backsync_bookmark_once;
 use crate::backsync_deleted_by_prefix;
-use crate::backsync_latest;
+use crate::backsync_latest as legacy_backsync_latest;
 use crate::backsync_latest_by_prefix;
 use crate::backsync_latest_for_bookmark;
 use crate::discover_deleted_bookmarks;
@@ -116,6 +119,7 @@ use crate::format_counter;
 use crate::sync_entries;
 
 mod bookmark_cursor_tests;
+mod caller_stream_tests;
 mod ensure_backsynced_tests;
 
 const REPOMERGE_FOLDER: &str = "repomerge";
@@ -266,7 +270,7 @@ async fn global_cursor_catches_up_when_bookmark_worker_applied_move(
     )
     .await?;
 
-    let (_, commit_only_future) = backsync_latest(
+    let (_, commit_only_future) = legacy_backsync_latest(
         ctx.clone(),
         commit_sync_data.clone(),
         small_repo_dbs.clone(),
@@ -643,7 +647,7 @@ async fn test_sync_entries(fb: FacebookInit) -> Result<(), Error> {
     let small_repo_dbs = Arc::new(small_repo_dbs);
     // Backsync a few entries
     let ctx = CoreContext::test_mock(fb);
-    let (_delay_info, fut) = backsync_latest(
+    let (_delay_info, fut) = backsync_snapshot(
         ctx.clone(),
         commit_sync_data.clone(),
         small_repo_dbs.clone(),
@@ -658,10 +662,13 @@ async fn test_sync_entries(fb: FacebookInit) -> Result<(), Error> {
 
     let large_repo = commit_sync_data.get_source_repo();
 
+    let bookmark = BookmarkKey::new("anotherbookmark")?;
+    let counter_name = format_bookmark_counter(&large_repo.repo_identity().id(), &bookmark)?;
     let next_log_entries: Vec<_> = large_repo
         .bookmark_update_log()
-        .read_next_bookmark_log_entries(
+        .read_next_bookmark_log_entries_by_bookmark(
             ctx.clone(),
+            bookmark,
             BookmarkUpdateLogId(0),
             1000,
             Freshness::MostRecent,
@@ -677,7 +684,7 @@ async fn test_sync_entries(fb: FacebookInit) -> Result<(), Error> {
         small_repo_dbs.clone(),
         next_log_entries.clone(),
         BookmarkUpdateLogId(0),
-        &format_counter(&large_repo.repo_identity().id()),
+        &counter_name,
         None,
         Arc::new(AtomicBool::new(false)),
         CommitSyncContext::Backsyncer,
@@ -687,15 +694,17 @@ async fn test_sync_entries(fb: FacebookInit) -> Result<(), Error> {
     .await?
     .await;
 
-    let latest_log_id = next_log_entries.len() as i64;
+    let latest_log_id = next_log_entries
+        .last()
+        .expect("fixture has bookmark moves")
+        .id;
 
-    // Make sure all of the entries were synced
     let fetched_value = small_repo_dbs
         .counters
-        .get_counter(&ctx, &format_counter(&large_repo.repo_identity().id()))
+        .get_counter(&ctx, &counter_name)
         .await?;
 
-    assert_eq!(fetched_value, Some(latest_log_id));
+    assert_eq!(fetched_value, Some(latest_log_id.try_into()?));
 
     Ok(())
 }
@@ -880,7 +889,7 @@ async fn backsync_two_small_repos(fb: FacebookInit) -> Result<(), Error> {
         println!("backsyncing small repo#{}", small_repo_id.id());
         let small_repo_dbs = Arc::new(small_repo_dbs);
         let small_repo_id = commit_sync_data.get_target_repo().repo_identity().id();
-        backsync_latest(
+        backsync_snapshot(
             ctx.clone(),
             commit_sync_data.clone(),
             small_repo_dbs.clone(),
@@ -1121,7 +1130,7 @@ async fn backsync_unrelated_branch(fb: FacebookInit) -> Result<(), Error> {
     )
     .await?;
 
-    let (_delay_info, fut) = backsync_latest(
+    let (_delay_info, fut) = backsync_snapshot(
         ctx.clone(),
         commit_sync_data.clone(),
         small_repo_dbs.clone(),
@@ -1154,7 +1163,7 @@ async fn backsync_unrelated_branch(fb: FacebookInit) -> Result<(), Error> {
     )
     .await?;
 
-    backsync_latest(
+    backsync_snapshot(
         ctx.clone(),
         commit_sync_data.clone(),
         small_repo_dbs.clone(),
@@ -1299,9 +1308,11 @@ async fn backsync_change_mapping(fb: FacebookInit) -> Result<(), Error> {
     // Do the backsync, and check the version
     let jk = JustKnobsInMemory::new(hashmap! {
         "scm/mononoke:ignore_change_xrepo_mapping_extra".to_string() => KnobVal::Bool(false),
+        BOOKMARK_DISCOVERY_PAGE_SIZE_JUST_KNOB.to_string() => KnobVal::Int(10_000),
+        MAX_DISCOVERED_BOOKMARKS_JUST_KNOB.to_string() => KnobVal::Int(100_000),
     });
 
-    let f = backsync_latest(
+    let f = backsync_snapshot(
         ctx.clone(),
         commit_sync_data.clone(),
         small_repo_dbs.clone(),
@@ -1397,6 +1408,59 @@ async fn new_commit<T: AsRef<str>>(
     .await
 }
 
+async fn backsync_snapshot(
+    ctx: CoreContext,
+    data: CommitSyncData<TestRepo>,
+    dbs: Arc<TargetRepoDbs>,
+    limit: BacksyncLimit,
+    cancelled: Arc<AtomicBool>,
+    sync_context: CommitSyncContext,
+    disable_lease: bool,
+    mut future: Box<dyn Future<Output = ()> + Send + Unpin>,
+) -> Result<
+    (
+        BacksyncDelayInfo,
+        Box<dyn Future<Output = ()> + Send + Unpin>,
+    ),
+    Error,
+> {
+    let mut bookmarks =
+        crate::list_publishing_bookmarks(&ctx, data.get_source_repo(), &BookmarkPrefix::empty())
+            .await?
+            .into_iter()
+            .collect::<Vec<_>>();
+    // The merged fixture establishes post-merge mapping through master before
+    // exercising pre-merge and commit-only bookmarks.
+    bookmarks.sort_by(|a, b| {
+        (a.as_str() != "master")
+            .cmp(&(b.as_str() != "master"))
+            .then_with(|| a.as_str().cmp(b.as_str()))
+    });
+    let mut delay = BacksyncDelayInfo {
+        delay_secs: 0,
+        remaining_entries: 0,
+        failed_bookmarks: 0,
+    };
+    for bookmark in bookmarks {
+        let (next_delay, next_future) = backsync_bookmark_once(
+            ctx.clone(),
+            data.clone(),
+            dbs.clone(),
+            bookmark,
+            limit,
+            cancelled.clone(),
+            sync_context,
+            disable_lease,
+            future,
+        )
+        .await?;
+        delay.delay_secs = delay.delay_secs.max(next_delay.delay_secs);
+        delay.remaining_entries += next_delay.remaining_entries;
+        future = next_future;
+    }
+    Ok((delay, future))
+}
+
 async fn backsync_and_verify_master_wc(
     fb: FacebookInit,
     commit_sync_data: CommitSyncData<TestRepo>,
@@ -1417,12 +1481,11 @@ async fn backsync_and_verify_master_wc(
         .try_collect()
         .await?;
     let small_repo_dbs = Arc::new(small_repo_dbs);
-    let latest_log_id = next_log_entries.len() as i64;
 
     let mut futs = vec![];
     // Run syncs in parallel
     for _ in 1..5 {
-        let f = mononoke::spawn_task(backsync_latest(
+        let f = mononoke::spawn_task(backsync_snapshot(
             ctx.clone(),
             commit_sync_data.clone(),
             small_repo_dbs.clone(),
@@ -1439,12 +1502,16 @@ async fn backsync_and_verify_master_wc(
     let results = futures::future::try_join_all(futs).await?;
     futures::future::join_all(results.into_iter().map(|(_di, f)| f)).await;
 
-    // Check that counter was moved
-    let fetched_value = small_repo_dbs
-        .counters
-        .get_counter(&ctx, &format_counter(&large_repo.repo_identity().id()))
-        .await?;
-    assert_eq!(fetched_value, Some(latest_log_id));
+    for entry in next_log_entries {
+        let cursor = small_repo_dbs
+            .counters
+            .get_counter(
+                &ctx,
+                &format_bookmark_counter(&large_repo.repo_identity().id(), &entry.bookmark_name)?,
+            )
+            .await?;
+        assert!(cursor.is_some_and(|cursor| cursor >= i64::try_from(entry.id).unwrap()));
+    }
 
     verify_mapping_and_all_wc(ctx.clone(), commit_sync_data, vec![]).await?;
     Ok(())
@@ -2112,6 +2179,10 @@ async fn init_merged_repos(
     ),
     Error,
 > {
+    override_just_knobs(JustKnobsInMemory::new(hashmap! {
+        BOOKMARK_DISCOVERY_PAGE_SIZE_JUST_KNOB.to_string() => KnobVal::Int(10_000),
+        MAX_DISCOVERED_BOOKMARKS_JUST_KNOB.to_string() => KnobVal::Int(100_000),
+    }));
     let ctx = CoreContext::test_mock(fb);
 
     let mut factory = TestRepoFactory::new(fb)?;

@@ -14,7 +14,7 @@ use anyhow::Context;
 use anyhow::Error;
 use anyhow::format_err;
 use backsyncer::BacksyncLimit;
-use backsyncer::backsync_latest;
+use backsyncer::backsync_bookmark_once;
 use backsyncer::ensure_backsynced;
 use blobstore::Loadable;
 use bookmarks::BookmarkKey;
@@ -503,11 +503,16 @@ impl<R: Repo> PushRedirector<R> {
         legacy_wait_required: bool,
     ) -> Result<(), Error> {
         if !defer_to_backsyncer_for_backsync {
-            return if legacy_wait_required {
-                self.backsync_latest(ctx).await
-            } else {
-                Ok(())
-            };
+            if legacy_wait_required {
+                let bookmarks = bookmark_log_updates
+                    .into_iter()
+                    .map(|(bookmark, _)| bookmark)
+                    .collect::<HashSet<_>>();
+                for bookmark in bookmarks {
+                    self.backsync_bookmark_once(ctx, &bookmark).await?;
+                }
+            }
+            return Ok(());
         }
         if bookmark_log_updates.is_empty() {
             return Ok(());
@@ -533,12 +538,12 @@ impl<R: Repo> PushRedirector<R> {
     ) -> Result<(), Error> {
         let defer_to_backsyncer_for_backsync =
             justknobs::eval("scm/mononoke:defer_to_backsyncer_for_backsync", None, None);
+        let source_bookmark = self.small_to_large_bookmark(bookmark).await?;
         if defer_to_backsyncer_for_backsync {
-            let source_bookmark = self.small_to_large_bookmark(bookmark).await?;
             self.ensure_source_bookmark_backsynced(ctx, &source_bookmark, log_id)
                 .await
         } else {
-            self.backsync_latest(ctx).await
+            self.backsync_bookmark_once(ctx, &source_bookmark).await
         }
     }
 
@@ -558,13 +563,18 @@ impl<R: Repo> PushRedirector<R> {
         .await
     }
 
-    async fn backsync_latest(&self, ctx: &CoreContext) -> Result<(), Error> {
-        // backsync_latest returns a tokio-spawned future which contains the
+    async fn backsync_bookmark_once(
+        &self,
+        ctx: &CoreContext,
+        source_bookmark: &BookmarkKey,
+    ) -> Result<(), Error> {
+        // backsync_bookmark_once returns a tokio-spawned future which contains the
         // non-blocking extra syncing done. We don't need to wait for it.
-        let (_delay_info, future) = backsync_latest(
+        let (_delay_info, future) = backsync_bookmark_once(
             ctx.clone(),
             self.large_to_small_commit_syncer.clone(),
             self.target_repo_dbs.clone(),
+            source_bookmark.clone(),
             BacksyncLimit::NoLimit,
             Arc::new(AtomicBool::new(false)),
             CommitSyncContext::PushRedirector,

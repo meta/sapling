@@ -401,6 +401,7 @@ function switch_source_of_truth_to_large_repo {
   export LARGE_REPO_BOOKMARK_UPDATE_LOG_ID;
   local small_repo=$1
   local large_repo=$2
+  local source_commit target_commit
 
   orig_pwd=$(pwd)
 
@@ -420,6 +421,15 @@ function switch_source_of_truth_to_large_repo {
     "SELECT value FROM mutable_counters WHERE name = 'backsync_from_$LARGE_REPO_ID';")
   echo "BACKSYNC_COUNTER: $BACKSYNC_COUNTER"
 
+  source_commit=$(mononoke_admin bookmarks --repo-id "$large_repo" get "$MASTER_BOOKMARK_NAME" -S bonsai) || return
+  target_commit=$(mononoke_admin bookmarks --repo-id "$small_repo" get "heads/$MASTER_BOOKMARK_NAME" -S bonsai) || return
+  qualify_backsync_cursor_at_fixture_checkpoint "$large_repo" "$small_repo" \
+    "$MASTER_BOOKMARK_NAME" "heads/$MASTER_BOOKMARK_NAME" \
+    "$source_commit" "$target_commit" || return
+
+  merge_just_knobs <<EOF
+{"bools": {"scm/mononoke:backsyncer_prefix_polling": true}}
+EOF
 
   # Start backsyncer in the background
   REPOIDSMALL=$SUBMODULE_REPO_ID REPOIDLARGE=$LARGE_REPO_ID \

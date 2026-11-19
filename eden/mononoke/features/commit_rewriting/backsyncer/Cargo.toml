@@ -48,6 +48,7 @@ wireproto_handler = { version = "0.1.0", path = "../../../servers/slapi/wireprot
 [dev-dependencies]
 ascii = "1.1.0"
 assert_matches = "1.5"
+async-trait = "0.1.92"
 blobrepo_hg = { version = "0.1.0", path = "../../../blobrepo/blobrepo_hg" }
 changesets_creation = { version = "0.1.0", path = "../../changesets_creation" }
 commit_transformation = { version = "0.1.0", path = "../../commit_transformation/commit_transformation" }

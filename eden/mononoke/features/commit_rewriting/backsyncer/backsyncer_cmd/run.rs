@@ -21,6 +21,7 @@ use backsyncer::Repo;
 use backsyncer::backsync_deleted_by_prefix;
 use backsyncer::backsync_latest;
 use backsyncer::backsync_latest_by_prefix;
+use backsyncer::backsync_once_by_prefix;
 use backsyncer::format_counter;
 use backsyncer::open_backsyncer_dbs;
 use blobrepo_hg::BlobRepoHg;
@@ -111,20 +112,28 @@ pub(crate) async fn run_backsyncer(
                     .await?,
             );
 
-            // TODO(ikostia): why do we use discarding ScubaSample for BACKSYNC_ALL?
-            let (_delay_info, future) = backsync_latest(
+            let (bookmark_prefix, common_bookmarks) = prefix_polling_config(
+                &live_commit_sync_config,
+                commit_sync_data.get_target_repo_id(),
+            )?;
+            let delay = backsync_once_by_prefix(
                 ctx.as_ref().clone(),
                 commit_sync_data,
                 target_repo_dbs,
-                BacksyncLimit::NoLimit,
+                bookmark_prefix,
+                &common_bookmarks,
+                PREFIX_POLLING_BOOKMARK_CONCURRENCY,
                 cancellation_requested,
                 CommitSyncContext::Backsyncer,
                 false,
-                Box::new(future::ready(())),
             )
-            .boxed()
             .await?;
-            future.await;
+            if delay.failed_bookmarks > 0 {
+                return Err(format_err!(
+                    "{} bookmark workers failed during one-shot backsync",
+                    delay.failed_bookmarks,
+                ));
+            }
         }
         BacksyncerCommand::Forever => {
             let target_repo_dbs = Arc::new(
