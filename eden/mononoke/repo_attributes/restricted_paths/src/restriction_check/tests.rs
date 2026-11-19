@@ -5,6 +5,7 @@
  * GNU General Public License version 2.
  */
 
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -15,10 +16,17 @@ use anyhow::Result;
 use context::CoreContext;
 use context::SessionContainer;
 use fbinit::FacebookInit;
+use futures::FutureExt;
+use justknobs::test_helpers::JustKnobsInMemory;
+use justknobs::test_helpers::KnobVal;
+use justknobs::test_helpers::with_just_knobs_async;
+use metaconfig_types::ComparableRegex;
 use metaconfig_types::EnforcementConditionSet;
+use metaconfig_types::EnforcementExemptionSet;
 use metaconfig_types::RequestMatchers;
 use metadata::Metadata;
 use mononoke_macros::mononoke;
+use mononoke_types::MPath;
 use mononoke_types::NonRootMPath;
 use permission_checker::AclProvider;
 use permission_checker::Acls;
@@ -37,8 +45,11 @@ use super::SharedFetchHandle;
 use super::SourceRestrictionCheck;
 use super::SourceRestrictionSummary;
 use crate::DenyingRestriction;
+use crate::RestrictedPaths;
 use crate::restriction_info::ManifestRestrictionInfo;
 use crate::restriction_info::PathRestrictionInfo;
+use crate::test_utils::RestrictedPathsConfigBuilder;
+use crate::test_utils::build_test_restricted_paths;
 
 /// What it tests: tri-state factor observations preserve the distinction
 /// between an absent policy and a configured policy that denies the caller.
@@ -982,6 +993,110 @@ async fn test_direct_acl_read_is_not_flagged_as_bypass(fb: FacebookInit) -> Resu
         !authorization.is_admin_bypass(),
         "a direct ACL reader must not be flagged as an admin bypass",
     );
+    Ok(())
+}
+
+// What it tests: the authorization check that the metadata APIs and enforcement
+// share records that the response depends on the caller.
+// Expected: recorded whatever the result: for a denied caller, one the ACL
+// authorizes and one the bypass group authorizes.
+#[mononoke::fbinit_test]
+async fn test_authorization_check_records_caller_dependence(fb: FacebookInit) -> Result<()> {
+    let acl_provider = admin_bypass_acl_provider()?;
+    let acl = MononokeIdentity::from_str("REPO_REGION:repos/hg/fbsource/=project1")?;
+    let restrictions = [(&acl, None)];
+    let bypass = MononokeIdentity::from_str("GROUP:path_acls_admin_bypass")?;
+
+    for user in ["USER:bob", "USER:alice", "USER:carol"] {
+        let ctx = ctx_with_identities(fb, &[user])?;
+        super::check_authorization(&ctx, &acl_provider, &restrictions, None, Some(&bypass)).await?;
+        assert!(ctx.response_depends_on_caller(), "{user}");
+    }
+    Ok(())
+}
+
+// What it tests: which accesses the enforcement entry point records as
+// depending on the caller, with access logging off so only enforcement reads
+// the sources.
+// Expected: an access to a restricted path is recorded whatever the decision
+// (denied, authorized, exempted), and so is any access when no condition set
+// matches the caller. An enforced access that no restriction covers is not,
+// and nothing is recorded with enforcement off for the repo.
+#[mononoke::fbinit_test]
+async fn test_enforcement_records_caller_dependence(fb: FacebookInit) -> Result<()> {
+    async fn repo(
+        fb: FacebookInit,
+        sets: Vec<EnforcementConditionSet>,
+        exemptions: Vec<EnforcementExemptionSet>,
+    ) -> Result<Arc<RestrictedPaths>> {
+        let acl = "REPO_REGION:repos/hg/fbsource/=project1";
+        let mut config = RestrictedPathsConfigBuilder::new()
+            .with_path_restriction_metadata("restricted", acl)?
+            .build();
+        config.enforcement_enabled = !sets.is_empty();
+        config.enforcement_condition_sets = sets;
+        config.enforcement_exemption_sets = exemptions;
+        let acl_provider = admin_bypass_acl_provider()?;
+        Ok(Arc::new(
+            build_test_restricted_paths(fb, config, acl_provider).await?,
+        ))
+    }
+
+    let everyone = EnforcementConditionSet {
+        always_enabled: true,
+        require_client_request_flag: false,
+        restriction_acls: vec![],
+        matchers: RequestMatchers::default(),
+    };
+    let bob_matchers = RequestMatchers {
+        client_identity_regexes: vec![ComparableRegex::new("^USER:bob$")?],
+        ..Default::default()
+    };
+    let only_bob = EnforcementConditionSet {
+        always_enabled: false,
+        matchers: bob_matchers.clone(),
+        ..everyone.clone()
+    };
+    let exempt_bob = EnforcementExemptionSet::new(bob_matchers)?;
+
+    let enforced = repo(fb, vec![everyone.clone()], vec![]).await?;
+    let exempting = repo(fb, vec![everyone], vec![exempt_bob]).await?;
+    let bob_only = repo(fb, vec![only_bob], vec![]).await?;
+    let off = repo(fb, vec![], vec![]).await?;
+    let tent = MPath::new("restricted/file")?;
+    let open = MPath::new("public/file")?;
+    let (alice, bob) = ("USER:alice", "USER:bob");
+
+    // (repo, caller, path, denied, depends on caller, case)
+    let cases = [
+        (&enforced, bob, &tent, true, true, "denied"),
+        (&enforced, alice, &tent, false, true, "authorized"),
+        (&enforced, bob, &open, false, false, "no restriction"),
+        (&exempting, bob, &tent, false, true, "exempted"),
+        (&bob_only, alice, &open, false, true, "no set matches"),
+        (&off, bob, &tent, false, false, "enforcement off"),
+    ];
+    for (restricted_paths, caller, path, denied, depends_on_caller, case) in cases {
+        let ctx = ctx_with_identities(fb, &[caller])?;
+        let logging_off = JustKnobsInMemory::new(HashMap::from([(
+            crate::ACCESS_LOGGING_JK.to_string(),
+            KnobVal::Bool(false),
+        )]));
+        let access = crate::spawn_enforce_restricted_path_access(
+            &ctx,
+            restricted_paths.clone(),
+            path,
+            "test",
+            None,
+        );
+        let result = with_just_knobs_async(logging_off, access.boxed()).await;
+        assert_eq!(result.is_err(), denied, "{case}: denied");
+        assert_eq!(
+            ctx.response_depends_on_caller(),
+            depends_on_caller,
+            "{case}: depends on caller",
+        );
+    }
     Ok(())
 }
 

@@ -49,6 +49,7 @@ pub struct LoggingContainer {
     nocache_thriftcache: Arc<AtomicBool>,
     partial_response: Arc<AtomicBool>,
     potential_partial_response: Arc<AtomicBool>,
+    response_depends_on_caller: Arc<AtomicBool>,
 }
 
 impl LoggingContainer {
@@ -68,6 +69,7 @@ impl LoggingContainer {
             nocache_thriftcache: Arc::new(AtomicBool::new(false)),
             partial_response: Arc::new(AtomicBool::new(false)),
             potential_partial_response: Arc::new(AtomicBool::new(false)),
+            response_depends_on_caller: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -87,6 +89,7 @@ impl LoggingContainer {
             nocache_thriftcache: self.nocache_thriftcache.clone(),
             partial_response: self.partial_response.clone(),
             potential_partial_response: self.potential_partial_response.clone(),
+            response_depends_on_caller: self.response_depends_on_caller.clone(),
         }
     }
 
@@ -124,6 +127,7 @@ impl LoggingContainer {
             nocache_thriftcache: self.nocache_thriftcache.clone(),
             partial_response: self.partial_response.clone(),
             potential_partial_response: self.potential_partial_response.clone(),
+            response_depends_on_caller: self.response_depends_on_caller.clone(),
         }
     }
 
@@ -157,6 +161,15 @@ impl LoggingContainer {
 
     pub fn set_potential_partial_response(&self) {
         self.potential_partial_response
+            .store(true, Ordering::Relaxed);
+    }
+
+    pub fn response_depends_on_caller(&self) -> bool {
+        self.response_depends_on_caller.load(Ordering::Relaxed)
+    }
+
+    pub fn set_response_depends_on_caller(&self) {
+        self.response_depends_on_caller
             .store(true, Ordering::Relaxed);
     }
 }

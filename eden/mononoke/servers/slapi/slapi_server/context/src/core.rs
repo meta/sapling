@@ -221,6 +221,17 @@ impl CoreContext {
         self.logging.set_potential_partial_response();
     }
 
+    /// Whether the response to this request depends on the caller's
+    /// identities beyond repo read access, so it must not be served to a
+    /// caller it was not computed for.
+    pub fn response_depends_on_caller(&self) -> bool {
+        self.logging.response_depends_on_caller()
+    }
+
+    pub fn set_response_depends_on_caller(&self) {
+        self.logging.set_response_depends_on_caller();
+    }
+
     pub fn sql_query_telemetry(&self) -> SqlQueryTelemetry {
         let fb = self.fb.clone();
         let metadata = self.metadata();

@@ -1045,6 +1045,13 @@ where
         return Ok(());
     }
 
+    if matches!(pre_filter.conditions, PreFilterResult::NoMatch) {
+        // No condition set matched this caller, so nothing is looked up and
+        // no ACL is consulted, but a caller that a set matches would be
+        // enforced on this access.
+        ctx.set_response_depends_on_caller();
+    }
+
     let enforcement_outcome = enforce_with_source_handles(
         fetches.enforcement_config,
         fetches.enforcement_acl_manifest,

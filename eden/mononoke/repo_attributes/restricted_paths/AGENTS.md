@@ -189,6 +189,17 @@ Record new decisions here with their reason.
    with a matching exemption the error is returned even over a denial. The
    denial can name an ACL that the failed source's rollout group would have
    waived; access is refused either way.
+9. **Caller dependence is recorded on the request.** A server whose response
+   cache does not key on the caller (the diff service behind ThriftCache,
+   whose key is SCS) must not store a response that another caller would get
+   differently (S729206). The two functions that consult the caller's
+   identities for a restriction, `has_repo_region_acls_for_action` and
+   `is_part_of_group`, call `CoreContext::set_response_depends_on_caller`, so
+   every entry point is covered whatever the decision, and an access that no
+   restriction covers records nothing. Enforcement also records it when no
+   condition set matches the caller, since nothing is consulted then. The
+   crate records the fact only; each server decides what it means for its
+   cache. ACL regions do not record it.
 
 ## Changing this code safely
 

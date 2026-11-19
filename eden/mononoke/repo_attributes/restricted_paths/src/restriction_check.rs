@@ -1066,6 +1066,10 @@ async fn has_repo_region_acls_for_action(
     action: &str,
 ) -> Result<bool> {
     let identities = ctx.metadata().identities();
+    // Another caller could get another answer: a server whose response cache
+    // does not key on the caller must not store this response (AGENTS.md,
+    // decision 9).
+    ctx.set_response_depends_on_caller();
     stream::iter(acls.iter().copied())
         .map(|acl| async move {
             let checker = acl_provider
@@ -1120,6 +1124,7 @@ pub(crate) async fn is_part_of_group(
             );
         })?;
 
+    ctx.set_response_depends_on_caller();
     Ok(membership_checker
         .is_member(ctx.metadata().identities())
         .await)

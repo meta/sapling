@@ -46,10 +46,28 @@ use crate::repo::Repo;
 use crate::utils::diff_conversion::convert_diff_single_input;
 use crate::utils::diff_conversion::input_changeset_specifier;
 
+/// Kill switch for keeping responses that depend on the caller's path ACLs
+/// out of ThriftCache.
+const THRIFTCACHE_NOCACHE_FOR_PATH_ACLS_JK: &str =
+    "scm/mononoke:diff_service_thriftcache_nocache_for_path_acls";
+
 pub fn internal_error<E: Into<Error>>(e: E) -> thrift::InternalError {
     thrift::InternalError {
         reason: format!("{:?}", e.into()),
     }
+}
+
+/// Whether ThriftCache must not store this response. Its key is the direct
+/// caller (SCS) and the request, not the caller SCS acts for, so a stored
+/// response is served to every SCS caller. An error is specific to the
+/// request that produced it, a partial response would reach an entitled
+/// caller incomplete, and a response that depends on the caller would reach
+/// callers it was not computed for.
+fn should_set_nocache(succeeded: bool, ctx: &CoreContext) -> bool {
+    !succeeded
+        || ctx.partial_response()
+        || (ctx.response_depends_on_caller()
+            && justknobs::eval(THRIFTCACHE_NOCACHE_FOR_PATH_ACLS_JK, None, None))
 }
 
 /// Partial-response verdict for a diff-service method, from the request's
@@ -104,7 +122,10 @@ macro_rules! impl_thrift_methods {
                 Self: Sync + 'async_trait,
             {
                 let handler = async move {
-                    let ctx = self.create_ctx(stringify!($method_name), req_ctxt, &$( $param_name ),* ).await.map_err(|e| <$err>::from(internal_error(e)))?;
+                    let ctx = self.create_ctx(stringify!($method_name), req_ctxt, &$( $param_name ),* ).await.map_err(|e| {
+                        platform::set_nocache_header(req_ctxt);
+                        <$err>::from(internal_error(e))
+                    })?;
                     ctx.scuba().clone().log_with_msg("Request start", None);
                     let mut scuba = ctx.scuba().clone();
                     let perf_counters = ctx.perf_counters().clone();
@@ -141,6 +162,9 @@ macro_rules! impl_thrift_methods {
                     perf_counters.insert_perf_counters(&mut scuba);
                     scuba.add_future_stats(&stats);
                     scuba.add("partial_response", ctx.partial_response());
+                    let nocache = should_set_nocache(res.is_ok(), &ctx);
+                    scuba.add("thriftcache_nocache", nocache);
+                    scuba.add("response_depends_on_caller", ctx.response_depends_on_caller());
 
                     scuba.log_with_msg("Request complete", None);
 
@@ -162,10 +186,7 @@ macro_rules! impl_thrift_methods {
                         },
                     });
 
-                    // A partial response must not be served from cache to an entitled
-                    // caller (who would silently receive incomplete data); the exact
-                    // verdict travels in the typed response instead.
-                    if res.is_ok() && ctx.partial_response() {
+                    if nocache {
                         platform::set_nocache_header(req_ctxt);
                     }
 
@@ -407,6 +428,9 @@ mod tests {
     use std::sync::Arc;
 
     use arc_swap::ArcSwap;
+    use justknobs::test_helpers::JustKnobsInMemory;
+    use justknobs::test_helpers::KnobVal;
+    use justknobs::test_helpers::with_just_knobs;
     use metaconfig_types::CommitIdentityScheme;
     use mononoke_api::OmissionCollector;
     use mononoke_macros::mononoke;
@@ -421,6 +445,40 @@ mod tests {
         Mononoke {
             repos: Arc::new(MononokeRepos::new()),
             repo_names_in_tier: Arc::new(ArcSwap::from_pointee(tier)),
+        }
+    }
+
+    // What it tests: which responses ThriftCache may store, with the path-ACL
+    // kill switch on and off.
+    // Expected: only a complete successful response that does not depend on
+    // the caller is cacheable. The switch off restores caching of successful
+    // caller-dependent responses and nothing else.
+    #[mononoke::fbinit_test]
+    fn test_should_set_nocache(fb: FacebookInit) {
+        let plain = CoreContext::test_mock(fb);
+        let partial = CoreContext::test_mock(fb);
+        partial.set_partial_response();
+        let acl = CoreContext::test_mock(fb);
+        acl.set_response_depends_on_caller();
+
+        // (kill switch, succeeded, context, nocache, case)
+        let cases = [
+            (true, true, &plain, false, "complete"),
+            (true, true, &partial, true, "partial"),
+            (true, true, &acl, true, "caller-dependent"),
+            (true, false, &plain, true, "error"),
+            (false, true, &acl, false, "switch off"),
+            (false, true, &partial, true, "switch off, partial"),
+            (false, false, &acl, true, "switch off, denial"),
+        ];
+        for (enabled, succeeded, ctx, nocache, case) in cases {
+            let knob = JustKnobsInMemory::new(HashMap::from([(
+                THRIFTCACHE_NOCACHE_FOR_PATH_ACLS_JK.to_string(),
+                KnobVal::Bool(enabled),
+            )]));
+            with_just_knobs(knob, || {
+                assert_eq!(should_set_nocache(succeeded, ctx), nocache, "{case}");
+            });
         }
     }
 

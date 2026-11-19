@@ -8,6 +8,7 @@
     "scm/mononoke:load_shed_client_groups_from_identities": false,
     "scm/mononoke:repo_metadata_logger_wait_for_derived_blame": false,
     "scm/mononoke:enable_diff_service_path_acls": true,
+    "scm/mononoke:diff_service_thriftcache_nocache_for_path_acls": true,
     "scm/artillery:handle_http_requests_with_rctx": true,
     "scm/artillery:root_scs_traces": false,
     "scm/artillery:root_land_service_traces": false,
