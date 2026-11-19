@@ -103,7 +103,6 @@
     "scm/mononoke:scs_disable_mutable_blame": false,
     "scm/mononoke:scs_force_local_pushrebase": true,
     "scm/mononoke:git_block_indirect_unshallow_fetch": false,
-    "scm/mononoke:hgmanifest_skip_writes": false,
     "scm/mononoke:hgmanifest_read_from_augmented": false,
     "scm/mononoke:use_acl_manifest_for_restricted_paths": true,
     "scm/mononoke:use_restricted_paths_for_augmented_tree_acl_metadata": true,

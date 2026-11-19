@@ -43,7 +43,6 @@ use futures::FutureExt;
 use futures::stream::TryStreamExt;
 use justknobs::test_helpers::JustKnobsInMemory;
 use justknobs::test_helpers::KnobVal;
-use justknobs::test_helpers::override_just_knobs;
 use justknobs::test_helpers::with_just_knobs_async;
 use manifest::Entry;
 use manifest::ManifestOps;
@@ -584,81 +583,6 @@ async fn test_augmented_manifest_derive_heads(fb: FacebookInit) -> Result<()> {
             .load(&ctx, repo.repo_blobstore())
             .await?
             .manifestid();
-
-        compare_manifests(&ctx, &repo, hg_manifest_id, aug.hg_augmented_manifest_id()).await?;
-    }
-
-    Ok(())
-}
-
-/// Test that the old HgManifest-based augmented-manifest path remains
-/// compatible when `hgmanifest_skip_writes=true`.
-#[mononoke::fbinit_test]
-async fn test_augmented_manifest_skip_writes(fb: FacebookInit) -> Result<()> {
-    override_just_knobs(JustKnobsInMemory::new(HashMap::from([(
-        "scm/mononoke:hgmanifest_skip_writes".to_string(),
-        KnobVal::Bool(true),
-    )])));
-
-    let ctx = CoreContext::test_mock(fb);
-    let repo: Repo = test_repo_factory::build_empty(fb).await?;
-
-    let root = CreateCommitContext::new_root(&ctx, &repo)
-        .add_file("dir/file_a", "content_a")
-        .add_file("dir/file_b", "content_b")
-        .add_file("other/file_c", "content_c")
-        .commit()
-        .await?;
-
-    let child = CreateCommitContext::new(&ctx, &repo, vec![root])
-        .add_file("dir/file_a", "updated_a")
-        .add_file("new/file_d", "content_d")
-        .commit()
-        .await?;
-
-    let grandchild = CreateCommitContext::new(&ctx, &repo, vec![child])
-        .add_file("other/file_c", "updated_c")
-        .commit()
-        .await?;
-
-    let manager = repo.repo_derived_data().manager();
-
-    // Prederive the static manager dependency retained in this stack.
-    fixtures::store_hg_changesets_as_uploaded(&ctx, &repo, vec![root, child, grandchild]).await?;
-
-    // Pre-derive RootAclManifestId (batch dependency of RootHgAugmentedManifestId)
-    manager
-        .derive_exactly_batch::<RootAclManifestId>(&ctx, vec![root, child, grandchild], None)
-        .await?;
-
-    manager
-        .derive_exactly_batch::<RootHgAugmentedManifestId>(
-            &ctx,
-            vec![root, child, grandchild],
-            None,
-        )
-        .await?;
-
-    for cs_id in [root, child, grandchild] {
-        let aug = manager
-            .fetch_derived::<RootHgAugmentedManifestId>(&ctx, cs_id, None)
-            .await?
-            .unwrap_or_else(|| panic!("Missing RootHgAugmentedManifestId for {cs_id}"));
-
-        let hg_cs_id = repo.derive_hg_changeset(&ctx, cs_id).await?;
-        let hg_manifest_id = hg_cs_id
-            .load(&ctx, repo.repo_blobstore())
-            .await?
-            .manifestid();
-
-        // HgManifest blobs are loadable via the reconstruction layer.
-        let _root_mf = hg_manifest_id.load(&ctx, repo.repo_blobstore()).await?;
-
-        let entries: Vec<_> = hg_manifest_id
-            .list_all_entries(ctx.clone(), repo.repo_blobstore().clone())
-            .try_collect()
-            .await?;
-        assert!(!entries.is_empty());
 
         compare_manifests(&ctx, &repo, hg_manifest_id, aug.hg_augmented_manifest_id()).await?;
     }
@@ -5156,7 +5080,7 @@ async fn test_cached_acl_overlay_map_none_does_not_mutate_cache(fb: FacebookInit
 }
 
 #[mononoke::fbinit_test]
-async fn test_augmented_manifest_skip_writes_uses_mapped_hg_roots(fb: FacebookInit) -> Result<()> {
+async fn test_augmented_manifest_uses_mapped_hg_roots(fb: FacebookInit) -> Result<()> {
     let repo: Repo = test_repo_factory::build_empty(fb).await?;
     let ctx = CoreContext::test_mock(fb);
 
@@ -5197,20 +5121,10 @@ async fn test_augmented_manifest_skip_writes_uses_mapped_hg_roots(fb: FacebookIn
         expected_roots.insert(*cs_id, expected_root);
     }
 
-    // When: deriving v1 augmented manifests with Hg manifest skip-writes enabled.
-    with_just_knobs_async(
-        JustKnobsInMemory::new(HashMap::from([(
-            "scm/mononoke:hgmanifest_skip_writes".to_string(),
-            KnobVal::Bool(true),
-        )])),
-        async {
-            manager
-                .derive_exactly_batch::<RootHgAugmentedManifestId>(&ctx, csids.clone(), None)
-                .await
-        }
-        .boxed(),
-    )
-    .await?;
+    // When: deriving v1 augmented manifests.
+    manager
+        .derive_exactly_batch::<RootHgAugmentedManifestId>(&ctx, csids.clone(), None)
+        .await?;
 
     // Then: the derived augmented manifests use the existing mapped Hg roots
     // and keep the manager dependency mapping intact.
