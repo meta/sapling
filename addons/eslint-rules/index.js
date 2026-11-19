@@ -8,11 +8,13 @@
 const jotaiMaybeUseFamily = require('./jotai-maybe-use-family');
 const internalPromiseCallbackTypes = require('./internal-promise-callback-types');
 const noFacebookImports = require('./no-facebook-imports');
+const noSyncIo = require('./no-sync-io');
 
 module.exports = {
   rules: {
     'jotai-maybe-use-family': jotaiMaybeUseFamily,
     'internal-promise-callback-types': internalPromiseCallbackTypes,
     'no-facebook-imports': noFacebookImports,
+    'no-sync-io': noSyncIo,
   },
 };

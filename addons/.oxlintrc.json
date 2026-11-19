@@ -85,6 +85,7 @@
     "custom/jotai-maybe-use-family": "error",
     "custom/internal-promise-callback-types": "error",
     "custom/no-facebook-imports": "error",
+    "custom/no-sync-io": "error",
 
     "require-await": "warn",
     "no-async-promise-executor": "warn",
