@@ -26,6 +26,7 @@
       }
     ],
     "@typescript-eslint/consistent-type-imports": "error",
+    "@typescript-eslint/no-explicit-any": "error",
 
     "curly": "error",
     "dot-notation": "error",
