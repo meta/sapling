@@ -25,6 +25,8 @@ use serde_json::Value;
 mod change_impact;
 mod check;
 mod compare;
+mod deployment_specs;
+mod minimise;
 mod show;
 
 /// Mononoke config operations.
@@ -52,6 +54,12 @@ pub enum ConfigSubcommand {
     /// such as an edit to a preset: the loaded deployment against a candidate
     /// version of it, or one field of a preset.
     ChangeImpact(change_impact::ChangeImpactArgs),
+    /// Rewrite repo specs to name a preset and keep only what
+    /// differs from it, checking that every service of the deployment that
+    /// serves each repo still loads the same config. A job that reads a tier
+    /// can't resolve a preset, so apply the result only once every job that
+    /// reads the specs loads them through a deployment.
+    Minimise(minimise::MinimiseArgs),
 }
 
 pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
@@ -62,6 +70,7 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
         ConfigSubcommand::ChangeImpact(change_impact_args) => {
             change_impact::run(app, change_impact_args).await
         }
+        ConfigSubcommand::Minimise(args) => minimise::run(app, args).await,
     }
 }
 
