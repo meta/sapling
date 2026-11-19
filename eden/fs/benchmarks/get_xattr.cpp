@@ -17,6 +17,7 @@
 
 #include <benchmark/benchmark.h>
 #include <boost/filesystem.hpp>
+#include <fmt/format.h>
 
 #include <folly/File.h>
 #include <folly/container/Array.h>
@@ -84,7 +85,8 @@ std::string_view xAttrTypeToString(XAttrType xtype) {
     }
     default:
       throw std::invalid_argument(
-          fmt::format("invalid xattr type selected: {}", xtype));
+          fmt::format(
+              "invalid xattr type selected: {}", fmt::underlying(xtype)));
   }
 }
 
@@ -110,7 +112,8 @@ size_t getXAttrTypeSize(XAttrType xtype) {
       return 64;
     default:
       throw std::invalid_argument(
-          fmt::format("invalid xattr type selected: {}", xtype));
+          fmt::format(
+              "invalid xattr type selected: {}", fmt::underlying(xtype)));
   }
 }
 
@@ -390,7 +393,8 @@ int main(int argc, char** argv) {
             default:
               throw std::invalid_argument(
                   fmt::format(
-                      "cannot fetch unknown attr via thrift: {}", xAttrType));
+                      "cannot fetch unknown attr via thrift: {}",
+                      fmt::underlying(xAttrType)));
           }
         }
 

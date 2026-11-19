@@ -94,6 +94,7 @@ cpp_binary(
     ],
     deps = [
         "fbsource//third-party/benchmark:benchmark",
+        "fbsource//third-party/fmt:fmt",
         "fbsource//xplat/folly:file",
         "fbsource//xplat/folly/container:array",
         "fbsource//xplat/folly/init:init",
