@@ -167,6 +167,15 @@ mononoke_queries! {
         LIMIT 1"
     }
 
+    read SelectBubblesFromChangeset(
+        repo_id: RepositoryId,
+        cs_id: ChangesetId,
+    ) -> (BubbleId,) {
+        "SELECT bubble_id
+        FROM ephemeral_bubble_changeset_mapping
+        WHERE repo_id = {repo_id} AND cs_id = {cs_id}"
+    }
+
     cacheable read SelectBubbleByIdMaybeStale(
          id: BubbleId,
     ) -> (Timestamp, ExpiryStatus, Option<String>) {
@@ -425,6 +434,28 @@ impl RepoEphemeralStoreInner {
         Ok(rows.into_iter().next().map(|b| b.0))
     }
 
+    /// Given a changeset ID, fetch every bubble that contains it, in no
+    /// particular order. Reads from the master, so that a caller that acts on
+    /// the result, like a deletion, does not miss bubbles that have not yet
+    /// replicated.
+    async fn bubbles_from_changeset(
+        &self,
+        ctx: &CoreContext,
+        repo_id: &RepositoryId,
+        cs_id: &ChangesetId,
+    ) -> Result<Vec<BubbleId>> {
+        ctx.perf_counters()
+            .increment_counter(PerfCounterType::SqlReadsMaster);
+        let rows = SelectBubblesFromChangeset::query(
+            &self.connections.read_master_connection,
+            ctx.sql_query_telemetry(),
+            repo_id,
+            cs_id,
+        )
+        .await?;
+        Ok(rows.into_iter().map(|b| b.0).collect())
+    }
+
     async fn bubble_from_hg_changeset(
         &self,
         ctx: &CoreContext,
@@ -454,15 +485,18 @@ impl RepoEphemeralStoreInner {
         Ok(rows.into_iter().map(|l| l.0).collect::<Vec<_>>())
     }
 
+    /// Fetch every changeset in the bubble. Reads from the master, so that
+    /// a caller that reports what a deletion of the bubble removes sees
+    /// changesets that have not yet replicated.
     async fn changesets_from_bubble(
         &self,
         ctx: &CoreContext,
         bubble_id: &BubbleId,
     ) -> Result<Vec<ChangesetId>> {
         ctx.perf_counters()
-            .increment_counter(PerfCounterType::SqlReadsReplica);
+            .increment_counter(PerfCounterType::SqlReadsMaster);
         let rows = SelectChangesetFromBubble::query(
-            &self.connections.read_connection,
+            &self.connections.read_master_connection,
             ctx.sql_query_telemetry(),
             bubble_id,
         )
@@ -931,6 +965,19 @@ impl RepoEphemeralStore {
     ) -> Result<Option<BubbleId>> {
         self.inner()?
             .bubble_from_changeset(ctx, &self.repo_id, cs_id)
+            .await
+    }
+
+    /// Given a changeset ID, fetch every bubble that contains it, in no
+    /// particular order. Unlike `bubble_from_changeset`, this also returns
+    /// bubbles that are marked as expired.
+    pub async fn bubbles_from_changeset(
+        &self,
+        ctx: &CoreContext,
+        cs_id: &ChangesetId,
+    ) -> Result<Vec<BubbleId>> {
+        self.inner()?
+            .bubbles_from_changeset(ctx, &self.repo_id, cs_id)
             .await
     }
 

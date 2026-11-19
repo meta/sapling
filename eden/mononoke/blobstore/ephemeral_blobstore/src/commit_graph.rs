@@ -533,6 +533,7 @@ mod test {
     use mononoke_types_mocks::changesetid::ONES_CSID;
     use mononoke_types_mocks::changesetid::THREES_CSID;
     use mononoke_types_mocks::changesetid::TWOS_CSID;
+    use mononoke_types_mocks::repo::REPO_ONE;
     use mononoke_types_mocks::repo::REPO_ZERO;
     use repo_blobstore::RepoBlobstore;
     use scuba_ext::MononokeScubaSampleBuilder;
@@ -837,6 +838,106 @@ mod test {
             eph.changesets_from_bubble(&ctx, &older.bubble_id()).await?,
             vec![snapshot],
             "deleting one bubble should not remove the changeset from another bubble"
+        );
+        Ok(())
+    }
+
+    /// What it tests: looking up the bubbles of a changeset that is stored in
+    /// two bubbles, and of a changeset that is in no bubble.
+    /// Expected: both bubbles are returned for the first, none for the second.
+    #[mononoke::fbinit_test]
+    async fn bubbles_from_changeset_returns_every_bubble(fb: FacebookInit) -> Result<()> {
+        let (ctx, repo_blobstore, eph) = bootstrap(fb)?;
+        let first = eph.create_bubble(&ctx, None, vec![]).await?;
+        let second = eph.create_bubble(&ctx, None, vec![]).await?;
+        let unrelated = eph.create_bubble(&ctx, None, vec![]).await?;
+
+        let snapshot_edges = edges_with_parents(ONES_CSID, 1, vec![FIVES_CSID]);
+        let unrelated_edges = edges_with_parents(TWOS_CSID, 1, vec![FIVES_CSID]);
+        ephemeral_only_storage(&first, repo_blobstore.clone())
+            .add(&ctx, &snapshot_edges)
+            .await?;
+        ephemeral_only_storage(&second, repo_blobstore.clone())
+            .add(&ctx, &snapshot_edges)
+            .await?;
+        ephemeral_only_storage(&unrelated, repo_blobstore)
+            .add(&ctx, &unrelated_edges)
+            .await?;
+
+        let mut bubbles = eph.bubbles_from_changeset(&ctx, &ONES_CSID).await?;
+        bubbles.sort();
+        assert_eq!(
+            bubbles,
+            vec![first.bubble_id(), second.bubble_id()],
+            "every bubble containing the changeset should be returned, and no other"
+        );
+        assert!(
+            eph.bubbles_from_changeset(&ctx, &THREES_CSID)
+                .await?
+                .is_empty(),
+            "a changeset that is in no bubble should have no bubbles"
+        );
+        Ok(())
+    }
+
+    /// What it tests: looking up the bubbles of a changeset when one of its
+    /// bubbles is marked as expired.
+    /// Expected: the marked-expired bubble is returned along with the active
+    /// one, so that no copy of the changeset is left behind.
+    #[mononoke::fbinit_test]
+    async fn bubbles_from_changeset_includes_marked_expired_bubbles(
+        fb: FacebookInit,
+    ) -> Result<()> {
+        let (ctx, repo_blobstore, eph) = bootstrap_with_mode(fb, BubbleDeletionMode::MarkOnly)?;
+        let marked_expired = eph.create_bubble(&ctx, None, vec![]).await?;
+        let active = eph.create_bubble(&ctx, None, vec![]).await?;
+
+        let edges = edges_with_parents(ONES_CSID, 1, vec![FIVES_CSID]);
+        ephemeral_only_storage(&marked_expired, repo_blobstore.clone())
+            .add(&ctx, &edges)
+            .await?;
+        ephemeral_only_storage(&active, repo_blobstore)
+            .add(&ctx, &edges)
+            .await?;
+        eph.delete_bubble(&ctx, marked_expired.bubble_id()).await?;
+
+        let mut bubbles = eph.bubbles_from_changeset(&ctx, &ONES_CSID).await?;
+        bubbles.sort();
+        assert_eq!(
+            bubbles,
+            vec![marked_expired.bubble_id(), active.bubble_id()],
+            "a bubble marked as expired still holds the changeset and should be returned"
+        );
+        Ok(())
+    }
+
+    /// What it tests: looking up the bubbles of a changeset that is stored in
+    /// a bubble of the repo and in a bubble of another repo sharing the same
+    /// SQL store.
+    /// Expected: only the bubble of the repo of the store is returned.
+    #[mononoke::fbinit_test]
+    async fn bubbles_from_changeset_ignores_other_repos(fb: FacebookInit) -> Result<()> {
+        let (ctx, repo_blobstore, eph) = bootstrap(fb)?;
+        let own = eph.create_bubble(&ctx, None, vec![]).await?;
+        let other_repo = eph.create_bubble(&ctx, None, vec![]).await?;
+
+        let edges = edges_with_parents(ONES_CSID, 1, vec![FIVES_CSID]);
+        ephemeral_only_storage(&own, repo_blobstore.clone())
+            .add(&ctx, &edges)
+            .await?;
+        EphemeralOnlyChangesetStorage::new(
+            REPO_ONE,
+            other_repo.bubble_id(),
+            repo_blobstore,
+            other_repo.sql_connections().clone(),
+        )
+        .add(&ctx, &edges)
+        .await?;
+
+        assert_eq!(
+            eph.bubbles_from_changeset(&ctx, &ONES_CSID).await?,
+            vec![own.bubble_id()],
+            "a bubble that holds the changeset for another repo should not be returned"
         );
         Ok(())
     }
