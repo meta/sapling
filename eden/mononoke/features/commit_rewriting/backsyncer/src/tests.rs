@@ -111,10 +111,11 @@ use crate::backsync_latest;
 use crate::backsync_latest_by_prefix;
 use crate::backsync_latest_for_bookmark;
 use crate::discover_deleted_bookmarks;
-use crate::ensure_backsynced;
 use crate::format_bookmark_counter;
 use crate::format_counter;
 use crate::sync_entries;
+
+mod ensure_backsynced_tests;
 
 const REPOMERGE_FOLDER: &str = "repomerge";
 const REPOMERGE_FILE: &str = "repomergefile";
@@ -199,97 +200,6 @@ async fn backsync_single_bookmark_uses_independent_cursor(fb: FacebookInit) -> R
             .await?,
         Some(0),
     );
-    Ok(())
-}
-
-#[mononoke::fbinit_test]
-async fn ensure_backsynced_accepts_bookmark_or_global_progress(
-    fb: FacebookInit,
-) -> Result<(), Error> {
-    let (commit_sync_data, small_repo_dbs) =
-        init_repos(fb, MoverType::Noop, BookmarkRenamerType::Noop).await?;
-    let ctx = CoreContext::test_mock(fb);
-    let bookmark = BookmarkKey::new("anotherbookmark")?;
-    let source_repo_id = commit_sync_data.get_source_repo().repo_identity().id();
-    let log_id = commit_sync_data
-        .get_source_repo()
-        .bookmark_update_log()
-        .read_next_bookmark_log_entries_by_bookmark(
-            ctx.clone(),
-            bookmark.clone(),
-            BookmarkUpdateLogId(0),
-            u64::MAX,
-            Freshness::MostRecent,
-        )
-        .try_collect::<Vec<_>>()
-        .await?
-        .last()
-        .expect("fixture has an update for anotherbookmark")
-        .id;
-    let small_repo_dbs = Arc::new(small_repo_dbs);
-    let bookmark_counter_name = format_bookmark_counter(&source_repo_id, &bookmark)?;
-
-    small_repo_dbs
-        .counters
-        .set_counter_if_absent(&ctx, &bookmark_counter_name, log_id.try_into()?)
-        .await?;
-    let jk = JustKnobsInMemory::new(hashmap! {
-        crate::PREFIX_POLLING_JUST_KNOB.to_string() => KnobVal::Bool(true),
-    });
-    with_just_knobs_async(
-        jk,
-        ensure_backsynced(
-            ctx.clone(),
-            commit_sync_data.clone(),
-            small_repo_dbs.clone(),
-            &bookmark,
-            log_id,
-        )
-        .boxed(),
-    )
-    .await?;
-
-    let global_only_bookmark = BookmarkKey::new("master")?;
-    let global_log_id = commit_sync_data
-        .get_source_repo()
-        .bookmark_update_log()
-        .read_next_bookmark_log_entries_by_bookmark(
-            ctx.clone(),
-            global_only_bookmark.clone(),
-            BookmarkUpdateLogId(0),
-            u64::MAX,
-            Freshness::MostRecent,
-        )
-        .try_collect::<Vec<_>>()
-        .await?
-        .last()
-        .expect("fixture has an update for master")
-        .id;
-    small_repo_dbs
-        .counters
-        .set_counter(
-            &ctx,
-            &format_counter(&source_repo_id),
-            global_log_id.try_into()?,
-            Some(0),
-        )
-        .await?;
-    let jk = JustKnobsInMemory::new(hashmap! {
-        crate::PREFIX_POLLING_JUST_KNOB.to_string() => KnobVal::Bool(false),
-    });
-    with_just_knobs_async(
-        jk,
-        ensure_backsynced(
-            ctx,
-            commit_sync_data,
-            small_repo_dbs,
-            &global_only_bookmark,
-            global_log_id,
-        )
-        .boxed(),
-    )
-    .await?;
-
     Ok(())
 }
 

@@ -8,6 +8,7 @@ rust_library(
     srcs = [
         "src/lib.rs",
         "src/tests.rs",
+        "src/tests/ensure_backsynced_tests.rs",
     ],
     test_deps = [
         "fbcode//eden/mononoke/derived_data/mercurial_derivation:mercurial_derivation",
