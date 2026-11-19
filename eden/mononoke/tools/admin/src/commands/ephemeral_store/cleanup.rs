@@ -12,6 +12,7 @@ use anyhow::Result;
 use anyhow::bail;
 use clap::Args;
 use context::CoreContext;
+use ephemeral_blobstore::BubbleId;
 use ephemeral_blobstore::UnlinkPolicy;
 use futures::StreamExt;
 use mononoke_macros::mononoke;
@@ -66,49 +67,56 @@ pub async fn clean_bubbles(
         );
     }
     if !args.dryrun {
-        let total = expired_bubbles.len();
-        let started = Instant::now();
-        let deletions = repo
-            .repo_ephemeral_store
-            .delete_bubbles(
-                ctx,
-                expired_bubbles,
-                args.concurrency,
-                UnlinkPolicy::default(),
-            )
-            .fold(
-                (0, 0, 0),
-                |(finished, already_deleted, failed), (id, result)| async move {
-                    match result {
-                        Ok(outcome) => {
-                            println!(
-                                "Cleaned up bubble {id} and deleted {} blob keys contained in it",
-                                outcome.keys_deleted
-                            );
-                            let already_deleted =
-                                already_deleted + usize::from(outcome.keys_already_deleted > 0);
-                            (finished + 1, already_deleted, failed)
-                        }
-                        Err(err) => {
-                            eprintln!("Failed to clean up bubble {id}: {err:#}");
-                            (finished, already_deleted, failed + 1)
-                        }
-                    }
-                },
-            );
-        let (finished, already_deleted, failed) = mononoke::spawn_task(deletions).await?;
-        println!(
-            "Deleted {finished} of {total} expired bubbles in {:.1?}, {already_deleted} of them had blob keys that were already deleted, {failed} failed",
-            started.elapsed()
-        );
-        if failed > 0 {
-            bail!("Failed to clean up {failed} of {total} expired bubbles");
-        }
+        delete_bubbles_and_report(ctx, repo, expired_bubbles, args.concurrency).await?;
     } else {
         println!(
             "Executing cleanup in dry-run mode. The following bubbles were fetched for deletion:"
         );
         println!("{expired_bubbles:?}");
+    }
+    Ok(())
+}
+
+/// Deletes the given bubbles regardless of their expiry status, printing the
+/// outcome of each one and a final summary. Fails if any deletion failed.
+async fn delete_bubbles_and_report(
+    ctx: &CoreContext,
+    repo: &Repo,
+    bubbles: Vec<BubbleId>,
+    concurrency: usize,
+) -> Result<()> {
+    let total = bubbles.len();
+    let started = Instant::now();
+    let deletions = repo
+        .repo_ephemeral_store
+        .delete_bubbles(ctx, bubbles, concurrency, UnlinkPolicy::default())
+        .fold(
+            (0, 0, 0),
+            |(finished, already_deleted, failed), (id, result)| async move {
+                match result {
+                    Ok(outcome) => {
+                        println!(
+                            "Cleaned up bubble {id} and deleted {} blob keys contained in it",
+                            outcome.keys_deleted
+                        );
+                        let already_deleted =
+                            already_deleted + usize::from(outcome.keys_already_deleted > 0);
+                        (finished + 1, already_deleted, failed)
+                    }
+                    Err(err) => {
+                        eprintln!("Failed to clean up bubble {id}: {err:#}");
+                        (finished, already_deleted, failed + 1)
+                    }
+                }
+            },
+        );
+    let (finished, already_deleted, failed) = mononoke::spawn_task(deletions).await?;
+    println!(
+        "Deleted {finished} of {total} expired bubbles in {:.1?}, {already_deleted} of them had blob keys that were already deleted, {failed} failed",
+        started.elapsed()
+    );
+    if failed > 0 {
+        bail!("Failed to clean up {failed} of {total} expired bubbles");
     }
     Ok(())
 }
