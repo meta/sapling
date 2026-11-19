@@ -338,21 +338,25 @@ def setupwrapcolorwrite(ui):
     return oldwrite
 
 
-def filterchunks(ui, originalhunks, interface, testfile, operation=None):
+def _uichunkselector(interface, testfile):
+    """The chunk selector that marks ``uiheader`` applied flags, or None for
+    the text interface"""
     if interface == "curses":
         if testfile:
-            recordfn = crecordmod.testdecorator(testfile, crecordmod.testchunkselector)
-        else:
-            recordfn = crecordmod.chunkselector
-
-        return crecordmod.filterpatch(ui, originalhunks, recordfn, operation)
+            return crecordmod.testdecorator(testfile, crecordmod.testchunkselector)
+        return crecordmod.chunkselector
     if interface == "repl":
         from . import repl_record
 
-        return crecordmod.filterpatch(
-            ui, originalhunks, repl_record.chunkselector, operation
-        )
-    return patch.filterpatch(ui, originalhunks, operation)
+        return repl_record.chunkselector
+    return None
+
+
+def filterchunks(ui, originalhunks, interface, testfile, operation=None):
+    recordfn = _uichunkselector(interface, testfile)
+    if recordfn is None:
+        return patch.filterpatch(ui, originalhunks, operation)
+    return crecordmod.filterpatch(ui, originalhunks, recordfn, operation)
 
 
 def recordfilter(ui, originalhunks, operation=None):
