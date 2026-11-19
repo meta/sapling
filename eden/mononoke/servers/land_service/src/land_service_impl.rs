@@ -7,9 +7,13 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use anyhow::Result;
 use anyhow::anyhow;
+use artillery_http_ext::ArtilleryTraceGuard;
+use artillery_http_ext::current_trace_id;
+use artillery_http_ext::start_trace;
 use async_trait::async_trait;
 use context::CoreContext;
 use context::SessionContainer;
@@ -113,6 +117,43 @@ impl LandServiceImpl {
     }
 }
 
+/// Operation name for land traces rooted here rather than continued, so that a
+/// root is distinguishable from a continuation in Tracery.
+const ROOT_OPERATION_NAME: &str = "land_service_root";
+
+/// Endpoint label bound to the `mononoke_endpoint` Luna sample key of the
+/// `mononoke_scm` policy. Kept equal to the Thrift method name, as SLAPI and SCS
+/// keep theirs, and it matches the policy's `land` prefix so a land rates the
+/// same whichever transport carried it.
+const LAND_ENDPOINT_LABEL: &str = "land_changesets";
+
+fn tw_job_name() -> Option<&'static str> {
+    static TW_JOB_NAME: OnceLock<Option<String>> = OnceLock::new();
+    TW_JOB_NAME
+        .get_or_init(|| std::env::var("TW_JOB_NAME").ok())
+        .as_deref()
+}
+
+/// Root an Artillery trace for a land that arrived without one.
+///
+/// Inbound traces are continued further up by `ContextPropModule`, so a request
+/// that already has one is left alone: re-rooting would sever it from its
+/// caller. Whether a root is actually sampled is the `mononoke_scm` policy's
+/// decision, so `None` here is the normal case rather than a failure.
+fn maybe_root_trace(fb: FacebookInit) -> Option<ArtilleryTraceGuard> {
+    if !justknobs::eval(
+        "scm/artillery:root_land_service_traces",
+        None,
+        tw_job_name(),
+    ) {
+        return None;
+    }
+    if current_trace_id().is_some() {
+        return None;
+    }
+    start_trace(fb, ROOT_OPERATION_NAME, LAND_ENDPOINT_LABEL)
+}
+
 #[async_trait]
 impl LandService for LandServiceImpl {
     type RequestContext = RequestContext;
@@ -123,6 +164,7 @@ impl LandService for LandServiceImpl {
         land_changesets: LandChangesetRequest,
     ) -> Result<LandChangesetsResponse, LandChangesetsExn> {
         let ctx: CoreContext = self.create_ctx("land_changesets", req_ctxt).await?;
+        let _artillery_trace = maybe_root_trace(ctx.fb);
         let repo = self
             .repos_mgr
             .repos()
@@ -160,5 +202,104 @@ impl LandService for LandServiceImpl {
         } else {
             Ok(worker::impl_land_changesets(ctx, repo, land_changesets).await?)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use justknobs::test_helpers::JustKnobsInMemory;
+    use justknobs::test_helpers::KnobVal;
+    use justknobs::test_helpers::with_just_knobs;
+    use mononoke_macros::mononoke;
+
+    use super::*;
+
+    fn knobs(enabled: bool) -> JustKnobsInMemory {
+        JustKnobsInMemory::new(HashMap::from([(
+            "scm/artillery:root_land_service_traces".to_string(),
+            KnobVal::Bool(enabled),
+        )]))
+    }
+
+    /// The `mononoke_scm` Luna expression selects its 1:1 land branch by
+    /// matching this label against the prefix `land`. Drifting off it demotes
+    /// every land arriving here to the thin catch-all rate, which would leave
+    /// the server rooting traces for lands it was added to cover.
+    #[mononoke::test]
+    fn the_land_label_matches_the_policy_prefix() {
+        assert!(LAND_ENDPOINT_LABEL.starts_with("land"));
+    }
+
+    /// Guards the label drifting away from the method. SLAPI and SCS both keep
+    /// theirs equal to the name the land arrived under, so that the policy, the
+    /// ODS stats and the traces all name endpoints the same way.
+    #[mononoke::test]
+    fn the_label_is_the_thrift_method_name() {
+        assert_eq!(LAND_ENDPOINT_LABEL, "land_changesets");
+    }
+
+    /// A root has to be distinguishable from a continuation in Tracery, and
+    /// from the roots the other servers start.
+    #[mononoke::test]
+    fn the_root_operation_name_names_this_server() {
+        assert_eq!(ROOT_OPERATION_NAME, "land_service_root");
+        assert_ne!(ROOT_OPERATION_NAME, "scs_method_root");
+        assert_ne!(ROOT_OPERATION_NAME, "mononoke_http_request_root");
+    }
+
+    #[mononoke::fbinit_test]
+    fn rooting_does_nothing_while_the_killswitch_is_off(fb: FacebookInit) {
+        with_just_knobs(knobs(false), || {
+            assert!(
+                maybe_root_trace(fb).is_none(),
+                "no trace should be rooted while the knob is off"
+            );
+        });
+    }
+
+    /// With the knob on, the start path runs for real through the cxx bridge.
+    /// Asserts nothing about the outcome: sampling is the `mononoke_scm`
+    /// policy's decision and the policy lives in configerator, out of reach of
+    /// a unit test. What is checked is that the path cannot be made to panic.
+    #[mononoke::fbinit_test]
+    fn rooting_a_land_is_infallible_when_enabled(fb: FacebookInit) {
+        with_just_knobs(knobs(true), || {
+            let _ = maybe_root_trace(fb);
+        });
+    }
+
+    /// End-to-end over the real Artillery cxx bridge: synthesise the inbound
+    /// context a traced caller would send, continue it, and check that a trace
+    /// genuinely becomes current and that this server then declines to root
+    /// over it. Re-rooting would sever the land from the WWW request that asked
+    /// for it — the one thing this server must never do to a traced land.
+    ///
+    /// Continuation is what makes this assertable without the `mononoke_scm`
+    /// policy existing: `continue_managed_trace` bypasses sampling and rate
+    /// limiting, where `start_managed_trace` does not.
+    #[cfg(fbcode_build)]
+    #[mononoke::fbinit_test]
+    fn an_inbound_trace_is_continued_and_never_re_rooted(fb: FacebookInit) {
+        // W3C traceparent: version-traceid-spanid-sampled.
+        const TRACEPARENT: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+
+        with_just_knobs(knobs(true), || {
+            let mut inbound = tracer::parse_traceparent_to_context(TRACEPARENT)
+                .expect("a well-formed traceparent should parse");
+            tracer::add_policy_to_context(inbound.pin_mut(), "mononoke_scm");
+
+            let _continued = tracer::Tracer::new(fb, "mononoke_scm")
+                .continue_managed_trace(&inbound)
+                .expect("continuation bypasses sampling, so it must succeed");
+
+            assert!(
+                current_trace_id().is_some(),
+                "continuing an inbound context should make a trace current"
+            );
+            assert!(
+                maybe_root_trace(fb).is_none(),
+                "a land that already carries a trace must not be re-rooted"
+            );
+        });
     }
 }

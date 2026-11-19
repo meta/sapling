@@ -10,7 +10,17 @@ rust_binary(
         "//eden/mononoke/common/mononoke_macros:mononoke_macros",
         "//eden/mononoke/common/rust/justknobs_ext:justknobs",
     ]
-    + ([] if rust_oss.is_oss_build() else ["//common/rust/shed/fbinit:fbinit-tokio"]),
+    + (
+        []
+        if rust_oss.is_oss_build()
+        # `tracer` lets the trace-rooting test synthesise an inbound Artillery
+        # context and continue it, which is the only way to get a live trace
+        # without the mononoke_scm policy.
+        else [
+            "//artillery/artillery2/api/rust:tracer",
+            "//common/rust/shed/fbinit:fbinit-tokio",
+        ]
+    ),
     deps = [
         "fbsource//third-party/rust:anyhow",
         "fbsource//third-party/rust:async-trait",
@@ -33,6 +43,7 @@ rust_binary(
         "//eden/mononoke/cmdlib/thrift_server:mononoke_thrift_server",
         "//eden/mononoke/common/metadata:metadata",
         "//eden/mononoke/common/permission_checker:permission_checker",
+        "//eden/mononoke/common/rust/artillery_http_ext:artillery_http_ext",
         "//eden/mononoke/common/rust/justknobs_ext:justknobs",
         "//eden/mononoke/common/scribe_ext:scribe_ext",
         "//eden/mononoke/common/scuba_ext:scuba_ext",
