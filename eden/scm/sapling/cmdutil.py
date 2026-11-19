@@ -440,14 +440,9 @@ def dorecord(
         status = repo.status(match=match)
         if not force:
             repo.checkcommitpatterns(wctx, match, status, fail)
-        diffopts = patch.difffeatureopts(ui, opts=opts, whitespace=True)
-        diffopts.nodates = True
-        diffopts.git = True
-        diffopts.showfunc = True
-        originaldiff = patch.diff(
-            repo, repo[repo.dirstate.p1()], repo[None], changes=status, opts=diffopts
+        originalchunks = selectableheaders(
+            ui, repo, repo[repo.dirstate.p1()], wctx, status=status, opts=opts
         )
-        originalchunks = patch.parsepatch(originaldiff)
 
         # 1. filter patch, since we are intending to apply subset of it
         try:
@@ -635,12 +630,43 @@ def selectedcontents(ui, repo, patchdata, paths):
     Return {path: (data, flags)} for each of ``paths`` that exists after the
     patch. Paths removed by the patch are omitted.
     """
-    p1 = repo["."]
+    mctx = applyselected(ui, repo, patchdata, repo["."])
+    contents = {}
+    for path in paths:
+        fctx = mctx[path]
+        if fctx is not None:
+            contents[path] = (fctx.data(), fctx.flags())
+    return contents
 
-    def p1filectx(_repo, _memctx, path):
-        return p1[path] if path in p1 else None
 
-    mctx = context.memctx(repo, [p1], "", [], p1filectx)
+def selectableheaders(ui, repo, ctx1, ctx2, match=None, status=None, opts=None):
+    """Parse the changes from ``ctx1`` to ``ctx2`` into patch headers to
+    select from, as interactive commit shows them.
+
+    ``status`` can give the changes to a working copy ``ctx2``, if they are
+    already known. ``opts`` are diff options, such as whitespace handling.
+    """
+    diffopts = patch.difffeatureopts(ui, opts=opts, whitespace=True)
+    diffopts.nodates = True
+    diffopts.git = True
+    diffopts.showfunc = True
+    if status is None and ctx2.node() is None:
+        status = repo.status(node1=ctx1.node(), match=match)
+    if status is None:
+        diff = patch.diff(repo, ctx1, ctx2, match=match, opts=diffopts)
+    else:
+        diff = patch.diff(repo, ctx1, ctx2, changes=status, opts=diffopts)
+    return patch.parsepatch(diff)
+
+
+def applyselected(ui, repo, patchdata, base):
+    """Return a memctx on top of ``base`` with a patch of selected changes
+    applied"""
+
+    def basefilectx(_repo, _memctx, path):
+        return base[path] if path in base else None
+
+    mctx = context.memctx(repo, [base], "", [], basefilectx)
     store = patch.mempatchstore(mctx)
     backend = patch.mempatchbackend(ui, mctx, store)
     try:
@@ -656,13 +682,7 @@ def selectedcontents(ui, repo, patchdata, paths):
                 "without editing, or keep its context lines unchanged"
             ),
         )
-
-    contents = {}
-    for path in paths:
-        fctx = mctx[path]
-        if fctx is not None:
-            contents[path] = (fctx.data(), fctx.flags())
-    return contents
+    return mctx
 
 
 class dirnode:
