@@ -17,6 +17,7 @@ bonsai_hg_mapping = { version = "0.1.0", path = "../repo_attributes/bonsai_hg_ma
 bookmarks = { version = "0.1.0", path = "../repo_attributes/bookmarks" }
 bytes = { version = "1.12.1", features = ["serde"] }
 cacheblob = { version = "0.1.0", path = "../blobstore/cacheblob" }
+changesets_creation = { version = "0.1.0", path = "../features/changesets_creation" }
 commit_graph = { version = "0.1.0", path = "../repo_attributes/commit_graph/commit_graph" }
 context = { version = "0.1.0", path = "../servers/slapi/slapi_server/context" }
 derived_data_manager = { version = "0.1.0", path = "../derived_data/manager" }
@@ -50,6 +51,7 @@ unbundle = { version = "0.1.0", path = "../repo_client/unbundle" }
 
 [dev-dependencies]
 counting_blob = { version = "0.1.0", path = "../blobstore/counting_blob" }
+derivation_queue_thrift = { version = "0.1.0", path = "../repo_attributes/repo_derivation_queues/if" }
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 fixtures = { version = "0.1.0", path = "../tests/fixtures" }
