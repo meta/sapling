@@ -1343,6 +1343,8 @@ def render_mononoke_config(stderr: BinaryIO, fs: ShellFS, env: Env) -> int:
     """Render $TESTTMP/mononoke-config (TOML RawRepoConfigs tree) into
     $LOCAL_CONFIGERATOR_PATH as `scm/mononoke/repos/tiers/<tier>_manifest`
     plus one `scm/mononoke/repos/<tier>/<repo>` RepoSpec per repo.
+    `common/presets.toml`, if present, becomes the deployment's `presets` (tier
+    manifests have none), and a repo definition's `preset` the RepoSpec's.
 
     The TOML keys are the thrift field names, so a repo's `server.toml`
     becomes the RepoSpec's `repo_config` as-is; `repo_definitions` supplies the
@@ -1386,6 +1388,8 @@ def render_mononoke_config(stderr: BinaryIO, fs: ShellFS, env: Env) -> int:
         }
         if "enable_git_bundle_uri" in definition:
             spec["enable_git_bundle_uri"] = bool(definition["enable_git_bundle_uri"])
+        if "preset" in definition:
+            spec["preset"] = definition["preset"]
         config_path = f"scm/mononoke/repos/{tier}/{encoded}"
         _write_json(fs, f"{dst}/{config_path}", spec)
         entries.append(
@@ -1429,6 +1433,9 @@ def render_mononoke_config(stderr: BinaryIO, fs: ShellFS, env: Env) -> int:
             for entry in entries
         ],
     }
+    presets_path = f"{src}/common/presets.toml"
+    if fs.exists(presets_path):
+        deployment["presets"] = _read_toml(fs, presets_path)
     _write_json(fs, f"{dst}/scm/mononoke/deployments/{tier}", deployment)
     return 0
 

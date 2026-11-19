@@ -42,8 +42,11 @@ pub struct ShowArgs {
 
 pub async fn run(app: MononokeApp, args: ShowArgs) -> Result<()> {
     let loaded = load_repo_spec(&app, &args.repo)?;
-    let config =
-        metaconfig_parser::resolve_repo_config_with_provenance(&loaded.spec, &loaded.tier)?;
+    let config = metaconfig_parser::resolve_repo_config_with_provenance(
+        &loaded.spec,
+        &loaded.tier,
+        loaded.manifest.presets.as_ref(),
+    )?;
     // A config whose storage config is not defined is still shown, so the
     // name is there to see; the command then fails.
     let storage = metaconfig_parser::named_storage_config(&config.value, &loaded.manifest.storage);

@@ -54,7 +54,7 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
     }
 }
 
-/// A repo's spec and the tier it was loaded for.
+/// A repo's spec and the manifest it was loaded through.
 struct LoadedSpec {
     tier: String,
     manifest: Arc<ServiceManifest>,

@@ -17,6 +17,7 @@ use std::sync::LazyLock;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
+use anyhow::bail;
 use anyhow::ensure;
 use cached_config::ConfigHandle;
 use cached_config::ConfigStore;
@@ -233,17 +234,27 @@ pub struct ResolvedRepoConfig<C> {
     pub storage: RawStorageConfig,
 }
 
-/// Resolves a repo's raw config for a tier from its layers: the spec's
-/// `repo_config`, then the spec's override for the tier, whose top-level fields
-/// replace the spec's whole. The result records which layer set each value, and
-/// holds the storage config the resolved config names, from
-/// `named_storage_configs`.
+/// The preset named `name`. Only a deployment has presets, so a config loaded
+/// through a tier manifest cannot name one.
+fn find_preset<'a>(name: &str, presets: Option<&'a Presets>) -> Result<&'a RawRepoConfig> {
+    let Some(presets) = presets else {
+        bail!("preset '{name}' needs a deployment: tier manifests have no presets");
+    };
+    presets
+        .get(name)
+        .with_context(|| format!("preset '{name}' is not in the deployment"))
+}
+
+/// Resolves a repo's raw config for a tier from its layers
+/// ([`repo_config_layers`]), recording which layer set each value, with the
+/// storage config it names. A spec that names a preset `presets` lacks fails.
 pub fn resolve_repo_spec_with_provenance(
     repo_spec: &RepoSpec,
     tier_name: &str,
     named_storage_configs: &HashMap<String, RawStorageConfig>,
+    presets: Option<&Presets>,
 ) -> Result<ResolvedRepoConfig<Layered<RawRepoConfig>>> {
-    let config = resolve_repo_config_with_provenance(repo_spec, tier_name)?;
+    let config = resolve_repo_config_with_provenance(repo_spec, tier_name, presets)?;
     let storage = named_storage_config(&config.value, named_storage_configs)?;
     Ok(ResolvedRepoConfig { config, storage })
 }
@@ -253,8 +264,9 @@ pub fn resolve_repo_spec_with_provenance(
 pub fn resolve_repo_config_with_provenance(
     repo_spec: &RepoSpec,
     tier_name: &str,
+    presets: Option<&Presets>,
 ) -> Result<Layered<RawRepoConfig>> {
-    layer_repo_config_with_provenance(&repo_config_layers(repo_spec, tier_name))
+    layer_repo_config_with_provenance(&repo_config_layers(repo_spec, tier_name, presets)?)
 }
 
 /// The config [`resolve_repo_spec_with_provenance`] resolves, without
@@ -263,8 +275,9 @@ fn resolve_repo_spec(
     repo_spec: &RepoSpec,
     tier_name: &str,
     named_storage_configs: &HashMap<String, RawStorageConfig>,
+    presets: Option<&Presets>,
 ) -> Result<ResolvedRepoConfig<RawRepoConfig>> {
-    let config = layer_repo_config(&repo_config_layers(repo_spec, tier_name))?;
+    let config = layer_repo_config(&repo_config_layers(repo_spec, tier_name, presets)?)?;
     let storage = named_storage_config(&config, named_storage_configs)?;
     Ok(ResolvedRepoConfig { config, storage })
 }
@@ -292,9 +305,20 @@ pub fn named_storage_config(
 }
 
 /// `repo_spec`'s config layers on `tier_name`, lowest first.
-fn repo_config_layers<'a>(repo_spec: &'a RepoSpec, tier_name: &str) -> Vec<Layer<'a>> {
+fn repo_config_layers<'a>(
+    repo_spec: &'a RepoSpec,
+    tier_name: &str,
+    presets: Option<&'a Presets>,
+) -> Result<Vec<Layer<'a>>> {
     static NO_REPO_CONFIG: LazyLock<RawRepoConfig> = LazyLock::new(RawRepoConfig::default);
     let mut layers = Vec::new();
+    if let Some(name) = &repo_spec.preset {
+        layers.push(Layer {
+            source: ConfigSource::Preset(name.clone()),
+            config: find_preset(name, presets)?,
+            mode: LayerMode::Merge,
+        });
+    }
     layers.push(Layer {
         source: ConfigSource::Spec,
         config: repo_spec.repo_config.as_ref().unwrap_or(&NO_REPO_CONFIG),
@@ -311,7 +335,7 @@ fn repo_config_layers<'a>(repo_spec: &'a RepoSpec, tier_name: &str) -> Vec<Layer
             mode: LayerMode::ReplaceTopLevel,
         });
     }
-    layers
+    Ok(layers)
 }
 
 /// Parse a RepoSpec into a RepoConfig for a specific tier.
@@ -326,9 +350,9 @@ pub fn parse_repo_spec(
     repo_spec: RepoSpec,
     tier_name: &str,
     named_storage_configs: &HashMap<String, RawStorageConfig>,
-    _presets: Option<&Presets>,
+    presets: Option<&Presets>,
 ) -> Result<RepoConfig> {
-    let resolved = resolve_repo_spec(&repo_spec, tier_name, named_storage_configs)?;
+    let resolved = resolve_repo_spec(&repo_spec, tier_name, named_storage_configs, presets)?;
 
     let readonly = if repo_spec.readonly {
         RepoReadOnly::ReadOnly("Set by config option".to_string())
@@ -3161,7 +3185,7 @@ mod test {
             ..Default::default()
         };
 
-        let resolve = |tier| resolve_repo_spec_with_provenance(&spec, tier, &named_storage);
+        let resolve = |tier| resolve_repo_spec_with_provenance(&spec, tier, &named_storage, None);
         assert_eq!(
             resolve("gitimport")
                 .expect("resolve should succeed")
@@ -3175,7 +3199,7 @@ mod test {
             "the storage config the tier override names, on its tier",
         );
 
-        let missing = resolve_repo_spec_with_provenance(&spec, "scs", &HashMap::new())
+        let missing = resolve_repo_spec_with_provenance(&spec, "scs", &HashMap::new(), None)
             .expect_err("a storage config that is not defined must fail");
         assert!(
             missing
@@ -3205,7 +3229,7 @@ mod test {
         let named_storage = hashmap! {
             "test_storage".to_string() => test_raw_storage_config(),
         };
-        let scs = resolve_repo_spec_with_provenance(&spec, "scs", &named_storage)
+        let scs = resolve_repo_spec_with_provenance(&spec, "scs", &named_storage, None)
             .expect("resolve should succeed")
             .config;
         assert_eq!(scs.value.phabricator_callsign.as_deref(), Some("SCS"));
@@ -3222,7 +3246,7 @@ mod test {
             &ConfigSource::Default
         );
 
-        let gitimport = resolve_repo_spec_with_provenance(&spec, "gitimport", &named_storage)
+        let gitimport = resolve_repo_spec_with_provenance(&spec, "gitimport", &named_storage, None)
             .expect("resolve should succeed")
             .config;
         assert_eq!(
@@ -3236,6 +3260,73 @@ mod test {
             &ConfigSource::Spec,
             "another tier's override does not apply"
         );
+    }
+
+    #[mononoke::test]
+    fn test_parse_repo_spec_with_repo_config_preset() {
+        let named_storage = hashmap! {
+            "test_storage".to_string() => test_raw_storage_config(),
+        };
+        let presets = btreemap! {
+            "git".to_string() => RawRepoConfig {
+                storage_config: Some("test_storage".to_string()),
+                phabricator_callsign: Some("PRESET".to_string()),
+                list_keys_patterns_max: Some(10),
+                ..Default::default()
+            },
+        };
+        let spec = |preset: &str| repos::RepoSpec {
+            repo_id: 42,
+            repo_name: "test/repo".to_string(),
+            hipster_acl: "acl.test.repo".to_string(),
+            enabled: true,
+            default_commit_identity_scheme: repos::RawCommitIdentityScheme::GIT,
+            tiers: vec!["scs".to_string()],
+            preset: Some(preset.to_string()),
+            repo_config: Some(RawRepoConfig {
+                list_keys_patterns_max: Some(20),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let config = parse_repo_spec(spec("git"), "scs", &named_storage, Some(&presets))
+            .expect("parse should succeed");
+        assert_eq!(config.phabricator_callsign.as_deref(), Some("PRESET"));
+        assert_eq!(
+            config.list_keys_patterns_max, 20,
+            "the spec overrides the preset"
+        );
+
+        let resolved =
+            resolve_repo_spec_with_provenance(&spec("git"), "scs", &named_storage, Some(&presets))
+                .expect("resolve should succeed")
+                .config;
+        assert_eq!(
+            resolved
+                .provenance
+                .source(&config_path("phabricator_callsign")),
+            &ConfigSource::Preset("git".to_owned())
+        );
+        assert_eq!(
+            resolved
+                .provenance
+                .source(&config_path("list_keys_patterns_max")),
+            &ConfigSource::Spec
+        );
+
+        let error = parse_repo_spec(spec("hg"), "scs", &named_storage, Some(&presets))
+            .expect_err("an unknown preset should fail")
+            .to_string();
+        assert!(
+            error.contains("preset 'hg' is not in the deployment"),
+            "{error}"
+        );
+
+        let error = parse_repo_spec(spec("git"), "scs", &named_storage, None)
+            .expect_err("a preset needs a deployment")
+            .to_string();
+        assert!(error.contains("preset 'git' needs a deployment"), "{error}");
     }
 
     #[mononoke::test]

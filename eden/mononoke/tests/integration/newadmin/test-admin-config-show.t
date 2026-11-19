@@ -80,3 +80,20 @@ Where each value comes from:
   phabricator_callsign
   $ mononoke_admin config show --repo repo --json --provenance 2>&1 | grep -o "cannot be used with"
   cannot be used with
+
+A value from a preset, which only a deployment has:
+  $ cat >> "$TESTTMP/mononoke-config/repo_definitions/repo/server.toml" <<EOF
+  > preset="test"
+  > EOF
+  $ cat > "$TESTTMP/mononoke-config/common/presets.toml" <<EOF
+  > [test]
+  > phabricator_callsign="PRESET"
+  > EOF
+  $ mononoke_admin_with --deployment test config show --repo repo --provenance 2>/dev/null | grep -E "^(preset|repo_config.phabricator_callsign|repo_config.storage_config) "
+  preset = "test"  # spec
+  repo_config.phabricator_callsign = "PRESET"  # preset test
+  repo_config.storage_config = "blobstore"  # spec
+  $ mononoke_admin config show --repo repo 2> stderr
+  [1]
+  $ grep "^Error" stderr
+  Error: preset 'test' needs a deployment: tier manifests have no presets

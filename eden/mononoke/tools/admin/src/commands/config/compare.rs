@@ -19,6 +19,7 @@ use cached_config::ConfigStore;
 use clap::Parser;
 use metaconfig_parser::ConfigRoot;
 use metaconfig_parser::DeploymentLocation;
+use metaconfig_parser::Presets;
 use metaconfig_parser::ServiceManifest;
 use metaconfig_parser::configerator_manifest_handle;
 use metaconfig_parser::configerator_repo_spec_handle;
@@ -106,6 +107,7 @@ pub async fn run(app: MononokeApp, args: CompareArgs) -> Result<()> {
                 deployment_store: repo_store,
                 deployment_storage: &view.manifest.storage,
                 legacy_tier: &view.legacy_tier,
+                presets: view.manifest.presets.as_ref(),
                 tier_store,
                 tier_storage: &manifest.storage,
                 tier: &tier,
@@ -142,26 +144,29 @@ pub async fn run(app: MononokeApp, args: CompareArgs) -> Result<()> {
     Ok(())
 }
 
-/// How to resolve a repo's config on each side of a comparison.
+/// How to resolve a repo's config on each side of a comparison. Only the
+/// deployment has presets.
 struct SpecSides<'a> {
     deployment_store: &'a ConfigStore,
     deployment_storage: &'a HashMap<String, RawStorageConfig>,
     legacy_tier: &'a str,
+    presets: Option<&'a Presets>,
     tier_store: &'a ConfigStore,
     tier_storage: &'a HashMap<String, RawStorageConfig>,
     tier: &'a str,
 }
 
 /// The repo's own spec fields, its raw config and the storage config it names,
-/// from its spec at `entry.config_path` in `store`, resolved for `tier`.
+/// from its spec at `entry.config_path` in `store`, resolved for `tier` with `presets`.
 fn resolve(
     entry: &TierRepoEntry,
     store: &ConfigStore,
     storage: &HashMap<String, RawStorageConfig>,
     tier: &str,
+    presets: Option<&Presets>,
 ) -> Result<(Value, RawRepoConfig, RawStorageConfig)> {
     let spec = configerator_repo_spec_handle(&entry.config_path, store)?.get();
-    let resolved = resolve_repo_spec_with_provenance(&spec, tier, storage)?;
+    let resolved = resolve_repo_spec_with_provenance(&spec, tier, storage, presets)?;
     Ok((spec_fields(&spec)?, resolved.config.value, resolved.storage))
 }
 
@@ -246,12 +251,14 @@ fn compare_repos(
                 sides.deployment_store,
                 sides.deployment_storage,
                 sides.legacy_tier,
+                sides.presets,
             );
             let theirs = resolve(
                 &tier[*name],
                 sides.tier_store,
                 sides.tier_storage,
                 sides.tier,
+                None,
             );
             match (ours, theirs) {
                 (Ok(ours), Ok(theirs)) if ours != theirs => different.push(*name),

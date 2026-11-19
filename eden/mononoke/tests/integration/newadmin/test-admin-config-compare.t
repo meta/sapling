@@ -101,3 +101,18 @@ are refused:
   has no service GIT_SERVER
   $ mononoke_admin --service SCS_SERVER config show --repo repo > /dev/null 2>&1
   [2]
+
+A spec that names a preset resolves only with the deployment's
+presets, which a tier does not have:
+  $ cat >> "$TESTTMP/mononoke-config/repo_definitions/repo/server.toml" <<EOF
+  > preset="standard"
+  > EOF
+  $ cat > "$TESTTMP/mononoke-config/common/presets.toml" <<EOF
+  > [standard]
+  > hook_max_file_size=12345
+  > EOF
+  $ mononoke_admin_with --deployment test config compare --specs SCS_SERVER
+  SCS_SERVER (test): differs
+    repos the tier cannot resolve: repo (repo: preset 'standard' needs a deployment: tier manifests have no presets)
+  Error: 1 of 1 services differ from their tiers
+  [1]
