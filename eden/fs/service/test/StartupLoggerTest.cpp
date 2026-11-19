@@ -241,12 +241,10 @@ TEST_F(DaemonStartupLoggerTest, sigHupReportsReopenFailure) {
   auto logPath = (tempDir.path() / "logs" / "edenfs.log").string();
   auto result = runFunctionInSeparateProcess(
       "sigHupReportsReopenFailureChild", std::vector<std::string>{logPath});
-  // FIXME(T291170716): stderr should get the whole line, "Failed to reopen
-  // <logPath>: No such file or directory\n". Only "Failed to reopen " arrives
-  // because the rest is written to the failed descriptor -1. The next diff
-  // fixes the handler and expects the whole line here.
-  EXPECT_THAT(result.standardError, HasSubstr("Failed to reopen "));
-  EXPECT_THAT(result.standardError, Not(HasSubstr(logPath)));
+  EXPECT_THAT(
+      result.standardError,
+      HasSubstr(
+          "Failed to reopen " + logPath + ": No such file or directory\n"));
 }
 
 [[noreturn]] void sigHupReportsReopenFailureChild(const std::string& logPath) {

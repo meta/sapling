@@ -334,15 +334,15 @@ void handleSigHup(int /*signum*/) {
   if (fileno == -1) {
     int err = errno;
     write_cstr(STDERR_FILENO, "Failed to reopen ");
-    write_cstr(fileno, logPath_.value().c_str());
-    write_cstr(fileno, ": ");
+    write_cstr(STDERR_FILENO, logPath_.value().c_str());
+    write_cstr(STDERR_FILENO, ": ");
 #ifdef __APPLE__
     // On macOS, strerrrodesc_np is not defined. We use sys_errlist instead
-    write_cstr(fileno, sys_errlist[err]);
+    write_cstr(STDERR_FILENO, sys_errlist[err]);
 #else
-    write_cstr(fileno, strerrordesc_np(err));
+    write_cstr(STDERR_FILENO, strerrordesc_np(err));
 #endif
-    write_cstr(fileno, "\n");
+    write_cstr(STDERR_FILENO, "\n");
     return;
   }
 
