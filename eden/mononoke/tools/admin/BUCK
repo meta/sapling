@@ -100,6 +100,7 @@ rust_binary(
         "//eden/mononoke/cmdlib:arg_extensions",
         "//eden/mononoke/cmdlib:cmdlib_cross_repo",
         "//eden/mononoke/cmdlib/commit_id:commit_id",
+        "//eden/mononoke/cmdlib/config_args:config_args",
         "//eden/mononoke/cmdlib/displaying:cmdlib_displaying",
         "//eden/mononoke/cmdlib/displaying/graph:print_graph",
         "//eden/mononoke/cmdlib/mononoke_app:mononoke_app",

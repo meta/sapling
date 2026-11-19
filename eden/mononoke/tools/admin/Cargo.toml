@@ -52,6 +52,7 @@ commit_graph = { version = "0.1.0", path = "../../repo_attributes/commit_graph/c
 commit_graph_types = { version = "0.1.0", path = "../../repo_attributes/commit_graph/commit_graph_types" }
 commit_id = { version = "0.1.0", path = "../../cmdlib/commit_id" }
 commit_transformation = { version = "0.1.0", path = "../../features/commit_transformation/commit_transformation" }
+config_args = { version = "0.1.0", path = "../../cmdlib/config_args" }
 content_manifest_derivation = { version = "0.1.0", path = "../../derived_data/content_manifest_derivation" }
 context = { version = "0.1.0", path = "../../servers/slapi/slapi_server/context" }
 cross_repo_sync = { version = "0.1.0", path = "../../features/cross_repo_sync" }
