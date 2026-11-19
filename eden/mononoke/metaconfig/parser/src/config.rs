@@ -176,15 +176,22 @@ pub fn load_repo_configs_from_manifest(
 pub fn parse_manifest_common_and_storage(
     manifest: &TierManifest,
 ) -> Result<(CommonConfig, StorageConfigs)> {
-    let common = parse_common_config(manifest.common.clone(), &manifest.storage)
-        .context("Failed to parse common config from tier manifest")?;
-    let storage = manifest
-        .storage
+    parse_common_and_storage(&manifest.common, &manifest.storage)
+}
+
+/// Parses a manifest's common config and named storage configs.
+pub(crate) fn parse_common_and_storage(
+    common: &RawCommonConfig,
+    storage: &HashMap<String, RawStorageConfig>,
+) -> Result<(CommonConfig, StorageConfigs)> {
+    let common = parse_common_config(common.clone(), storage)
+        .context("Failed to parse common config from the manifest")?;
+    let storage = storage
         .clone()
         .into_iter()
         .map(|(name, config)| Ok((name, config.convert()?)))
         .collect::<Result<_>>()
-        .context("Failed to parse storage configs from tier manifest")?;
+        .context("Failed to parse storage configs from the manifest")?;
 
     Ok((common, StorageConfigs { storage }))
 }
