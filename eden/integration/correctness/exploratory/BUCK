@@ -1508,6 +1508,7 @@ python_unittest(
         ":backends_fixtures",
         ":core_containment",
         ":edenfs_backends",
+        ":edenfs_target",
         ":environment",
         ":scheduler",
         ":target",

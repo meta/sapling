@@ -110,6 +110,9 @@ class LiveBackend:
         self._faults = FaultTracker(env, spec)
         self._reader_lock = threading.Lock()
         self._readers: dict[str, subprocess.Popen[str]] = {}
+        self._overrun_readers: set[str] = set()
+        # Readers an executed `kill_process` signalled, by pgid.
+        self._signalled_readers: dict[str, int] = {}
         self._readers_closed = False
         self._sl = SaplingProcesses(env.processes, _harness_failure)
         self._executor = SharedExecutor(
@@ -191,8 +194,19 @@ class LiveBackend:
         raise HarnessFailure(INVALID_BACKEND_RESPONSE)
 
     def unwind_faults(self, sink: HistorySink, clock: Clock) -> dict[str, Any]:
-        """Release faults before workers join, retaining their descriptors and processes."""
+        """Release faults before workers join, retaining their descriptors and processes.
+
+        Only overrun leases' readers are reaped here (`drain_overrun_readers`);
+        their exits are `lease_overruns`, the stderr tails of nonzero exits
+        `lease_overrun_stderr`, and their failures are leaks.
+        """
         result: dict[str, Any] = dict(self._faults.unwind(sink, clock))
+        failures, exits, stderr_tails = processes.drain_overrun_readers(self)
+        result["leaks"] += failures
+        if exits:
+            result["lease_overruns"] = exits
+        if stderr_tails:
+            result["lease_overrun_stderr"] = stderr_tails
         result["setup"] = dict(self._env.setup_facts)
         return result
 
@@ -201,6 +215,7 @@ class LiveBackend:
         with self._reader_lock:
             self._readers_closed = True
             readers = tuple(self._readers.values())
+            self._signalled_readers.clear()
         self._executor.close()
         leaks = 0
         for process in readers:

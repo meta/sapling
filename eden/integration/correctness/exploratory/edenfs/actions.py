@@ -1473,6 +1473,7 @@ _RESULTS: Mapping[str, ResultSchema] = {
             _diagnostic("stderr", FieldKind.TEXT),
             _diagnostic("sweeps", FieldKind.INT),
         ),
+        info=(_diagnostic("pgid", FieldKind.INT, required=False),),
     ),
     "unload_inodes": ResultSchema(
         ok=(

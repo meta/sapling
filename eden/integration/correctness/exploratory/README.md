@@ -64,7 +64,7 @@ Every action has `kind`, `deadline`, optional `requires`, and kind-specific fiel
 | Input | `readdir` | directory `path`, `channel`; one-shot sorted `entries` |
 | Input | `open`, `read_fd`, `close` | a read-only descriptor held across other inputs; `read_fd` reads through it (there is no `write_fd`) |
 | Input | `rename`, `unlink`, `mkdir`, `chmod`, `sl_rm`, `sl_mv` | namespace and metadata mutations |
-| Nemesis | `fault_install`, `fault_await`, `fault_remove`, `kill_process`, `background_read`, `unload_inodes` | a fault's install, wait, and removal around its target action; a kill of one spawned process (never the daemon); a timed directory-read lease under a root; unloading one subtree's inodes. Sites and behaviors are in `edenfs/sites.py` |
+| Nemesis | `fault_install`, `fault_await`, `fault_remove`, `kill_process`, `background_read`, `unload_inodes` | a fault's install, wait, and removal around its target action; a kill of one spawned process (never the daemon); a timed directory-read lease under a root (a reader still running 10 s past its lease completes it `info` `lease-overrun`; unwind reaps it after faults are released (one 10 s wait shared by all such readers, plus at most 1 s shared to read exited readers' pipes) and records its exit in `unwind.lease_overruns` and a nonzero exit's stderr tail in `unwind.lease_overrun_stderr`); unloading one subtree's inodes. Sites and behaviors are in `edenfs/sites.py` |
 | Observation | `manifest_presence`, `journal_window`, `status_counts`, `blocked_faults` | |
 | Input (unmodeled) | `sleep` | `seconds` |
 

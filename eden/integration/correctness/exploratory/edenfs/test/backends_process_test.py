@@ -25,18 +25,29 @@ from typing import Any, cast
 from unittest import mock
 
 from eden.integration.correctness.exploratory.core.containment import _runner_env
-from eden.integration.correctness.exploratory.core.history import FAIL, InMemorySink, OK
+from eden.integration.correctness.exploratory.core.facts import (
+    decode_result,
+    ResultProblem,
+)
+from eden.integration.correctness.exploratory.core.history import (
+    FAIL,
+    INFO,
+    InMemorySink,
+    OK,
+)
 from eden.integration.correctness.exploratory.core.runspec import (
     Action,
     Actor,
     Budgets,
     DEADLINE_OPERATION,
+    FINISHED,
     RunSpec,
     STARTED,
     to_json,
 )
 from eden.integration.correctness.exploratory.core.scheduler import (
     BackendResult,
+    COMPLETED,
     HarnessFailure,
     INVALID_BACKEND_RESPONSE,
     run_actions,
@@ -48,6 +59,7 @@ from eden.integration.correctness.exploratory.edenfs.backend_processes import (
 )
 from eden.integration.correctness.exploratory.edenfs.backends import LiveBackend
 from eden.integration.correctness.exploratory.edenfs.environment import Environment
+from eden.integration.correctness.exploratory.edenfs.target import RECORDING_TARGET
 from eden.integration.correctness.exploratory.edenfs.test.backends_fixtures import (
     _BlockingProcess,
     _CannedSl,
@@ -62,6 +74,19 @@ from eden.integration.correctness.exploratory.edenfs.test.backends_fixtures impo
 
 # Real seconds before a test gives up waiting; a hang guard, not a measurement.
 _HANG_GUARD = 60.0
+
+
+def _reap(process: subprocess.Popen[Any]) -> None:
+    if process.poll() is None:
+        process.kill()
+        process.wait(timeout=_HANG_GUARD)
+
+
+def _state(pid: int) -> str:
+    """Return the process state letter from `/proc/<pid>/status`."""
+    with open(f"/proc/{pid}/status") as status:
+        line = next(line for line in status if line.startswith("State:"))
+    return line.split()[1]
 
 
 class _NativeMountRepo(_FakeMountRepo):
@@ -97,7 +122,9 @@ class NativeProcessBackendTest(unittest.TestCase):
         finally:
             env.close()
 
-    def _reader(self, seconds: float = 0.1) -> tuple[Any, RunSpec, LiveBackend]:
+    def _reader(
+        self, seconds: float = 0.1, planned_kill: bool = True
+    ) -> tuple[Any, RunSpec, LiveBackend]:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         root = Path(directory.name)
@@ -112,7 +139,7 @@ class NativeProcessBackendTest(unittest.TestCase):
             "operation",
             payload={"root": "tree", "seconds": seconds},
         )
-        spec = _native_spec(action, planned_kill=True)
+        spec = _native_spec(action, planned_kill=planned_kill)
         return env, spec, LiveBackend(cast(Any, env), spec)
 
     def test_fault_unwind_keeps_resources_until_cleanup_join(self) -> None:
@@ -168,6 +195,252 @@ class NativeProcessBackendTest(unittest.TestCase):
         self.assertIsNone(env.processes.lookup("r"))
         with self.assertRaises(ProcessLookupError):
             os.killpg(result.facts["pgid"], 0)
+
+    def _stop_after_first_sweep(self) -> Any:
+        """Patch readers to SIGSTOP themselves after their first sweep.
+
+        The stop follows the reader's parent-death setup and precedes its
+        lease check, and spawning returns only once the reader has stopped.
+        """
+        sweep = "    print('sweep', flush=True)\n"
+        program = backend_processes._BACKGROUND_READ
+        self.assertIn(sweep, program)
+        stopping = program.replace(
+            sweep, f"{sweep}    os.kill(os.getpid(), {int(signal.SIGSTOP)})\n"
+        )
+        spawn = backend_processes.spawn
+
+        def spawn_then_wait_stopped(
+            registry: Any, key: str, argv: list[str], **popen: Any
+        ) -> subprocess.Popen[str]:
+            process = spawn(registry, key, [*argv[:2], stopping, *argv[3:]], **popen)
+            self.addCleanup(_reap, process)
+            state = os.waitid(
+                os.P_PID, process.pid, os.WSTOPPED | os.WEXITED | os.WNOWAIT
+            )
+            assert state is not None
+            self.assertEqual(os.CLD_STOPPED, state.si_code)
+            return process
+
+        return mock.patch.object(backend_processes, "spawn", spawn_then_wait_stopped)
+
+    def _stopped_overrun(
+        self, planned_kill: bool = True
+    ) -> tuple[Any, LiveBackend, int, BackendResult]:
+        """Return a lease whose stopped reader outlived it, still stopped."""
+        env, spec, backend = self._reader(planned_kill=planned_kill)
+        results: list[BackendResult] = []
+        worker = threading.Thread(
+            target=lambda: results.append(backend(spec.action("r")))
+        )
+        with self._stop_after_first_sweep():
+            worker.start()
+            worker.join(timeout=_HANG_GUARD)
+        self.assertFalse(worker.is_alive(), "the lease waited for a stopped reader")
+        pgid = env.processes.lookup("r")
+        assert pgid is not None
+        return env, backend, pgid, results[0]
+
+    def test_lease_before_its_release_completes_info_and_the_release_runs(
+        self,
+    ) -> None:
+        """`a0: r, x`, where only `x` lets the stopped reader run again.
+
+        The overrun lease completes `info` without exit facts, `x` runs, the
+        reader outlives its action's thread and finishes its walk, and unwind
+        reaps it and records its late exit.
+        """
+        env, spec, _backend = self._reader()
+        lease = spec.action("r")
+        release = Action("x", "sleep", "operation", (("r", FINISHED),), {"seconds": 0})
+        spec = replace(
+            spec,
+            budgets=Budgets(20.0, 30.0, 120.0),
+            actors=(Actor("a0", ("r", "x")),),
+            actions=(lease, release),
+        )
+        backend = LiveBackend(cast(Any, env), spec)
+
+        def run(action: Action) -> BackendResult:
+            if action.id != release.id:
+                return backend(action)
+            pgid = env.processes.lookup(lease.id)
+            assert pgid is not None
+            os.killpg(pgid, signal.SIGCONT)
+            return BackendResult(OK, {})
+
+        sink = InMemorySink()
+        unwound: list[dict[str, Any]] = []
+        with (
+            self._stop_after_first_sweep(),
+            mock.patch.object(backend._faults, "unwind", return_value={"leaks": 0}),
+        ):
+            status = run_actions(
+                spec,
+                run,
+                sink,
+                time.monotonic,
+                unwind=lambda: unwound.append(
+                    backend.unwind_faults(sink, time.monotonic)
+                ),
+            )
+        ends = {e.data["action"]: e for e in sink.events if e.type in {OK, INFO}}
+        self.assertEqual(COMPLETED, status.status, status)
+        self.assertEqual((INFO, OK), (ends["r"].type, ends["x"].type))
+        facts = {
+            k: v for k, v in ends["r"].data.items() if k not in {"action", "actor"}
+        }
+        self.assertEqual({"reason", "pgid"}, set(facts))
+        self.assertEqual(backend_processes.LEASE_OVERRUN, facts["reason"])
+        schema = RECORDING_TARGET.actions["background_read"].result
+        decoded = decode_result(schema, INFO, facts)
+        self.assertNotIsInstance(decoded, ResultProblem)
+        (result,) = unwound
+        self.assertEqual((0, {"r": 0}), (result["leaks"], result["lease_overruns"]))
+        self.assertIsNone(env.processes.lookup("r"))
+        self.assertEqual(({}, set()), (backend._readers, backend._overrun_readers))
+        with self.assertRaises(ProcessLookupError):
+            os.killpg(facts["pgid"], 0)
+
+    def test_overrun_reader_still_running_after_release_is_a_leak(self) -> None:
+        env, backend, pgid, _result = self._stopped_overrun()
+        self.assertEqual(
+            (1, {"r": None}, {}), backend_processes.drain_overrun_readers(backend)
+        )
+        self.assertEqual(pgid, env.processes.lookup("r"))
+        self.assertEqual({"r"}, backend._overrun_readers)
+        self.assertEqual("T", _state(pgid))
+
+    def test_overrun_reader_late_sigkill_counts_unless_its_spec_kill_signalled_it(
+        self,
+    ) -> None:
+        """Only a SIGKILL sent by an executed spec `kill_process` is excused.
+
+        A planned kill that never ran, or that found the reader already
+        killed by someone else, does not excuse the late exit.
+        """
+        for planned_kill, killer, failures in (
+            (False, "external", 1),
+            (True, "external", 1),
+            (True, "external-then-spec", 1),
+            (True, "spec", 0),
+        ):
+            with self.subTest(planned_kill=planned_kill, killer=killer):
+                env, backend, pgid, _result = self._stopped_overrun(planned_kill)
+                if killer.startswith("external"):
+                    os.killpg(pgid, signal.SIGKILL)
+                    os.waitid(os.P_PID, pgid, os.WEXITED | os.WNOWAIT)
+                if killer != "external":
+                    killed = backend(backend._spec.action("k1"))
+                    self.assertEqual(
+                        killer == "external-then-spec",
+                        killed.facts.get("already_exited", False),
+                    )
+                self.assertEqual(
+                    (failures, {"r": -signal.SIGKILL}, {}),
+                    backend_processes.drain_overrun_readers(backend),
+                )
+                self.assertIsNone(env.processes.lookup("r"))
+                self.assertEqual({}, backend._signalled_readers)
+
+    def test_overrun_reader_late_failure_keeps_its_stderr_tail(self) -> None:
+        """A late positive exit fails cleanup even after a planned kill found it already exited."""
+        code = "import sys; sys.stderr.write('x' * 5000 + 'late failure'); sys.exit(1)"
+        for planned_kill in (False, True):
+            with self.subTest(planned_kill=planned_kill):
+                env, spec, backend = self._reader(planned_kill=planned_kill)
+                process = backend_processes.spawn(
+                    env.processes,
+                    "r",
+                    [sys.executable, "-c", code],
+                    env=_runner_env(),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                self.addCleanup(_reap, process)
+                backend._readers["r"] = process
+                backend._overrun_readers.add("r")
+                if planned_kill:
+                    os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT)
+                    killed = backend(spec.action("k1"))
+                    self.assertTrue(killed.facts["already_exited"], killed)
+                with mock.patch.object(
+                    backend._faults, "unwind", return_value={"leaks": 0}
+                ):
+                    result = backend.unwind_faults(InMemorySink(), time.monotonic)
+                self.assertEqual(
+                    (1, {"r": 1}), (result["leaks"], result["lease_overruns"])
+                )
+                tail = result["lease_overrun_stderr"]["r"]
+                self.assertEqual(2000, len(tail))
+                self.assertTrue(tail.endswith("late failure"), tail[-40:])
+
+    def test_overrun_reader_exited_at_the_deadline_keeps_its_stderr_tail(self) -> None:
+        env, _spec, backend = self._reader(planned_kill=False)
+        process = backend_processes.spawn(
+            env.processes,
+            "r",
+            [sys.executable, "-c", "import sys; sys.stderr.write('boom'); sys.exit(3)"],
+            env=_runner_env(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.addCleanup(_reap, process)
+        backend._readers["r"] = process
+        backend._overrun_readers.add("r")
+        os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT)
+        with mock.patch.object(backend_processes, "_LEASE_DRAIN_SECONDS", 0.0):
+            drained = backend_processes.drain_overrun_readers(backend)
+        self.assertEqual((1, {"r": 3}, {"r": "boom"}), drained)
+
+    def test_overrun_readers_share_one_drain_allowance(self) -> None:
+        """Running readers share one process allowance; exited readers' pipes share one more."""
+        env, _spec, backend = self._reader()
+        now = [0.0]
+        timeouts: list[float] = []
+
+        def communicate(*steps: tuple[float, str | None]) -> Any:
+            """Each call spends `seconds` (at most its timeout), then times out or returns `stderr`."""
+            pending = list(steps)
+
+            def call(timeout: float) -> tuple[str, str]:
+                timeouts.append(timeout)
+                seconds, stderr = pending.pop(0)
+                now[0] += min(seconds, timeout)
+                if stderr is None:
+                    raise subprocess.TimeoutExpired("reader", timeout)
+                return "", stderr
+
+            return call
+
+        wedged = (float("inf"), None)
+        readers = {
+            "a": (None, communicate(wedged)),
+            "b": (None, communicate(wedged)),
+            "c": (3, communicate(wedged, (0.5, "boom"))),
+            "d": (0, communicate(wedged, wedged)),
+        }
+        for reader, (returncode, call) in readers.items():
+            backend._readers[reader] = mock.Mock(
+                communicate=call,
+                poll=lambda code=returncode: code,
+                returncode=returncode,
+            )
+            backend._overrun_readers.add(reader)
+        with (
+            mock.patch.object(backend_processes.time, "monotonic", lambda: now[0]),
+            mock.patch.object(env.processes, "retire") as retire,
+        ):
+            drained = backend_processes.drain_overrun_readers(backend)
+        exits = {"a": None, "b": None, "c": 3, "d": 0}
+        self.assertEqual((3, exits, {"c": "boom"}), drained)
+        drain = backend_processes._LEASE_DRAIN_SECONDS
+        pipes = backend_processes._LATE_PIPE_SECONDS
+        self.assertEqual([drain, 0.0, 0.0, pipes, 0.0, pipes - 0.5], timeouts)
+        self.assertEqual(2, retire.call_count)
+        self.assertEqual({"a", "b"}, backend._overrun_readers)
 
     def test_background_read_kill_and_unwind_empty_owned_group(self) -> None:
         for mode in ("kill", "unwind", "timeout"):
@@ -247,11 +520,11 @@ original = subprocess.Popen
 def spawn(*args, **kwargs):
     process = original(*args, **kwargs)
     communicate = process.communicate
-    def receive():
+    def receive(timeout=None):
         first = process.stdout.readline()
         assert first == 'sweep\\n'
         ready.set()
-        output, error = communicate()
+        output, error = communicate(timeout=timeout)
         return first + output, error
     process.communicate = receive
     return process

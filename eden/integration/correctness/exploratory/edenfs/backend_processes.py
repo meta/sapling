@@ -11,15 +11,18 @@ process registry; ``_kill_process_group`` empties a group before returning.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, TYPE_CHECKING
 
 from eden.integration.correctness.exploratory.core.containment import _runner_env
-from eden.integration.correctness.exploratory.core.history import FAIL, OK
+from eden.integration.correctness.exploratory.core.history import FAIL, INFO, OK
 from eden.integration.correctness.exploratory.core.processes import (
     confirm_gone,
     kill_group,
@@ -36,6 +39,26 @@ if TYPE_CHECKING:
     from eden.integration.correctness.exploratory.edenfs.backends import LiveBackend
 
 _KILL_WAIT_SECONDS = 30.0
+
+# How long a reader may outlive its lease before the lease completes
+# `info`: past this its walk waits on something, such as a request a block
+# fault holds, that it cannot finish without.
+_LEASE_DRAIN_SECONDS = 10.0
+_LATE_PIPE_SECONDS = 1.0
+_LATE_STDERR_CHARS = 2000
+LEASE_OVERRUN = "lease-overrun"
+
+
+@functools.cache
+def _spawner() -> ThreadPoolExecutor:
+    """Return the one long-lived thread that forks readers.
+
+    A child's parent-death signal fires when the thread that forked it
+    exits, so a reader forked by its action's scheduler thread would die
+    when its lease completed.
+    """
+    return ThreadPoolExecutor(max_workers=1, thread_name_prefix="reader-spawner")
+
 
 _BACKGROUND_READ = """
 import ctypes, os, sys, time
@@ -101,38 +124,50 @@ def _kill_process_group(
 
 
 def background_read(backend: LiveBackend, action: Action) -> BackendResult:
-    """Keep one registered directory-walking process alive for the lease."""
+    """Keep one registered directory-walking process alive for the lease.
+
+    A reader still running `_LEASE_DRAIN_SECONDS` after its lease ends
+    completes the lease `info`; see `drain_overrun_readers`.
+    """
     root = (backend._env.mount_path / action.payload["root"]).resolve(strict=True)
     if not root.is_relative_to(backend._env.mount_path.resolve()) or not root.is_dir():
         raise HarnessFailure(INVALID_BACKEND_RESPONSE)
+    argv = [
+        sys.executable,
+        "-c",
+        _BACKGROUND_READ,
+        str(root),
+        str(action.payload["seconds"]),
+        str(os.getpid()),
+    ]
     with backend._reader_lock:
         if backend._readers_closed:
             raise HarnessFailure(INVALID_BACKEND_RESPONSE)
-        process = spawn(
+        future = _spawner().submit(
+            spawn,
             backend._env.processes,
             action.id,
-            [
-                sys.executable,
-                "-c",
-                _BACKGROUND_READ,
-                str(root),
-                str(action.payload["seconds"]),
-                str(os.getpid()),
-            ],
+            argv,
             env=_runner_env(),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
         )
+        process = future.result()
         backend._readers[action.id] = process
+    overran = False
     try:
-        stdout, stderr = process.communicate()
-    finally:
-        if process.poll() is None:
-            _kill_process_group(process, process.pid)
+        stdout, stderr = process.communicate(
+            timeout=action.payload["seconds"] + _LEASE_DRAIN_SECONDS
+        )
+    except subprocess.TimeoutExpired:
+        overran = True
         with backend._reader_lock:
-            backend._readers.pop(action.id)
-            backend._env.processes.retire(action.id, process)
+            backend._overrun_readers.add(action.id)
+        return BackendResult(INFO, {"reason": LEASE_OVERRUN, "pgid": process.pid})
+    finally:
+        if not overran:
+            retire_stream(backend, action.id, process)
     return BackendResult(
         OK if process.returncode == 0 else FAIL,
         {
@@ -143,6 +178,71 @@ def background_read(backend: LiveBackend, action: Action) -> BackendResult:
             "sweeps": stdout.count("sweep\n"),
         },
     )
+
+
+def _killed_by_spec(backend: LiveBackend, action_id: str) -> bool:
+    return any(
+        other.kind == "kill_process" and other.payload["target_action"] == action_id
+        for other in backend._spec.actions
+    )
+
+
+def drain_overrun_readers(
+    backend: LiveBackend,
+) -> tuple[int, dict[str, int | None], dict[str, str]]:
+    """Reap every overrun reader once faults are released; return failures, exits, and stderr.
+
+    An overrun reader completed its lease `info` with no exit facts and
+    stayed owned and running. All readers share one `_LEASE_DRAIN_SECONDS`
+    wait for their exits; readers that exited but whose pipes were not yet
+    read share at most `_LATE_PIPE_SECONDS` more. `exits` maps each to its
+    late exit status, None for one still running, which is left to the
+    supervisor's run-dir close. A failure is a reader still running or one
+    with a nonzero exit other than SIGKILL after a spec `kill_process`
+    actually signalled it (not one that found it already exited); the last
+    `_LATE_STDERR_CHARS` of a nonzero exit's stderr are returned with it.
+    """
+    with backend._reader_lock:
+        overrun = [(r, backend._readers[r]) for r in sorted(backend._overrun_readers)]
+        signalled = dict(backend._signalled_readers)
+    deadline = time.monotonic() + _LEASE_DRAIN_SECONDS
+    pipe_deadline = deadline + _LATE_PIPE_SECONDS
+    exits: dict[str, int | None] = {}
+    stderr_tails: dict[str, str] = {}
+    failures = 0
+    for action_id, process in overrun:
+        try:
+            _stdout, stderr = process.communicate(
+                timeout=max(0.0, deadline - time.monotonic())
+            )
+        except subprocess.TimeoutExpired:
+            if process.poll() is None:
+                exits[action_id] = None
+                failures += 1
+                continue
+            stderr = _exited_stderr(process, pipe_deadline)
+        exits[action_id] = process.returncode
+        planned = (
+            process.returncode == -signal.SIGKILL
+            and signalled.get(action_id) == process.pid
+        )
+        failures += process.returncode != 0 and not planned
+        if process.returncode != 0 and stderr:
+            stderr_tails[action_id] = stderr[-_LATE_STDERR_CHARS:]
+        retire_stream(backend, action_id, process)
+        with backend._reader_lock:
+            backend._overrun_readers.discard(action_id)
+    return failures, exits, stderr_tails
+
+
+def _exited_stderr(process: subprocess.Popen[str], pipe_deadline: float) -> str:
+    """Read an exited reader's remaining stderr by `pipe_deadline`; "" if its pipes stay open."""
+    try:
+        return process.communicate(timeout=max(0.0, pipe_deadline - time.monotonic()))[
+            1
+        ]
+    except subprocess.TimeoutExpired:
+        return ""
 
 
 def spawn_owned(
@@ -191,6 +291,7 @@ def retire_stream(
         _kill_process_group(process, process.pid)
     with backend._reader_lock:
         backend._readers.pop(action_id)
+        backend._signalled_readers.pop(action_id, None)
         backend._env.processes.retire(action_id, process)
 
 
@@ -198,11 +299,7 @@ def stream_died(
     backend: LiveBackend, stream_id: str, reason: str, stderr: str
 ) -> BackendResult:
     """A dead stream is a FAIL only when a spec kill_process aimed at it."""
-    killed_by_spec = any(
-        other.kind == "kill_process" and other.payload["target_action"] == stream_id
-        for other in backend._spec.actions
-    )
-    if not killed_by_spec:
+    if not _killed_by_spec(backend, stream_id):
         raise HarnessFailure(INVALID_BACKEND_RESPONSE)
     return BackendResult(FAIL, {"reason": reason, "stderr": stderr})
 
@@ -288,4 +385,8 @@ def kill_process(backend: LiveBackend, action: Action) -> BackendResult:
     }
     if already_exited:
         facts["already_exited"] = True
+    else:
+        with backend._reader_lock:
+            if backend._readers.get(target_id) is owned.process:
+                backend._signalled_readers[target_id] = owned.pgid
     return BackendResult(OK, facts)
