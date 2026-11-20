@@ -5,6 +5,7 @@ oncall("scm_client_infra")
 cpp_library(
     name = "model",
     srcs = [
+        "EmbeddedMetadata.cpp",
         "Hash.cpp",
         "ObjectId.cpp",
         "Tree.cpp",
@@ -13,6 +14,7 @@ cpp_library(
     headers = [
         "Blob.h",
         "BlobAuxData.h",
+        "EmbeddedMetadata.h",
         "EntryAttributeFlags.h",
         "Hash.h",
         "ObjectId.h",
@@ -24,6 +26,8 @@ cpp_library(
     deps = [
         "fbsource//xplat/folly:conv",
         "fbsource//xplat/folly:string",
+        "fbsource//xplat/folly:varint",
+        "fbsource//xplat/folly/lang:bits",
         "fbsource//xplat/folly/logging:logging",
         "fbsource//xplat/folly/memory:malloc",
         "fbsource//xplat/folly/ssl:openssl_hash",
@@ -34,6 +38,7 @@ cpp_library(
     exported_deps = [
         "fbsource//third-party/fmt:fmt",
         "fbsource//xplat/folly:c_portability",
+        "fbsource//xplat/folly:cpp_attributes",
         "fbsource//xplat/folly:fbstring",
         "fbsource//xplat/folly:range",
         "fbsource//xplat/folly:try",

@@ -7,6 +7,7 @@
 
 eden_add_test(eden_fs_model_test
   SRCS
+    EmbeddedMetadataTest.cpp
     HashTest.cpp
     ObjectIdTest.cpp
     TreeEntryTest.cpp

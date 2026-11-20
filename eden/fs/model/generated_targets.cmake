@@ -7,6 +7,7 @@
 
 eden_add_library(eden_fs_model
   SRCS
+    EmbeddedMetadata.cpp
     Hash.cpp
     ObjectId.cpp
     Tree.cpp
@@ -14,14 +15,17 @@ eden_add_library(eden_fs_model
   DEPS
     Boost::headers
     Folly::folly_conv
+    Folly::folly_lang_bits
     Folly::folly_logging_logging
     Folly::folly_memory_malloc
     Folly::folly_ssl_openssl_hash
     Folly::folly_string
+    Folly::folly_varint
     eden_fs_digest_blake3_hash
   EXPORTED_DEPS
     Folly::folly_c_portability
     Folly::folly_container_array
+    Folly::folly_cpp_attributes
     Folly::folly_fbstring
     Folly::folly_io_iobuf
     Folly::folly_range

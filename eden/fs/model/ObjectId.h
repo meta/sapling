@@ -24,6 +24,8 @@ namespace facebook::eden {
  * Identifies tree and blob objects.
  * This identifier is a variable length string.
  *
+ * It starts with a byte that holds a type, and can carry metadata about the
+ * object after it. See EmbeddedMetadata.h.
  */
 class ObjectId {
  public:
