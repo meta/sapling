@@ -74,6 +74,9 @@ pub(super) struct QueuedPushrebaseRequest {
     pub(super) ctx: CoreContext,
     pub(super) stack: PushrebaseStack,
     pub(super) retry_num: PushrebaseRetryNum,
+    /// The part of `retry_num` spent preparing: it counts against the
+    /// requeue limit, but not as contention in the retry stats.
+    pub(super) preparation_rounds: usize,
     pub(super) response_tx:
         oneshot::Sender<Result<PushrebaseOutcome, SharedError<PushrebaseError>>>,
     pub(super) enqueued_at: tokio::time::Instant,
@@ -145,6 +148,7 @@ fn partition_requests(
                 ctx,
                 stack: request.stack,
                 retry_num: PushrebaseRetryNum(0),
+                preparation_rounds: 0,
                 response_tx: request.response_tx,
                 enqueued_at: request.enqueued_at,
             }],
@@ -414,7 +418,7 @@ async fn run_queue<R, F>(
                 if batch.flags.monitoring_bookmark.is_some() {
                     bookmarks::saturation::record_pushrebase_retries(
                         repo.repo_identity().name(),
-                        request.retry_num.0 as i64,
+                        crate::contention_retries(request.retry_num.0, request.preparation_rounds),
                     );
                 }
                 let error = SharedError::from(PushrebaseError::Error(anyhow!(

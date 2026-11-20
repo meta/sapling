@@ -17,6 +17,7 @@ bookmarks = { version = "0.1.0", path = "../../../repo_attributes/bookmarks" }
 context = { version = "0.1.0", path = "../../../servers/slapi/slapi_server/context" }
 mononoke_types = { version = "0.1.0", path = "../../../mononoke_types" }
 sql_ext = { version = "0.1.0", path = "../../../common/rust/sql_ext" }
+thiserror = "2.0.21"
 
 [lints]
 workspace = true

@@ -87,6 +87,8 @@ use tokio::sync::oneshot;
 
 use super::*;
 
+mod source_revision_guard;
+
 fn init_just_knobs_for_test() {
     override_just_knobs(JustKnobsInMemory::new(hashmap! {
         "scm/mononoke:pushrebase_enable_merge_resolution".to_string() => KnobVal::Bool(false),
@@ -171,6 +173,7 @@ fn queued_pushrebase_request(
         ctx: ctx.clone(),
         stack,
         retry_num: PushrebaseRetryNum(0),
+        preparation_rounds: 0,
         response_tx,
         enqueued_at: tokio::time::Instant::now(),
     }

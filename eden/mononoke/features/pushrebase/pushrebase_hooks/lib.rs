@@ -22,11 +22,14 @@ use pushrebase_hook::PushrebaseHook;
 use pushrebase_hook::PushrebaseTransactionHook;
 use pushrebase_hook::RebasedChangesets;
 use pushrebase_mutation_mapping::PushrebaseMutationMappingRef;
+use repo_blobstore::RepoBlobstoreArc;
 use repo_bookmark_attrs::RepoBookmarkAttrsRef;
 use repo_cross_repo::RepoCrossRepoRef;
+use repo_derived_data::RepoDerivedDataArc;
 use repo_identity::RepoIdentityRef;
 use repo_lock::RepoLockState;
 use repo_lock::TransactionRepoLock;
+use source_revision_pushrebase_hook::SourceRevisionPushrebaseHook;
 use sql_ext::Transaction;
 use synced_commit_mapping_pushrebase_hook::CrossRepoSyncPushrebaseHook;
 use synced_commit_mapping_pushrebase_hook::ForwardSyncedCommitInfo;
@@ -136,8 +139,10 @@ pub async fn get_pushrebase_hooks(
          impl BonsaiGitMappingArc
          + BonsaiGlobalrevMappingArc
          + PushrebaseMutationMappingRef
+         + RepoBlobstoreArc
          + RepoBookmarkAttrsRef
          + RepoCrossRepoRef
+         + RepoDerivedDataArc
          + RepoIdentityRef
      ),
     bookmark: &BookmarkKey,
@@ -223,6 +228,13 @@ pub async fn get_pushrebase_hooks(
     match repo.pushrebase_mutation_mapping().get_hook() {
         Some(hook) => pushrebase_hooks.push(hook),
         None => {}
+    }
+
+    // Last, so that it sees the commits as every other hook leaves them.
+    if let Some(config) = &pushrebase_params.source_revision_guard
+        && config.bookmark == *bookmark
+    {
+        pushrebase_hooks.push(SourceRevisionPushrebaseHook::try_new(config, repo)?);
     }
     Ok(pushrebase_hooks)
 }

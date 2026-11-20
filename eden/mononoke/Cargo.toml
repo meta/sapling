@@ -218,6 +218,7 @@ members = [
   "features/pushrebase/pushrebase_client",
   "features/pushrebase/pushrebase_hook",
   "features/pushrebase/pushrebase_hooks",
+  "features/pushrebase/source_revision_pushrebase_hook",
   "features/redaction",
   "features/repo_metadata",
   "features/repo_stats_logger",

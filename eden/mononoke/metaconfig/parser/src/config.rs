@@ -1710,6 +1710,7 @@ mod test {
                     remote_mode: PushrebaseRemoteMode::RemoteLandService(Address::Tier(
                         "my-tier".to_string(),
                     )),
+                    source_revision_guard: None,
                 },
                 lfs: LfsParams {
                     threshold: Some(1000),

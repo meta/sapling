@@ -39,6 +39,7 @@ use repo_blobstore::RepoBlobstoreArc;
 use repo_blobstore::RepoBlobstoreRef;
 use repo_bookmark_attrs::RepoBookmarkAttrsRef;
 use repo_cross_repo::RepoCrossRepoRef;
+use repo_derived_data::RepoDerivedDataArc;
 use repo_derived_data::RepoDerivedDataRef;
 use repo_identity::RepoIdentityRef;
 use repo_permission_checker::RepoPermissionCheckerRef;
@@ -113,6 +114,7 @@ pub trait Repo = BonsaiHgMappingRef
     + PushrebaseMutationMappingRef
     + RepoBookmarkAttrsRef
     + RepoConfigRef
+    + RepoDerivedDataArc
     + RepoDerivedDataRef
     + RepoBlobstoreArc
     + RepoBlobstoreRef

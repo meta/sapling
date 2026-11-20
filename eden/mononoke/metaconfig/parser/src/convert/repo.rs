@@ -540,6 +540,8 @@ impl Convert for RawPushrebaseParams {
             remote_mode: self
                 .remote_mode
                 .map_or(Ok(default.remote_mode), Convert::convert)?,
+            // `RawPushrebaseParams` has no field for it yet.
+            source_revision_guard: default.source_revision_guard,
         })
     }
 }

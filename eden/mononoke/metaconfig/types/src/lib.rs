@@ -1439,6 +1439,24 @@ pub struct GlobalrevConfig {
     pub globalrevs_small_repo_id: Option<RepositoryId>,
 }
 
+/// Generated JSON files whose root `source_revision` must advance by exactly
+/// one with every semantic change landed onto `bookmark`: the immediate
+/// `*.json` children of `directories`, which all share one revision.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct SourceRevisionGuardConfig {
+    /// The bookmark whose pushrebases are checked.
+    pub bookmark: BookmarkKey,
+    /// The authoritative directory first, then the mirrored copies that must
+    /// hold the same files with the same content and revision.
+    pub directories: Vec<NonRootMPath>,
+    /// The most entries one guarded directory may have.
+    pub max_files: usize,
+    /// The largest guarded file, in bytes, that pushrebase will read.
+    pub max_file_bytes: u64,
+    /// The most bytes pushrebase will read for one commit's guarded files.
+    pub max_total_bytes: u64,
+}
+
 /// Pushrebase configuration options
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PushrebaseParams {
@@ -1460,6 +1478,9 @@ pub struct PushrebaseParams {
     pub allow_change_xrepo_mapping_extra: bool,
     /// How to do pushrebase on Mononoke
     pub remote_mode: PushrebaseRemoteMode,
+    /// Generated files whose `source_revision` pushrebase checks before
+    /// moving the bookmark; `None` checks nothing.
+    pub source_revision_guard: Option<SourceRevisionGuardConfig>,
 }
 
 impl Default for PushrebaseParams {
@@ -1472,6 +1493,7 @@ impl Default for PushrebaseParams {
             populate_git_mapping: false,
             allow_change_xrepo_mapping_extra: false,
             remote_mode: PushrebaseRemoteMode::Local,
+            source_revision_guard: None,
         }
     }
 }
