@@ -66,16 +66,20 @@ class MountHealthCheckTest(MountHealthCheckTestBase):
         self.wait_for_counter("timed_out")
         self.assertEqual(0, self.counter("not_started"))
 
-    def test_probe_waiting_for_a_thread_is_counted_as_not_started(self) -> None:
+    def test_probe_waiting_for_a_thread_runs_late(self) -> None:
         stuck = [self.mount, os.path.join(self.mounts_dir, "second")]
         self.eden.clone(self.repo.path, stuck[1])
         self.eden.clone(self.repo.path, os.path.join(self.mounts_dir, "third"))
         self.wait_for_counter("healthy")
         # Two stuck probes hold both health check threads, so the third
-        # checkout's probe cannot start.
+        # checkout's probe waits for one.
         for mount in stuck:
             self.delay_next_probe(8, mount)
+        poll_until(lambda: True if self.counter("timed_out") >= 2 else None, timeout=30)
+        self.assertEqual(0, self.counter("not_started"))
+        # It runs once a thread is free, and counts the wait.
         self.wait_for_counter("not_started")
+        self.assertEqual(2, self.counter("timed_out"))
 
     def test_probe_done_in_time_is_not_reported(self) -> None:
         # Checkouts are probed in path order. The second checkout's probe
