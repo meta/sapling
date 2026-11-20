@@ -6,10 +6,12 @@ rust_library(
     name = "augmented_manifest_backfill",
     srcs = glob(["src/**/*.rs"]),
     test_deps = [
+        "fbsource//third-party/rust:assert_matches",
         "fbsource//third-party/rust:tokio",
         "//common/rust/shed/facet:facet",
         "//common/rust/shed/fbinit:fbinit",
         "//common/rust/shed/fbinit:fbinit-tokio",
+        "//eden/mononoke/mercurial:mercurial_types",
         "//eden/mononoke/repo_attributes/bonsai_hg_mapping:bonsai_hg_mapping",
         "//eden/mononoke/repo_attributes/bookmarks:bookmarks",
         "//eden/mononoke/repo_attributes/commit_graph/commit_graph:commit_graph",
@@ -23,7 +25,10 @@ rust_library(
     deps = [
         "fbsource//third-party/rust:anyhow",
         "fbsource//third-party/rust:futures",
+        "fbsource//third-party/rust:thiserror",
         "fbsource//third-party/rust:tokio-util",
+        "fbsource//third-party/rust:tracing",
+        "//common/rust/shed/futures_retry:futures_retry",
         "//eden/mononoke/common/mononoke_macros:mononoke_macros",
         "//eden/mononoke/common/topo_sort:topo_sort",
         "//eden/mononoke/derived_data:derived_data_manager",

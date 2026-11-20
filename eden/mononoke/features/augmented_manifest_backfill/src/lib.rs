@@ -11,4 +11,5 @@
 mod repo_backfill;
 
 pub use repo_backfill::CommitOutcome;
+pub use repo_backfill::Failure;
 pub use repo_backfill::RepoBackfill;
