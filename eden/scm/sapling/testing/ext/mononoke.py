@@ -1086,8 +1086,6 @@ pure_push_allowed = true
 bookmark="{cache_warmup_bookmark}"
 """
         )
-        if env.getenv("CACHE_WARMUP_MICROWAVE"):
-            append_config("microwave_preload = true")
 
     append_config("[lfs]")
 

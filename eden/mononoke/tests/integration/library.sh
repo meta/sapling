@@ -1773,15 +1773,6 @@ if [ -z "$HAS_FB" ]; then
   }
 fi
 
-function microwave_builder() {
-  render_mononoke_config
-  GLOG_minloglevel=5 "$MONONOKE_MICROWAVE_BUILDER" \
-    "${CACHE_ARGS[@]}" \
-    "${COMMON_ARGS[@]}" \
-    --config-tier "$MONONOKE_CONFIG_TIER" \
-    "$@"
-}
-
 function derivation_pipeline_tailer {
   render_mononoke_config
   THRIFT_TLS_CL_CERT_PATH="$TEST_CERTDIR/client0.crt" \
