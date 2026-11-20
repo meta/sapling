@@ -181,6 +181,7 @@ members = [
   "features/async_requests/types",
   "features/async_requests/worker",
   "features/async_requests/worker_lib",
+  "features/augmented_manifest_backfill",
   "features/bookmark_selection",
   "features/cache_warmup",
   "features/changesets_creation",
