@@ -535,6 +535,7 @@ cpp_unittest(
     deps = [
         "fbsource//third-party/googletest:gtest",
         "fbsource//xplat/folly/portability:unistd",
+        "fbsource//xplat/folly/synchronization:baton",
         "fbsource//xplat/folly/test:test_utils",
         "//eden/fs/inodes:inodes",
         "//eden/fs/journal:journal",
@@ -542,7 +543,6 @@ cpp_unittest(
         "//eden/fs/testharness:fake_backing_store_and_tree_builder",
         "//eden/fs/testharness:test_checks",
         "//eden/fs/testharness:test_mount",
-        "//folly/synchronization:baton",
     ],
 )
 
