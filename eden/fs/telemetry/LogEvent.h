@@ -1012,6 +1012,19 @@ struct EdenMountHealthIssue : public EdenFSEvent {
   }
 };
 
+/**
+ * A mount health check probe that was reported as hung returned. The hang was
+ * reported as a mount health issue when it began, so its end is logged as its
+ * own event, with the same fields, to not count the hang twice.
+ */
+struct EdenMountHealthCheckHangEnded : public EdenMountHealthIssue {
+  using EdenMountHealthIssue::EdenMountHealthIssue;
+
+  const char* getType() const override {
+    return "eden_mount_health_check_hang_ended";
+  }
+};
+
 struct FetchMiss : public EdenFSEvent {
   enum MissType : uint8_t {
     Tree = 0,

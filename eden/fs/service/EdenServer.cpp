@@ -303,6 +303,7 @@ struct MountHealthIssueLogContext {
     stats->increment(counter);
   }
 
+  template <typename Event = EdenMountHealthIssue>
   void log(
       std::string reason,
       std::string error,
@@ -318,7 +319,7 @@ struct MountHealthIssueLogContext {
     if (!edenFsEventsLogger) {
       return;
     }
-    EdenMountHealthIssue event{
+    Event event{
         "daemon_periodic",
         std::move(reason),
         std::string{mountPath},
@@ -554,7 +555,7 @@ void logMountHealthCheckHangEnded(
     auto detail = folly::toJson(
         folly::dynamic::object("result", result)("probe_ms", durationMs));
     XLOGF(WARN, "{} for {}: {}", error, logContext.mountPath, detail);
-    logContext.log(
+    logContext.log<EdenMountHealthCheckHangEnded>(
         std::string{edenMountHealthIssueReasonString(
             EdenMountHealthIssueReason::DaemonRunningMountHangEnded)},
         std::move(error),

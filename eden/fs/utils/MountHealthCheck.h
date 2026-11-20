@@ -39,7 +39,8 @@ enum class EdenMountHealthIssueReason {
   // The probe ran past the 5 s timeout but finished before the hang
   // threshold.
   DaemonRunningMountSlow,
-  // A probe reported as hung finished.
+  // A probe reported as hung finished. Logged as its own event, not as a mount
+  // health issue.
   DaemonRunningMountHangEnded,
 };
 
