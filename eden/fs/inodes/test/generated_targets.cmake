@@ -442,12 +442,16 @@ eden_add_test(eden_fs_inodes_test_remove
     RemoveTest.cpp
   DEPS
     ${LIBGMOCK_LIBRARIES}
+    Folly::folly_portability_unistd
+    Folly::folly_synchronization_baton
     Folly::folly_test_test_utils
     eden_fs_inodes
     eden_fs_journal
+    eden_fs_store_context
     eden_fs_testharness_fake_backing_store_and_tree_builder
     eden_fs_testharness_test_checks
     eden_fs_testharness_test_mount
+    edencommon::edencommon_utils
 )
 
 eden_add_test(eden_fs_inodes_test_rename

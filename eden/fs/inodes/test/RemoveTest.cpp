@@ -5,13 +5,23 @@
  * GNU General Public License version 2.
  */
 
+#include <folly/portability/Unistd.h>
+#include <folly/synchronization/Baton.h>
 #include <folly/test/TestUtils.h>
 #include <gtest/gtest.h>
+#include <atomic>
+#include <csignal>
+#include <cstdio>
+#include <thread>
 
+#include "eden/common/utils/ImmediateFuture.h"
+#include "eden/fs/inodes/EdenMount.h"
 #include "eden/fs/inodes/FileInode.h"
 #include "eden/fs/inodes/InodeTable.h"
+#include "eden/fs/inodes/Overlay.h"
 #include "eden/fs/inodes/TreeInode.h"
 #include "eden/fs/journal/Journal.h"
+#include "eden/fs/store/ObjectFetchContext.h"
 #include "eden/fs/testharness/FakeTreeBuilder.h"
 #include "eden/fs/testharness/TestChecks.h"
 #include "eden/fs/testharness/TestMount.h"
@@ -167,6 +177,101 @@ TEST_F(UnlinkTest, created) {
   EXPECT_FILE_INODE(file, contents, 0644);
 #endif
 }
+
+#ifndef _WIN32
+namespace {
+class RemoveLookupContext final : public ObjectFetchContext {
+ public:
+  Cause getCause() const override {
+    // rlockGetOrFindChild pins the loaded child before logging this access.
+    if (!lookupPosted_.exchange(true)) {
+      lookup.post();
+    }
+    return Cause::Prefetch;
+  }
+
+  const std::unordered_map<std::string, std::string>* getRequestInfo()
+      const override {
+    return nullptr;
+  }
+
+  mutable folly::Baton<> lookup;
+
+ private:
+  mutable std::atomic<bool> lookupPosted_{false};
+};
+
+[[noreturn]] void removeReplacedChild(bool directory) {
+  // Setup failures must not be mistaken for the expected retry deadlock.
+  alarm(30);
+  FakeTreeBuilder builder;
+  if (directory) {
+    builder.mkdir("parent/victim");
+  } else {
+    builder.setFile("parent/victim", "contents\n");
+  }
+  TestMount mount{builder};
+  auto parent = mount.getTreeInode("parent");
+  auto original = mount.getInode("parent/victim"_relpath);
+  auto context = makeRefPtr<RemoveLookupContext>();
+  auto renameLock = mount.getEdenMount()->acquireRenameLock();
+  folly::Try<folly::Unit> result;
+  std::thread remover([&] {
+    result = folly::makeTryWith([&] {
+      auto future = directory ? parent->rmdir(
+                                    "victim"_pc,
+                                    InvalidationRequired::No,
+                                    context.as<ObjectFetchContext>())
+                              : parent->unlink(
+                                    "victim"_pc,
+                                    InvalidationRequired::No,
+                                    context.as<ObjectFetchContext>());
+      std::move(future).get(1s);
+      return folly::unit;
+    });
+  });
+  if (!context->lookup.try_wait_for(10s)) {
+    _exit(1);
+  }
+
+  {
+    auto contents = parent->lockContentsWrite();
+    auto& entry = contents->entries.at("victim"_pc);
+    auto replacement = DirEntry{
+        entry.getInitialMode(),
+        mount.getEdenMount()->getOverlay()->allocateInodeNumber(),
+        entry.getObjectId()};
+    original->markUnlinked(parent.get(), "victim"_pc, renameLock);
+    entry = std::move(replacement);
+  }
+
+  std::fputs("ready replacement installed\n", stderr);
+  std::signal(SIGALRM, [](int) { _exit(2); });
+  alarm(5);
+  renameLock.unlock();
+  remover.join();
+  _exit(result.hasValue() ? 0 : 1);
+}
+
+void expectRemoveReplacedChild(bool directory) {
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  // Debug/sanitized ImmediateFuture always defers, so the outer guard is gone
+  // before retry. Only immediate continuations reproduce the self-deadlock.
+  ASSERT_EXIT(
+      removeReplacedChild(directory),
+      ::testing::ExitedWithCode(detail::kImmediateFutureAlwaysDefer ? 0 : 2),
+      "ready replacement installed");
+}
+} // namespace
+
+TEST(RemoveReplacedChild, unlinkReloadsReadyFile) {
+  expectRemoveReplacedChild(false);
+}
+
+TEST(RemoveReplacedChild, rmdirReloadsReadyDirectory) {
+  expectRemoveReplacedChild(true);
+}
+#endif
 
 class RemoveRecursivelyTest : public ::testing::Test {
  protected:
