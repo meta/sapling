@@ -28,7 +28,7 @@ justknobs_ext = { version = "0.1.0", path = "../justknobs_ext" }
 maplit = "1.0"
 memcache = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 mononoke_types = { version = "0.1.0", path = "../../../mononoke_types" }
-mysql_async = { version = "0.36.2", features = ["native-tls-tls"] }
+mysql_async = { version = "0.37.1", features = ["native-tls-tls"] }
 paste = "1.0.14"
 rusqlite = { version = "0.40.0", features = ["backup", "blob", "bundled", "column_decltype", "fallible_uint", "functions", "limits", "modern_sqlite", "serde_json", "session", "vtab"] }
 sapling-clientinfo = { version = "0.1.0", path = "../../../../scm/lib/clientinfo" }
