@@ -237,8 +237,8 @@ constexpr auto kChannelStopRecoveryDelay = std::chrono::milliseconds{500};
 // Stop reason of a mount that failed before its channel started.
 constexpr std::string_view kMountFailedStopReason = "mount_failed";
 
-// `source` of the eden_mount_health_issue row that reports a recovery's
-// outcome.
+// `source` of the eden_mount_health_issue row that reports a recovery giving
+// up.
 constexpr std::string_view recoveryOutcomeSource(
     CheckoutRecoveryTrigger trigger) {
   switch (trigger) {
@@ -5006,7 +5006,7 @@ void EdenServer::checkMountHealth() {
     // Recovery refuses a flapping checkout, so it is reported instead.
     const bool flapping = isCheckoutFlapLimited(mountPath);
     if (!flapping && edenConfig->mountHealthCheckRecovery.getValue()) {
-      // The outcome is reported once the recovery succeeds or gives up.
+      // Reported only if the recovery gives up.
       startCheckoutRecovery(
           mountPath,
           std::move(config),
@@ -5276,8 +5276,9 @@ bool EdenServer::startCheckoutRecovery(
                     "Giving up recovering {} after {} failed attempts",
                     mountPath,
                     kMaxCheckoutRecoveryAttempts);
-              }
-              if (success || gaveUp) {
+                // A remounted checkout is recorded by the recovery event
+                // alone. Only one recovery gave up on is still an outage of
+                // the user.
                 edenFsEventsLogger->logEvent(
                     EdenMountHealthIssue{
                         std::string{recoveryOutcomeSource(event.trigger)},
@@ -5290,7 +5291,7 @@ bool EdenServer::startCheckoutRecovery(
                         event.repo_source,
                         event.stop_reason,
                         /*attempted_repair=*/true,
-                        success});
+                        /*success=*/false});
               }
               event.success = success;
               if (success) {

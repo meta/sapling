@@ -821,8 +821,8 @@ class EdenServer : private TakeoverHandler {
   bool isCheckoutFlapLimited(const AbsolutePath& mountPath) const;
 
   // Remounts a checkout loadCheckoutNotServed() returned. A failed attempt is
-  // retried by a later call, up to kMaxCheckoutRecoveryAttempts. The success
-  // or final failure is logged as an eden_mount_health_issue.
+  // retried by a later call, up to kMaxCheckoutRecoveryAttempts. Giving up is
+  // logged as an eden_mount_health_issue.
   // Returns false if the checkout must not be tried now.
   bool startCheckoutRecovery(
       const AbsolutePath& mountPath,
