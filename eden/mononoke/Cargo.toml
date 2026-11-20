@@ -238,6 +238,7 @@ members = [
   "git/packetline",
   "git/packfile",
   "git/protocol",
+  "jobs/augmented_manifest_backfill",
   "jobs/blobstore_healer",
   "jobs/cas_sync",
   "jobs/modern_sync",

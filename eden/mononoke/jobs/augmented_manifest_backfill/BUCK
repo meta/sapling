@@ -1,0 +1,33 @@
+load("@fbsource//tools/build_defs:rust_binary.bzl", "rust_binary")
+
+oncall("scm_server_infra")
+
+rust_binary(
+    name = "augmented_manifest_backfill_job",
+    srcs = glob(["src/**/*.rs"]),
+    test_deps = [
+        "//eden/mononoke/common/mononoke_macros:mononoke_macros",
+    ],
+    deps = [
+        "fbsource//third-party/rust:anyhow",
+        "fbsource//third-party/rust:clap",
+        "fbsource//third-party/rust:futures",
+        "fbsource//third-party/rust:tracing",
+        "//common/rust/shed/facet:facet",
+        "//common/rust/shed/fbinit:fbinit",
+        "//eden/mononoke/blobstore:throttledblob",
+        "//eden/mononoke/cmdlib/caching:cmdlib_caching",
+        "//eden/mononoke/cmdlib/mononoke_app:mononoke_app",
+        "//eden/mononoke/common/scuba_ext:scuba_ext",
+        "//eden/mononoke/common/wait_for_replication:wait_for_replication",
+        "//eden/mononoke/features/augmented_manifest_backfill:augmented_manifest_backfill",
+        "//eden/mononoke/metaconfig:metaconfig_types",
+        "//eden/mononoke/mononoke_types:mononoke_types",
+        "//eden/mononoke/repo_attributes/commit_graph/commit_graph:commit_graph",
+        "//eden/mononoke/repo_attributes/commit_graph/sql_commit_graph_storage:sql_commit_graph_storage",
+        "//eden/mononoke/repo_attributes/mutable_counters:mutable_counters",
+        "//eden/mononoke/repo_attributes/repo_derived_data:repo_derived_data",
+        "//eden/mononoke/repo_attributes/repo_identity:repo_identity",
+        "//eden/mononoke/servers/slapi/slapi_server/context:context",
+    ],
+)
