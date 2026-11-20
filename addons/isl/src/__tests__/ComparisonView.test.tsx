@@ -870,7 +870,7 @@ ${content}
         'split-diff-view-file-header-expand-button',
       ]);
       unmountNow();
-    }, 20_000 /* potentially slow test */);
+    }, 20_000); // potentially slow test
 
     it('a single large file is expanded so you always see something', async () => {
       const GIANT_FILE = makeFileDiff(
