@@ -73,6 +73,20 @@ class UpdateTest(EdenHgTestCase):
         repo.write_file("foo/bar.txt", "updated in commit 3\n")
         self.commit3 = repo.commit("Update foo/.gitignore")
 
+        # Create a commit with troublesome file paths.
+        repo.run_hg(
+            "debugdrawdag",
+            "--config",
+            "ui.username=test",
+            "--no-bookmarks",
+            input=(
+                "X   # X/f/.git/config=[core]\n"
+                "|   # X/f/.sl/requires=store\n"
+                "|   # X/f/others=1\n"
+                ".   # bookmark X=X\n"
+            ),
+        )
+
     def test_mode_change_with_no_content_change(self) -> None:
         """Test changing the mode of a file but NOT the contents."""
         self.assert_status_empty()
@@ -1152,6 +1166,15 @@ class UpdateTest(EdenHgTestCase):
         # Setting the experimental.repair-eden-dirstate config option to true (the default) will fix the issue
         self.hg("config", "--local", "experimental.repair-eden-dirstate", "True")
         self.repo.status()
+
+    def test_troublesome_paths(self) -> None:
+        self.repo.update("X")
+        f_dir = self.get_path("f")
+        listing = os.listdir(f_dir)
+        self.assertIn("others", listing)
+        # FIXME: these should be filtered.
+        self.assertIn(".git", listing)
+        self.assertIn(".sl", listing)
 
 
 class PrjFsState(Enum):
