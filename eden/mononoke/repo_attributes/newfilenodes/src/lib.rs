@@ -106,8 +106,4 @@ impl Filenodes for NewFilenodes {
             })?;
         Ok(ret)
     }
-
-    fn prime_cache(&self, ctx: &CoreContext, filenodes: &[PreparedFilenode]) {
-        self.reader.prime_cache(ctx, self.repo_id, filenodes);
-    }
 }

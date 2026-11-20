@@ -19,7 +19,6 @@ use faster_hex::hex_encode;
 use filenodes::FilenodeInfo;
 use filenodes::FilenodeRange;
 use filenodes::FilenodeResult;
-use filenodes::PreparedFilenode;
 use futures::future;
 use futures::future::Future;
 use itertools::Itertools;
@@ -351,19 +350,6 @@ impl FilenodesReader {
                 }
             })
             .await?
-    }
-
-    pub fn prime_cache(
-        &self,
-        _ctx: &CoreContext,
-        repo_id: RepositoryId,
-        filenodes: &[PreparedFilenode],
-    ) {
-        for c in filenodes {
-            let pwh = PathWithHash::from_repo_path(&c.path);
-            let key = filenode_cache_key(repo_id, &pwh, &c.info.filenode);
-            self.local_cache.fill_filenode(&key, &c.info)
-        }
     }
 }
 

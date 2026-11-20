@@ -1199,10 +1199,6 @@ mod tests {
                 .get_all_filenodes_maybe_stale(ctx, path, limit)
                 .await
         }
-
-        fn prime_cache(&self, ctx: &CoreContext, filenodes: &[PreparedFilenode]) {
-            self.inner.prime_cache(ctx, filenodes)
-        }
     }
 
     async fn compare_filenodes(

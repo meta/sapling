@@ -63,10 +63,6 @@ impl Filenodes for DummyStruct {
     ) -> Result<FilenodeResult<FilenodeRange>> {
         unimplemented!()
     }
-
-    fn prime_cache(&self, _ctx: &CoreContext, _filenodes: &[PreparedFilenode]) {
-        unimplemented!()
-    }
 }
 
 #[async_trait]

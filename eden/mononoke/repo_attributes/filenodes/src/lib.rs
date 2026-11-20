@@ -148,8 +148,6 @@ pub trait Filenodes: Send + Sync {
         path: &RepoPath,
         limit: Option<u64>,
     ) -> Result<FilenodeResult<FilenodeRange>>;
-
-    fn prime_cache(&self, ctx: &CoreContext, filenodes: &[PreparedFilenode]);
 }
 
 #[cfg(test)]
