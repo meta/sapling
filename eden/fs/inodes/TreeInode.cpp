@@ -1701,6 +1701,17 @@ std::optional<std::vector<std::string>> findEntryDifferences(
   return std::nullopt;
 }
 
+std::optional<InodeTimestamps> TreeInode::initialChildTimestamps(
+    const ObjectId& id) const {
+  const auto mtime = getObjectStore().getMtime(id);
+  if (!mtime) {
+    return std::nullopt;
+  }
+  InodeTimestamps timestamps{getMount()->getLastCheckoutTime()};
+  timestamps.mtime = EdenTimestamp{*mtime};
+  return timestamps;
+}
+
 ImmediateFuture<unique_ptr<InodeBase>> TreeInode::startLoadingInode(
     const DirEntry& entry,
     PathComponentPiece name,
@@ -1720,12 +1731,16 @@ ImmediateFuture<unique_ptr<InodeBase>> TreeInode::startLoadingInode(
     // Eventually we may want to go ahead start loading some of the blob data
     // now, but we don't have to wait for it to be ready before marking the
     // inode loaded.
+    std::optional<InodeTimestamps> initialTimestamps;
+    if (const auto* id = entry.getObjectIdPtr()) {
+      initialTimestamps = initialChildTimestamps(*id);
+    }
     return make_unique<FileInode>(
         entry.getInodeNumber(),
         inodePtrFromThis(),
         name,
         entry.getInitialMode(),
-        std::nullopt,
+        initialTimestamps,
         entry.getObjectIdPtr());
   }
 
@@ -1752,7 +1767,7 @@ ImmediateFuture<unique_ptr<InodeBase>> TreeInode::startLoadingInode(
           inodePtrFromThis(),
           name,
           entry.getInitialMode(),
-          std::nullopt,
+          initialChildTimestamps(entry.getObjectId()),
           DirContents{caseSensitivity},
           entry.getObjectId(),
           /*isRestricted=*/true,
@@ -1782,6 +1797,12 @@ ImmediateFuture<unique_ptr<InodeBase>> TreeInode::startLoadingInode(
               // Tree has been loaded, end the getTree span
               getTreeSpan.reset();
 
+              // startLoadingInode() is called with this directory's contents
+              // lock held. Done here, after the fetch, this runs without
+              // that lock unless the tree was available immediately.
+              const auto initialTimestamps =
+                  self->initialChildTimestamps(treeId);
+
               if (tree->isRestricted()) {
                 auto caseSensitivity =
                     self->getMount()->getCheckoutConfig()->getCaseSensitive();
@@ -1790,7 +1811,7 @@ ImmediateFuture<unique_ptr<InodeBase>> TreeInode::startLoadingInode(
                     std::move(self),
                     childName,
                     entryMode,
-                    std::nullopt,
+                    initialTimestamps,
                     DirContents{caseSensitivity},
                     tree->getObjectId(),
                     /*isRestricted=*/true,
@@ -1810,6 +1831,7 @@ ImmediateFuture<unique_ptr<InodeBase>> TreeInode::startLoadingInode(
                    entryMode,
                    entryHasACL,
                    number,
+                   initialTimestamps = initialTimestamps,
                    tree = std::move(tree),
                    loadOverlayDirSpan = std::move(
                        loadOverlayDirSpan)]() mutable -> unique_ptr<InodeBase> {
@@ -1843,7 +1865,7 @@ ImmediateFuture<unique_ptr<InodeBase>> TreeInode::startLoadingInode(
                     std::move(self),
                     childName,
                     entryMode,
-                    std::nullopt,
+                    initialTimestamps,
                     std::move(dirContents.contents),
                     treeId,
                     /*isRestricted=*/false,

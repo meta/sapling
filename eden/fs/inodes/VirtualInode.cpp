@@ -15,6 +15,7 @@
 #include "eden/fs/inodes/DirEntry.h"
 #include "eden/fs/inodes/FileInode.h"
 #include "eden/fs/inodes/InodeError.h"
+#include "eden/fs/inodes/InodeTimestamps.h"
 #include "eden/fs/inodes/TreeInode.h"
 #include "eden/fs/model/Tree.h"
 #include "eden/fs/model/TreeAuxData.h"
@@ -488,18 +489,29 @@ VirtualInode::co_getTreeAuxData(
 
 namespace {
 
-struct stat makeStatFromModeAndSize(
-    mode_t mode,
-    uint64_t size,
-    struct timespec lastCheckoutTime) {
+/**
+ * The mtime of an object that has no inode: the one an inode loaded for it
+ * starts with. That is the time the object's id carries, limited to the range
+ * an inode holds (EdenTimestamp), or else the time of the last checkout.
+ */
+struct timespec mtimeWithoutInode(
+    const ObjectStore& objectStore,
+    const ObjectId& id,
+    const struct timespec& lastCheckoutTime) {
+  const auto mtime = objectStore.getMtime(id);
+  return mtime ? EdenTimestamp{*mtime}.toTimespec() : lastCheckoutTime;
+}
+
+struct stat
+makeStatFromModeAndSize(mode_t mode, uint64_t size, struct timespec mtime) {
   struct stat st = {};
 #ifndef _WIN32
   st.st_mode = static_cast<decltype(st.st_mode)>(mode);
-  stMtime(st, lastCheckoutTime);
+  stMtime(st, mtime);
 #else
   // Windows returns zero for st_mode and mtime; intentionally discard.
   (void)mode;
-  (void)lastCheckoutTime;
+  (void)mtime;
 #endif
   st.st_size = static_cast<decltype(st.st_size)>(size);
   return st;
@@ -1073,7 +1085,10 @@ folly::coro::now_task<struct stat> VirtualInode::co_stat(
   }
   auto auxData =
       co_await objectStore->co_getBlobAuxData(info->id, fetchContext);
-  co_return makeStatFromModeAndSize(info->mode, auxData.size, lastCheckoutTime);
+  co_return makeStatFromModeAndSize(
+      info->mode,
+      auxData.size,
+      mtimeWithoutInode(*objectStore, info->id, lastCheckoutTime));
 }
 
 std::optional<struct stat> VirtualInode::tryGetCachedStat(
@@ -1094,8 +1109,11 @@ std::optional<struct stat> VirtualInode::tryGetCachedStat(
   }
 
   if (auto* tree = std::get_if<TreePtr>(&variant_)) {
-    (void)tree;
-    return makeStatFromModeAndSize(treeMode_, 0U, lastCheckoutTime);
+    return makeStatFromModeAndSize(
+        treeMode_,
+        0U,
+        mtimeWithoutInode(
+            *objectStore, (*tree)->getObjectId(), lastCheckoutTime));
   }
 
   std::optional<BlobAuxData> blobAux = blobAuxHint;
@@ -1116,7 +1134,10 @@ std::optional<struct stat> VirtualInode::tryGetCachedStat(
   if (!info) {
     return std::nullopt;
   }
-  return makeStatFromModeAndSize(info->mode, blobAux->size, lastCheckoutTime);
+  return makeStatFromModeAndSize(
+      info->mode,
+      blobAux->size,
+      mtimeWithoutInode(*objectStore, info->id, lastCheckoutTime));
 }
 
 namespace {

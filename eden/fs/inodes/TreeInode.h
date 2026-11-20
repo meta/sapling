@@ -930,6 +930,16 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
       std::unique_ptr<InodeBase> childInode);
 
   /**
+   * The timestamps a non-materialized child with the given id starts with if
+   * the backing store records a modification time for it:
+   * that mtime, and the time of the last checkout as atime and ctime. nullopt
+   * if it records none; the child then starts with the time of the last
+   * checkout for all three.
+   */
+  std::optional<InodeTimestamps> initialChildTimestamps(
+      const ObjectId& id) const;
+
+  /**
    * Start loading inode for name. If async=true, potentially blocking
    * operations are forced to run through the executor (async).
    */

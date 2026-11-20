@@ -24,6 +24,7 @@
 
 #include "eden/common/utils/CaseSensitivity.h"
 #include "eden/common/utils/FaultInjector.h"
+#include "eden/common/utils/StatTimes.h"
 #include "eden/fs/fuse/FuseDirList.h"
 #include "eden/fs/inodes/EdenMount.h"
 #include "eden/fs/inodes/FileInode.h"
@@ -135,6 +136,178 @@ TEST(TreeInodeTest, renameOrdersUnrelatedDestinationChildLock) {
         ENOENT);
   }
 }
+
+#ifndef _WIN32
+namespace {
+const timespec kFileMtime{1700000000, 123456789};
+const timespec kLinkMtime{1650000000, 1};
+const timespec kDirMtime{1600000000, 3};
+
+std::pair<int64_t, int64_t> parts(timespec ts) {
+  return {ts.tv_sec, ts.tv_nsec};
+}
+
+struct stat statInode(const InodePtr& inode) {
+  return inode->stat(ObjectFetchContext::getNullContext()).get(0ms);
+}
+
+/**
+ * A tree whose "dir", "dir/timed", "dir/link" and "rootfile" have a
+ * modification time that the backing store records, and whose "dir/plain"
+ * and "plaindir" have none.
+ */
+FakeTreeBuilder makeTreeWithMtimes() {
+  FakeTreeBuilder builder;
+  builder.setFile("dir/timed", "contents\n");
+  builder.setFile("dir/plain", "contents\n");
+  builder.setSymlink("dir/link", "timed");
+  builder.setFile("plaindir/file", "contents\n");
+  builder.setFile("rootfile", "contents\n");
+  builder.setMtime("dir/timed", kFileMtime);
+  builder.setMtime("dir/link", kLinkMtime);
+  builder.setMtime("dir", kDirMtime);
+  builder.setMtime("rootfile", kLinkMtime);
+  return builder;
+}
+} // namespace
+
+TEST(TreeInode, loadedInodesReportTheirBackingStoreMtime) {
+  auto builder = makeTreeWithMtimes();
+  TestMount mount{builder};
+  const auto checkoutTime =
+      mount.getEdenMount()->getLastCheckoutTime().toTimespec();
+
+  const std::pair<const char*, timespec> timed[] = {
+      {"dir/timed", kFileMtime},
+      {"dir/link", kLinkMtime},
+      {"dir", kDirMtime},
+      {"rootfile", kLinkMtime},
+  };
+  for (const auto& [path, mtime] : timed) {
+    const auto st = statInode(mount.getInode(RelativePathPiece{path}));
+    EXPECT_EQ(parts(mtime), parts(stMtime(st))) << path;
+    EXPECT_EQ(parts(checkoutTime), parts(stAtime(st))) << path;
+    EXPECT_EQ(parts(checkoutTime), parts(stCtime(st))) << path;
+  }
+
+  for (const auto* path : {"dir/plain", "plaindir", "plaindir/file"}) {
+    const auto st = statInode(mount.getInode(RelativePathPiece{path}));
+    EXPECT_EQ(parts(checkoutTime), parts(stMtime(st))) << path;
+  }
+}
+
+TEST(TreeInode, restrictedDirectoryReportsItsBackingStoreMtime) {
+  FakeTreeBuilder builder;
+  builder.setFile("restricted/file", "contents\n");
+  builder.setDirIsRestricted("restricted");
+  builder.setMtime("restricted", kDirMtime);
+  TestMount mount{builder};
+
+  const auto restricted = mount.getTreeInode("restricted");
+  EXPECT_TRUE(restricted->isRestricted());
+  EXPECT_EQ(parts(kDirMtime), parts(stMtime(statInode(restricted))));
+}
+
+TEST(TreeInode, writingAFileReplacesItsBackingStoreMtime) {
+  auto builder = makeTreeWithMtimes();
+  TestMount mount{builder};
+  EXPECT_EQ(
+      parts(kFileMtime),
+      parts(stMtime(statInode(mount.getInode("dir/timed"_relpath)))));
+
+  mount.getClock().advance(10min);
+  mount.overwriteFile("dir/timed", "changed\n");
+
+  EXPECT_EQ(
+      parts(mount.getClock().getRealtime()),
+      parts(stMtime(statInode(mount.getInode("dir/timed"_relpath)))));
+}
+
+TEST(TreeInode, chmodKeepsABackingStoreMtimeAndSettingTheMtimeReplacesIt) {
+  auto builder = makeTreeWithMtimes();
+  TestMount mount{builder};
+  mount.getClock().advance(10min);
+
+  // Changing the mode changes the ctime and leaves the mtime alone.
+  const auto timed = mount.getFileInode("dir/timed");
+  DesiredMetadata chmod;
+  chmod.mode = S_IFREG | 0600;
+  timed->setattr(chmod, ObjectFetchContext::getNullContext()).get(0ms);
+  const auto afterChmod = statInode(timed);
+  EXPECT_EQ(parts(kFileMtime), parts(stMtime(afterChmod)));
+  EXPECT_EQ(parts(mount.getClock().getRealtime()), parts(stCtime(afterChmod)));
+
+  const auto rootfile = mount.getFileInode("rootfile");
+  const timespec touched{1500000000, 7};
+  DesiredMetadata touch;
+  touch.mtime = touched;
+  rootfile->setattr(touch, ObjectFetchContext::getNullContext()).get(0ms);
+  EXPECT_EQ(parts(touched), parts(stMtime(statInode(rootfile))));
+}
+
+CO_TEST(TreeInode, filesOfAModifiedDirectoryKeepTheirMtimeAcrossARemount) {
+  auto builder = makeTreeWithMtimes();
+  TestMount mount{builder};
+  const auto checkoutTime =
+      mount.getEdenMount()->getLastCheckoutTime().toTimespec();
+
+  // Give "dir" a local change without loading the files it already has. The
+  // root has one from the start: its .eden directory.
+  mount.addFile("dir/new", "new\n");
+  mount.remount();
+
+  // Both directories now come from the overlay, which has only an id for
+  // each of these files, and no tree is involved. The ids carry the times.
+  const auto objectStore = mount.getEdenMount()->getObjectStore();
+  const auto& context = ObjectFetchContext::getNullContext();
+  const auto unloadedTimed = co_await mount.getVirtualInode("dir/timed")
+                                 .co_stat(checkoutTime, objectStore, context);
+  EXPECT_EQ(parts(kFileMtime), parts(stMtime(unloadedTimed)));
+  const auto unloadedRootFile =
+      co_await mount.getVirtualInode("rootfile")
+          .co_stat(checkoutTime, objectStore, context);
+  EXPECT_EQ(parts(kLinkMtime), parts(stMtime(unloadedRootFile)));
+  const auto unloadedPlain = co_await mount.getVirtualInode("dir/plain")
+                                 .co_stat(checkoutTime, objectStore, context);
+  EXPECT_EQ(parts(checkoutTime), parts(stMtime(unloadedPlain)));
+
+  const std::pair<const char*, timespec> timed[] = {
+      {"dir/timed", kFileMtime},
+      {"dir/link", kLinkMtime},
+      {"rootfile", kLinkMtime},
+  };
+  for (const auto& [path, mtime] : timed) {
+    EXPECT_EQ(
+        parts(mtime),
+        parts(stMtime(statInode(mount.getInode(RelativePathPiece{path})))))
+        << path;
+  }
+  EXPECT_EQ(
+      parts(checkoutTime),
+      parts(stMtime(statInode(mount.getInode("dir/plain"_relpath)))));
+}
+
+CO_TEST(TreeInode, aFileRenamedIntoAnotherDirectoryKeepsItsMtime) {
+  auto builder = makeTreeWithMtimes();
+  TestMount mount{builder};
+  const auto checkoutTime =
+      mount.getEdenMount()->getLastCheckoutTime().toTimespec();
+
+  mount.move("dir/timed", "plaindir/moved");
+  mount.remount();
+
+  // "plaindir" never had a tree that lists this file.
+  const auto unloaded = co_await mount.getVirtualInode("plaindir/moved")
+                            .co_stat(
+                                checkoutTime,
+                                mount.getEdenMount()->getObjectStore(),
+                                ObjectFetchContext::getNullContext());
+  EXPECT_EQ(parts(kFileMtime), parts(stMtime(unloaded)));
+  EXPECT_EQ(
+      parts(kFileMtime),
+      parts(stMtime(statInode(mount.getInode("plaindir/moved"_relpath)))));
+}
+#endif // !_WIN32
 
 TEST(TreeInode, loadTimeEntryCountsAreSnapshotAtLoad) {
   FakeTreeBuilder builder;

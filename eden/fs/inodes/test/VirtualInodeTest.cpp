@@ -717,6 +717,74 @@ folly::coro::Task<void> testRootDirAChildren(TestMount& mount) {
   }
 }
 
+#ifndef _WIN32
+namespace {
+folly::coro::Task<timespec> co_statMtime(
+    TestMount& mount,
+    folly::StringPiece path) {
+  const auto virtualInode = mount.getVirtualInode(path);
+  co_return stMtime(
+      co_await virtualInode.co_stat(
+          mount.getEdenMount()->getLastCheckoutTime().toTimespec(),
+          mount.getEdenMount()->getObjectStore(),
+          ObjectFetchContext::getNullContext()));
+}
+} // namespace
+
+CO_TEST(VirtualInodeTest, unloadedEntriesReportTheirBackingStoreMtime) {
+  const timespec fileMtime{1700000000, 1};
+  const timespec dirMtime{1600000000, 3};
+  FakeTreeBuilder builder;
+  builder.setFile("dir/timed", "contents\n");
+  builder.setFile("dir/plain", "contents\n");
+  builder.setFile("dir/sub/file", "contents\n");
+  builder.setMtime("dir/timed", fileMtime);
+  builder.setMtime("dir/sub", dirMtime);
+  auto mount = TestMount{builder};
+  const auto lastCheckoutTime =
+      mount.getEdenMount()->getLastCheckoutTime().toTimespec();
+
+  const auto timed = co_await co_statMtime(mount, "dir/timed");
+  EXPECT_EQ(fileMtime.tv_sec, timed.tv_sec);
+  EXPECT_EQ(fileMtime.tv_nsec, timed.tv_nsec);
+
+  const auto sub = co_await co_statMtime(mount, "dir/sub");
+  EXPECT_EQ(dirMtime.tv_sec, sub.tv_sec);
+  EXPECT_EQ(dirMtime.tv_nsec, sub.tv_nsec);
+
+  const auto plain = co_await co_statMtime(mount, "dir/plain");
+  EXPECT_EQ(lastCheckoutTime.tv_sec, plain.tv_sec);
+  EXPECT_EQ(lastCheckoutTime.tv_nsec, plain.tv_nsec);
+
+  // Nothing above loaded an inode below "dir".
+  const auto dir = mount.getTreeInode("dir");
+  const auto contents = dir->lockContentsRead();
+  for (const auto& name : {"timed"_pc, "plain"_pc, "sub"_pc}) {
+    EXPECT_FALSE(contents->entries.find(name)->second.getInode())
+        << name.view();
+  }
+}
+
+CO_TEST(VirtualInodeTest, mtimeAnInodeCannotHoldIsTheSameWithAndWithoutInode) {
+  // 1850. An inode holds times from 1901-12-13 20:45:52 UTC on.
+  const timespec early{-3786825600, 0};
+  const timespec earliestInodeTime{-0x80000000LL, 0};
+  FakeTreeBuilder builder;
+  builder.setFile("dir/early", "contents\n");
+  builder.setMtime("dir/early", early);
+  auto mount = TestMount{builder};
+
+  const auto withoutInode = co_await co_statMtime(mount, "dir/early");
+  const auto inode = mount.getFileInode("dir/early");
+  const auto withInode = co_await co_statMtime(mount, "dir/early");
+
+  EXPECT_EQ(earliestInodeTime.tv_sec, withoutInode.tv_sec);
+  EXPECT_EQ(earliestInodeTime.tv_nsec, withoutInode.tv_nsec);
+  EXPECT_EQ(earliestInodeTime.tv_sec, withInode.tv_sec);
+  EXPECT_EQ(earliestInodeTime.tv_nsec, withInode.tv_nsec);
+}
+#endif // !_WIN32
+
 CO_TEST(VirtualInodeTest, getChildrenSimple) {
   TestFileDatabase files;
   auto flags = VERIFY_DEFAULT ^ VERIFY_SHA1 ^ VERIFY_BLAKE3;

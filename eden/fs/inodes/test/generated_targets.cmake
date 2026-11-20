@@ -530,6 +530,7 @@ eden_add_test(eden_fs_inodes_test_tree_inode
     edencommon::edencommon_utils
     fb303::fb303
     fmt::fmt
+    sigbus_memops
 )
 
 eden_add_test(eden_fs_inodes_test_virtual_inode

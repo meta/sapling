@@ -630,6 +630,7 @@ cpp_unittest(
         "fbsource//xplat/folly/test:test_utils",
         "//eden/common/utils:case_sensitivity",
         "//eden/common/utils:fault_injector",
+        "//eden/common/utils:utils",
         "//eden/fs/fuse:fuse",
         "//eden/fs/inodes:inodes",
         "//eden/fs/model:model",

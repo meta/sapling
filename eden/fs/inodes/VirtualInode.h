@@ -181,8 +181,9 @@ class VirtualInode {
    *
    * Will just run stat on the Inode if possible, otherwise returns a stat
    * structure with the st_mode and st_size data from the
-   * ObjectStore/DirEntry/TreeEntry, and the st_mtim set to the passed in
-   * lastCheckoutTime.
+   * ObjectStore/DirEntry/TreeEntry, and the st_mtim set to the modification
+   * time the backing store records for the object (ObjectStore::getMtime), or
+   * to the passed in lastCheckoutTime when it records none.
    */
   folly::coro::now_task<struct stat> co_stat(
       const struct timespec& lastCheckoutTime,
