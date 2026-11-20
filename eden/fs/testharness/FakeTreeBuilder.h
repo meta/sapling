@@ -156,6 +156,20 @@ class FakeTreeBuilder {
   }
 
   /**
+   * Give the file, symlink or directory at the given path a modification
+   * time that the backing store records. The entry must already exist.
+   *
+   * The time becomes part of the entry's object ID, so this cannot be used
+   * on an entry that was given an explicit object ID. replaceFile() and
+   * replaceSymlink() make a new entry, which has no time until this is called
+   * again.
+   */
+  void setMtime(folly::StringPiece path, timespec mtime) {
+    setMtime(RelativePathPiece{path}, mtime);
+  }
+  void setMtime(RelativePathPiece path, timespec mtime);
+
+  /**
    * Remove a file or symlink at the given path.
    */
   void removeFile(folly::StringPiece path, bool removeEmptyParents = true) {
@@ -298,6 +312,7 @@ class FakeTreeBuilder {
     std::unique_ptr<PathMap<EntryInfo>> entries;
     std::string contents;
     std::optional<ObjectId> objectId;
+    std::optional<timespec> mtime;
     bool isRestricted = false;
     std::optional<bool> hasACL = false;
   };

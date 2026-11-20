@@ -10,6 +10,7 @@
 #include <folly/coro/Task.h>
 #include <folly/coro/safe/NowTask.h>
 #include <gtest/gtest_prod.h>
+#include <ctime>
 #include <initializer_list>
 #include <memory>
 #include <optional>
@@ -212,6 +213,20 @@ class FakeBackingStore final : public BackingStore {
       std::optional<bool> hasACL = std::nullopt);
 
   /**
+   * Add the blob of a file, or the tree of a directory, whose modification
+   * time the store records. The id carries the time (see
+   * EmbeddedMetadata.h), so the same contents with another time are another
+   * object.
+   */
+  std::tuple<StoredBlob*, ObjectId, bool> maybePutBlob(
+      folly::StringPiece contents,
+      timespec mtime);
+  std::pair<StoredTree*, bool> maybePutTree(
+      Tree::container entries,
+      std::optional<bool> hasACL,
+      timespec mtime);
+
+  /**
    * Add a mapping from a commit ID to a root tree id.
    */
   StoredId* putCommit(const RootId& commitId, const StoredTree* tree);
@@ -310,7 +325,9 @@ class FakeBackingStore final : public BackingStore {
 
   static Tree::container buildTreeEntries(
       const std::initializer_list<TreeEntryData>& entryArgs);
-  static ObjectId computeTreeId(const Tree::container& sortedEntries);
+  static ObjectId computeTreeId(
+      const Tree::container& sortedEntries,
+      const std::optional<timespec>& mtime = std::nullopt);
   StoredTree* putTreeImpl(
       ObjectId id,
       Tree::container&& sortedEntries,

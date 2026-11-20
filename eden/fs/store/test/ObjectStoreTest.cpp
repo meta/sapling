@@ -616,6 +616,21 @@ TEST_P(ObjectStoreTest, getBlobSize_tracks_second_read_from_cache) {
   EXPECT_EQ(ObjectFetchContext::FromMemoryCache, request.origin);
 }
 
+TEST_P(ObjectStoreTest, mtimeComesFromTheId) {
+  const timespec mtime{1700000000, 123456789};
+  const auto timedId =
+      std::get<1>(fakeBackingStore->maybePutBlob("same contents", mtime));
+  const auto plainId = fakeBackingStore->putBlob("same contents").second;
+  // The same contents with and without a modification time are two objects.
+  EXPECT_NE(timedId, plainId);
+
+  const auto found = objectStore->getMtime(timedId);
+  ASSERT_TRUE(found.has_value());
+  EXPECT_EQ(mtime.tv_sec, found->tv_sec);
+  EXPECT_EQ(mtime.tv_nsec, found->tv_nsec);
+  EXPECT_FALSE(objectStore->getMtime(plainId).has_value());
+}
+
 TEST_P(ObjectStoreTest, getBlobSizeFromBackingStore) {
   auto data = "A"_sp;
   ObjectId id = putReadyBlob(data);

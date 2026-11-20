@@ -52,6 +52,13 @@ void FakeTreeBuilder::mkdir(RelativePathPiece path) {
   getDirEntry(path, true);
 }
 
+void FakeTreeBuilder::setMtime(RelativePathPiece path, timespec mtime) {
+  XCHECK(!finalizedRoot_);
+  auto* entry = getEntry(path);
+  XCHECK(!entry->objectId.has_value());
+  entry->mtime = mtime;
+}
+
 void FakeTreeBuilder::setDirIsRestricted(RelativePathPiece path) {
   XCHECK(!finalizedRoot_);
   auto* entry = getEntry(path);
@@ -285,6 +292,7 @@ FakeTreeBuilder::EntryInfo::EntryInfo(ExplicitClone, const EntryInfo& orig)
     : type(orig.type),
       contents(orig.contents),
       objectId(orig.objectId),
+      mtime(orig.mtime),
       isRestricted(orig.isRestricted),
       hasACL(orig.hasACL) {
   if (orig.entries) {
@@ -327,7 +335,9 @@ StoredTree* FakeTreeBuilder::EntryInfo::finalizeTree(
     throw std::logic_error(
         "FakeTreeBuilder::finalize requires a backing store");
   }
-  auto* storedTree = builder->store_->maybePutTree(treeEntries, hasACL).first;
+  auto* storedTree = mtime
+      ? builder->store_->maybePutTree(treeEntries, hasACL, *mtime).first
+      : builder->store_->maybePutTree(treeEntries, hasACL).first;
   if (storedTree == nullptr) {
     throw std::logic_error("FakeTreeBuilder::finalize failed to store tree");
   }
@@ -343,7 +353,8 @@ std::pair<StoredBlob*, ObjectId> FakeTreeBuilder::EntryInfo::finalizeBlob(
   XCHECK(type != TreeEntryType::TREE);
   auto [storedBlob, id, inserted] = objectId
       ? builder->store_->maybePutBlob(objectId.value(), contents)
-      : builder->store_->maybePutBlob(contents);
+      : mtime ? builder->store_->maybePutBlob(contents, *mtime)
+              : builder->store_->maybePutBlob(contents);
   if (setReady) {
     storedBlob->setReady();
   }

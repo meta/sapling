@@ -12,6 +12,7 @@
 #include <folly/coro/safe/NowTask.h>
 #include <atomic>
 #include <chrono>
+#include <ctime>
 #include <memory>
 #include <unordered_map>
 
@@ -289,6 +290,12 @@ class ObjectStore : public IObjectStore,
    * ObjectId, keeping only the hash bytes.
    */
   ObjectId stripObjectId(const ObjectId& id) const;
+
+  /**
+   * The modification time that `id` carries (see EmbeddedMetadata.h), if it
+   * carries one. Does no I/O.
+   */
+  std::optional<timespec> getMtime(const ObjectId& id) const;
 
   /**
    * Get a Blob by ID.

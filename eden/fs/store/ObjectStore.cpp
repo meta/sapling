@@ -22,6 +22,7 @@
 #include "eden/fs/config/EdenConfig.h"
 #include "eden/fs/config/ReloadableConfig.h"
 #include "eden/fs/model/Blob.h"
+#include "eden/fs/model/EmbeddedMetadata.h"
 #include "eden/fs/model/Tree.h"
 #include "eden/fs/model/TreeAuxData.h"
 #include "eden/fs/store/BackingStore.h"
@@ -505,6 +506,10 @@ folly::coro::now_task<folly::Unit> ObjectStore::prefetchBlobs(
 
 ObjectId ObjectStore::stripObjectId(const ObjectId& id) const {
   return backingStore_->stripObjectId(id);
+}
+
+std::optional<timespec> ObjectStore::getMtime(const ObjectId& id) const {
+  return EmbeddedMetadataView{id}.mtime();
 }
 
 ImmediateFuture<shared_ptr<const Blob>> ObjectStore::getBlob(
