@@ -14,7 +14,6 @@ rust_library(
         "//eden/mononoke/mercurial:mercurial_types",
         "//eden/mononoke/repo_attributes/bonsai_hg_mapping:bonsai_hg_mapping",
         "//eden/mononoke/repo_attributes/bookmarks:bookmarks",
-        "//eden/mononoke/repo_attributes/commit_graph/commit_graph:commit_graph",
         "//eden/mononoke/repo_attributes/filestore:filestore",
         "//eden/mononoke/repo_attributes/repo_blobstore:repo_blobstore",
         "//eden/mononoke/repo_attributes/repo_derived_data:repo_derived_data",
@@ -34,6 +33,9 @@ rust_library(
         "//eden/mononoke/derived_data:derived_data_manager",
         "//eden/mononoke/derived_data/mercurial_derivation:mercurial_derivation",
         "//eden/mononoke/mononoke_types:mononoke_types",
+        "//eden/mononoke/repo_attributes/commit_graph/commit_graph:commit_graph",
+        "//eden/mononoke/repo_attributes/commit_graph/sql_commit_graph_storage:sql_commit_graph_storage",
+        "//eden/mononoke/repo_attributes/mutable_counters:mutable_counters",
         "//eden/mononoke/servers/slapi/slapi_server/context:context",
     ],
 )

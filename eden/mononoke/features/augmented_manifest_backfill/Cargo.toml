@@ -9,6 +9,7 @@ license = "GPLv2+"
 
 [dependencies]
 anyhow = "1.0.104"
+commit_graph = { version = "0.1.0", path = "../../repo_attributes/commit_graph/commit_graph" }
 context = { version = "0.1.0", path = "../../servers/slapi/slapi_server/context" }
 derived_data_manager = { version = "0.1.0", path = "../../derived_data/manager" }
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
@@ -16,6 +17,8 @@ futures_retry = { version = "0.1.0", git = "https://github.com/facebookexperimen
 mercurial_derivation = { version = "0.1.0", path = "../../derived_data/mercurial_derivation" }
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
 mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
+mutable_counters = { version = "0.1.0", path = "../../repo_attributes/mutable_counters" }
+sql_commit_graph_storage = { version = "0.1.0", path = "../../repo_attributes/commit_graph/sql_commit_graph_storage" }
 thiserror = "2.0.21"
 tokio-util = { version = "0.7.20", features = ["full"] }
 topo_sort = { version = "0.1.0", path = "../../common/topo_sort" }
@@ -25,7 +28,6 @@ tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 assert_matches = "1.5"
 bonsai_hg_mapping = { version = "0.1.0", path = "../../repo_attributes/bonsai_hg_mapping" }
 bookmarks = { version = "0.1.0", path = "../../repo_attributes/bookmarks" }
-commit_graph = { version = "0.1.0", path = "../../repo_attributes/commit_graph/commit_graph" }
 facet = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main", features = ["impl_never_type"] }
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }

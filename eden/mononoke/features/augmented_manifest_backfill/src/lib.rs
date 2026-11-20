@@ -9,7 +9,12 @@
 //! commits that lack them.
 
 mod repo_backfill;
+mod repo_walk;
 
 pub use repo_backfill::CommitOutcome;
 pub use repo_backfill::Failure;
 pub use repo_backfill::RepoBackfill;
+pub use repo_walk::IdBounds;
+pub use repo_walk::RepoWalk;
+pub use repo_walk::TaskShard;
+pub use repo_walk::WindowReport;
