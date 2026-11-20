@@ -51,6 +51,7 @@ console-api = { git = "https://github.com/tokio-rs/console", rev = "b59758e5a6ef
 cxx = { git = "https://github.com/facebookexperimental/cxx.git", rev = "b835645da52253df462725516fbd460ef000d496" }
 cxx-build = { git = "https://github.com/facebookexperimental/cxx.git", rev = "b835645da52253df462725516fbd460ef000d496" }
 darwin-libproc = { git = "https://github.com/fbsource/darwin-libproc", rev = "f73ddb1002d51ae74c1b41670fae56bd5896b7a3" }
+deelevate = { git = "https://github.com/wez/EleDo", rev = "96d9933ed33cb952f81ed33dc602dd131b18d4d0" }
 fixed = { git = "https://gitlab.com/tinozzo123/fixed", rev = "e7d72487b9da972d3ed7aec7bc32c12cd8881994" }
 gimli = { git = "https://github.com/gimli-rs/gimli.git", rev = "64a7a194fb5fe43d474fd9c101555e5a81b1d36c" }
 gimli-0-33 = { package = "gimli", git = "https://github.com/gimli-rs/gimli.git", rev = "ebad63b48e960270b8d8d0dec74f5b2e54cad13f" }
