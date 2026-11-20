@@ -32,9 +32,10 @@ def check_for_stale_mounts(
     [stale_mounts, hanging_mounts, unknown_status_mounts] = (
         get_all_stale_eden_mount_points(mount_table)
     )
+    # Hangs are logged by the EdenFS mount health check, which tells a slow
+    # mount from a hung one; doctor only shows them.
     if instance is not None:
         _log_mount_health_issues(instance, stale_mounts, "stale_mount")
-        _log_mount_health_issues(instance, hanging_mounts, "hanging_mount")
     if stale_mounts:
         tracker.add_problem(StaleMountsFound(stale_mounts, mount_table, sudo_perms))
     if hanging_mounts:

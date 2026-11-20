@@ -299,6 +299,23 @@ Unmounting 1 stale edenfs mount...<green>fixed<reset>
             instance.logged_samples,
         )
 
+    @patch("eden.fs.cli.doctor.check_stale_mounts.get_sudo_perms")
+    def test_hanging_mount_is_shown_but_not_logged(
+        self, mock_get_sudo_perms: MagicMock
+    ) -> None:
+        mock_get_sudo_perms.return_value = True
+        instance = FakeEdenInstance(self.make_temporary_directory())
+        checkout = instance.create_test_mount("hanging")
+        mount_table = instance.mount_table
+        mount_table.fail_access(str(checkout.path / ".eden"), errno.ETIMEDOUT)
+        fixer = doctor.ProblemFixer(instance, TestOutput())
+
+        check_stale_mounts.check_for_stale_mounts(fixer, mount_table, instance)
+
+        self.assert_results(fixer, num_problems=1, num_manual_fixes=1)
+        self.assertEqual({"HangingMountFound"}, fixer.problem_types)
+        self.assertEqual([], instance.logged_samples)
+
     def test_does_not_unmount_other_users_mounts(self) -> None:
         self.mount_table.add_mount("/mnt/stale1", uid=FAKE_UID + 1)
 
