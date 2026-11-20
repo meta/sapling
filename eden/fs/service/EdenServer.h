@@ -90,6 +90,7 @@ class MountInfo;
 class ObjectStore;
 class PrivHelper;
 class ReloadableConfig;
+class SlowMountHealthCheckTicks;
 class ServerState;
 class StartupLogger;
 class StartupStatusChannel;
@@ -864,7 +865,8 @@ class EdenServer : private TakeoverHandler {
   void scheduleRunningMountHealthCheck(
       const AbsolutePath& mountPath,
       std::string repoSource,
-      std::weak_ptr<EdenMount> mount);
+      std::weak_ptr<EdenMount> mount,
+      std::chrono::steady_clock::time_point tick);
 
   // Rechecks restricted roots that omitted mode hides from their parent's
   // listing, so that a re-grant becomes visible without an explicit access.
@@ -1133,6 +1135,9 @@ class EdenServer : private TakeoverHandler {
       std::string,
       std::shared_ptr<const MountHealthProbeProgress>>>>
       runningMountHealthChecks_;
+
+  // The health check ticks of the last day that had a slow probe.
+  std::shared_ptr<SlowMountHealthCheckTicks> slowMountHealthCheckTicks_;
 
   static constexpr uint32_t kMaxCheckoutRecoveryAttempts = 3;
   // A recovered checkout that stops again within kCheckoutFlapWindow flaps;

@@ -231,6 +231,8 @@ void runInEventBaseThreadAndRethrow(folly::EventBase* evb, Fn&& fn) {
 }
 
 constexpr auto kMountHealthCheckTimeout = std::chrono::seconds{5};
+// See `mount:mount-health-check-slow-report-ticks`.
+constexpr auto kSlowMountHealthCheckWindow = std::chrono::hours{24};
 constexpr auto kChannelStopRecoveryDelay = std::chrono::milliseconds{500};
 // Stop reason of a mount that failed before its channel started.
 constexpr std::string_view kMountFailedStopReason = "mount_failed";
@@ -503,12 +505,19 @@ void logMountHealthCheckTimeout(
 
 /**
  * Logs a probe that ran past the 5 s timeout and then finished, once per
- * probe rather than once per issue. `detail` was taken at the timeout.
+ * probe rather than once per issue. `detail` was taken at the timeout;
+ * `slowTicks` is how many ticks of the last day had a slow probe.
  */
 void logSlowMountHealthCheck(
     const MountHealthIssueLogContext& logContext,
-    std::string detail) {
+    std::string detail,
+    size_t slowTicks) {
   try {
+    auto fields = folly::parseJson(detail);
+    fields["slow_ticks_24h"] = slowTicks;
+    folly::json::serialization_opts sortedKeys;
+    sortedKeys.sort_keys = true;
+    detail = folly::json::serialize(fields, sortedKeys);
     const auto duration = probeRunningTime(
         *logContext.progress, std::chrono::steady_clock::now());
     auto error = fmt::format(
@@ -1087,6 +1096,8 @@ EdenServer::EdenServer(
           makePrefetchFilesV2Threads(thriftUsePrefetchExecutor_, edenConfig)},
       runningMountHealthChecks_{std::make_shared<
           std::decay_t<decltype(*runningMountHealthChecks_)>>()},
+      slowMountHealthCheckTicks_{std::make_shared<SlowMountHealthCheckTicks>(
+          kSlowMountHealthCheckWindow)},
       progressManager_{
           std::make_unique<folly::Synchronized<EdenServer::ProgressManager>>()},
       startupStatusChannel_{std::move(startupStatusChannel)},
@@ -4737,7 +4748,8 @@ bool EdenServer::isInodeGCRunningForAnyMount() const {
 void EdenServer::scheduleRunningMountHealthCheck(
     const AbsolutePath& mountPath,
     std::string repoSource,
-    std::weak_ptr<EdenMount> mount) {
+    std::weak_ptr<EdenMount> mount,
+    std::chrono::steady_clock::time_point tick) {
   auto mountPathString = std::string{mountPath.view()};
   auto runningMountHealthChecks = runningMountHealthChecks_;
   auto progress = std::make_shared<MountHealthProbeProgress>(
@@ -4772,6 +4784,8 @@ void EdenServer::scheduleRunningMountHealthCheck(
 
   auto config = serverState_->getEdenConfig();
   const auto hangThreshold = config->mountHealthCheckHangThreshold.getValue();
+  const auto slowReportTicks =
+      config->mountHealthCheckSlowReportTicks.getValue();
   MountHealthCheckOptions options;
   options.useStatx = config->mountHealthCheckStatx.getValue();
   if (auto edenMount = logContext->mount.lock()) {
@@ -4820,7 +4834,10 @@ void EdenServer::scheduleRunningMountHealthCheck(
           [completed,
            emittedMountHealthIssues,
            logContext,
-           runningMountHealthChecks](
+           runningMountHealthChecks,
+           slowTicks = slowMountHealthCheckTicks_,
+           tick,
+           slowReportTicks](
               folly::Try<std::optional<EdenMountHealthCheckIssue>>&& result) {
             const auto alreadyCompleted = completed->exchange(true);
             {
@@ -4859,8 +4876,14 @@ void EdenServer::scheduleRunningMountHealthCheck(
                   std::move(*logContext->slowProbeDetail.wlock());
               if (!slowProbeDetail.empty()) {
                 logContext->count(&MountHealthCheckStats::slow);
-                logSlowMountHealthCheck(
-                    *logContext, std::move(slowProbeDetail));
+                const auto slowTickCount = slowTicks->recordSlowProbe(
+                    tick, std::chrono::steady_clock::now());
+                if (slowTickCount >= slowReportTicks) {
+                  logSlowMountHealthCheck(
+                      *logContext, std::move(slowProbeDetail), slowTickCount);
+                } else {
+                  logContext->count(&MountHealthCheckStats::slowNotReported);
+                }
               }
             }
             if (result.hasException()) {
@@ -4969,11 +4992,13 @@ void EdenServer::checkMountHealth() {
 
   // The probe holds only a weak reference to the mount, so no strong
   // reference is held across the asynchronous check.
+  const auto tick = std::chrono::steady_clock::now();
   for (auto& target : probeTargets) {
     scheduleRunningMountHealthCheck(
         target.mountPath,
         std::move(target.repoSource),
-        std::move(target.mount));
+        std::move(target.mount),
+        tick);
   }
 
   for (auto& [mountPath, config] : notServed) {

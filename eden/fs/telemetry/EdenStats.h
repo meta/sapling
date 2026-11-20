@@ -894,6 +894,8 @@ struct MountHealthCheckStats : StatsGroup<MountHealthCheckStats> {
   Counter notStarted{"mount_health_check.not_started"};
   Counter hung{"mount_health_check.hung"};
   Counter slow{"mount_health_check.slow"};
+  // Slow probes not logged, see `mount:mount-health-check-slow-report-ticks`.
+  Counter slowNotReported{"mount_health_check.slow_not_reported"};
   Counter hangEnded{"mount_health_check.hang_ended"};
   // Probes that confirmed the mount with statx instead of the mount table.
   Counter statxMountCheck{"mount_health_check.statx_mount_check"};

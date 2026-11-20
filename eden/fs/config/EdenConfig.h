@@ -944,6 +944,16 @@ class EdenConfig : private ConfigSettingManager {
       this};
 
   /**
+   * Log a slow mount health check probe (`daemon_running_mount_slow`) only
+   * when at least this many health check ticks in the last 24 hours had a slow
+   * probe. The default of 0 logs every slow probe.
+   */
+  ConfigSetting<uint32_t> mountHealthCheckSlowReportTicks{
+      "mount:mount-health-check-slow-report-ticks",
+      0,
+      this};
+
+  /**
    * The soong build system used in AOSP loves to crawls the entirety of the
    * repository, including the .eden directory. In doing so, it infinitely
    * recurse into the this-dir.

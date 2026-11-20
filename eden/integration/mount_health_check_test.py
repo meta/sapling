@@ -131,3 +131,24 @@ class HangThresholdMountHealthCheckTest(MountHealthCheckTestBase):
         self.wait_for_counter("slow")
         self.assertEqual(0, self.counter("timed_out"))
         self.assertEqual(0, self.counter("hung"))
+        self.assertEqual(0, self.counter("slow_not_reported"))
+
+
+@testcase.eden_repo_test(run_on_nfs=False, run_coroutines=False, run_io_uring=False)
+@unittest.skipIf(sys.platform != "linux", "exercised on Linux FUSE mounts")
+class SlowReportTicksMountHealthCheckTest(MountHealthCheckTestBase):
+    def mount_config(self) -> List[str]:
+        return super().mount_config() + [
+            'mount-health-check-hang-threshold = "10s"',
+            'mount-health-check-slow-report-ticks = "2"',
+        ]
+
+    def test_slow_probe_is_reported_once_slow_probes_recur(self) -> None:
+        self.wait_for_counter("healthy")
+        self.delay_next_probe(7)
+        self.wait_for_counter("slow_not_reported")
+        self.assertEqual(1, self.counter("slow"))
+        # The next slow probe runs in a later tick, the second with a slow probe.
+        self.delay_next_probe(7)
+        poll_until(lambda: True if self.counter("slow") == 2 else None, timeout=30)
+        self.assertEqual(1, self.counter("slow_not_reported"))
