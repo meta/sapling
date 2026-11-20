@@ -10,6 +10,8 @@
 
 use metaconfig_types::SourceRevisionGuardConfig;
 use mononoke_types::SubtreeChange;
+use source_revision_pushrebase_hook::EntryChange;
+use source_revision_pushrebase_hook::EntryRevisions;
 use source_revision_pushrebase_hook::GuardCounters;
 use source_revision_pushrebase_hook::GuardCounts;
 use source_revision_pushrebase_hook::GuardOutcome;
@@ -2320,5 +2322,285 @@ async fn preparation_and_a_failed_swap_retry_separately(fb: FacebookInit) -> Res
     );
     assert_eq!(rx.await??.retry_num.0, 2);
     assert_eq!(contention_retries(2, 1), 1);
+    Ok(())
+}
+
+/// The generated files with tracked string entries: `entries` of key, text
+/// and metadata, in one module, in both directories.
+fn tracked_files(root: i64, entries: &[(&str, &str, Option<(i64, i64)>)]) -> Vec<(String, String)> {
+    let strings: Vec<String> = entries
+        .iter()
+        .map(|(key, text, tracked)| {
+            let metadata = tracked.map_or_else(String::new, |(introduced, last_changed)| {
+                format!(
+                    ",\n                    \"introduced_revision\": {introduced},\n                    \"last_changed_revision\": {last_changed}"
+                )
+            });
+            format!(
+                "                {{\n                    \"comment\": \"c\",\n                    \"en_string\": \"{text}\",\n                    \"key\": \"{key}\"{metadata}\n                }}"
+            )
+        })
+        .collect();
+    let json = format!(
+        "{{\n    \"source_revision\": {root},\n    \"modules\": [\n        {{\n            \"key\": \"default\",\n            \"strings\": [\n{}\n            ]\n        }}\n    ]\n}}\n",
+        strings.join(",\n")
+    );
+    [AUTHORITATIVE, MIRROR]
+        .map(|dir| (format!("{dir}/default.json"), json.clone()))
+        .to_vec()
+}
+
+/// Tracking through real pushrebases: the metadata-only migration of root 1
+/// lands, then an edit with the right metadata; tampered metadata and
+/// dropping it are rejected, and counted as rejections before the swap.
+#[mononoke::fbinit_test]
+async fn guard_tracks_string_revisions(fb: FacebookInit) -> Result<()> {
+    init_just_knobs_for_guard_test();
+    let ctx = CoreContext::test_mock(fb);
+    let repo: PushrebaseTestRepo = test_repo_factory::build_empty(fb).await?;
+    let root = commit(
+        &ctx,
+        &repo,
+        vec![],
+        tracked_files(1, &[("A", "a", None), ("B", "b", None)]),
+    )
+    .await?;
+    bookmark(&ctx, &repo, master_bookmark())
+        .set_to(root)
+        .await?;
+    let (hooks, counters) = counted_guard(&repo)?;
+
+    // Combined with a source change, the migration is rejected.
+    let combined = commit(
+        &ctx,
+        &repo,
+        vec![root],
+        tracked_files(
+            2,
+            &[("A", "edited", Some((1, 2))), ("B", "b", Some((1, 1)))],
+        ),
+    )
+    .await?;
+    assert_eq!(
+        transition_error(land(&ctx, &repo, &hooks, combined).await),
+        TransitionError::MetadataMigrationChangesSource
+    );
+
+    let migration = commit(
+        &ctx,
+        &repo,
+        vec![root],
+        tracked_files(1, &[("A", "a", Some((1, 1))), ("B", "b", Some((1, 1)))]),
+    )
+    .await?;
+    land(&ctx, &repo, &hooks, migration).await?;
+
+    let head = master(&ctx, &repo).await?;
+    let edit = commit(
+        &ctx,
+        &repo,
+        vec![head],
+        tracked_files(
+            2,
+            &[
+                ("A", "edited", Some((1, 2))),
+                ("B", "b", Some((1, 1))),
+                ("C", "c", Some((2, 2))),
+            ],
+        ),
+    )
+    .await?;
+    land(&ctx, &repo, &hooks, edit).await?;
+
+    let head = master(&ctx, &repo).await?;
+    let before = counters.counts();
+    let tampered = commit(
+        &ctx,
+        &repo,
+        vec![head],
+        tracked_files(
+            2,
+            &[
+                ("A", "edited", Some((1, 2))),
+                ("B", "b", Some((1, 2))),
+                ("C", "c", Some((2, 2))),
+            ],
+        ),
+    )
+    .await?;
+    assert_eq!(
+        transition_error(land(&ctx, &repo, &hooks, tampered).await),
+        TransitionError::MetadataMismatch {
+            key: "B".to_owned(),
+            change: EntryChange::Unchanged,
+            expected: EntryRevisions {
+                introduced: revision(1),
+                last_changed: revision(1),
+            },
+            found: EntryRevisions {
+                introduced: revision(1),
+                last_changed: revision(2),
+            },
+        }
+    );
+    let after = counters.counts();
+    assert_eq!(after.rejected, before.rejected + 1);
+    assert_eq!(after.rejected_layout, before.rejected_layout);
+
+    let dropped = commit(
+        &ctx,
+        &repo,
+        vec![head],
+        tracked_files(
+            3,
+            &[("A", "again", None), ("B", "b", None), ("C", "c", None)],
+        ),
+    )
+    .await?;
+    assert_eq!(
+        transition_error(land(&ctx, &repo, &hooks, dropped).await),
+        TransitionError::MetadataRemoved
+    );
+    assert_eq!(master(&ctx, &repo).await?, head);
+    Ok(())
+}
+
+/// Malformed catalogs through real pushrebases: a tracked landing cannot
+/// hide a duplicate or untracked string in a part of the catalog that is not
+/// the generated shape, in either directory, and cannot drop every tracked
+/// entry. The bookmark stays put.
+#[mononoke::fbinit_test]
+async fn guard_rejects_malformed_tracked_catalogs(fb: FacebookInit) -> Result<()> {
+    init_just_knobs_for_guard_test();
+    let ctx = CoreContext::test_mock(fb);
+    let repo: PushrebaseTestRepo = test_repo_factory::build_empty(fb).await?;
+    let root = commit(
+        &ctx,
+        &repo,
+        vec![],
+        tracked_files(1, &[("A", "a", Some((1, 1))), ("B", "b", Some((1, 1)))]),
+    )
+    .await?;
+    bookmark(&ctx, &repo, master_bookmark())
+        .set_to(root)
+        .await?;
+    let hooks = guard(&repo)?;
+    let tracked = tracked_files(
+        2,
+        &[("A", "a", Some((1, 1))), ("B", "edited", Some((1, 2)))],
+    );
+    let hidden_module = |strings: &str| {
+        format!(
+            r#"{{"source_revision": 2, "modules": [{{"key": "m", "strings": [{{"comment": "c", "en_string": "a", "key": "A", "introduced_revision": 1, "last_changed_revision": 1}}]}}, {{"key": "n", "strings": {strings}}}]}}"#
+        )
+    };
+    let duplicate = r#"{"0": {"comment": "c", "en_string": "other", "key": "A"}}"#;
+
+    for (files, what) in [
+        // A second file whose module hides a duplicate of `A`, both mirrors.
+        (
+            tracked
+                .iter()
+                .cloned()
+                .chain(
+                    [AUTHORITATIVE, MIRROR]
+                        .map(|dir| (format!("{dir}/hidden.json"), hidden_module(duplicate))),
+                )
+                .collect::<Vec<_>>(),
+            "hidden duplicate",
+        ),
+        // `strings` null in the only file.
+        (
+            [AUTHORITATIVE, MIRROR]
+                .map(|dir| (format!("{dir}/default.json"), hidden_module("null")))
+                .to_vec(),
+            "null strings",
+        ),
+        // A module that is not an object.
+        (
+            [AUTHORITATIVE, MIRROR]
+                .map(|dir| {
+                    (
+                        format!("{dir}/default.json"),
+                        hidden_module("[]").replace(r#"{"key": "n", "strings": []}"#, r#""n""#),
+                    )
+                })
+                .to_vec(),
+            "module string",
+        ),
+    ] {
+        let pushed = commit(&ctx, &repo, vec![root], files).await?;
+        let error = guard_error(land(&ctx, &repo, &hooks, pushed).await);
+        assert!(
+            matches!(
+                &error,
+                SourceRevisionGuardError::InvalidCandidate {
+                    error: SnapshotError::MalformedCatalog { .. },
+                    ..
+                }
+            ),
+            "{what}: {error}"
+        );
+    }
+
+    // Every tracked entry dropped, the shape kept, the root bumped.
+    let empty = [AUTHORITATIVE, MIRROR]
+        .map(|dir| {
+            (
+                format!("{dir}/default.json"),
+                r#"{"source_revision": 2, "modules": [{"key": "default", "strings": []}]}"#
+                    .to_string(),
+            )
+        })
+        .to_vec();
+    let emptied = commit(&ctx, &repo, vec![root], empty).await?;
+    assert_eq!(
+        transition_error(land(&ctx, &repo, &hooks, emptied).await),
+        TransitionError::MetadataRemoved
+    );
+    assert_eq!(master(&ctx, &repo).await?, root);
+
+    // A well-formed tracked landing still goes through.
+    let fine = commit(&ctx, &repo, vec![root], tracked).await?;
+    land(&ctx, &repo, &hooks, fine).await?;
+    Ok(())
+}
+
+/// A string hidden in a malformed catalog of an untracked root-1 snapshot
+/// cannot be exposed by the tracking migration: that changes the source.
+#[mononoke::fbinit_test]
+async fn guard_does_not_date_strings_exposed_from_a_malformed_catalog(
+    fb: FacebookInit,
+) -> Result<()> {
+    init_just_knobs_for_guard_test();
+    let ctx = CoreContext::test_mock(fb);
+    let repo: PushrebaseTestRepo = test_repo_factory::build_empty(fb).await?;
+    let hidden = r#"{"source_revision": 1, "modules": [{"key": "m", "strings": {"0": {"comment": "c", "en_string": "a", "key": "A"}}}]}"#;
+    let root = commit(
+        &ctx,
+        &repo,
+        vec![],
+        [AUTHORITATIVE, MIRROR]
+            .map(|dir| (format!("{dir}/default.json"), hidden.to_string()))
+            .to_vec(),
+    )
+    .await?;
+    bookmark(&ctx, &repo, master_bookmark())
+        .set_to(root)
+        .await?;
+    let hooks = guard(&repo)?;
+
+    let exposed = commit(
+        &ctx,
+        &repo,
+        vec![root],
+        tracked_files(1, &[("A", "a", Some((1, 1)))]),
+    )
+    .await?;
+    assert_eq!(
+        transition_error(land(&ctx, &repo, &hooks, exposed).await),
+        TransitionError::MetadataMigrationChangesSource
+    );
+    assert_eq!(master(&ctx, &repo).await?, root);
     Ok(())
 }

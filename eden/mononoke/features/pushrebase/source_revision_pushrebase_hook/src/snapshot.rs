@@ -7,6 +7,9 @@
 
 //! The `source_revision` rules, over file contents already read.
 
+mod strict_json;
+mod tracking;
+
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
@@ -16,6 +19,12 @@ use mononoke_types::NonRootMPath;
 use serde_json::Map;
 use serde_json::Value;
 use thiserror::Error;
+use tracking::Entry;
+pub use tracking::EntryChange;
+pub use tracking::EntryRevisions;
+pub use tracking::INTRODUCED_REVISION_FIELD;
+pub use tracking::LAST_CHANGED_REVISION_FIELD;
+use tracking::TrackedEntries;
 
 /// The root field every guarded file carries once versioned.
 pub const SOURCE_REVISION_FIELD: &str = "source_revision";
@@ -119,6 +128,56 @@ pub enum SnapshotError {
     SubtreeChange { path: MPath },
     #[error("the generated source files are {size} bytes in total, over the {limit} byte limit")]
     SnapshotTooLarge { size: u64, limit: u64 },
+    #[error(
+        "{path} entry {entry} has only one of {INTRODUCED_REVISION_FIELD} and {LAST_CHANGED_REVISION_FIELD}"
+    )]
+    PartialEntryMetadata { path: NonRootMPath, entry: String },
+    #[error(
+        "{path} entry {entry} has {field} {value}, which is not a positive signed 32-bit integer (1 to 2147483647)"
+    )]
+    InvalidEntryRevision {
+        path: NonRootMPath,
+        entry: String,
+        field: &'static str,
+        value: String,
+    },
+    #[error(
+        "{tracked} has {INTRODUCED_REVISION_FIELD} and {LAST_CHANGED_REVISION_FIELD} but {untracked} does not; every entry of every file must have them, or none"
+    )]
+    PartialMetadata { tracked: String, untracked: String },
+    #[error(
+        "{path} entry {entry} has {INTRODUCED_REVISION_FIELD} and {LAST_CHANGED_REVISION_FIELD}, but the files have no {SOURCE_REVISION_FIELD}"
+    )]
+    MetadataWithoutRevision { path: NonRootMPath, entry: String },
+    #[error(
+        "{path} {location} is not {expected}, so the strings it holds could not be checked; a tracked snapshot must have the generated shape"
+    )]
+    MalformedCatalog {
+        path: NonRootMPath,
+        location: String,
+        expected: &'static str,
+    },
+    #[error("{path} entry {entry} has no string `key`")]
+    EntryWithoutKey { path: NonRootMPath, entry: String },
+    #[error(
+        "key {key:?} is at {path} {entry} and at {other_path} {other_entry}; keys must be unique across every module"
+    )]
+    DuplicateKey {
+        key: String,
+        path: NonRootMPath,
+        entry: String,
+        other_path: NonRootMPath,
+        other_entry: String,
+    },
+    #[error(
+        "{path} entry {entry} has {revisions}, which is not within 1 <= {INTRODUCED_REVISION_FIELD} <= {LAST_CHANGED_REVISION_FIELD} <= {SOURCE_REVISION_FIELD} {revision}"
+    )]
+    EntryRevisionsOutOfRange {
+        path: NonRootMPath,
+        entry: String,
+        revisions: EntryRevisions,
+        revision: SourceRevision,
+    },
 }
 
 /// Why a commit's snapshot cannot follow its parent's.
@@ -167,21 +226,48 @@ pub enum TransitionError {
         "it changes the generated content, but {SOURCE_REVISION_FIELD} {parent_revision} has no successor"
     )]
     RevisionOverflow { parent_revision: SourceRevision },
+    #[error(
+        "it removes {INTRODUCED_REVISION_FIELD} and {LAST_CHANGED_REVISION_FIELD} from some entries; once tracked, every entry must keep them"
+    )]
+    MetadataRemoved,
+    #[error(
+        "it adds {INTRODUCED_REVISION_FIELD} and {LAST_CHANGED_REVISION_FIELD} at {SOURCE_REVISION_FIELD} {parent_revision}; tracking can only start at {SOURCE_REVISION_FIELD} 1"
+    )]
+    MetadataBootstrapUnsupported { parent_revision: SourceRevision },
+    #[error(
+        "it adds {INTRODUCED_REVISION_FIELD} and {LAST_CHANGED_REVISION_FIELD} and changes the generated content; the migration must change nothing else"
+    )]
+    MetadataMigrationChangesSource,
+    #[error("it starts tracking key {key:?} with {found}; every entry must start at 1 and 1")]
+    MetadataNotBaseline { key: String, found: EntryRevisions },
+    #[error("key {key:?} is {change}, so it must have {expected}, but it has {found}")]
+    MetadataMismatch {
+        key: String,
+        change: EntryChange,
+        expected: EntryRevisions,
+        found: EntryRevisions,
+    },
 }
 
 /// One guarded file, with its revision taken out of its content.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParsedFile {
     revision: Option<SourceRevision>,
+    /// Everything but the root revision, which mirrors must match.
     content: Map<String, Value>,
+    /// `content` without the entries' metadata, which the root revision
+    /// covers.
+    source: Map<String, Value>,
+    entries: Vec<Entry>,
 }
 
 /// Parse a guarded file: a JSON object whose root `source_revision`, if
 /// present, is a JSON integer in `1..=2147483647`, a positive signed 32-bit
-/// integer. Floats and exponent forms are not integers. Content compares as JSON:
+/// integer. Floats and exponent forms are not integers, and an object with a
+/// repeated key is not valid. Content compares as JSON:
 /// object keys in any order, arrays in order.
 pub fn parse_file(path: &NonRootMPath, bytes: &[u8]) -> Result<ParsedFile, SnapshotError> {
-    let value: Value = serde_json::from_slice(bytes).map_err(|error| SnapshotError::NotJson {
+    let value: Value = strict_json::from_slice(bytes).map_err(|error| SnapshotError::NotJson {
         path: path.clone(),
         error: error.to_string(),
     })?;
@@ -200,7 +286,13 @@ pub fn parse_file(path: &NonRootMPath, bytes: &[u8]) -> Result<ParsedFile, Snaps
                 })?,
         ),
     };
-    Ok(ParsedFile { revision, content })
+    let (source, entries) = tracking::split_entries(path, &content)?;
+    Ok(ParsedFile {
+        revision,
+        content,
+        source,
+        entries,
+    })
 }
 
 /// The revision of a whole snapshot.
@@ -218,12 +310,20 @@ pub enum SnapshotRevision {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParsedSnapshot {
     revision: SnapshotRevision,
-    content: BTreeMap<NonRootMPath, Map<String, Value>>,
+    /// Each file without its root revision and entry metadata.
+    source: BTreeMap<NonRootMPath, Map<String, Value>>,
+    /// `None` if no entry is tracked.
+    tracked: Option<TrackedEntries>,
 }
 
 impl ParsedSnapshot {
     pub fn revision(&self) -> SnapshotRevision {
         self.revision
+    }
+
+    /// Whether the entries carry tracking metadata.
+    pub fn is_tracked(&self) -> bool {
+        self.tracked.is_some()
     }
 }
 
@@ -268,12 +368,21 @@ pub fn parse_snapshot(
         }
     };
 
+    let tracked = tracking::tracked_entries(
+        directories.first(),
+        files
+            .iter()
+            .map(|(path, file)| (path, file.entries.as_slice())),
+        revision,
+    )?;
+
     Ok(ParsedSnapshot {
         revision,
-        content: files
+        source: files
             .into_iter()
-            .map(|(path, file)| (path, file.content))
+            .map(|(path, file)| (path, file.source))
             .collect(),
+        tracked,
     })
 }
 
@@ -318,16 +427,37 @@ fn check_mirrored(
 /// Check that `candidate` may follow `parent`, its commit's actual parent:
 /// a content change takes exactly the parent's revision plus one, no content
 /// change keeps the parent's revision, and unversioned files may only become
-/// versioned at `SourceRevision::FIRST`.
+/// versioned at `SourceRevision::FIRST`. Entry metadata is not content: it
+/// is checked entry by entry against the parent (see `tracking`).
 pub fn check_transition(
     parent: &ParsedSnapshot,
     candidate: &ParsedSnapshot,
 ) -> Result<(), TransitionError> {
+    let source_changed = parent.source != candidate.source;
+    tracking::check_tracking_mode(
+        parent.revision,
+        parent.tracked.as_ref(),
+        candidate.tracked.as_ref(),
+        source_changed,
+    )?;
+    check_root_transition(parent.revision, candidate.revision, source_changed)?;
+    match (&parent.tracked, &candidate.tracked, candidate.revision) {
+        (Some(parent_entries), Some(candidate_entries), SnapshotRevision::Versioned(revision)) => {
+            tracking::check_entries(parent_entries, candidate_entries, revision)
+        }
+        _ => Ok(()),
+    }
+}
+
+fn check_root_transition(
+    parent: SnapshotRevision,
+    candidate: SnapshotRevision,
+    content_changed: bool,
+) -> Result<(), TransitionError> {
     use SnapshotRevision::Unversioned;
     use SnapshotRevision::Versioned;
 
-    let content_changed = parent.content != candidate.content;
-    match (parent.revision, candidate.revision) {
+    match (parent, candidate) {
         (Unversioned, Unversioned) => Ok(()),
         (Unversioned, Versioned(revision)) if revision == SourceRevision::FIRST => Ok(()),
         (Unversioned, Versioned(revision)) => {

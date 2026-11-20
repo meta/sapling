@@ -25,6 +25,7 @@ mononoke_types = { version = "0.1.0", path = "../../../mononoke_types" }
 pushrebase_hook = { version = "0.1.0", path = "../pushrebase_hook" }
 repo_blobstore = { version = "0.1.0", path = "../../../repo_attributes/repo_blobstore" }
 repo_derived_data = { version = "0.1.0", path = "../../../repo_attributes/repo_derived_data" }
+serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 sql_ext = { version = "0.1.0", path = "../../../common/rust/sql_ext" }
 stats = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
