@@ -185,6 +185,25 @@ describe('Interactive Split', () => {
       ).toBeInTheDocument();
     });
 
+    it.each([
+      ['blur', (input: HTMLElement) => fireEvent.blur(input)],
+      ['Enter', (input: HTMLElement) => fireEvent.keyDown(input, {key: 'Enter'})],
+    ])('saves edited commit title on %s', async (_, finishEditing) => {
+      jest.useFakeTimers().setSystemTime(new Date('2020-01-01'));
+
+      const input = screen.getAllByTitle('Edit commit title')[0] as HTMLInputElement;
+      fireEvent.input(input, {target: {value: 'Commit E edited'}});
+      expect(input.value).toBe('Commit E edited');
+      finishEditing(input);
+      fireEvent.click(screen.getByTestId('confirm-edit-stack-button'));
+
+      const message = await waitFor(() =>
+        utils.nullthrows(getLastMessageOfTypeSentToServer('runOperation')),
+      );
+      const stdin = JSON.parse(message.operation.stdin ?? '[]');
+      expect(stdin[0]).toEqual(['commit', expect.objectContaining({text: 'Commit E edited\n'})]);
+    });
+
     it('moves lines and requests importing', async () => {
       jest.useFakeTimers().setSystemTime(new Date('2020-01-01'));
 

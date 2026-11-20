@@ -360,7 +360,11 @@ function SplitColumn(props: SplitColumnProps) {
           <span className="split-commit-header-stack-number">
             {rev + 1} / {subStack.size}
           </span>
-          <EditableCommitTitle commitMessage={commitMessage} commitKey={commit?.key} />
+          <EditableCommitTitle
+            key={commit?.key}
+            commitMessage={commitMessage}
+            commitKey={commit?.key}
+          />
           <Button icon onClick={e => showExtraCommitActionsContextMenu(e)}>
             <Icon icon="ellipsis" />
           </Button>
@@ -741,6 +745,10 @@ function EditableCommitTitle(props: MaybeEditableCommitTitleProps) {
   const existingTitle = firstLine(commitMessage);
   const existingDescription = commitMessage.slice(existingTitle.length + 1);
 
+  // Updating the stack re-renders every file in the split view, which is slow for large
+  // commits. Keep the in-progress title local and write it to the stack on blur or Enter.
+  const [draftTitle, setDraftTitle] = useState<string | undefined>(undefined);
+
   // Only allow changing the commit title, not the rest of the commit message.
   const handleEdit = (newTitle?: string) => {
     if (newTitle != null && commitKey != null) {
@@ -783,13 +791,29 @@ function EditableCommitTitle(props: MaybeEditableCommitTitleProps) {
       }
     }
   };
+  const commitDraftTitle = () => {
+    if (draftTitle == null) {
+      return;
+    }
+    if (draftTitle !== existingTitle) {
+      handleEdit(draftTitle);
+    }
+    setDraftTitle(undefined);
+  };
+
   return (
     <TextField
       containerClassName={css.full}
-      value={existingTitle}
+      value={draftTitle ?? existingTitle}
       title={t('Edit commit title')}
       style={{width: 'calc(100% - var(--pad))'}}
-      onInput={e => handleEdit(e.currentTarget?.value)}
+      onInput={e => setDraftTitle(e.currentTarget.value)}
+      onBlur={commitDraftTitle}
+      onKeyDown={e => {
+        if (e.key === 'Enter') {
+          commitDraftTitle();
+        }
+      }}
     />
   );
 }
