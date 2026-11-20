@@ -628,11 +628,7 @@ fn write_value(
         Value::Float32(value) if *value == f32::NEG_INFINITY => {
             write_special_float(output, "-Infinity", options.mode)
         }
-        Value::Float32(value) => output.put_slice(
-            serde_json::to_string(value)
-                .expect("finite float is representable in JSON")
-                .as_bytes(),
-        ),
+        Value::Float32(value) => write_finite_float(output, value, 7),
         Value::Float64(value) if value.is_nan() => {
             write_special_float(output, signed_nan(*value), options.mode)
         }
@@ -642,16 +638,9 @@ fn write_value(
         Value::Float64(value) if *value == f64::NEG_INFINITY => {
             write_special_float(output, "-Infinity", options.mode)
         }
-        Value::Float64(value) => output.put_slice(
-            serde_json::to_string(value)
-                .expect("finite float is representable in JSON")
-                .as_bytes(),
-        ),
-        Value::ParsedFloat { value, .. } => output.put_slice(
-            serde_json::to_string(value)
-                .expect("finite float is representable in JSON")
-                .as_bytes(),
-        ),
+        Value::Float64(value) | Value::ParsedFloat { value, .. } => {
+            write_finite_float(output, value, 16)
+        }
         Value::String(value) => write_string(output, value, options, object_name),
         Value::Binary(value) if options.binary_as_base64_string => {
             write_string(
@@ -712,6 +701,31 @@ fn write_value(
         }
     }
     Ok(())
+}
+
+/// Lays out the shortest round-trip digits in fixed notation for decimal
+/// exponents in [-4, `fixed_below`), and in scientific notation otherwise.
+fn write_finite_float(
+    output: &mut Vec<u8>,
+    value: impl fmt::Display + fmt::LowerExp,
+    fixed_below: i32,
+) {
+    let scientific = format!("{value:e}");
+    let (mantissa, exponent) = scientific
+        .split_once('e')
+        .expect("`{:e}` output has an exponent");
+    let exponent: i32 = exponent.parse().expect("`{:e}` exponent is an integer");
+    let formatted = if (-4..fixed_below).contains(&exponent) {
+        let fixed = value.to_string();
+        if fixed.contains('.') {
+            fixed
+        } else {
+            format!("{fixed}.0")
+        }
+    } else {
+        format!("{mantissa}e{exponent:+03}")
+    };
+    output.put_slice(formatted.as_bytes());
 }
 
 fn write_special_float(output: &mut Vec<u8>, value: &str, mode: Json5Mode) {

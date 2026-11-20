@@ -32,15 +32,6 @@ use json5_test::consts::testCases;
 
 /// Cases of `testCases` that Rust does not pass yet.
 const KNOWN_FAILURES: &[&str] = &[
-    // Lays out floating-point values as serde_json does.
-    "DoubleFormatting",
-    "FloatAsKeyFromInteger",
-    "FloatAsKeyFromString",
-    "FloatFormatting",
-    "FloatingPointKeys",
-    "MoreDoubleFormatting",
-    "MoreFloatFormatting",
-    "NegativeLargestExactIntegers",
     // Reads an integer `-0` as `0.0`.
     "NegativeZero",
     "NegativeZeroKey",
