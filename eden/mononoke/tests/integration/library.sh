@@ -860,6 +860,28 @@ function wait_for_git_bookmark_move() {
   done
 }
 
+# Wait until `git ls-remote` advertises `bookmark_name` at exactly
+# `expected_target`. Unlike wait_for_git_bookmark_move, this does not return
+# early when the advertised value is some other stale value (for example a
+# target from before an earlier push the git server has not caught up with).
+function wait_for_git_bookmark_target() {
+  local bookmark_name="$1"
+  local expected_target="$2"
+  local attempt=1
+  local max_attempts=${MAX_ATTEMPTS:-30}
+  local sleep_time=${SLEEP_TIME:-2}
+  while [[ "$(git_client ls-remote --quiet 2>/dev/null | awk -v ref="$bookmark_name" '$2 == ref { print $1 }')" != "$expected_target" ]]
+  do
+    attempt=$((attempt + 1))
+    if [[ $attempt -gt $max_attempts ]]
+    then
+        echo "bookmark $bookmark_name did not move to $expected_target"
+        return 1
+    fi
+    sleep "$sleep_time"
+  done
+}
+
 function wait_for_git_bookmark_delete() {
   local bookmark_name="$1"
   local attempt=0
