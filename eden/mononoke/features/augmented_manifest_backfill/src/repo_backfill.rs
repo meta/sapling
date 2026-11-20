@@ -7,12 +7,14 @@
 
 use std::collections::HashMap;
 use std::error::Error as StdError;
-use std::num::NonZeroUsize;
+use std::pin::pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::ensure;
+use async_trait::async_trait;
 use context::CoreContext;
 use derived_data_manager::BonsaiDerivable;
 use derived_data_manager::DerivationError;
@@ -25,10 +27,25 @@ use futures_retry::retry;
 use mercurial_derivation::RootHgAugmentedManifestId;
 use mononoke_macros::mononoke;
 use mononoke_types::ChangesetId;
+use repo_blobstore::RepoBlobstore;
 use thiserror::Error;
+use throttledblob::ThrottleOptions;
+use throttledblob::ThrottledBlob;
 use tokio_util::task::AbortOnDropHandle;
 use topo_sort::TopoSortedDagTraversal;
 use tracing::warn;
+use wait_for_replication::WaitForReplication;
+
+/// How many derivations a backfill runs at once. A value below 1 counts as 1.
+const JK_CONCURRENCY: &str = "scm/mononoke:augmented_manifest_backfill_concurrency";
+
+/// Evaluated with the repo name as the switch value. While it is true, a
+/// backfill of that repo starts no new derivation and lists no new commits,
+/// and the derivations already running finish.
+const JK_PAUSED: &str = "scm/mononoke:augmented_manifest_backfill_paused";
+
+/// How often a backfill re-reads its switches while it waits.
+const SWITCH_RECHECK_INTERVAL: Duration = Duration::from_secs(5);
 
 /// How often a commit that fails to load or derive is tried, and how long to
 /// wait before the first retry. Each later wait is twice as long.
@@ -76,29 +93,60 @@ struct Retries {
     first_delay: Duration,
 }
 
+/// Waits while the storage that derivation writes to lags behind.
+#[async_trait]
+pub trait ReplicationWait: Send + Sync {
+    /// Returns once replication lag is below the limit.
+    async fn wait_for_replication(&self) -> Result<()>;
+}
+
+#[async_trait]
+impl ReplicationWait for WaitForReplication {
+    async fn wait_for_replication(&self) -> Result<()> {
+        WaitForReplication::wait_for_replication(self).await
+    }
+}
+
 /// Derives augmented manifests, and the ACL manifests they depend on, for the
 /// commits of one repo. Derivation is local: it never goes through the derived
 /// data service.
 pub struct RepoBackfill {
     manager: DerivedDataManager,
-    concurrency: NonZeroUsize,
+    replication: Arc<dyn ReplicationWait>,
     retries: Retries,
 }
 
 impl RepoBackfill {
-    pub fn new(manager: DerivedDataManager, concurrency: NonZeroUsize) -> Self {
+    /// All the derivations of this backfill share one blobstore throttle with
+    /// the limits of `throttle`. The throttle sits above the repo's caches, so
+    /// reads served from the cache count towards the read limit too. Before
+    /// starting more derivations, the backfill waits on `replication`.
+    pub fn new(
+        manager: DerivedDataManager,
+        throttle: ThrottleOptions,
+        replication: Arc<dyn ReplicationWait>,
+    ) -> Self {
         Self {
-            manager,
-            concurrency,
+            manager: throttled(manager, throttle),
+            replication,
             retries: RETRIES,
+        }
+    }
+
+    /// Returns once the repo's backfill is not paused, re-reading the pause
+    /// switch every few seconds.
+    pub(crate) async fn wait_while_paused(&self) {
+        while is_paused(self.manager.repo_name()) {
+            tokio::time::sleep(SWITCH_RECHECK_INTERVAL).await;
         }
     }
 
     /// Derives the commits of `commits`, which maps each commit to its parents,
     /// and returns what was done with each one.
     ///
-    /// Commits that already have augmented manifests are skipped. Up to
-    /// `concurrency` commits are derived at once, and a commit waits only for
+    /// Commits that already have augmented manifests are skipped. The
+    /// backfill's switches set how many commits are derived at once, and
+    /// whether the repo is paused, and a commit waits only for
     /// its parents in the list, so a parent in the list is derived once rather
     /// than by each of its children. Commits outside the list are not tracked:
     /// two commits that share an underived parent outside the list may both
@@ -112,8 +160,8 @@ impl RepoBackfill {
     /// being tried. A commit whose derivation the repo config blocks, or whose
     /// derivation reaches such an ancestor, is recorded as blocked without a
     /// retry. The call itself fails only if the repo cannot derive augmented
-    /// manifests, if it cannot check which commits are derived, or if the
-    /// parents form a cycle.
+    /// manifests, if it cannot check which commits are derived, if it cannot
+    /// check the replication lag, or if the parents form a cycle.
     pub async fn derive_commits(
         &self,
         ctx: &CoreContext,
@@ -138,11 +186,16 @@ impl RepoBackfill {
             .context("Failed to check which commits have augmented manifests")?;
         commits.retain(|cs_id, _| !derived.contains_key(cs_id));
 
-        let results = derive_parents_first(&commits, self.concurrency, |cs_id| {
-            with_retries(self.retries, cs_id, move || {
-                self.try_derive_commit(ctx, cs_id)
-            })
-        })
+        let results = derive_parents_first(
+            &commits,
+            self.manager.repo_name(),
+            self.replication.as_ref(),
+            |cs_id| {
+                with_retries(self.retries, cs_id, move || {
+                    self.try_derive_commit(ctx, cs_id)
+                })
+            },
+        )
         .await?;
 
         Ok(derived
@@ -215,6 +268,32 @@ fn blocked_derivation(error: &SharedDerivationError) -> Option<Failure> {
     None
 }
 
+/// Returns `manager` with its blobstore throttled to the limits of
+/// `throttle`, unless `throttle` sets no limit.
+fn throttled(manager: DerivedDataManager, throttle: ThrottleOptions) -> DerivedDataManager {
+    if !throttle.has_throttle() {
+        return manager;
+    }
+    let blobstore = RepoBlobstore::new_with_wrapped_inner_blobstore(
+        manager.repo_blobstore().clone(),
+        |inner| Arc::new(ThrottledBlob::new(inner, throttle)),
+    );
+    manager.with_replaced_blobstore(blobstore)
+}
+
+fn is_paused(repo_name: &str) -> bool {
+    justknobs::eval(JK_PAUSED, None, Some(repo_name))
+}
+
+/// How many derivations may run at once in `repo_name`: none while its
+/// backfill is paused.
+fn concurrency_limit(repo_name: &str) -> usize {
+    if is_paused(repo_name) {
+        return 0;
+    }
+    usize::try_from(justknobs::get(JK_CONCURRENCY, None).max(1)).unwrap_or(usize::MAX)
+}
+
 /// Runs `attempt`, which derives `cs_id`, until it succeeds, it fails for a
 /// reason other than an error, or `retries.attempts` attempts have failed,
 /// waiting longer before each retry. Each failed attempt is logged.
@@ -242,14 +321,22 @@ where
 }
 
 /// Derives each commit of `commits`, which maps each commit to its parents,
-/// with `derive`, running up to `concurrency` derivations at once, and returns
-/// what each derivation returned. A commit starts only once its parents in
-/// `commits` have finished. A commit whose parent in `commits` failed is
-/// recorded as failed without calling `derive`. Parents outside `commits` are
-/// ignored.
+/// with `derive`, and returns what each derivation returned. A commit starts
+/// only once its parents in `commits` have finished. A commit whose parent in
+/// `commits` failed is recorded as failed without calling `derive`. Parents
+/// outside `commits` are ignored.
+///
+/// How many derivations run at once follows the switches of `repo_name`,
+/// re-read whenever a derivation finishes and every few seconds. A lower
+/// limit, or a pause, stops new derivations from starting until the running
+/// ones are below it; running ones are never stopped. Before starting more
+/// derivations, it waits on `replication`, and fails if the lag cannot be
+/// checked. Derivations already started go on during the wait, and the
+/// switches are read again once it is over.
 async fn derive_parents_first<F, Fut>(
     commits: &HashMap<ChangesetId, Vec<ChangesetId>>,
-    concurrency: NonZeroUsize,
+    repo_name: &str,
+    replication: &dyn ReplicationWait,
     derive: F,
 ) -> Result<HashMap<ChangesetId, Result<u64, Failure>>>
 where
@@ -273,7 +360,31 @@ where
     let mut results = HashMap::with_capacity(commits.len());
     let mut running = FuturesUnordered::new();
     loop {
-        while running.len() < concurrency.get() {
+        let mut limit = concurrency_limit(repo_name);
+        if running.len() < limit && !dag.is_empty() {
+            // Keep polling the running derivations while waiting: a pushed
+            // derivation starts only when it is first polled.
+            let mut wait = pin!(replication.wait_for_replication());
+            loop {
+                tokio::select! {
+                    waited = &mut wait => {
+                        waited.context("Failed to wait for replication before deriving")?;
+                        break;
+                    }
+                    Some((cs_id, result)) = running.next() => {
+                        results.insert(cs_id, result);
+                        dag.visited(cs_id);
+                    }
+                }
+            }
+            limit = concurrency_limit(repo_name);
+        }
+
+        // No await from reading the limit to pushing the derivations, so
+        // that they start under the switches as just read. Without a wait
+        // above, the limit leaves no room or nothing is ready, so derivations
+        // never start without a check of the lag.
+        while running.len() < limit {
             let Some(cs_id) = dag.drain(1).next() else {
                 break;
             };
@@ -289,11 +400,18 @@ where
                 None => running.push(derive(cs_id).map(move |result| (cs_id, result))),
             }
         }
-        let Some((cs_id, result)) = running.next().await else {
+
+        // With nothing running, ready commits are left only while paused.
+        if running.is_empty() && dag.is_empty() {
             break;
-        };
-        results.insert(cs_id, result);
-        dag.visited(cs_id);
+        }
+        tokio::select! {
+            Some((cs_id, result)) = running.next() => {
+                results.insert(cs_id, result);
+                dag.visited(cs_id);
+            }
+            _ = tokio::time::sleep(SWITCH_RECHECK_INTERVAL) => {}
+        }
     }
 
     ensure!(
@@ -305,13 +423,42 @@ where
     Ok(results)
 }
 
+/// A replication wait that never waits.
+#[cfg(test)]
+pub(crate) struct NoReplicationLag;
+
+#[cfg(test)]
+#[async_trait]
+impl ReplicationWait for NoReplicationLag {
+    async fn wait_for_replication(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Sets the backfill's switches for the rest of a test.
+#[cfg(test)]
+pub(crate) fn set_switches(concurrency: i64, paused: bool) {
+    use justknobs::test_helpers::JustKnobsInMemory;
+    use justknobs::test_helpers::KnobVal;
+    use justknobs::test_helpers::override_just_knobs;
+
+    override_just_knobs(JustKnobsInMemory::new(HashMap::from([
+        (JK_CONCURRENCY.to_string(), KnobVal::Int(concurrency)),
+        (JK_PAUSED.to_string(), KnobVal::Bool(paused)),
+    ])));
+}
+
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::cell::RefCell;
+    use std::num::NonZeroU32;
+    use std::sync::atomic::AtomicBool;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
 
     use assert_matches::assert_matches;
+    use blobstore::KeyedBlobstore;
     use bonsai_hg_mapping::BonsaiHgMapping;
     use bonsai_hg_mapping::BonsaiHgMappingEntry;
     use bonsai_hg_mapping::BonsaiHgMappingRef;
@@ -321,8 +468,8 @@ mod tests {
     use fbinit::FacebookInit;
     use filestore::FilestoreConfig;
     use mercurial_types::HgChangesetId;
+    use mononoke_types::BlobstoreBytes;
     use mononoke_types::DerivableType;
-    use repo_blobstore::RepoBlobstore;
     use repo_derived_data::RepoDerivedData;
     use repo_derived_data::RepoDerivedDataRef;
     use repo_identity::RepoIdentity;
@@ -345,7 +492,11 @@ mod tests {
     );
 
     /// Enough to derive every commit of a test at once.
-    const CONCURRENCY: NonZeroUsize = NonZeroUsize::new(10).unwrap();
+    const CONCURRENCY: i64 = 10;
+
+    /// The repo name the switches are read for. Switch overrides in tests
+    /// ignore it.
+    const REPO: &str = "repo";
 
     /// A repo with one commit that has an augmented manifest, standing in for
     /// the public commit that drafts are based on.
@@ -412,7 +563,11 @@ mod tests {
                 first_delay: Duration::ZERO,
                 ..RETRIES
             },
-            ..RepoBackfill::new(repo.repo_derived_data().manager().clone(), CONCURRENCY)
+            ..RepoBackfill::new(
+                repo.repo_derived_data().manager().clone(),
+                ThrottleOptions::default(),
+                Arc::new(NoReplicationLag),
+            )
         }
     }
 
@@ -686,6 +841,37 @@ mod tests {
     enum Step {
         Started(ChangesetId),
         Finished(ChangesetId),
+        /// Something the test did while derivations ran.
+        Note(&'static str),
+    }
+
+    /// The most derivations running at the same time in `steps`.
+    fn most_running(steps: &[Step]) -> usize {
+        steps
+            .iter()
+            .scan(0, |running, step| {
+                *running = match step {
+                    Step::Started(_) => *running + 1,
+                    Step::Finished(_) => *running - 1,
+                    Step::Note(_) => *running,
+                };
+                Some(*running)
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// How many derivations are running at the end of `steps`.
+    fn running_after(steps: &[Step]) -> usize {
+        let started = steps
+            .iter()
+            .filter(|s| matches!(s, Step::Started(_)))
+            .count();
+        let finished = steps
+            .iter()
+            .filter(|s| matches!(s, Step::Finished(_)))
+            .count();
+        started - finished
     }
 
     /// Stands in for derivation. It records when each commit starts and
@@ -695,11 +881,16 @@ mod tests {
     struct FakeDerivation {
         steps: RefCell<Vec<Step>>,
         failing: Vec<ChangesetId>,
+        /// Commits whose derivation takes ten seconds.
+        slow: Vec<ChangesetId>,
     }
 
     impl FakeDerivation {
         async fn derive(&self, cs_id: ChangesetId) -> Result<u64, Failure> {
             self.steps.borrow_mut().push(Step::Started(cs_id));
+            if self.slow.contains(&cs_id) {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+            }
             for _ in 0..3 {
                 tokio::task::yield_now().await;
             }
@@ -710,25 +901,46 @@ mod tests {
             Ok(1)
         }
 
-        /// The most derivations that were running at the same time.
-        fn most_running(&self) -> usize {
-            self.steps
-                .borrow()
-                .iter()
-                .scan(0, |running, step| {
-                    *running = match step {
-                        Step::Started(_) => *running + 1,
-                        Step::Finished(_) => *running - 1,
-                    };
-                    Some(*running)
-                })
-                .max()
-                .unwrap_or(0)
+        fn note(&self, note: &'static str) {
+            self.steps.borrow_mut().push(Step::Note(note));
+        }
+    }
+
+    /// A replication wait that, from its call numbered `lags_from` on
+    /// (counting from 0), waits while `lagging` is set. It counts its calls.
+    #[derive(Default)]
+    struct FakeLag {
+        lagging: AtomicBool,
+        lags_from: usize,
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ReplicationWait for FakeLag {
+        async fn wait_for_replication(&self) -> Result<()> {
+            if self.calls.fetch_add(1, Ordering::Relaxed) < self.lags_from {
+                return Ok(());
+            }
+            while self.lagging.load(Ordering::Relaxed) {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            Ok(())
+        }
+    }
+
+    /// A replication wait that cannot check the lag.
+    struct BrokenLag;
+
+    #[async_trait]
+    impl ReplicationWait for BrokenLag {
+        async fn wait_for_replication(&self) -> Result<()> {
+            Err(anyhow::anyhow!("the lag cannot be read"))
         }
     }
 
     #[mononoke::test]
     async fn starts_a_commit_only_after_its_parents_finish() -> Result<()> {
+        set_switches(CONCURRENCY, false);
         // Given a commit with two children, one of which has a child of its own.
         let (root, left, left_child, right) =
             (commit_id(1), commit_id(2), commit_id(3), commit_id(4));
@@ -741,7 +953,10 @@ mod tests {
         let fake = FakeDerivation::default();
 
         // When they are derived with room to derive them all at once.
-        derive_parents_first(&commits, CONCURRENCY, |cs_id| fake.derive(cs_id)).await?;
+        derive_parents_first(&commits, REPO, &NoReplicationLag, |cs_id| {
+            fake.derive(cs_id)
+        })
+        .await?;
 
         // Then each commit was derived once, and started only after its parents
         // finished.
@@ -770,7 +985,8 @@ mod tests {
         let fake = FakeDerivation::default();
 
         // When they are derived three at a time.
-        let results = derive_parents_first(&commits, NonZeroUsize::new(3).unwrap(), |cs_id| {
+        set_switches(3, false);
+        let results = derive_parents_first(&commits, REPO, &NoReplicationLag, |cs_id| {
             fake.derive(cs_id)
         })
         .await?;
@@ -778,7 +994,7 @@ mod tests {
         // Then all ten were derived, three at a time and never more.
         assert_eq!(results.len(), 10, "every commit should be derived");
         assert_eq!(
-            fake.most_running(),
+            most_running(&fake.steps.borrow()),
             3,
             "three derivations should run at once, and no more",
         );
@@ -787,13 +1003,17 @@ mod tests {
 
     #[mononoke::test]
     async fn derives_a_commit_that_lists_a_parent_twice_once() -> Result<()> {
+        set_switches(CONCURRENCY, false);
         // Given a commit whose parent appears twice in its list of parents.
         let (parent, child) = (commit_id(1), commit_id(2));
         let commits = HashMap::from([(parent, vec![]), (child, vec![parent, parent])]);
         let fake = FakeDerivation::default();
 
         // When they are derived.
-        derive_parents_first(&commits, CONCURRENCY, |cs_id| fake.derive(cs_id)).await?;
+        derive_parents_first(&commits, REPO, &NoReplicationLag, |cs_id| {
+            fake.derive(cs_id)
+        })
+        .await?;
 
         // Then the parent and then the child were each derived once.
         assert_eq!(
@@ -810,6 +1030,7 @@ mod tests {
 
     #[mononoke::test]
     async fn fails_when_parents_form_a_cycle() -> Result<()> {
+        set_switches(CONCURRENCY, false);
         // Given two commits that each list the other as their parent, which a
         // real commit graph cannot contain.
         let (first, second) = (commit_id(1), commit_id(2));
@@ -817,7 +1038,10 @@ mod tests {
         let fake = FakeDerivation::default();
 
         // When they are derived.
-        let result = derive_parents_first(&commits, CONCURRENCY, |cs_id| fake.derive(cs_id)).await;
+        let result = derive_parents_first(&commits, REPO, &NoReplicationLag, |cs_id| {
+            fake.derive(cs_id)
+        })
+        .await;
 
         // Then neither was derived, and the call fails rather than reporting
         // success for commits it did not derive.
@@ -828,6 +1052,7 @@ mod tests {
 
     #[mononoke::test]
     async fn records_the_descendants_of_a_failed_commit_without_deriving_them() -> Result<()> {
+        set_switches(CONCURRENCY, false);
         // Given a commit that fails, its child and grandchild, and a commit
         // that does not depend on it.
         let (broken, child, grandchild, unrelated) =
@@ -844,8 +1069,10 @@ mod tests {
         };
 
         // When they are derived.
-        let results =
-            derive_parents_first(&commits, CONCURRENCY, |cs_id| fake.derive(cs_id)).await?;
+        let results = derive_parents_first(&commits, REPO, &NoReplicationLag, |cs_id| {
+            fake.derive(cs_id)
+        })
+        .await?;
 
         // Then the failed commit keeps its error, its descendants are recorded
         // as failed through their parents without being tried, and the other
@@ -942,6 +1169,345 @@ mod tests {
         assert_matches!(result, Err(Failure::Blocked { .. }));
         assert_eq!(attempts.into_inner(), 1, "it should not be retried");
         assert_eq!(start.elapsed(), Duration::ZERO, "it should not wait");
+        Ok(())
+    }
+
+    /// `count` commits that do not depend on each other.
+    fn independent_commits(count: u8) -> HashMap<ChangesetId, Vec<ChangesetId>> {
+        (1..=count).map(|byte| (commit_id(byte), vec![])).collect()
+    }
+
+    #[mononoke::test]
+    async fn a_lower_concurrency_takes_effect_while_deriving() -> Result<()> {
+        // Given ten commits that do not depend on each other, derived four at
+        // a time, and a concurrency switch lowered to one when the first
+        // derivation finishes.
+        set_switches(4, false);
+        let commits = independent_commits(10);
+        let fake = FakeDerivation::default();
+        let finished = Cell::new(0);
+        let derive = |cs_id| {
+            let (fake, finished) = (&fake, &finished);
+            async move {
+                let result = fake.derive(cs_id).await;
+                finished.set(finished.get() + 1);
+                if finished.get() == 1 {
+                    set_switches(1, false);
+                    fake.note("lowered");
+                }
+                result
+            }
+        };
+
+        // When they are derived.
+        let results = derive_parents_first(&commits, REPO, &NoReplicationLag, derive).await?;
+
+        // Then four ran at once until the switch was lowered, and after that
+        // a derivation started only once none was running.
+        assert_eq!(results.len(), 10, "every commit should be derived");
+        let steps = fake.steps.into_inner();
+        let lowered = steps
+            .iter()
+            .position(|step| *step == Step::Note("lowered"))
+            .expect("the switch should have been lowered");
+        assert_eq!(
+            most_running(&steps[..lowered]),
+            4,
+            "four should run at once before the switch is lowered"
+        );
+        for (index, step) in steps.iter().enumerate().skip(lowered) {
+            if matches!(step, Step::Started(_)) {
+                assert_eq!(
+                    running_after(&steps[..index]),
+                    0,
+                    "after the switch is lowered, a derivation should start only when none is running"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[mononoke::test]
+    async fn a_concurrency_below_one_counts_as_one() -> Result<()> {
+        // Given three commits that do not depend on each other, and a
+        // concurrency switch of zero.
+        set_switches(0, false);
+        let commits = independent_commits(3);
+        let fake = FakeDerivation::default();
+
+        // When they are derived.
+        let results = derive_parents_first(&commits, REPO, &NoReplicationLag, |cs_id| {
+            fake.derive(cs_id)
+        })
+        .await?;
+
+        // Then all three were derived, one at a time.
+        assert_eq!(results.len(), 3, "every commit should be derived");
+        assert_eq!(most_running(&fake.steps.into_inner()), 1);
+        Ok(())
+    }
+
+    #[mononoke::test]
+    async fn pausing_stops_new_derivations_until_resumed() -> Result<()> {
+        // Given six commits that do not depend on each other, derived two at a
+        // time, a pause switch turned on when the first derivation finishes,
+        // and turned off a minute later.
+        tokio::time::pause();
+        set_switches(2, false);
+        let commits = independent_commits(6);
+        let fake = FakeDerivation::default();
+        let finished = Cell::new(0);
+        let derive = |cs_id| {
+            let (fake, finished) = (&fake, &finished);
+            async move {
+                let result = fake.derive(cs_id).await;
+                finished.set(finished.get() + 1);
+                if finished.get() == 1 {
+                    set_switches(2, true);
+                    fake.note("paused");
+                }
+                result
+            }
+        };
+        let resume = async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            fake.note("resumed");
+            set_switches(2, false);
+        };
+
+        // When they are derived.
+        let (results, ()) = tokio::join!(
+            derive_parents_first(&commits, REPO, &NoReplicationLag, derive),
+            resume
+        );
+
+        // Then while paused, the derivation already running finished and none
+        // started, and after resuming the rest were derived.
+        assert_eq!(results?.len(), 6, "every commit should be derived");
+        let steps = fake.steps.into_inner();
+        let position = |note| steps.iter().position(|step| *step == Step::Note(note));
+        let paused = position("paused").expect("the backfill should have been paused");
+        let resumed = position("resumed").expect("the backfill should have been resumed");
+        assert!(paused < resumed, "the pause should come before resuming");
+        let while_paused = &steps[paused..resumed];
+        assert!(
+            !while_paused
+                .iter()
+                .any(|step| matches!(step, Step::Started(_))),
+            "no derivation should start while paused: {while_paused:?}"
+        );
+        assert_eq!(
+            running_after(&steps[..resumed]),
+            0,
+            "the derivation running when paused should finish"
+        );
+        Ok(())
+    }
+
+    #[mononoke::test]
+    async fn waits_for_replication_before_starting_a_derivation() -> Result<()> {
+        // Given three commits, and storage that lags for thirty seconds.
+        tokio::time::pause();
+        set_switches(CONCURRENCY, false);
+        let commits = independent_commits(3);
+        let fake = FakeDerivation::default();
+        let lag = FakeLag::default();
+        lag.lagging.store(true, Ordering::Relaxed);
+        let catch_up = async {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            let started = fake.steps.borrow().len();
+            lag.lagging.store(false, Ordering::Relaxed);
+            started
+        };
+
+        // When they are derived.
+        let (results, started_while_lagging) = tokio::join!(
+            derive_parents_first(&commits, REPO, &lag, |cs_id| fake.derive(cs_id)),
+            catch_up
+        );
+
+        // Then none started while the storage lagged, and all three started
+        // together after one check of the lag.
+        assert_eq!(
+            started_while_lagging, 0,
+            "nothing should start while lagging"
+        );
+        assert_eq!(results?.len(), 3, "every commit should be derived");
+        assert_eq!(
+            lag.calls.into_inner(),
+            1,
+            "one check should cover all three"
+        );
+        Ok(())
+    }
+
+    #[mononoke::test]
+    async fn a_pause_during_a_lag_wait_holds_back_derivations() -> Result<()> {
+        // Given three commits, storage that lags for thirty seconds, and a
+        // pause switch turned on during the lag and off thirty seconds after
+        // the lag ends.
+        tokio::time::pause();
+        set_switches(CONCURRENCY, false);
+        let commits = independent_commits(3);
+        let fake = FakeDerivation::default();
+        let lag = FakeLag::default();
+        lag.lagging.store(true, Ordering::Relaxed);
+        let pause_then_resume = async {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            set_switches(CONCURRENCY, true);
+            lag.lagging.store(false, Ordering::Relaxed);
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            let started = fake.steps.borrow().len();
+            set_switches(CONCURRENCY, false);
+            started
+        };
+
+        // When they are derived.
+        let (results, started_while_paused) = tokio::join!(
+            derive_parents_first(&commits, REPO, &lag, |cs_id| fake.derive(cs_id)),
+            pause_then_resume
+        );
+
+        // Then none started once the lag ended while the repo was paused, and
+        // all were derived once resumed.
+        assert_eq!(started_while_paused, 0, "nothing should start while paused");
+        assert_eq!(results?.len(), 3, "every commit should be derived");
+        Ok(())
+    }
+
+    #[mononoke::test]
+    async fn derivations_go_on_during_a_lag_wait_and_a_pause_during_it_holds_back_the_rest()
+    -> Result<()> {
+        // Given a commit whose derivation takes ten seconds, and a fast commit
+        // with a child, derived two at a time; storage that starts to lag at
+        // the second check of the lag and lags for thirty seconds; and a pause
+        // switch turned on during the lag and off thirty seconds after it
+        // ends.
+        tokio::time::pause();
+        set_switches(2, false);
+        let (slow, fast, last) = (commit_id(1), commit_id(2), commit_id(3));
+        let commits = HashMap::from([(slow, vec![]), (fast, vec![]), (last, vec![fast])]);
+        let fake = FakeDerivation {
+            slow: vec![slow],
+            ..Default::default()
+        };
+        let lag = FakeLag {
+            lags_from: 1,
+            ..Default::default()
+        };
+        lag.lagging.store(true, Ordering::Relaxed);
+        let pause_then_resume = async {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            set_switches(2, true);
+            fake.note("paused");
+            lag.lagging.store(false, Ordering::Relaxed);
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            fake.note("resumed");
+            set_switches(2, false);
+        };
+
+        // When they are derived.
+        let (results, ()) = tokio::join!(
+            derive_parents_first(&commits, REPO, &lag, |cs_id| fake.derive(cs_id)),
+            pause_then_resume
+        );
+
+        // Then the slow derivation finished during the lag wait that began
+        // when the fast one finished, and the last commit, held back by that
+        // wait, did not start while paused.
+        assert_eq!(results?.len(), 3, "every commit should be derived");
+        let steps = fake.steps.into_inner();
+        let position = |step| steps.iter().position(|s| *s == step);
+        let paused = position(Step::Note("paused")).expect("the backfill should have been paused");
+        let resumed =
+            position(Step::Note("resumed")).expect("the backfill should have been resumed");
+        assert!(
+            position(Step::Finished(slow)) < Some(paused),
+            "the slow derivation should finish during the lag wait: {steps:?}"
+        );
+        assert!(
+            position(Step::Started(last)) > Some(resumed),
+            "the last commit should start only after resuming: {steps:?}"
+        );
+        Ok(())
+    }
+
+    #[mononoke::test]
+    async fn fails_when_replication_lag_cannot_be_checked() -> Result<()> {
+        // Given a commit, and storage whose lag cannot be read.
+        set_switches(CONCURRENCY, false);
+        let commits = independent_commits(1);
+        let fake = FakeDerivation::default();
+
+        // When it is derived.
+        let result =
+            derive_parents_first(&commits, REPO, &BrokenLag, |cs_id| fake.derive(cs_id)).await;
+
+        // Then the call fails without deriving it, rather than recording the
+        // commit as failed.
+        assert!(result.is_err(), "an unreadable lag should fail the call");
+        assert_eq!(fake.steps.into_inner(), vec![], "nothing should be derived");
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn every_derivation_shares_one_blobstore_throttle(fb: FacebookInit) -> Result<()> {
+        // Given a backfill limited to 20 writes a second, which allows a burst
+        // of 20 writes and then one every 50 milliseconds, and one without
+        // limits.
+        let ctx = CoreContext::test_mock(fb);
+        let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+        let manager = repo.repo_derived_data().manager().clone();
+        let limits = ThrottleOptions {
+            write_qps: NonZeroU32::new(20),
+            ..Default::default()
+        };
+        let throttled = RepoBackfill::new(manager.clone(), limits, Arc::new(NoReplicationLag));
+        let unthrottled = RepoBackfill::new(
+            manager,
+            ThrottleOptions::default(),
+            Arc::new(NoReplicationLag),
+        );
+
+        // When two copies of each backfill's manager, as two derivations hold
+        // them, write 20 blobs each at the same time.
+        let write_40 = |backfill: &RepoBackfill| {
+            let managers = [backfill.manager.clone(), backfill.manager.clone()];
+            let ctx = &ctx;
+            async move {
+                let start = Instant::now();
+                futures::future::try_join_all(managers.into_iter().enumerate().map(
+                    |(copy, manager)| async move {
+                        for blob in 0..20 {
+                            manager
+                                .repo_blobstore()
+                                .put(
+                                    ctx,
+                                    format!("test_blob_{copy}_{blob}"),
+                                    BlobstoreBytes::from_bytes("blob"),
+                                )
+                                .await?;
+                        }
+                        anyhow::Ok(())
+                    },
+                ))
+                .await?;
+                anyhow::Ok(start.elapsed())
+            }
+        };
+        let throttled_time = write_40(&throttled).await?;
+        let unthrottled_time = write_40(&unthrottled).await?;
+
+        // Then the throttled writes shared one limit, so the 20 writes past the
+        // burst took about a second, while the others were not held back.
+        assert!(
+            throttled_time >= Duration::from_millis(900),
+            "40 writes at 20 a second should take about a second, not {throttled_time:?}"
+        );
+        assert!(
+            unthrottled_time < Duration::from_millis(900),
+            "writes without limits should not be held back, but took {unthrottled_time:?}"
+        );
         Ok(())
     }
 }

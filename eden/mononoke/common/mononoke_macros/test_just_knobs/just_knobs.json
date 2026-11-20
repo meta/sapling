@@ -171,7 +171,8 @@
     "scm/mononoke:incremental_manifest_reload": true,
     "scm/mononoke:fail_closed_on_repo_config_parse_error": false,
     "scm/mononoke:reject_commit_cloud_writes_on_readonly_repos": true,
-    "scm/mononoke:repo_metadata_logger_bookmark_fallback": false
+    "scm/mononoke:repo_metadata_logger_bookmark_fallback": false,
+    "scm/mononoke:augmented_manifest_backfill_paused": false
   },
   "ints": {
     "scm/mononoke:sslv2_active_window_days": 0,
@@ -309,6 +310,7 @@
     "scm/mononoke:git_server_lfs_max_retries": 2,
     "scm/mononoke:git_server_perf_log_sampling": 1,
     "scm/mononoke:scs_stream_chunk_scuba_sampling_rate": 0,
-    "scm/mononoke_commit_metadata_scraper:change_details_concurrency": 10
+    "scm/mononoke_commit_metadata_scraper:change_details_concurrency": 10,
+    "scm/mononoke:augmented_manifest_backfill_concurrency": 5
   }
 }

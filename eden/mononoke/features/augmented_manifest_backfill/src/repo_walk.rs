@@ -248,6 +248,11 @@ impl RepoWalk {
     where
         R: CommitGraphRef + CommitGraphBulkFetcherRef + MutableCountersRef,
     {
+        // A paused repo's windows are not listed either, so that pausing it
+        // also stops the walk's reads from the commit-graph replica. Each
+        // attempt waits, so that a pause also holds back the retries of a
+        // failed window.
+        backfill.wait_while_paused().await;
         let cs_ids: Vec<_> = repo
             .commit_graph_bulk_fetcher()
             .oldest_first_stream(ctx, window.clone(), SQL_CHUNK_SIZE, false)
@@ -412,6 +417,7 @@ mod tests {
     use std::cell::Cell;
     use std::cell::RefCell;
     use std::collections::BTreeSet;
+    use std::sync::Arc;
 
     use bonsai_hg_mapping::BonsaiHgMapping;
     use bookmarks::Bookmarks;
@@ -431,9 +437,13 @@ mod tests {
     use sql_commit_graph_storage::CommitGraphBulkFetcher;
     use test_repo_factory::TestRepoFactory;
     use tests_utils::CreateCommitContext;
+    use throttledblob::ThrottleOptions;
+    use tokio::time::Instant;
 
     use super::*;
     use crate::Failure;
+    use crate::repo_backfill::NoReplicationLag;
+    use crate::repo_backfill::set_switches;
 
     fn shard(index: u64, count: u64) -> TaskShard {
         TaskShard::try_new(index, count).expect("the test's shard should be valid")
@@ -605,11 +615,12 @@ mod tests {
         RepoIdentity,
     );
 
-    /// Enough to derive every commit of a test at once.
-    const CONCURRENCY: std::num::NonZeroUsize = std::num::NonZeroUsize::new(10).unwrap();
-
     fn backfill(repo: &TestRepo) -> RepoBackfill {
-        RepoBackfill::new(repo.repo_derived_data().manager().clone(), CONCURRENCY)
+        RepoBackfill::new(
+            repo.repo_derived_data().manager().clone(),
+            ThrottleOptions::default(),
+            Arc::new(NoReplicationLag),
+        )
     }
 
     /// Creates commits that have no parents and returns them in the order of
@@ -997,12 +1008,10 @@ mod tests {
         Ok(())
     }
 
-    #[mononoke::fbinit_test]
-    async fn a_window_that_fails_is_not_recorded_as_finished(fb: FacebookInit) -> Result<()> {
-        // Given a repo where augmented manifests are not enabled for
-        // derivation, so that deriving any window fails as a whole.
-        let ctx = CoreContext::test_mock(fb);
-        let repo: TestRepo = TestRepoFactory::new(fb)?
+    /// A repo where augmented manifests are not enabled for derivation, so
+    /// that deriving any window fails as a whole.
+    async fn repo_that_cannot_derive(fb: FacebookInit) -> Result<TestRepo> {
+        Ok(TestRepoFactory::new(fb)?
             .with_config_override(|config| {
                 let derived_data = &mut config.derived_data_config;
                 derived_data
@@ -1015,7 +1024,15 @@ mod tests {
                     .insert(DerivableType::HgAugmentedManifests);
             })
             .build()
-            .await?;
+            .await?)
+    }
+
+    #[mononoke::fbinit_test]
+    async fn a_window_that_fails_is_not_recorded_as_finished(fb: FacebookInit) -> Result<()> {
+        // Given a repo where augmented manifests are not enabled for
+        // derivation, so that deriving any window fails as a whole.
+        let ctx = CoreContext::test_mock(fb);
+        let repo = repo_that_cannot_derive(fb).await?;
         roots(&ctx, &repo, 2).await?;
         let walk = walk(shard(0, 1), 1, ALL);
 
@@ -1102,6 +1119,101 @@ mod tests {
                 (3..4, derived_once(&commits[2..3])),
                 (4..5, derived_once(&commits[3..4])),
             ],
+        );
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn a_paused_repo_walks_no_window_until_resumed(fb: FacebookInit) -> Result<()> {
+        // Given a repo whose only commit is derived, so that its window has
+        // nothing to derive, and a backfill paused for this repo and resumed a
+        // minute later.
+        let ctx = CoreContext::test_mock(fb);
+        let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+        let root = roots(&ctx, &repo, 1).await?[0];
+        derive(&ctx, &repo, root).await?;
+        let walk = walk(shard(0, 1), 10, ALL);
+        let backfill = backfill(&repo);
+        tokio::time::pause();
+        set_switches(5, true);
+        let start = Instant::now();
+        let resume = async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            set_switches(5, false);
+        };
+
+        // When a single task walks the repo.
+        let (reports, ()) = tokio::join!(
+            walk.walk(&ctx, &repo, &backfill)
+                .map_ok(|report| (report, start.elapsed()))
+                .try_collect::<Vec<_>>(),
+            resume
+        );
+
+        // Then the window was walked only once the repo was resumed, so a
+        // paused repo's windows are not even listed.
+        let (reports, times): (Vec<_>, Vec<_>) = reports?.into_iter().unzip();
+        assert_eq!(
+            summary(reports),
+            vec![(1..2, HashMap::from([(root, Outcome::AlreadyDerived)]))]
+        );
+        assert!(
+            times[0] >= Duration::from_secs(60),
+            "the window should be walked after resuming, not after {:?}",
+            times[0]
+        );
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn a_paused_repo_does_not_retry_a_failed_window_until_resumed(
+        fb: FacebookInit,
+    ) -> Result<()> {
+        // Given a repo whose windows fail as a whole, a walk that retries a
+        // failed window after 10, 20 and 40 seconds, and a backfill paused for
+        // this repo one second after the walk starts, once the window's first
+        // attempt has failed, and resumed after 1,000 seconds.
+        let ctx = CoreContext::test_mock(fb);
+        let repo = repo_that_cannot_derive(fb).await?;
+        roots(&ctx, &repo, 1).await?;
+        let walk = RepoWalk {
+            retries: WalkRetries {
+                first_delay: Duration::from_secs(10),
+                ..WALK_RETRIES
+            },
+            ..RepoWalk::new(shard(0, 1), size(10), ALL)
+        };
+        let backfill = backfill(&repo);
+        tokio::time::pause();
+        set_switches(5, false);
+        let start = Instant::now();
+        let pause_and_resume = async {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            set_switches(5, true);
+            tokio::time::sleep(Duration::from_secs(999)).await;
+            set_switches(5, false);
+        };
+
+        // When a single task walks the repo.
+        let (results, ()) = tokio::join!(
+            async {
+                let results: Vec<_> = walk.walk(&ctx, &repo, &backfill).collect().await;
+                (results, start.elapsed())
+            },
+            pause_and_resume
+        );
+
+        // Then the walk ended with the window's error only after the repo was
+        // resumed, because the retries waited while it was paused, rather
+        // than after the 70 seconds that the retries take on their own.
+        let (results, elapsed) = results;
+        assert!(
+            matches!(results[..], [Err(_)]),
+            "the walk should end with the window's error"
+        );
+        assert!(
+            elapsed >= Duration::from_secs(1_000),
+            "the retries should wait while the repo is paused, but the walk ended after {elapsed:?}",
         );
         Ok(())
     }
