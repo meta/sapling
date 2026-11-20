@@ -534,6 +534,7 @@ cpp_unittest(
     supports_static_listing = False,
     deps = [
         "fbsource//third-party/googletest:gtest",
+        "fbsource//xplat/folly/portability:unistd",
         "fbsource//xplat/folly/test:test_utils",
         "//eden/fs/inodes:inodes",
         "//eden/fs/journal:journal",
@@ -541,7 +542,6 @@ cpp_unittest(
         "//eden/fs/testharness:fake_backing_store_and_tree_builder",
         "//eden/fs/testharness:test_checks",
         "//eden/fs/testharness:test_mount",
-        "//folly/portability:unistd",
         "//folly/synchronization:baton",
     ],
 )
