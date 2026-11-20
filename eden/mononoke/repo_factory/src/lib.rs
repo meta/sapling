@@ -1873,6 +1873,12 @@ impl RepoFactory {
                     repo_event_publisher.clone(),
                     warmer_requirement,
                 );
+                #[cfg(fbcode_build)]
+                if let Some(metadata) = repo_config.metadata_cache_config.as_ref() {
+                    wbc_builder.set_event_router_configured(
+                        metadata.wbc_event_router_scribe_category().is_some(),
+                    );
+                }
 
                 match effective_derived_data {
                     BookmarkCacheDerivedData::HgOnly => {

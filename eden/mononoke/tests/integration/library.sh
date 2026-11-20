@@ -837,20 +837,26 @@ function wait_for_bookmark_move_edenapi() {
 function wait_for_git_bookmark_move() {
   local bookmark_name="$1"
   local last_bookmark_target="$2"
+  local expected_bookmark_target="${3-}"
+  local current_bookmark_target
   local attempt=1
   local max_attempts=${MAX_ATTEMPTS:-30}
   local sleep_time=${SLEEP_TIME:-2}
-  last_status_regex="$last_bookmark_target\s+$bookmark_name"
-  last_status="$last_bookmark_target$bookmark_name"
-  while [[ "$(git_client ls-remote --quiet | grep -E "$last_status_regex" | tr -d '[:space:]')" == "$last_status" ]]
+  while true
   do
+    current_bookmark_target=$(git_client ls-remote --quiet | awk -v ref="$bookmark_name" '$2 == ref { print $1 }')
+    if [[ -n "$expected_bookmark_target" ]]; then
+      [[ "$current_bookmark_target" == "$expected_bookmark_target" ]] && return 0
+    elif [[ "$current_bookmark_target" != "$last_bookmark_target" ]]; then
+      return 0
+    fi
     attempt=$((attempt + 1))
     if [[ $attempt -gt $max_attempts ]]
     then
-        echo "bookmark move of $bookmark away from $last_bookmark_target has not happened"
+        echo "bookmark move of $bookmark_name away from $last_bookmark_target to ${expected_bookmark_target:-a different target} has not happened"
         return 1
     fi
-    sleep $sleep_time
+    sleep "$sleep_time"
   done
 }
 

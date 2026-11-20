@@ -1163,6 +1163,12 @@ impl TestRepoFactory {
                     repo_event_publisher.clone(),
                     WarmerRequirement::AllKinds,
                 );
+                #[cfg(fbcode_build)]
+                if let Some(metadata) = self.repo_config().metadata_cache_config.as_ref() {
+                    warm_bookmarks_cache_builder.set_event_router_configured(
+                        metadata.wbc_event_router_scribe_category().is_some(),
+                    );
+                }
                 warm_bookmarks_cache_builder.add_all_warmers(repo_derived_data, phases)?;
                 warm_bookmarks_cache_builder.wait_until_warmed();
                 Ok(Arc::new(warm_bookmarks_cache_builder.build().await?))

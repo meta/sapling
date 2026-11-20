@@ -72,6 +72,7 @@
   Tracking "large_file"
   $ git add .gitattributes large_file
   $ git commit -aqm "new LFS change"
+  $ LFS_HEAD=$(git rev-parse HEAD)
   $ quiet git_client push
 
 # Show the resulting bonsai as JSON.
@@ -137,6 +138,8 @@
   $ jq -r 'select(.normal.method != null) | .normal.method' "$SCUBA_LFS" | sort -u
   batch
   upload
+
+  $ wait_for_git_bookmark_move refs/heads/master_bookmark "" "$LFS_HEAD"
 
 # Re-clone the repo with GIT_LFS_SKIP_SMUDGE=1 so git-lfs does NOT replace
 # pointer files with their content during checkout. `large_file` stays as the

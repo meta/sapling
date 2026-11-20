@@ -62,13 +62,12 @@ pub trait RepoEventPublisher {
         repo_name: &RepoName,
     ) -> Result<broadcast::Receiver<PlainBookmarkInfo>>;
 
-    /// Subscribe to EventRouter bookmark notifications for the repo. `None` means the repo has no
-    /// EventRouter stream: its metadata cache config names no `wbc_event_router_update_mode`.
+    /// Subscribe to EventRouter bookmark notifications for the repo.
     #[cfg(fbcode_build)]
     fn subscribe_for_bookmark_event_notifications(
         &self,
         repo_name: &RepoName,
-    ) -> Result<Option<broadcast::Receiver<BookmarkEventNotification>>>;
+    ) -> Result<broadcast::Receiver<BookmarkEventNotification>>;
 
     /// Subscribe to tag create/update/delete notifications for the repo.
     fn subscribe_for_tag_updates(

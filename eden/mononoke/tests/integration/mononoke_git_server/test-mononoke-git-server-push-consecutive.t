@@ -92,7 +92,7 @@
      70faae0..5d04bf5  pusher_branch -> pusher_branch
 
 # Wait for the warm bookmark cache to catch up with the latest changes
-  $ wait_for_git_bookmark_move refs/heads/pusher_branch $current_head
+  $ wait_for_git_bookmark_move refs/heads/pusher_branch "$current_head" "$(git rev-parse pusher_branch)"
 
 # Cloning the repo in a new folder will not get the latest changes since we didn't really accept the push
   $ cd "$TESTTMP"

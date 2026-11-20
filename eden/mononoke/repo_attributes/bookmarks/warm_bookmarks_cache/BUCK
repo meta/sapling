@@ -6,7 +6,16 @@ oncall("scm_server_infra")
 rust_library(
     name = "warm_bookmarks_cache",
     srcs = glob(["src/**/*.rs"]),
-    autocargo = {"cargo_toml_dir": "."},
+    autocargo = {
+        "cargo_toml_config": {
+            "extra_buck_dependencies": {
+                "dev-dependencies": [
+                    ("sql_ext", "//eden/mononoke/common/rust/sql_ext:sql_ext"),
+                ],
+            },
+        },
+        "cargo_toml_dir": ".",
+    },
     named_deps = (
         {}
         if rust_oss.is_oss_build()
@@ -50,7 +59,6 @@ rust_library(
             "fbsource//third-party/rust:futures",
             "fbsource//third-party/rust:itertools",
             "fbsource//third-party/rust:tokio",
-            "fbsource//third-party/rust:tokio-util",
             "fbsource//third-party/rust:tracing",
             "//common/rust/shed/cloned:cloned",
             "//common/rust/shed/facet:facet",
@@ -59,7 +67,6 @@ rust_library(
             "//common/rust/shed/stats:stats",
             "//eden/mononoke/common/futures_watchdog:futures_watchdog",
             "//eden/mononoke/common/mononoke_macros:mononoke_macros",
-            "//eden/mononoke/common/rust/justknobs_ext:justknobs",
             "//eden/mononoke/derived_data:basename_suffix_skeleton_manifest_v3",
             "//eden/mononoke/derived_data:blame",
             "//eden/mononoke/derived_data:case_conflict_skeleton_manifest",
@@ -93,6 +100,7 @@ rust_library(
             []
             if rust_oss.is_oss_build()
             else [
+                "//eden/mononoke/common/rust/justknobs_ext:justknobs",
                 "//common/rust/shed/fbinit:fbinit",
                 "//eden/mononoke/facebook/ods3_schemas:MononokeWarmBookmarkCacheStats_ods3-rs_bindings",
             ]
