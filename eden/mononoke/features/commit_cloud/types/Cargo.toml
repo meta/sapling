@@ -15,7 +15,7 @@ anyhow = "1.0.104"
 mercurial_types = { version = "0.1.0", path = "../../../mercurial/types" }
 metaconfig_types = { version = "0.1.0", path = "../../../metaconfig/types" }
 mononoke_types = { version = "0.1.0", path = "../../../mononoke_types" }
-mysql_common = { version = "0.32.4", features = ["chrono", "default"] }
+mysql_common = { version = "0.34.1", features = ["chrono", "default"] }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_derive = "1.0.229"
 sql = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
