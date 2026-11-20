@@ -451,7 +451,6 @@ eden_add_test(eden_fs_inodes_test_remove
     eden_fs_testharness_fake_backing_store_and_tree_builder
     eden_fs_testharness_test_checks
     eden_fs_testharness_test_mount
-    edencommon::edencommon_utils
 )
 
 eden_add_test(eden_fs_inodes_test_rename

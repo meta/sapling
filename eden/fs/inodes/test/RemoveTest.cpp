@@ -14,7 +14,6 @@
 #include <cstdio>
 #include <thread>
 
-#include "eden/common/utils/ImmediateFuture.h"
 #include "eden/fs/inodes/EdenMount.h"
 #include "eden/fs/inodes/FileInode.h"
 #include "eden/fs/inodes/InodeTable.h"
@@ -255,11 +254,9 @@ class RemoveLookupContext final : public ObjectFetchContext {
 
 void expectRemoveReplacedChild(bool directory) {
   GTEST_FLAG_SET(death_test_style, "threadsafe");
-  // Debug/sanitized ImmediateFuture always defers, so the outer guard is gone
-  // before retry. Only immediate continuations reproduce the self-deadlock.
   ASSERT_EXIT(
       removeReplacedChild(directory),
-      ::testing::ExitedWithCode(detail::kImmediateFutureAlwaysDefer ? 0 : 2),
+      ::testing::ExitedWithCode(0),
       "ready replacement installed");
 }
 } // namespace

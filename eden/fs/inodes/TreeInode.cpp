@@ -2953,6 +2953,8 @@ ImmediateFuture<folly::Unit> TreeInode::removeImpl(
   // getOrLoadChildTree(name).  C++17 fixes this order to guarantee that
   // the left side of "." will always get evaluated before the right
   // side.
+  // Reloading may immediately run the retry, which acquires the rename lock.
+  renameLock.unlock();
   auto childFuture = getOrLoadChild(name, context);
   return std::move(childFuture)
       .thenValue([self = inodePtrFromThis(),

@@ -535,7 +535,6 @@ cpp_unittest(
     deps = [
         "fbsource//third-party/googletest:gtest",
         "fbsource//xplat/folly/test:test_utils",
-        "//eden/common/utils:immediate_future",
         "//eden/fs/inodes:inodes",
         "//eden/fs/journal:journal",
         "//eden/fs/store:context",
