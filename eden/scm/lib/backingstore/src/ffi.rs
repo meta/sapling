@@ -32,6 +32,8 @@ use types::PathComponentBuf;
 use types::RepoPath;
 use types::fetch_cause::FetchCause;
 use types::fetch_mode::FetchMode;
+use vfs::FsFeatures;
+use vfs::is_path_component_invalid;
 
 use crate::backingstore::BackingStore;
 use crate::backingstore::HgCacheStats;
@@ -798,8 +800,23 @@ fn add_tree_to_builder(
         builder.as_mut().reserve(hint)?;
     }
 
+    // FsFeatures used by is_path_component_invalid().
+    //
+    // Ideally this can use builder's case sensitivity. However, a single backingstore (Rust) can
+    // be shared by multiple mounts with different case sensitivity.
+    // `ObjectStore::changeCaseSensitivity` (C++) converts case sensitivity on the fly. ObjectStore
+    // should not unconditionally filter out invalid path components either, because there are
+    // legit use-cases (e.g. CafBackingStore) that should preserve those names.
+    // Be conservative. Treat it as case insensitive.
+    let fs_features = FsFeatures::current_platform() | FsFeatures::CASE_INSENSITIVE;
+
     for entry in tree.iter()? {
         let (name, node, flag) = entry?;
+
+        if is_path_component_invalid(name.as_str(), fs_features) {
+            tracing::warn!(%name, %node, "skipping invalid tree entry");
+            continue;
+        }
 
         let ttype = match flag {
             TreeItemFlag::Directory => ffi::TreeEntryType::TREE,

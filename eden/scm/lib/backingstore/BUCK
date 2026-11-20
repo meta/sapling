@@ -131,6 +131,7 @@ sl_rust_library(
         "//eden/scm/lib/storemodel:storemodel",
         "//eden/scm/lib/types:types",
         "//eden/scm/lib/util/testutil:testutil",
+        "//eden/scm/lib/vfs:vfs",
         "//eden/scm/lib/walkdetector:walkdetector",
     ]
     + edenfs_cas_select([

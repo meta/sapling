@@ -82,6 +82,7 @@ class UpdateTest(EdenHgTestCase):
             input=(
                 "X   # X/f/.git/config=[core]\n"
                 "|   # X/f/.sl/requires=store\n"
+                "|   # X/f/.GiT=tracked\n"
                 "|   # X/f/others=1\n"
                 ".   # bookmark X=X\n"
             ),
@@ -1172,9 +1173,16 @@ class UpdateTest(EdenHgTestCase):
         f_dir = self.get_path("f")
         listing = os.listdir(f_dir)
         self.assertIn("others", listing)
-        # FIXME: these should be filtered.
-        self.assertIn(".git", listing)
-        self.assertIn(".sl", listing)
+        self.assertNotIn(".git", listing)
+        self.assertNotIn(".sl", listing)
+        # Hidden regardless of the mount's case sensitivity.
+        self.assertNotIn(".GiT", listing)
+
+        for name in (".git", ".sl"):
+            with self.subTest(name=name):
+                os.mkdir(os.path.join(f_dir, name))
+                self.write_file(f"f/{name}/local", "local content")
+                self.assertEqual("local content", self.read_file(f"f/{name}/local"))
 
 
 class PrjFsState(Enum):
