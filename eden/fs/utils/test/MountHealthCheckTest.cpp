@@ -221,5 +221,26 @@ TEST(MountHealthCheckTest, probeStepNamesMatchTelemetryContract) {
   EXPECT_EQ("done", mountHealthProbeStepName(MountHealthProbeStep::Done));
 }
 
+TEST(SlowMountHealthCheckTicksTest, countsATickOnce) {
+  SlowMountHealthCheckTicks ticks{std::chrono::hours{24}};
+  const auto first = std::chrono::steady_clock::now();
+  const auto second = first + std::chrono::minutes{10};
+
+  EXPECT_EQ(1, ticks.recordSlowProbe(first, first));
+  EXPECT_EQ(1, ticks.recordSlowProbe(first, first + std::chrono::seconds{1}));
+  EXPECT_EQ(2, ticks.recordSlowProbe(second, second));
+}
+
+TEST(SlowMountHealthCheckTicksTest, forgetsTicksOutsideTheWindow) {
+  SlowMountHealthCheckTicks ticks{std::chrono::hours{24}};
+  const auto first = std::chrono::steady_clock::now();
+  const auto nextDay =
+      first + std::chrono::hours{24} + std::chrono::minutes{10};
+
+  ticks.recordSlowProbe(first, first);
+
+  EXPECT_EQ(1, ticks.recordSlowProbe(nextDay, nextDay));
+}
+
 } // namespace
 } // namespace facebook::eden

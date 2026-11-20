@@ -472,4 +472,16 @@ std::optional<EdenMountHealthCheckIssue> checkRunningEdenMountHealth(
   return issueForPathAccessError(expectedMissingPath, err);
 }
 
+SlowMountHealthCheckTicks::SlowMountHealthCheckTicks(Clock::duration window)
+    : window_{window} {}
+
+size_t SlowMountHealthCheckTicks::recordSlowProbe(
+    Clock::time_point tick,
+    Clock::time_point now) {
+  auto ticks = ticks_.lock();
+  ticks->insert(tick);
+  ticks->erase(ticks->begin(), ticks->lower_bound(now - window_));
+  return ticks->size();
+}
+
 } // namespace facebook::eden

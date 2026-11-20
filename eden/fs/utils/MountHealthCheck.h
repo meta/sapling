@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 
@@ -169,6 +170,28 @@ folly::dynamic describeSystemPressure();
  * the connection is unknown or the file cannot be read.
  */
 std::optional<uint64_t> readFuseConnectionWaiting(uint64_t device);
+
+/**
+ * The health check ticks in a recent window that had a slow probe, each known
+ * by the time it started, so that slow probes can be reported only once they
+ * keep coming back. Thread-safe.
+ */
+class SlowMountHealthCheckTicks {
+ public:
+  using Clock = std::chrono::steady_clock;
+
+  explicit SlowMountHealthCheckTicks(Clock::duration window);
+
+  /**
+   * Records a slow probe of the tick that started at `tick`, and returns how
+   * many ticks that started in the window ending at `now` had a slow probe.
+   */
+  size_t recordSlowProbe(Clock::time_point tick, Clock::time_point now);
+
+ private:
+  const Clock::duration window_;
+  folly::Synchronized<std::set<Clock::time_point>, std::mutex> ticks_;
+};
 
 namespace detail {
 
