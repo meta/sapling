@@ -60,6 +60,13 @@ TEST(SlOidTest, round_trip_without_path) {
   EXPECT_EQ(RelativePathPiece{}, proxy.path());
 }
 
+TEST(SlOidTest, an_id_without_a_type_byte_is_not_valid) {
+  // A 20 byte node with nothing in front of it.
+  const ObjectId bare{folly::fbstring(20, '\x01')};
+  EXPECT_FALSE(SlOid::hasValidType(bare));
+  EXPECT_THROW(SlOid{bare}, std::invalid_argument);
+}
+
 TEST(SlOidViewTest, construct_from_objectid_with_path) {
   Hash20 hash{folly::StringPiece{"0123456789abcdef0123456789abcdef01234567"}};
   auto slOid = SlOid{hash, RelativePathPiece{"some/path"}};

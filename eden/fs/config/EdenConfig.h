@@ -964,15 +964,6 @@ class EdenConfig : private ConfigSettingManager {
   // [store]
 
   /**
-   * The minimum duration between logging occurrences of failed HgProxyHash
-   * loads.
-   */
-  ConfigSetting<std::chrono::nanoseconds> missingHgProxyHashLogInterval{
-      "store:missing-hgproxyhash-log-interval",
-      std::chrono::minutes{10},
-      this};
-
-  /**
    * If the number of fetching requests of a process reaches this number,
    * a FetchHeavy event will be sent to Scuba.
    */

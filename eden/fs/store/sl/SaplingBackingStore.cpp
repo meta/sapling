@@ -2437,7 +2437,7 @@ int64_t SaplingBackingStore::dropAllPendingRequestsFromQueue() {
 
 ObjectId SaplingBackingStore::stripObjectId(const ObjectId& id) const {
   if (id.getBytes().size() < 21) {
-    // Empty or proxy hash - don't do anything.
+    // An empty id has nothing to strip.
     return id;
   }
   // Strip the path from the object id.

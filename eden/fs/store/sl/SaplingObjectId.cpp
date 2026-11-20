@@ -73,11 +73,9 @@ ObjectId SaplingObjectId::oid() && {
 
 bool SaplingObjectId::hasValidType(const ObjectId& oid) {
   folly::ByteRange bytes = oid.getBytes();
-  // 20 bytes is a legacy proxy hash (with no type byte).
-  // >=21 bytes is a oid with embedded hg info (and a type byte).
-  return bytes.size() == 20 ||
-      (bytes.size() >= 21 &&
-       (bytes[0] == TYPE_HG_ID_WITH_PATH || bytes[0] == TYPE_HG_ID_NO_PATH));
+  // A type byte, then the 20 byte node.
+  return bytes.size() >= 21 &&
+      (bytes[0] == TYPE_HG_ID_WITH_PATH || bytes[0] == TYPE_HG_ID_NO_PATH);
 }
 
 RelativePathPiece SaplingObjectId::path() const noexcept {

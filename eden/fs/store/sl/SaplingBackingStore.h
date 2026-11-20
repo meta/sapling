@@ -811,11 +811,6 @@ class SaplingBackingStore final
 
   FaultInjector& faultInjector_;
 
-  // The last time we logged a missing proxy hash so the minimum interval is
-  // limited to EdenConfig::missingHgProxyHashLogInterval.
-  folly::Synchronized<std::chrono::steady_clock::time_point>
-      lastMissingProxyHashLog_;
-
   // Track metrics for queued imports
   mutable RequestMetricsScope::LockedRequestWatchList pendingImportBlobWatches_;
   mutable RequestMetricsScope::LockedRequestWatchList
