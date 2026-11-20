@@ -46,6 +46,7 @@ cpp_unittest(
         "fbsource//third-party/googletest:gtest",
         "fbsource//xplat/folly:range",
         "//eden/fs/inodes:inodes",
+        "//eden/fs/model:model",
         "//eden/fs/model:testutil",
         "//eden/fs/testharness:fake_backing_store_and_tree_builder",
         "//eden/fs/testharness:test_mount",

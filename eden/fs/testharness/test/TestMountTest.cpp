@@ -9,6 +9,7 @@
 #include <folly/Range.h>
 #include "eden/fs/inodes/FileInode.h"
 #include "eden/fs/inodes/TreeInode.h"
+#include "eden/fs/model/Hash.h"
 #include "eden/fs/model/TestOps.h"
 #include "eden/fs/testharness/FakeTreeBuilder.h"
 
@@ -42,10 +43,11 @@ TEST(TestMount, createSimpleTestMount) {
 
   auto blobId = path1Inode->getObjectId();
   ASSERT_TRUE(blobId.has_value());
-  auto expectedSha1 = ObjectId::sha1(ByteRange(StringPiece("first!")));
-  EXPECT_EQ(expectedSha1, blobId.value())
-      << "For simplicity, TestMount uses the SHA-1 of the contents as "
-      << "the id for a Blob.";
+  auto expectedId = ObjectId::fromHex(
+      "3f" + Hash20::sha1(ByteRange(StringPiece("first!"))).toString());
+  EXPECT_EQ(expectedId, blobId.value())
+      << "For simplicity, TestMount uses its type byte and the SHA-1 of the "
+      << "contents as the id for a Blob.";
 
   auto dirTreeEntry = testMount.getTreeInode("");
   {
@@ -53,7 +55,7 @@ TEST(TestMount, createSimpleTestMount) {
     auto& rootEntries = dir->entries;
     auto& path1Entry = rootEntries.at("path1"_pc);
     ASSERT_FALSE(path1Entry.isMaterialized());
-    EXPECT_EQ(expectedSha1, path1Entry.getObjectId())
+    EXPECT_EQ(expectedId, path1Entry.getObjectId())
         << "Getting the Entry from the root Dir should also work.";
   }
 

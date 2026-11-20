@@ -40,6 +40,7 @@ eden_add_test(eden_fs_testharness_test_test_mount_test
     ${LIBGMOCK_LIBRARIES}
     Folly::folly_range
     eden_fs_inodes
+    eden_fs_model
     eden_fs_model_testutil
     eden_fs_testharness_fake_backing_store_and_tree_builder
     eden_fs_testharness_test_mount

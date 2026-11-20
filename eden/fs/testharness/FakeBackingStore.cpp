@@ -17,6 +17,7 @@
 #include "eden/common/utils/FaultInjector.h"
 #include "eden/fs/inodes/ServerState.h"
 #include "eden/fs/model/Blob.h"
+#include "eden/fs/model/EmbeddedMetadata.h"
 #include "eden/fs/model/Hash.h"
 #include "eden/fs/model/Tree.h"
 #include "eden/fs/testharness/FakeTreeBuilder.h"
@@ -31,6 +32,16 @@ using std::make_unique;
 using std::unique_ptr;
 
 namespace facebook::eden {
+
+namespace {
+// The type of the ObjectIds this store generates. See EmbeddedMetadata.h.
+constexpr uint8_t kObjectIdType = 0x3f;
+
+ObjectId makeId(const Hash20& hash) {
+  return makeObjectId(kObjectIdType, EmbeddedMetadata{}, hash.getBytes());
+}
+} // namespace
+
 FakeBackingStore::FakeBackingStore(
     std::shared_ptr<ServerState> serverState,
     std::optional<std::string> blake3Key)
@@ -268,7 +279,7 @@ Blob FakeBackingStore::makeBlob(folly::StringPiece contents) {
 
 std::pair<StoredBlob*, ObjectId> FakeBackingStore::putBlob(
     StringPiece contents) {
-  ObjectId id = ObjectId::sha1(contents);
+  ObjectId id = makeId(Hash20::sha1(ByteRange{contents}));
   return {putBlob(id, contents), id};
 }
 
@@ -284,7 +295,7 @@ StoredBlob* FakeBackingStore::putBlob(
 
 std::tuple<StoredBlob*, ObjectId, bool> FakeBackingStore::maybePutBlob(
     folly::StringPiece contents) {
-  return maybePutBlob(ObjectId::sha1(contents), contents);
+  return maybePutBlob(makeId(Hash20::sha1(ByteRange{contents})), contents);
 }
 
 std::tuple<StoredBlob*, ObjectId, bool> FakeBackingStore::maybePutBlob(
@@ -430,7 +441,7 @@ ObjectId FakeBackingStore::computeTreeId(const Tree::container& sortedEntries) {
   digest.hash_final(
       folly::MutableByteRange{
           computedHashBytes.data(), computedHashBytes.size()});
-  return ObjectId{computedHashBytes};
+  return makeId(Hash20{computedHashBytes});
 }
 
 StoredTree* FakeBackingStore::putTreeImpl(

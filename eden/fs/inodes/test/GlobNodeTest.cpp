@@ -156,15 +156,17 @@ TEST_P(GlobNodeTest, starTxt) {
   }
 }
 
+// The ids FakeBackingStore generates: its type byte (0x3f), then the SHA-1 of
+// the contents.
 // id of "a"
 const ObjectId AId =
-    ObjectId::fromHex("86f7e437faa5a7fce15d1ddcb9eaeaea377667b8");
+    ObjectId::fromHex("3f86f7e437faa5a7fce15d1ddcb9eaeaea377667b8");
 // id of "b"
 const ObjectId BId =
-    ObjectId::fromHex("e9d71f5ee7c92d6dc9e92ffdad17b8bd49418f98");
+    ObjectId::fromHex("3fe9d71f5ee7c92d6dc9e92ffdad17b8bd49418f98");
 // id of "wat"
 const ObjectId WatId =
-    ObjectId::fromHex("a3bbe1a8f2f025b8b6c5b66937763bb2b9bebdf2");
+    ObjectId::fromHex("3fa3bbe1a8f2f025b8b6c5b66937763bb2b9bebdf2");
 
 TEST_P(GlobNodeTest, matchFilesByExtensionRecursively) {
   auto matches = doGlobIncludeDotFiles("**/*.txt", kZeroRootId);

@@ -27,7 +27,9 @@ namespace facebook::eden {
  * The prefix byte is `X M tttttt`:
  * - t, the low six bits, is a type that the store picks. It tells the ids of
  *   one store from those of another, and the kinds of ids of one store apart.
- *   In use: 0x01 and 0x02 (SaplingObjectId), 0x10 to 0x12 (FilteredObjectId).
+ *   In use: 0x01 and 0x02 (SaplingObjectId), 0x10 to 0x12 (FilteredObjectId),
+ *   0x20 (reserved), 0x2f ('/', for ids that are absolute paths), 0x3f
+ *   (FakeBackingStore).
  * - M (0x40) says that a metadata block follows the prefix byte.
  * - X (0x80) is reserved and written as 0. An id that has it set is read as
  *   carrying no metadata, whatever its other bits are.
