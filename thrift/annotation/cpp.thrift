@@ -533,14 +533,16 @@ struct AllowCustomDefaultInAllocCtor {
  * such as `std::pmr::string` or `std::pmr::vector`, that can allocate from a
  * `std::pmr::memory_resource` such as an arena. The field doesn't use its
  * struct's memory resource yet: it allocates from the default resource. On a
- * struct or union it does nothing yet, and on a typedef it is an error.
+ * struct or union it does nothing yet, and on a typedef it is an error. On a
+ * request-response function it does nothing yet; other functions reject it.
  *
- * The py3 generator rejects fields with it unless `auto_migrate` is set. Other
- * languages ignore it.
+ * The py3 generator rejects fields with it unless `auto_migrate` is set, and
+ * always rejects functions with it. Other languages ignore it.
  */
 @scope.Field
 @scope.Struct
 @scope.Union
 @scope.Typedef
+@scope.Function
 @thrift.Experimental
 struct Arena {}
