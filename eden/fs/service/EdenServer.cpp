@@ -4831,7 +4831,10 @@ void EdenServer::scheduleRunningMountHealthCheck(
         progress.enter(MountHealthProbeStep::Done);
         return issue;
       })
-      .thenTry(
+      // Handled on the probe thread. Queued on this two-thread pool, the
+      // result could wait behind the stuck probes of other checkouts, and a
+      // probe that finished in time would be reported as slow or hung.
+      .thenTryInline(
           [completed,
            emittedMountHealthIssues,
            logContext,

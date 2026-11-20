@@ -7,6 +7,7 @@
 import os
 import re
 import sys
+import time
 import unittest
 from typing import Dict, List, Optional
 
@@ -75,6 +76,21 @@ class MountHealthCheckTest(MountHealthCheckTestBase):
         for mount in stuck:
             self.delay_next_probe(8, mount)
         self.wait_for_counter("not_started")
+
+    def test_probe_done_in_time_is_not_reported(self) -> None:
+        # Checkouts are probed in path order. The second checkout's probe
+        # finishes at once, while the probes before and after it are stuck and
+        # hold both health check threads.
+        stuck = [self.mount, os.path.join(self.mounts_dir, "third")]
+        self.eden.clone(self.repo.path, os.path.join(self.mounts_dir, "second"))
+        self.eden.clone(self.repo.path, stuck[1])
+        self.wait_for_counter("healthy")
+        for mount in stuck:
+            self.delay_next_probe(8, mount)
+        poll_until(lambda: True if self.counter("timed_out") >= 2 else None, timeout=30)
+        # Let the stuck probes return.
+        time.sleep(10)
+        self.assertEqual(2, self.counter("timed_out"))
 
 
 @testcase.eden_repo_test(run_on_nfs=False, run_coroutines=False, run_io_uring=False)
