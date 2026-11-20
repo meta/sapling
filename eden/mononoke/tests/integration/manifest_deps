@@ -22,7 +22,6 @@ MONONOKE_BINS = {
     "MONONOKE_GIT_SERVER": "git_server",
     "MONONOKE_CAS_SYNC": "mononoke_cas_sync_job",
     "MONONOKE_IMPORT": "import",
-    "MONONOKE_MICROWAVE_BUILDER": "builder",
     "MONONOKE_ADMIN": "admin",
     "MONONOKE_PACKER": "packer",
     "MONONOKE_REPO_IMPORT": "repo_import",

@@ -20,8 +20,8 @@ use mononoke_types::RepositoryId;
 use prefixblob::PrefixBlobstore;
 
 /// A blobstore that stores all keys which are not part of the commit graph of a repo.
-/// That is, auxiliary data that is not part of the commit graph, such as microwave blobs
-/// or segmented changelog data.
+/// That is, auxiliary data that is not part of the commit graph, such as
+/// segmented changelog data.
 /// It does not require redaction as the assumption is that blobs contained can be regenerated
 /// excluding redacted content.
 ///

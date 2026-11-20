@@ -332,7 +332,6 @@ pub fn fill_cachelib<'a, K, V>(
 }
 
 /// Directly fill a cache from data you've prefetched outside the caching system
-/// Allows things like microwave to avoid any backing store fetches
 pub async fn fill_cache<'a, K, V>(
     store: &impl KeyedEntityStore<K, V>,
     data: impl IntoIterator<Item = (&'a K, &'a V)>,

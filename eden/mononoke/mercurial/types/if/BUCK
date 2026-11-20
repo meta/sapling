@@ -20,7 +20,6 @@ thrift_library(
         "//eden/mononoke/derived_data/mercurial_derivation:mercurial_derivation",
         "//eden/mononoke/derived_data/mercurial_derivation:mercurial_derivation-unittest",
         "//eden/mononoke/derived_data/remote/if:",
-        "//eden/mononoke/features/microwave/if:",
         "//eden/mononoke/mercurial:mercurial_types",
         "//eden/mononoke/mercurial:mercurial_types-unittest",
         "//eden/mononoke/mercurial/mutation/if:",

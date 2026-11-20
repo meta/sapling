@@ -88,9 +88,6 @@ Policy enforcement at push time. Covers hook types (bookmark, changeset, file), 
 **[4.4 - Redaction](4.4-redaction.md)**
 Content redaction for removing sensitive data. Covers how redaction works at the blobstore level and access control.
 
-**[4.5 - Microwave](4.5-microwave.md)**
-Cache warming for improved performance. Covers what gets warmed (derived data, blobstore) and when warming happens.
-
 ### 5. VCS Integration
 
 *Support for Git, Mercurial, and Sapling clients*

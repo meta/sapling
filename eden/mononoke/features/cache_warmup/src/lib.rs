@@ -75,8 +75,6 @@ pub enum CacheWarmupTarget {
 
 #[derive(Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub enum CacheWarmupKind {
-    // Offline job - speed is not a big concern
-    MicrowaveBuilder,
     // Warmup done during server startup, it needs happen fast
     MononokeServer,
 }

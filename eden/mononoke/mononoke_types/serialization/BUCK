@@ -29,7 +29,6 @@ thrift_library(
         "//eden/mononoke/features/async_requests:",
         "//eden/mononoke/features/async_requests/if:",
         "//eden/mononoke/features/commit_rewriting/synced_commit_mapping/if:",
-        "//eden/mononoke/features/microwave/if:",
         "//eden/mononoke/git/git_types:",
         "//eden/mononoke/git/git_types/if:",
         "//eden/mononoke/git_symbolic_refs/if:",
