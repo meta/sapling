@@ -183,7 +183,12 @@ from . import (
     util,
     version as version_mod,
 )
-from .cmd_util import get_eden_instance, get_fsck_command, require_checkout
+from .cmd_util import (
+    find_checkout,
+    get_eden_instance,
+    get_fsck_command,
+    require_checkout,
+)
 from .config import EdenCheckout, EdenInstance, ListMountInfo
 from .constants import (
     SHUTDOWN_EXIT_CODE_ERROR,
@@ -2561,17 +2566,57 @@ class UnmountCmd(Subcmd):
             help=argparse.SUPPRESS,
         )
 
-    def run(self, args: argparse.Namespace) -> int:
-        for path in args.paths:
-            # Removing redirection targets from checkout config to allow deletion of redirected paths
-            instance, checkout, _rel_path = require_checkout(args, path)
-            config = checkout.get_config()
-            config._replace(
-                redirection_targets={},
-            )
-            checkout.save_config(config)
+    def _resolve_daemon_only_mount(
+        self,
+        instance: EdenInstance,
+        path: str,
+        mount_paths: dict[Path, set[bytes]],
+    ) -> str | None:
+        """Authorize an exact daemon mount root without relying on checkout state."""
+        state_dir = instance.state_dir.resolve(strict=False)
+        if state_dir not in mount_paths:
+            try:
+                with instance.get_thrift_client(timeout=3) as client:
+                    mount_paths[state_dir] = {
+                        mount.mountPoint for mount in client.listMounts()
+                    }
+            except (EdenError, EdenNotRunningError, TransportError) as ex:
+                print_stderr(f"error: could not verify that EdenFS serves {path}: {ex}")
+                return None
+        mount_path = normalize_path_arg(path)
+        if os.fsencode(mount_path) not in mount_paths[state_dir]:
+            print_stderr(f"error: no EdenFS checkout found at {path}")
+            return None
+        return mount_path
 
-            path = normalize_path_arg(path)
+    def run(self, args: argparse.Namespace) -> int:
+        mount_paths: dict[Path, set[bytes]] = {}
+        exit_code = 0
+        for path in args.paths:
+            instance, checkout, _rel_path = find_checkout(args, path)
+            if checkout is None:
+                if args.debug_mark_unintentional:
+                    print_stderr(
+                        "error: checkout metadata is required for "
+                        f"--debug-mark-unintentional at {path}"
+                    )
+                    exit_code = 1
+                    continue
+                mount_path = self._resolve_daemon_only_mount(
+                    instance, path, mount_paths
+                )
+                if mount_path is None:
+                    exit_code = 1
+                    continue
+                path = mount_path
+            else:
+                # Removing redirection targets from checkout config to allow deletion of redirected paths
+                config = checkout.get_config()
+                config._replace(
+                    redirection_targets={},
+                )
+                checkout.save_config(config)
+                path = normalize_path_arg(path)
             try:
                 instance.unmount(
                     path,
@@ -2581,7 +2626,10 @@ class UnmountCmd(Subcmd):
             except (EdenError, EdenNotRunningError) as ex:
                 print_stderr(f"error: {ex}")
                 return 1
-        return 0
+            cached_paths = mount_paths.get(instance.state_dir.resolve(strict=False))
+            if cached_paths is not None:
+                cached_paths.discard(os.fsencode(path))
+        return exit_code
 
 
 DBG_LOG_LEVELS: set[str] = {"DBG" + str(i) for i in range(10)}
