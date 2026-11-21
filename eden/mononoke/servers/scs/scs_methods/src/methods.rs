@@ -85,7 +85,22 @@ pub(crate) fn partial_response_info_from_omissions(
     omitted_count: u64,
     groups: impl IntoIterator<Item = (DenyingRestriction, u64, Vec<String>, Vec<String>)>,
 ) -> thrift::PartialResponseInfo {
-    let groups = groups
+    let groups = render_omitted_groups(groups);
+    thrift::PartialResponseInfo {
+        partial: omitted_count > 0,
+        omitted_restricted_paths_count: Some(omitted_count as i64),
+        omitted_by_restriction: (!groups.is_empty()).then_some(groups),
+        ..Default::default()
+    }
+}
+
+/// Render one `OmittedRestrictionGroup` per denying restriction: counts,
+/// roots, ACLs, and path lists. A group's path lists stay unset when
+/// empty.
+pub(crate) fn render_omitted_groups(
+    groups: impl IntoIterator<Item = (DenyingRestriction, u64, Vec<String>, Vec<String>)>,
+) -> Vec<thrift::OmittedRestrictionGroup> {
+    groups
         .into_iter()
         .map(
             |(restriction, omitted_count, omitted_paths, downgraded_paths)| {
@@ -103,13 +118,7 @@ pub(crate) fn partial_response_info_from_omissions(
                 }
             },
         )
-        .collect::<Vec<_>>();
-    thrift::PartialResponseInfo {
-        partial: omitted_count > 0,
-        omitted_restricted_paths_count: Some(omitted_count as i64),
-        omitted_by_restriction: (!groups.is_empty()).then_some(groups),
-        ..Default::default()
-    }
+        .collect()
 }
 
 impl SourceControlServiceImpl {

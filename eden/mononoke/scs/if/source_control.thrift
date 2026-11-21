@@ -3062,6 +3062,9 @@ struct CommitFindFilesStreamItem {
   /// Present only when the caller asked for omitted paths. Each item is
   /// self-describing (a group's count covers its paths in this chunk);
   /// clients union the segments, and the terminal item carries the totals.
+  /// A fully-denied chunk carries an empty file list with `omitted` set,
+  /// so only `partial_info` marks the terminal item, never an empty
+  /// `files` alone.
   3: optional list<OmittedRestrictionGroup> omitted;
 }
 
