@@ -201,6 +201,28 @@ fn bench_with_iddag<S: IdDagStore + Persist>(get_empty_iddag: impl Fn() -> IdDag
         })
     });
 
+    bench("is_ancestor (smaller id first)", || {
+        elapsed(|| {
+            for set in &sample_two_ids {
+                let ids: Vec<_> = set.iter_desc().collect();
+                dag.is_ancestor(ids[1], ids[0]).unwrap();
+            }
+        })
+    });
+
+    // Pairs of ids at most 10 apart, smaller id first.
+    let sample_nearby_ids: Vec<(Id, Id)> = (10..parents.len() as u64)
+        .step_by(181)
+        .map(|i| (Id(i - i % 10 - 1), Id(i)))
+        .collect(); // 2672 samples
+    bench("is_ancestor (nearby ids)", || {
+        elapsed(|| {
+            for &(ancestor, descendant) in &sample_nearby_ids {
+                dag.is_ancestor(ancestor, descendant).unwrap();
+            }
+        })
+    });
+
     bench("parents", || {
         elapsed(|| {
             for set in &sample_sets {
