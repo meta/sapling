@@ -81,6 +81,10 @@ pub(super) struct CommandArgs {
     #[clap(long)]
     /// Follow mutable overrides to the history that make it more user friendly and 'correct'
     follow_mutable_history: bool,
+    #[clap(long)]
+    /// List the exact omitted and downgraded paths in the partial-response
+    /// note (opts the request into partial responses)
+    include_omitted_paths: bool,
 }
 
 #[derive(Serialize)]
@@ -314,6 +318,7 @@ pub(super) async fn run(app: ScscApp, args: CommandArgs) -> Result<()> {
         ordered_params,
         compare_with_subtree_copy_sources: Some(args.compare_with_subtree_copy_sources),
         follow_mutable_file_history: Some(args.follow_mutable_history),
+        partial_options: crate::util::partial_options(args.include_omitted_paths),
         ..Default::default()
     };
     let mut response = conn
@@ -397,6 +402,7 @@ pub(super) async fn run(app: ScscApp, args: CommandArgs) -> Result<()> {
                 args.diff_size_limit,
                 diff_format,
                 args.context,
+                args.include_omitted_paths,
             ),
         )
         .await;

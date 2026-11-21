@@ -49,6 +49,10 @@ pub(super) struct CommandArgs {
     #[clap(long, conflicts_with = "path")]
     /// Display info about bookmark itself rather than the commit it points to
     bookmark_info: bool,
+    #[clap(long)]
+    /// List the exact omitted and downgraded paths in the partial-response
+    /// note (opts the request into partial responses)
+    include_omitted_paths: bool,
 }
 
 struct CommitInfoOutput {
@@ -277,6 +281,7 @@ async fn multiple_path_info(
     };
     let params = thrift::CommitMultiplePathInfoParams {
         paths,
+        partial_options: crate::util::partial_options(args.include_omitted_paths),
         ..Default::default()
     };
     let response = conn

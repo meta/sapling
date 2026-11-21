@@ -51,6 +51,10 @@ pub(super) struct CommandArgs {
     #[clap(long)]
     /// EXPERIMENTAL: stream the output from the server rather than obtaining it in one go
     stream: bool,
+    #[clap(long)]
+    /// List the exact omitted and downgraded paths in the partial-response
+    /// note (opts the request into partial responses)
+    include_omitted_paths: bool,
 }
 
 #[derive(Serialize)]
@@ -92,6 +96,7 @@ pub(super) async fn run(app: ScscApp, args: CommandArgs) -> Result<()> {
         basenames,
         basename_suffixes,
         prefixes,
+        partial_options: crate::util::partial_options(args.include_omitted_paths),
         ..Default::default()
     };
 
@@ -103,11 +108,15 @@ pub(super) async fn run(app: ScscApp, args: CommandArgs) -> Result<()> {
 
         // The terminal item carries the exact verdict (an empty file list
         // marks it; rendering it prints nothing). Observe it while the
-        // stream is consumed.
+        // stream is consumed. With the flag, chunks also carry their
+        // omitted groups inline; merged, their counts equal the terminal
+        // totals, so the note prints from the chunks.
         let terminal_partial = Arc::new(AtomicBool::new(false));
         let observed = terminal_partial.clone();
         let terminal_groups = Arc::new(Mutex::new(Vec::new()));
         let collected = terminal_groups.clone();
+        let chunk_groups = Arc::new(Mutex::new(Vec::new()));
+        let collected_chunks = chunk_groups.clone();
         let response = response_stream
             .map_ok(move |entry| {
                 if crate::util::is_partial_verdict(&entry.partial_info) {
@@ -115,12 +124,20 @@ pub(super) async fn run(app: ScscApp, args: CommandArgs) -> Result<()> {
                     *collected.lock().expect("lock poisoned") =
                         crate::util::partial_groups(&entry.partial_info);
                 }
+                collected_chunks
+                    .lock()
+                    .expect("lock poisoned")
+                    .extend(entry.omitted.unwrap_or_default());
                 FileListOutput(entry.files)
             })
             .map_err(Into::into);
         let result = app.target.render(&args, response).await;
         if result.is_ok() && terminal_partial.load(Ordering::Relaxed) {
-            let groups = terminal_groups.lock().expect("lock poisoned").clone();
+            let groups = if args.include_omitted_paths {
+                chunk_groups.lock().expect("lock poisoned").clone()
+            } else {
+                terminal_groups.lock().expect("lock poisoned").clone()
+            };
             crate::util::print_partial_note(groups);
         }
         result

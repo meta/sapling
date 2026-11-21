@@ -171,6 +171,7 @@ async fn make_file_diff_request(
     diff_size_limit: Option<i64>,
     diff_format: thrift::DiffFormat,
     context: i64,
+    include_omitted_paths: bool,
 ) -> Result<DiffOutput> {
     let params = thrift::CommitFileDiffsParams {
         other_commit_id,
@@ -178,6 +179,7 @@ async fn make_file_diff_request(
         format: diff_format,
         context,
         diff_size_limit,
+        partial_options: crate::util::partial_options(include_omitted_paths),
         ..Default::default()
     };
 
@@ -231,6 +233,7 @@ pub(crate) fn diff_files<T: IntoIterator<Item = (thrift::CommitFileDiffsParamsPa
     diff_size_limit: Option<i64>,
     diff_format: thrift::DiffFormat,
     context: i64,
+    include_omitted_paths: bool,
 ) -> impl Stream<Item = Result<impl Render<Args = ()> + use<T>>> + use<T> {
     let mut size_sum: i64 = 0;
     let mut path_count: i64 = 0;
@@ -264,6 +267,7 @@ pub(crate) fn diff_files<T: IntoIterator<Item = (thrift::CommitFileDiffsParamsPa
                 diff_size_limit,
                 diff_format,
                 context,
+                include_omitted_paths,
             )
             .await
         }

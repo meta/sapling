@@ -8,6 +8,7 @@
 //! Utility traits and functions.
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 use anyhow::Result;
 use chrono::DateTime;
@@ -37,31 +38,59 @@ pub(crate) fn partial_groups(
         .unwrap_or_default()
 }
 
+/// Request partial responses with withheld paths when asked: the flag
+/// opts the request into partials and asks for the path lists.
+pub(crate) fn partial_options(
+    include_paths: bool,
+) -> Option<scs_client_raw::thrift::PartialOptions> {
+    include_paths.then(|| scs_client_raw::thrift::PartialOptions {
+        include_omitted_paths: Some(true),
+        ..Default::default()
+    })
+}
+
 /// Merge omission groups from several responses into one deduplicated list:
 /// groups naming the same restriction (root, ACL, request group) combine
-/// their counts. Sorted for stable output.
+/// their counts and union their path lists. Sorted for stable output.
 pub(crate) fn merge_partial_groups(
     groups: Vec<scs_client_raw::thrift::OmittedRestrictionGroup>,
 ) -> Vec<scs_client_raw::thrift::OmittedRestrictionGroup> {
-    let mut combined: BTreeMap<(Option<String>, String, String), i64> = BTreeMap::new();
+    #[derive(Default)]
+    struct Merged {
+        count: i64,
+        omitted: BTreeSet<String>,
+        downgraded: BTreeSet<String>,
+    }
+    let mut combined: BTreeMap<(Option<String>, String, String), Merged> = BTreeMap::new();
     for group in groups {
-        *combined
+        let merged = combined
             .entry((
                 group.restriction_root,
                 group.repo_region_acl,
                 group.permission_request_group,
             ))
-            .or_default() += group.omitted_count;
+            .or_default();
+        merged.count += group.omitted_count;
+        merged
+            .omitted
+            .extend(group.omitted_paths.unwrap_or_default());
+        merged
+            .downgraded
+            .extend(group.downgraded_paths.unwrap_or_default());
     }
     combined
         .into_iter()
         .map(
-            |((restriction_root, repo_region_acl, permission_request_group), omitted_count)| {
+            |((restriction_root, repo_region_acl, permission_request_group), merged)| {
+                let omitted: Vec<String> = merged.omitted.into_iter().collect();
+                let downgraded: Vec<String> = merged.downgraded.into_iter().collect();
                 scs_client_raw::thrift::OmittedRestrictionGroup {
                     restriction_root,
                     repo_region_acl,
                     permission_request_group,
-                    omitted_count,
+                    omitted_count: merged.count,
+                    omitted_paths: (!omitted.is_empty()).then_some(omitted),
+                    downgraded_paths: (!downgraded.is_empty()).then_some(downgraded),
                     ..Default::default()
                 }
             },
@@ -69,9 +98,10 @@ pub(crate) fn merge_partial_groups(
         .collect()
 }
 
-/// Print the partial-response note to stderr, with one line per denying
-/// restriction. Always stderr so stdout (including `--json`) stays
-/// machine-readable. Call once, after rendering output succeeds.
+/// Print the partial-response note to stderr: one count line per denying
+/// restriction, then one line per listed omitted and downgraded path.
+/// Always stderr so stdout (including `--json`) stays machine-readable.
+/// Call once, after rendering output succeeds.
 pub(crate) fn print_partial_note(groups: Vec<scs_client_raw::thrift::OmittedRestrictionGroup>) {
     eprintln!("note: response is partial: some paths were omitted due to restricted-path access");
     for group in merge_partial_groups(groups) {
@@ -86,6 +116,12 @@ pub(crate) fn print_partial_note(groups: Vec<scs_client_raw::thrift::OmittedRest
                 "note: omitted {count} {paths} ({}; request access to: {})",
                 group.repo_region_acl, group.permission_request_group,
             ),
+        }
+        for path in group.omitted_paths.unwrap_or_default() {
+            eprintln!("note: omitted path: {path}");
+        }
+        for path in group.downgraded_paths.unwrap_or_default() {
+            eprintln!("note: downgraded path: {path}");
         }
     }
 }
@@ -159,12 +195,18 @@ mod tests {
         acl: &str,
         request_group: &str,
         count: i64,
+        omitted: &[&str],
+        downgraded: &[&str],
     ) -> scs_client_raw::thrift::OmittedRestrictionGroup {
         scs_client_raw::thrift::OmittedRestrictionGroup {
             restriction_root: root.map(str::to_string),
             repo_region_acl: acl.to_string(),
             permission_request_group: request_group.to_string(),
             omitted_count: count,
+            omitted_paths: (!omitted.is_empty())
+                .then(|| omitted.iter().map(|path| path.to_string()).collect()),
+            downgraded_paths: (!downgraded.is_empty())
+                .then(|| downgraded.iter().map(|path| path.to_string()).collect()),
             ..Default::default()
         }
     }
@@ -172,10 +214,10 @@ mod tests {
     #[mononoke::test]
     fn merge_combines_same_restriction_and_sorts() {
         let merged = merge_partial_groups(vec![
-            group(Some("tent_b"), "REPO_REGION:b", "b", 1),
-            group(Some("tent_a"), "REPO_REGION:a", "a", 2),
-            group(Some("tent_a"), "REPO_REGION:a", "a", 3),
-            group(None, "REPO_REGION:m", "m", 1),
+            group(Some("tent_b"), "REPO_REGION:b", "b", 1, &[], &[]),
+            group(Some("tent_a"), "REPO_REGION:a", "a", 2, &[], &[]),
+            group(Some("tent_a"), "REPO_REGION:a", "a", 3, &[], &[]),
+            group(None, "REPO_REGION:m", "m", 1, &[], &[]),
         ]);
         let summary: Vec<_> = merged
             .iter()
@@ -196,10 +238,57 @@ mod tests {
     fn merge_distinguishes_request_group() {
         // Same root and ACL but different request groups stay separate.
         let merged = merge_partial_groups(vec![
-            group(Some("tent"), "REPO_REGION:acl", "group_one", 1),
-            group(Some("tent"), "REPO_REGION:acl", "group_two", 1),
+            group(Some("tent"), "REPO_REGION:acl", "group_one", 1, &[], &[]),
+            group(Some("tent"), "REPO_REGION:acl", "group_two", 1, &[], &[]),
         ]);
         assert_eq!(merged.len(), 2);
+    }
+
+    #[mononoke::test]
+    fn merge_unions_path_lists_sorted_and_deduped() {
+        let merged = merge_partial_groups(vec![
+            group(
+                Some("tent"),
+                "REPO_REGION:acl",
+                "group",
+                2,
+                &["tent/b", "tent/a"],
+                &["tent/changed"],
+            ),
+            group(
+                Some("tent"),
+                "REPO_REGION:acl",
+                "group",
+                1,
+                &["tent/a", "tent/c"],
+                &[],
+            ),
+            group(Some("bare"), "REPO_REGION:acl", "group", 1, &[], &[]),
+        ]);
+        assert_eq!(merged.len(), 2);
+        let tent = merged
+            .iter()
+            .find(|group| group.restriction_root.as_deref() == Some("tent"))
+            .expect("tent group present");
+        assert_eq!(tent.omitted_count, 3);
+        assert_eq!(
+            tent.omitted_paths,
+            Some(vec![
+                "tent/a".to_string(),
+                "tent/b".to_string(),
+                "tent/c".to_string(),
+            ]),
+        );
+        assert_eq!(
+            tent.downgraded_paths,
+            Some(vec!["tent/changed".to_string()]),
+        );
+        let bare = merged
+            .iter()
+            .find(|group| group.restriction_root.as_deref() == Some("bare"))
+            .expect("bare group present");
+        assert_eq!(bare.omitted_paths, None);
+        assert_eq!(bare.downgraded_paths, None);
     }
 
     /// What it tests: the accepted date formats.
