@@ -133,10 +133,10 @@ bool isThriftResultFatal(const ThriftResultT& res) {
   //    ATTRIBUTE_UNAVAILABLE errors should be fatal
   if (res.getType() == ThriftResultT::Type::error) {
     // Always log that an error occurred
-    XLOGF(DBG3, "Thrift request failed with: {}", res.get_error().what());
+    XLOGF(DBG3, "Thrift request failed with: {}", res.error().value().what());
 
     // The error should only be fatal in some cases
-    return res.get_error().errorType().value() !=
+    return res.error()->errorType().value() !=
         EdenErrorType::ATTRIBUTE_UNAVAILABLE ||
         FLAGS_noAttrIsFatal;
   }
@@ -173,7 +173,7 @@ void recordThriftSample(
     throw std::runtime_error("No results!");
   }
   if (UNLIKELY(res.size() != 1 || isThriftResultFatal(res.at(0)))) {
-    throw res.at(0).get_error();
+    throw res.at(0).error().as_const().value();
   }
 }
 
