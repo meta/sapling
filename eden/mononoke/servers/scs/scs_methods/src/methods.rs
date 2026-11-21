@@ -39,18 +39,22 @@ pub(crate) mod tree;
 /// allowed for this request (`None`, field unset, when not). Group counts
 /// reconcile with the total by construction: every recorded omission carries
 /// its denying restriction. When `include_paths`, each group also lists its
-/// retained omitted paths. The caller sets `nocache: 1` from the same flag,
-/// so a cached partial can never be served to an entitled caller.
+/// retained omitted and downgraded paths. The caller sets `nocache: 1` from
+/// the same flag, so a cached partial can never be served to an entitled
+/// caller.
 pub(crate) fn partial_response_info(
     policy: &RestrictedPathsPolicy,
     include_paths: bool,
 ) -> Option<thrift::PartialResponseInfo> {
     let omitted_count = policy.omitted_count()? as u64;
     let groups = policy.omitted_groups().unwrap_or_default();
-    let paths = if include_paths {
-        policy.omitted_paths().unwrap_or_default()
+    let (paths, downgraded) = if include_paths {
+        (
+            policy.omitted_paths().unwrap_or_default(),
+            policy.downgraded_paths().unwrap_or_default(),
+        )
     } else {
-        BTreeMap::new()
+        (BTreeMap::new(), BTreeMap::new())
     };
     Some(partial_response_info_from_omissions(
         omitted_count,
@@ -62,31 +66,41 @@ pub(crate) fn partial_response_info(
                 .into_iter()
                 .map(|path| path.to_string())
                 .collect();
-            (restriction, count as u64, paths)
+            let downgraded: Vec<String> = downgraded
+                .get(&restriction)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|path| path.to_string())
+                .collect();
+            (restriction, count as u64, paths, downgraded)
         }),
     ))
 }
 
 /// Partial-response verdict from a count of omitted paths and its breakdown
 /// by denying restriction. `omitted_by_restriction` stays unset when there
-/// are no groups; a group's path list stays unset when empty.
+/// are no groups; a group's path lists stay unset when empty.
 pub(crate) fn partial_response_info_from_omissions(
     omitted_count: u64,
-    groups: impl IntoIterator<Item = (DenyingRestriction, u64, Vec<String>)>,
+    groups: impl IntoIterator<Item = (DenyingRestriction, u64, Vec<String>, Vec<String>)>,
 ) -> thrift::PartialResponseInfo {
     let groups = groups
         .into_iter()
         .map(
-            |(restriction, omitted_count, omitted_paths)| thrift::OmittedRestrictionGroup {
-                restriction_root: restriction.restriction_root.map(|root| root.to_string()),
-                repo_region_acl: restriction.repo_region_acl.to_string(),
-                permission_request_group: restriction
-                    .permission_request_group
-                    .id_data()
-                    .to_string(),
-                omitted_count: omitted_count as i64,
-                omitted_paths: (!omitted_paths.is_empty()).then_some(omitted_paths),
-                ..Default::default()
+            |(restriction, omitted_count, omitted_paths, downgraded_paths)| {
+                thrift::OmittedRestrictionGroup {
+                    restriction_root: restriction.restriction_root.map(|root| root.to_string()),
+                    repo_region_acl: restriction.repo_region_acl.to_string(),
+                    permission_request_group: restriction
+                        .permission_request_group
+                        .id_data()
+                        .to_string(),
+                    omitted_count: omitted_count as i64,
+                    omitted_paths: (!omitted_paths.is_empty()).then_some(omitted_paths),
+                    downgraded_paths: (!downgraded_paths.is_empty()).then_some(downgraded_paths),
+                    ..Default::default()
+                }
             },
         )
         .collect::<Vec<_>>();
@@ -210,9 +224,9 @@ mod tests {
         let tent_a = denying_restriction(Some("tent_a"), "REPO_REGION:a_acl", "GROUP:a_group")?;
         let rootless =
             denying_restriction(None, "REPO_REGION:manifest_acl", "REPO_REGION:manifest_acl")?;
-        policy.record_denial(&tent_a, None);
-        policy.record_denial(&rootless, None);
-        policy.record_denial(&tent_a, None);
+        policy.record_omission(&tent_a, None);
+        policy.record_omission(&rootless, None);
+        policy.record_omission(&tent_a, None);
         let partial = partial_response_info(&policy, false).expect("populated when allowed");
         assert!(partial.partial);
         assert_eq!(partial.omitted_restricted_paths_count, Some(3));
@@ -243,7 +257,7 @@ mod tests {
         // The flag alone invents no paths: without retention the lists
         // stay unset even when asked for.
         let unretained = collecting_policy();
-        unretained.record_denial(&tent_a, None);
+        unretained.record_omission(&tent_a, None);
         let asked = partial_response_info(&unretained, true).expect("populated when allowed");
         assert!(
             asked
@@ -264,8 +278,9 @@ mod tests {
                     tent_a,
                     2,
                     vec!["tent_a/a".to_string(), "tent_a/b".to_string()],
+                    vec!["tent_a/changed".to_string()],
                 ),
-                (rootless, 1, Vec::new()),
+                (rootless, 1, Vec::new(), Vec::new()),
             ],
         );
         assert!(rendered.partial);
@@ -280,6 +295,10 @@ mod tests {
         assert_eq!(
             tent_group.omitted_paths,
             Some(vec!["tent_a/a".to_string(), "tent_a/b".to_string()]),
+        );
+        assert_eq!(
+            tent_group.downgraded_paths,
+            Some(vec!["tent_a/changed".to_string()]),
         );
         let rootless_group = groups
             .iter()

@@ -76,24 +76,34 @@ fn should_set_nocache(succeeded: bool, ctx: &CoreContext) -> bool {
 /// `Some` carrying the exact signal when partial responses are allowed for
 /// this request, `None` (field unset) when not. Group counts reconcile with
 /// the total by construction. When `include_paths`, each group also lists
-/// its retained omitted paths. Agrees with the context flag (and hence
-/// `nocache`) by construction.
+/// its retained omitted and downgraded paths. Agrees with the context flag
+/// (and hence `nocache`) by construction.
 pub(crate) fn partial_response_info(
     policy: &RestrictedPathsPolicy,
     include_paths: bool,
 ) -> Option<source_control_thrift::PartialResponseInfo> {
     let omitted_restricted_paths_count = policy.omitted_count()?;
     let groups = policy.omitted_groups().unwrap_or_default();
-    let paths = if include_paths {
-        policy.omitted_paths().unwrap_or_default()
+    let (paths, downgraded) = if include_paths {
+        (
+            policy.omitted_paths().unwrap_or_default(),
+            policy.downgraded_paths().unwrap_or_default(),
+        )
     } else {
-        BTreeMap::new()
+        (BTreeMap::new(), BTreeMap::new())
     };
     let omitted_by_restriction = (!groups.is_empty()).then(|| {
         groups
             .into_iter()
             .map(|(restriction, omitted_count)| {
                 let omitted_paths: Vec<String> = paths
+                    .get(&restriction)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|path| path.to_string())
+                    .collect();
+                let downgraded_paths: Vec<String> = downgraded
                     .get(&restriction)
                     .cloned()
                     .unwrap_or_default()
@@ -109,6 +119,7 @@ pub(crate) fn partial_response_info(
                         .to_string(),
                     omitted_count: omitted_count as i64,
                     omitted_paths: (!omitted_paths.is_empty()).then_some(omitted_paths),
+                    downgraded_paths: (!downgraded_paths.is_empty()).then_some(downgraded_paths),
                     ..Default::default()
                 }
             })
@@ -547,7 +558,7 @@ mod tests {
         // Denials are grouped by restriction; group counts sum to the total.
         let policy = collecting();
         let acl = MononokeIdentity::from_str("REPO_REGION:tent_acl")?;
-        policy.record_denial(
+        policy.record_omission(
             &DenyingRestriction {
                 restriction_root: Some(NonRootMPath::new("tent")?),
                 repo_region_acl: acl.clone(),
@@ -555,7 +566,7 @@ mod tests {
             },
             None,
         );
-        policy.record_denial(
+        policy.record_omission(
             &DenyingRestriction {
                 restriction_root: Some(NonRootMPath::new("tent")?),
                 repo_region_acl: MononokeIdentity::from_str("REPO_REGION:tent_acl")?,
@@ -583,7 +594,7 @@ mod tests {
         // where it lives, in mononoke_api's constructor tests.
         let policy = collecting();
         let acl = MononokeIdentity::from_str("REPO_REGION:tent_acl")?;
-        policy.record_denial(
+        policy.record_omission(
             &DenyingRestriction {
                 restriction_root: Some(NonRootMPath::new("tent")?),
                 repo_region_acl: acl.clone(),

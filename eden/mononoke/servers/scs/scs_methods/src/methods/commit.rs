@@ -330,7 +330,7 @@ where
             .take(limit)
             .try_filter_map(move |(kept, denial)| {
                 if let Some((restriction, path)) = denial {
-                    policy.record_denial(&restriction, Some(&path));
+                    policy.record_omission(&restriction, Some(&path));
                     policy.note_omitted_entry(Some(&path));
                 }
                 futures::future::ready(Ok(kept))
@@ -340,7 +340,7 @@ where
         checked
             .try_filter_map(move |(kept, denial)| {
                 if let Some((restriction, path)) = denial {
-                    policy.record_denial(&restriction, Some(&path));
+                    policy.record_omission(&restriction, Some(&path));
                 }
                 futures::future::ready(Ok(kept))
             })
