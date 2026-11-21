@@ -130,12 +130,18 @@ pub(super) async fn run(app: ScscApp, args: CommandArgs) -> Result<()> {
             .await
             .map_err(|e| e.handle_selection_error(&commit_specifier.repo))?;
         let files_partial = crate::util::is_partial_verdict(&response.partial_info);
+        let last_path = response.last_path;
         let result = app
             .target
             .render_one(&args, FileListOutput(response.files))
             .await;
         if result.is_ok() && files_partial {
             crate::util::print_partial_note(crate::util::partial_groups(&response.partial_info));
+        }
+        if result.is_ok()
+            && let Some(last_path) = last_path
+        {
+            eprintln!("note: more results available, last_path: {last_path}");
         }
         result
     }

@@ -1724,9 +1724,9 @@ struct CommitFileDiffsParams {
 const i64 COMMIT_FIND_FILES_MAX_LIMIT = 100000;
 
 struct CommitFindFilesParams {
-  /// Limit to the number of tree entries listed. If the request returns
-  /// the limit, a subsequent call with 'after' set to the last path in the
-  /// response is necessary to find the remaining files.
+  /// Limit to the number of tree entries listed. If an ordered request
+  /// returns the limit, `last_path` in the response carries the
+  /// continuation: pass it as `after` to find the remaining files.
   1: i64 limit;
 
   /// Start listing files after this path, to be used for paging.  If
@@ -2990,6 +2990,10 @@ struct CommitFindFilesResponse {
   1: list<string> files;
   /// Partial-response verdict. See PartialResponseInfo.
   2: optional PartialResponseInfo partial_info;
+  /// Set when an ordered request reached its limit: the last path produced,
+  /// suitable for passing as `after` to continue. Absent for unordered
+  /// requests and when fewer than `limit` files were returned.
+  3: optional string last_path;
 }
 
 struct CommitFindFilesStreamResponse {}

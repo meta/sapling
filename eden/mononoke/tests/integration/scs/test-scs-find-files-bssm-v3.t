@@ -64,20 +64,25 @@ Test with ordered requests
   A
   B
   C
+  note: more results available, last_path: C
   $ scsc find-files -R repo -B master --after "C" --limit 3
   D
   E
   dir1/file
+  note: more results available, last_path: dir1/file
   $ scsc find-files -R repo -B master --after "dir1/other_file" --limit 3
   dir1/subdir1_1/file
   dir2/file
   file
+  note: more results available, last_path: file
   $ scsc find-files -R repo -B master --after "" --limit 2 -f file
   dir1/file
   dir1/subdir1_1/file
+  note: more results available, last_path: dir1/subdir1_1/file
   $ scsc find-files -R repo -B master --after "dir1/file" --limit 2 -f file
   dir1/subdir1_1/file
   dir2/file
+  note: more results available, last_path: dir2/file
   $ scsc find-files -R repo -B master --after "" --limit 10 -p dir2 -f file
   dir2/file
 

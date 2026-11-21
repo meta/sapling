@@ -1096,6 +1096,7 @@ impl SourceControlServiceImpl {
             }
             None => ChangesetFileOrdering::Unordered,
         };
+        let ordered = params.after.is_some();
 
         let policy = RestrictedPathsPolicy::for_scs_request(&ctx, repo.name());
         let partial = !matches!(policy, RestrictedPathsPolicy::Strict);
@@ -1130,9 +1131,19 @@ impl SourceControlServiceImpl {
         };
         policy.set_partial_if_omitted(&ctx);
 
+        // Ordered requests that reached the limit carry the continuation,
+        // so callers paginate without re-deriving it. Unordered requests
+        // and short pages leave it unset.
+        let last_path = if ordered && files.len() == limit {
+            files.last().cloned()
+        } else {
+            None
+        };
+
         Ok(thrift::CommitFindFilesResponse {
             files,
             partial_info: super::partial_response_info(&policy),
+            last_path,
             ..Default::default()
         })
     }
