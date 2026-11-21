@@ -49,15 +49,13 @@ Checking out to diff that modifies a file deleted locally without sl rm
   > EOS
   $ sl go $B -qC
   $ rm file
-FIXME(T297737281): EdenFS restores the deleted file instead of reporting a conflict
   $ sl go $A
-  abort: 1 conflicting file changes: (no-eden !)
-   file (no-eden !)
-  (commit, shelve, goto --clean to discard all your changes, or goto --merge to merge them) (no-eden !)
-  [255] (no-eden !)
-  update complete (eden !)
+  abort: 1 conflicting file changes:
+   file
+  (commit, shelve, goto --clean to discard all your changes, or goto --merge to merge them)
+  [255]
   $ sl status
-  ! file (no-eden !)
+  ! file
 
 Respect merge marker file:
   $ newclientrepo

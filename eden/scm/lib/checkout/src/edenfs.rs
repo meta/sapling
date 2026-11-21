@@ -169,15 +169,15 @@ fn actionmap_from_eden_conflicts(
                     } else {
                         is_ignored = true;
                     }
-                } else if let Some(file_state) =
-                    treestate.normalized_get(conflict_path.as_str().as_bytes())?
-                {
-                    if file_state
-                        .state
-                        .intersects(StateFlags::EXIST_P1 | StateFlags::EXIST_P2)
-                    {
-                        // Seems like this code path never gets hit, but let's handle it anyways
+                } else {
+                    let file_state = treestate
+                        .normalized_get(conflict_path.as_str().as_bytes())?
+                        .map_or(StateFlags::empty(), |f| f.state);
+                    if file_state.intersects(StateFlags::EXIST_P1 | StateFlags::EXIST_P2) {
                         removed.push(conflict_path.to_owned());
+                    } else {
+                        // Deleted from disk without `sl rm`.
+                        missing.push(conflict_path.to_owned());
                     }
                 }
                 let target = match target_manifest.get(conflict_path) {
