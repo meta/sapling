@@ -580,7 +580,11 @@ impl SourceControlServiceImpl {
         // One policy for the whole request: all three resolutions share its
         // omission counter. Under Strict, denials fail the whole request and
         // the assembly below never sees a denied side.
-        let policy = RestrictedPathsPolicy::for_scs_request(&ctx, repo_name);
+        let policy = RestrictedPathsPolicy::for_scs_request(
+            &ctx,
+            repo_name,
+            params.partial_options.as_ref(),
+        );
         // The subtree branch moves its policy into a coroutine; the other
         // branches only borrow.
         let subtree_policy = policy.clone();
@@ -1037,7 +1041,11 @@ impl SourceControlServiceImpl {
         // Under Strict, denials fail the whole request; under SkipAndCollect,
         // entries denied by restricted-path enforcement are omitted or
         // downgraded, and recorded against their denying restriction.
-        let policy = RestrictedPathsPolicy::for_scs_request(&ctx, repo.name());
+        let policy = RestrictedPathsPolicy::for_scs_request(
+            &ctx,
+            repo.name(),
+            params.partial_options.as_ref(),
+        );
         let result = commit_compare::operations::commit_compare(
             &ctx,
             &repo,
@@ -1099,7 +1107,11 @@ impl SourceControlServiceImpl {
         };
         let ordered = params.after.is_some();
 
-        let policy = RestrictedPathsPolicy::for_scs_request(&ctx, repo.name());
+        let policy = RestrictedPathsPolicy::for_scs_request(
+            &ctx,
+            repo.name(),
+            params.partial_options.as_ref(),
+        );
         let partial = !matches!(policy, RestrictedPathsPolicy::Strict);
 
         let path_stream = changeset
@@ -1194,7 +1206,11 @@ impl SourceControlServiceImpl {
         // (counting omissions) and the exact verdict is reported on a
         // terminal item; up front we can only set `nocache`,
         // pessimistically, since items are produced lazily.
-        let policy = RestrictedPathsPolicy::for_scs_request(&ctx, repo.name());
+        let policy = RestrictedPathsPolicy::for_scs_request(
+            &ctx,
+            repo.name(),
+            params.partial_options.as_ref(),
+        );
         let partial = !matches!(policy, RestrictedPathsPolicy::Strict);
         if partial {
             ctx.set_potential_partial_response();

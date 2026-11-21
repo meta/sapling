@@ -20,6 +20,7 @@ use mononoke_types::NonRootMPath;
 pub use restricted_paths::DenyingRestriction;
 use restricted_paths::PathRestrictionInfo;
 use restricted_paths::PermissionRequestGroup;
+use source_control::PartialOptions;
 
 /// Access check result for a restricted path.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -261,10 +262,10 @@ impl OmissionCollector {
         self.omitted.load(Ordering::Relaxed)
     }
 
-    /// Retain omitted paths per group from now on. Callers that render
-    /// paths (bounded unary pages) opt in; streams leave it off and emit
-    /// paths inline instead.
-    pub fn set_path_retention(&self, retain: bool) {
+    /// Retain omitted paths per group from now on. The constructor turns
+    /// this on for requests whose block asks for omitted paths (bounded
+    /// unary pages); streams leave it off and emit paths inline instead.
+    fn set_path_retention(&self, retain: bool) {
         self.retain_paths.store(retain, Ordering::Relaxed);
     }
 
@@ -320,22 +321,34 @@ pub const SCS_ENABLE_PARTIAL_RESPONSES_JK: &str = "scm/mononoke:scs_enable_parti
 
 impl RestrictedPathsPolicy {
     /// Build the policy for the current SCS (or diff-service) request.
-    /// Skipping is allowed when the killswitch is on for the repo or the
-    /// client opted in via the request header, unless the client opted out:
-    /// an opted-out client gets `Strict` even when the killswitch is on.
-    /// Evaluate ONCE per request
-    /// and share the result across every call, so the knob decision cannot
-    /// disagree with itself. A missing knob is an error; the knob exists
-    /// with default off, and integration tests enable it via
-    /// `merge_just_knobs`.
-    pub fn for_scs_request(ctx: &CoreContext, repo_name: &str) -> Self {
+    /// Skipping is allowed when the killswitch is on for the repo, the
+    /// client opted in via the request header, or the request set
+    /// `partial_options`, unless the client opted out: an opted-out
+    /// client gets `Strict` even when the killswitch is on. A present
+    /// block also turns on path retention when it asks for omitted
+    /// paths; `Strict` ignores the block entirely. Evaluate ONCE per
+    /// request and share the result across every call, so the knob
+    /// decision cannot disagree with itself. A missing knob is an error;
+    /// the knob exists with default off, and integration tests enable it
+    /// via `merge_just_knobs`.
+    pub fn for_scs_request(
+        ctx: &CoreContext,
+        repo_name: &str,
+        partial_options: Option<&PartialOptions>,
+    ) -> Self {
         if ctx.metadata().partial_responses_opt_out() {
             return Self::Strict;
         }
         let client_opt_in = ctx.metadata().partial_responses_opt_in();
         let knob_on = justknobs::eval(SCS_ENABLE_PARTIAL_RESPONSES_JK, None, Some(repo_name));
-        if client_opt_in || knob_on {
-            Self::SkipAndCollect(Arc::new(OmissionCollector::default()))
+        if client_opt_in || knob_on || partial_options.is_some() {
+            let collector = OmissionCollector::default();
+            if let Some(options) = partial_options
+                && options.include_omitted_paths.unwrap_or(false)
+            {
+                collector.set_path_retention(true);
+            }
+            Self::SkipAndCollect(Arc::new(collector))
         } else {
             Self::Strict
         }
@@ -346,13 +359,6 @@ impl RestrictedPathsPolicy {
     pub fn record_denial(&self, restriction: &DenyingRestriction, path: Option<&MPath>) {
         if let Self::SkipAndCollect(collector) = self {
             collector.record(restriction, path);
-        }
-    }
-
-    /// Retain omitted paths per group from now on. No-op under `Strict`.
-    pub fn set_omitted_path_retention(&self, retain: bool) {
-        if let Self::SkipAndCollect(collector) = self {
-            collector.set_path_retention(retain);
         }
     }
 
@@ -484,7 +490,7 @@ mod tests {
             knobs(false),
             async move {
                 assert!(matches!(
-                    RestrictedPathsPolicy::for_scs_request(&ctx, "repo"),
+                    RestrictedPathsPolicy::for_scs_request(&ctx, "repo", None),
                     RestrictedPathsPolicy::Strict
                 ));
                 Ok(())
@@ -500,7 +506,7 @@ mod tests {
         with_just_knobs_async(
             knobs(false),
             async move {
-                let policy = RestrictedPathsPolicy::for_scs_request(&ctx, "repo");
+                let policy = RestrictedPathsPolicy::for_scs_request(&ctx, "repo", None);
                 assert_eq!(policy.omitted_count(), Some(0));
                 Ok(())
             }
@@ -515,7 +521,7 @@ mod tests {
         with_just_knobs_async(
             knobs(true),
             async move {
-                let policy = RestrictedPathsPolicy::for_scs_request(&ctx, "repo");
+                let policy = RestrictedPathsPolicy::for_scs_request(&ctx, "repo", None);
                 assert_eq!(policy.omitted_count(), Some(0));
                 Ok(())
             }
@@ -531,7 +537,7 @@ mod tests {
             knobs(true),
             async move {
                 assert!(matches!(
-                    RestrictedPathsPolicy::for_scs_request(&ctx, "repo"),
+                    RestrictedPathsPolicy::for_scs_request(&ctx, "repo", None),
                     RestrictedPathsPolicy::Strict
                 ));
                 Ok(())
@@ -548,7 +554,87 @@ mod tests {
             knobs(false),
             async move {
                 assert!(matches!(
-                    RestrictedPathsPolicy::for_scs_request(&ctx, "repo"),
+                    RestrictedPathsPolicy::for_scs_request(&ctx, "repo", None),
+                    RestrictedPathsPolicy::Strict
+                ));
+                Ok(())
+            }
+            .boxed(),
+        )
+        .await
+    }
+
+    #[mononoke::fbinit_test]
+    async fn block_opts_in_without_knob(fb: FacebookInit) -> Result<(), anyhow::Error> {
+        let ctx = ctx_with_opt_flags(fb, false, false);
+        let block = PartialOptions {
+            include_omitted_paths: Some(true),
+            ..Default::default()
+        };
+        with_just_knobs_async(
+            knobs(false),
+            async move {
+                let policy = RestrictedPathsPolicy::for_scs_request(&ctx, "repo", Some(&block));
+                assert_eq!(policy.omitted_count(), Some(0));
+                // The block's flag turns on retention at construction.
+                let restriction = denying_restriction("tent", "REPO_REGION:tent_acl")?;
+                policy.record_denial(&restriction, Some(&MPath::new("tent/secret")?));
+                assert_eq!(
+                    policy.omitted_paths(),
+                    Some(BTreeMap::from([(
+                        restriction,
+                        vec![MPath::new("tent/secret")?]
+                    )])),
+                );
+                Ok(())
+            }
+            .boxed(),
+        )
+        .await
+    }
+
+    #[mononoke::fbinit_test]
+    async fn block_without_flag_skips_without_retention(
+        fb: FacebookInit,
+    ) -> Result<(), anyhow::Error> {
+        let ctx = ctx_with_opt_flags(fb, false, false);
+        let block = PartialOptions {
+            include_omitted_paths: None,
+            ..Default::default()
+        };
+        with_just_knobs_async(
+            knobs(false),
+            async move {
+                let policy = RestrictedPathsPolicy::for_scs_request(&ctx, "repo", Some(&block));
+                assert_eq!(policy.omitted_count(), Some(0));
+                // Presence alone skips; without the flag, paths are dropped.
+                let restriction = denying_restriction("tent", "REPO_REGION:tent_acl")?;
+                policy.record_denial(&restriction, Some(&MPath::new("tent/secret")?));
+                assert_eq!(policy.omitted_count(), Some(1));
+                assert!(
+                    policy
+                        .omitted_paths()
+                        .is_some_and(|paths| paths.values().all(|group| group.is_empty()))
+                );
+                Ok(())
+            }
+            .boxed(),
+        )
+        .await
+    }
+
+    #[mononoke::fbinit_test]
+    async fn opt_out_beats_block(fb: FacebookInit) -> Result<(), anyhow::Error> {
+        let ctx = ctx_with_opt_flags(fb, false, true);
+        let block = PartialOptions {
+            include_omitted_paths: Some(true),
+            ..Default::default()
+        };
+        with_just_knobs_async(
+            knobs(false),
+            async move {
+                assert!(matches!(
+                    RestrictedPathsPolicy::for_scs_request(&ctx, "repo", Some(&block)),
                     RestrictedPathsPolicy::Strict
                 ));
                 Ok(())

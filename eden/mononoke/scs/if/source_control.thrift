@@ -1675,6 +1675,11 @@ struct CommitCompareParams {
   /// When performing a comparison against a parent, follow subtree
   /// copy sources and show only the differences against those sources.
   8: optional bool compare_with_subtree_copy_sources;
+  /// Opt into partial responses for this request: restricted-path
+  /// denials omit or downgrade entries instead of failing the request.
+  /// Omitted paths count toward the pagination limit. The opt-out
+  /// header takes precedence over this field.
+  9: optional PartialOptions partial_options;
 }
 
 struct CommitFileDiffsParamsSubtreeSource {
@@ -1719,6 +1724,10 @@ struct CommitFileDiffsParams {
   /// diff format.  For raw diffs, it is the total size in bytes of the returned diffs.
   /// For phabricator diff metadata, it is the number of entries.
   5: optional i64 diff_size_limit;
+  /// Opt into partial responses for this request: restricted-path
+  /// denials omit or downgrade entries instead of failing the request.
+  /// The opt-out header takes precedence over this field.
+  6: optional PartialOptions partial_options;
 }
 
 const i64 COMMIT_FIND_FILES_MAX_LIMIT = 100000;
@@ -1751,6 +1760,11 @@ struct CommitFindFilesParams {
   /// If the array is empty, nothing will match; however, basenames that are in
   /// the array basenames will match.
   5: optional list<string> basename_suffixes;
+  /// Opt into partial responses for this request: restricted-path
+  /// denials omit entries instead of failing the request. Omitted
+  /// paths count toward the pagination limit. The opt-out header
+  /// takes precedence over this field.
+  6: optional PartialOptions partial_options;
 }
 
 struct CommitChangedPathsApproxParams {}
@@ -2015,6 +2029,10 @@ struct CommitMultiplePathInfoParams {
   ///
   /// Note: paths that do not exist will be omitted from the response.
   1: list<Path> paths;
+  /// Opt into partial responses for this request: restricted-path
+  /// denials omit entries instead of failing the request. The opt-out
+  /// header takes precedence over this field.
+  2: optional PartialOptions partial_options;
 }
 
 const i64 TREE_LIST_MAX_LIMIT = 10000;
@@ -2114,6 +2132,10 @@ struct CommitMultiplePathLastChangedParams {
   /// Perforce mirrors only: also return the Perforce revision each path has at
   /// the commit (`CommitPathLastChange.p4_*`).
   3: bool include_p4_revision;
+  /// Opt into partial responses for this request: restricted-path
+  /// denials omit entries instead of failing the request. The opt-out
+  /// header takes precedence over this field.
+  4: optional PartialOptions partial_options;
 }
 
 struct CommitRestrictedPathsAccessParams {
@@ -2884,6 +2906,19 @@ union RepoUpdateSubmoduleExpansionResult {
   2: MegarepoAsynchronousRequestError error;
 }
 
+/// Partial-response options for this request. Setting `partial_options`
+/// on the request opts it into partial responses: restricted-path
+/// denials omit or downgrade entries instead of failing the request.
+/// The opt-out header takes precedence over this field. See
+/// `PartialResponseInfo` for the full selection rule.
+struct PartialOptions {
+  /// Emit the withheld paths in `partial_info`, grouped by denying
+  /// restriction: omitted paths everywhere, plus downgraded entry paths
+  /// for methods that downgrade. Streams emit them inline per chunk.
+  /// When unset, paths are not emitted.
+  1: optional bool include_omitted_paths;
+}
+
 /// Omitted paths grouped by the restriction that denied them. Entries are
 /// deduplicated by restriction: even thousands of omissions collapse to a
 /// handful of groups. Clients map a denied path to its group by longest
@@ -2898,6 +2933,13 @@ struct OmittedRestrictionGroup {
   3: string permission_request_group;
   /// Omitted paths denied under this restriction.
   4: i64 omitted_count;
+  /// Omitted paths denied under this restriction, sorted. Present only
+  /// when the caller asked for omitted paths; per page for paged methods.
+  5: optional list<string> omitted_paths;
+  /// Entry paths of visible-but-downgraded entries: one side was denied,
+  /// so the entry shows only the other side. Present only when the caller
+  /// asked for omitted paths.
+  6: optional list<string> downgraded_paths;
 }
 
 /// Partial-response signal: when the server omits entries due to
@@ -2909,8 +2951,9 @@ struct OmittedRestrictionGroup {
 /// denying restriction, and is absent when the server did not collect
 /// groups for this request. The field is populated when partial responses are
 /// allowed for the request: the `scs_enable_partial_responses` killswitch
-/// is on for the repo, or the client sent the opt-in request header,
-/// unless the client sent the opt-out request header. Its
+/// is on for the repo, the client sent the opt-in request header, or the
+/// request set `partial_options`, unless the client sent the opt-out
+/// request header. Its
 /// absence means the server does not support partial responses, or they
 /// are not allowed for this request. For diffs, both sides of an entry
 /// are counted separately: one omitted entry can contribute 2 to the
@@ -3009,6 +3052,11 @@ struct CommitFindFilesStreamItem {
   /// with `after` until one returns fewer than `limit` files. See
   /// PartialResponseInfo.
   2: optional PartialResponseInfo partial_info;
+  /// Omitted paths streamed inline, grouped by denying restriction.
+  /// Present only when the caller asked for omitted paths. Each item is
+  /// self-describing (a group's count covers its paths in this chunk);
+  /// clients union the segments, and the terminal item carries the totals.
+  3: optional list<OmittedRestrictionGroup> omitted;
 }
 
 struct CommitHistoryResponse {

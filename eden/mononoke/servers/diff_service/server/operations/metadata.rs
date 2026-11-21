@@ -46,7 +46,11 @@ impl DiffServiceImpl {
         // Build the policy once: it selects the omission path in
         // `resolve_diff_inputs` and the stamped verdict, so the two cannot
         // disagree.
-        let policy = mononoke_api::RestrictedPathsPolicy::for_scs_request(&ctx, &request.repo_name);
+        let policy = mononoke_api::RestrictedPathsPolicy::for_scs_request(
+            &ctx,
+            &request.repo_name,
+            request.partial_options.as_ref(),
+        );
         let resolved = self
             .resolve_diff_inputs(&ctx, &request.repo_name, request.input, &policy)
             .await?;

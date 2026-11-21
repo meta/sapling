@@ -205,6 +205,10 @@ struct DiffHunksRequest {
   1: string repo_name;
   2: DiffInput input;
   3: bool ignore_whitespace = false;
+  /// Opt into partial responses for this request: restricted-path
+  /// denials omit or downgrade entries instead of failing the request.
+  /// The opt-out header takes precedence over this field.
+  4: optional source_control.PartialOptions partial_options;
 }
 
 struct DiffHunksResponse {
@@ -228,6 +232,10 @@ struct DiffUnifiedRequest {
   1: string repo_name;
   2: DiffInput input;
   3: DiffUnifiedOptions options;
+  /// Opt into partial responses for this request: restricted-path
+  /// denials omit or downgrade entries instead of failing the request.
+  /// The opt-out header takes precedence over this field.
+  4: optional source_control.PartialOptions partial_options;
 }
 
 struct DiffUnifiedOptions {
@@ -255,6 +263,10 @@ struct DiffUnifiedHeaderlessRequest {
   1: string repo_name;
   2: DiffInput input;
   3: optional DiffUnifiedHeaderlessOptions options;
+  /// Opt into partial responses for this request: restricted-path
+  /// denials omit or downgrade entries instead of failing the request.
+  /// The opt-out header takes precedence over this field.
+  4: optional source_control.PartialOptions partial_options;
 }
 
 struct DiffUnifiedHeaderlessOptions {
@@ -335,6 +347,10 @@ struct MetadataDiffRequest {
   1: string repo_name;
   2: DiffInput input;
   3: bool ignore_whitespace = false;
+  /// Opt into partial responses for this request: restricted-path
+  /// denials omit or downgrade entries instead of failing the request.
+  /// The opt-out header takes precedence over this field.
+  4: optional source_control.PartialOptions partial_options;
 }
 
 // Commit compare structures

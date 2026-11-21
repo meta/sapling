@@ -201,7 +201,11 @@ impl DiffServiceImpl {
         let max_limit = source_control_thrift::consts::COMMIT_COMPARE_ORDERED_MAX_LIMIT as u64;
         // Build the policy once: it selects the omission path below and
         // the stamped verdict, so the two cannot disagree.
-        let policy = RestrictedPathsPolicy::for_scs_request(&ctx, repo_name);
+        let policy = RestrictedPathsPolicy::for_scs_request(
+            &ctx,
+            repo_name,
+            params.partial_options.as_ref(),
+        );
         let estimated_path_count = match &mode {
             CommitCompareMode::Ordered { ordered_params } => {
                 (ordered_params.limit as u64).min(max_limit)
