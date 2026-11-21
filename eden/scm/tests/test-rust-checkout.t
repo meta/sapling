@@ -40,6 +40,25 @@ Checking out to diff without file where file removed locally
   (commit, shelve, goto --clean to discard all your changes, or goto --merge to merge them)
   [255]
 
+Checking out to diff that modifies a file deleted locally without sl rm
+  $ newclientrepo
+  $ drawdag <<'EOS'
+  > B  # B/file = changed
+  > |
+  > A  # A/file = foo
+  > EOS
+  $ sl go $B -qC
+  $ rm file
+FIXME(T297737281): EdenFS restores the deleted file instead of reporting a conflict
+  $ sl go $A
+  abort: 1 conflicting file changes: (no-eden !)
+   file (no-eden !)
+  (commit, shelve, goto --clean to discard all your changes, or goto --merge to merge them) (no-eden !)
+  [255] (no-eden !)
+  update complete (eden !)
+  $ sl status
+  ! file (no-eden !)
+
 Respect merge marker file:
   $ newclientrepo
   $ drawdag <<'EOS'
