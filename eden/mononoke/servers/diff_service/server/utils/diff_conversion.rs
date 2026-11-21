@@ -152,7 +152,10 @@ pub async fn convert_diff_single_input(
                                 RestrictedPathsPolicy::Strict => return Err(e.into()),
                                 RestrictedPathsPolicy::SkipAndCollect(collector) => {
                                     if let Some(denial) = e.restricted_paths_denial() {
-                                        collector.record(denial.denying_restriction());
+                                        collector.record(
+                                            denial.denying_restriction(),
+                                            denial.denied_path(),
+                                        );
                                     }
                                     return Ok(None);
                                 }

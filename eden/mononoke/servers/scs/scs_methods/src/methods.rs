@@ -192,9 +192,9 @@ mod tests {
         let tent_a = denying_restriction(Some("tent_a"), "REPO_REGION:a_acl", "GROUP:a_group")?;
         let rootless =
             denying_restriction(None, "REPO_REGION:manifest_acl", "REPO_REGION:manifest_acl")?;
-        policy.record_denial(&tent_a);
-        policy.record_denial(&rootless);
-        policy.record_denial(&tent_a);
+        policy.record_denial(&tent_a, None);
+        policy.record_denial(&rootless, None);
+        policy.record_denial(&tent_a, None);
         let partial = partial_response_info(&policy).expect("populated when allowed");
         assert!(partial.partial);
         assert_eq!(partial.omitted_restricted_paths_count, Some(3));

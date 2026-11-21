@@ -318,15 +318,16 @@ fn filter_visible_paths<S, F, Fut>(
 where
     S: Stream<Item = Result<MPath, MononokeError>> + Send,
     F: FnMut(MPath) -> Fut + Send,
-    Fut:
-        Future<Output = Result<(Option<String>, Option<DenyingRestriction>), MononokeError>> + Send,
+    Fut: Future<
+            Output = Result<(Option<String>, Option<(DenyingRestriction, MPath)>), MononokeError>,
+        > + Send,
 {
     paths
         .map_ok(check)
         .try_buffered(50)
         .try_filter_map(move |(kept, denial)| {
-            if let Some(restriction) = denial {
-                policy.record_denial(&restriction);
+            if let Some((restriction, path)) = denial {
+                policy.record_denial(&restriction, Some(&path));
             }
             futures::future::ready(Ok(kept))
         })
@@ -1115,7 +1116,9 @@ impl SourceControlServiceImpl {
                 async move {
                     match changeset.check_path_visibility(&path).await {
                         Ok(PathVisibility::Present(_)) => Ok((Some(path.to_string()), None)),
-                        Ok(PathVisibility::Denied(restriction)) => Ok((None, Some(restriction))),
+                        Ok(PathVisibility::Denied(restriction)) => {
+                            Ok((None, Some((restriction, path))))
+                        }
                         Err(e) => Err(e),
                     }
                 }
@@ -1215,7 +1218,9 @@ impl SourceControlServiceImpl {
                     async move {
                         match changeset.check_path_visibility(&path).await {
                             Ok(PathVisibility::Present(_)) => Ok((Some(path.to_string()), None)),
-                            Ok(PathVisibility::Denied(restriction)) => Ok((None, Some(restriction))),
+                            Ok(PathVisibility::Denied(restriction)) => {
+                                Ok((None, Some((restriction, path))))
+                            }
                             Err(e) => Err(e),
                         }
                     }
@@ -2273,7 +2278,7 @@ mod find_files_filter_tests {
                     }
                     Ok((Some(path.to_string()), None))
                 } else {
-                    Ok((None, Some(denying_restriction())))
+                    Ok((None, Some((denying_restriction(), path))))
                 }
             },
         )
@@ -2312,7 +2317,7 @@ mod find_files_filter_tests {
                     }
                     Ok((Some(path.to_string()), None))
                 } else {
-                    Ok((None, Some(denying_restriction())))
+                    Ok((None, Some((denying_restriction(), path))))
                 }
             },
         )

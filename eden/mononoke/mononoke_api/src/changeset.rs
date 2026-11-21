@@ -321,7 +321,7 @@ where
             RestrictedPathsPolicy::SkipAndCollect(collector)
                 if let Some(denial) = e.restricted_paths_denial() =>
             {
-                collector.record(denial.denying_restriction());
+                collector.record(denial.denying_restriction(), denial.denied_path());
                 Ok(None)
             }
             _ => Err(e),
@@ -342,7 +342,7 @@ where
     stream.filter_map(move |res| match res {
         Err(e) => {
             if let Some(denial) = e.restricted_paths_denial() {
-                collector.record(denial.denying_restriction());
+                collector.record(denial.denying_restriction(), denial.denied_path());
                 futures::future::ready(None)
             } else {
                 futures::future::ready(Some(Err(e)))

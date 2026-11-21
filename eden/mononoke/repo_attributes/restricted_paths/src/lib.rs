@@ -138,6 +138,15 @@ impl RestrictedPathsAuthorizationError {
     pub fn is_manifest_access(&self) -> bool {
         matches!(&self.access, RestrictedPathAccess::Manifest(_))
     }
+
+    /// The denied path, if the denial names one. Manifest denials carry a
+    /// manifest id instead of a path.
+    pub fn denied_path(&self) -> Option<&MPath> {
+        match &self.access {
+            RestrictedPathAccess::Path(path) => Some(path),
+            RestrictedPathAccess::Manifest(_) => None,
+        }
+    }
 }
 
 /// Why creation-time validation rejected a change to an ACL (`.slacl`) file.

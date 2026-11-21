@@ -6,8 +6,10 @@
  */
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
@@ -236,11 +238,21 @@ pub enum RestrictedPathsPolicy {
 }
 
 /// Shared omission state for `SkipAndCollect`: the total omitted count plus
-/// per-restriction counts keyed by the denying restriction.
+/// per-restriction counts keyed by the denying restriction. Paths are
+/// retained per group only when a handler opts in, so unbounded streams
+/// never accumulate them.
 #[derive(Debug, Default)]
 pub struct OmissionCollector {
     omitted: AtomicUsize,
-    groups: Mutex<BTreeMap<DenyingRestriction, usize>>,
+    groups: Mutex<BTreeMap<DenyingRestriction, OmissionGroup>>,
+    retain_paths: AtomicBool,
+}
+
+/// One group's omission count plus its retained paths, if any.
+#[derive(Debug, Default)]
+struct OmissionGroup {
+    count: usize,
+    paths: BTreeSet<MPath>,
 }
 
 impl OmissionCollector {
@@ -249,20 +261,49 @@ impl OmissionCollector {
         self.omitted.load(Ordering::Relaxed)
     }
 
+    /// Retain omitted paths per group from now on. Callers that render
+    /// paths (bounded unary pages) opt in; streams leave it off and emit
+    /// paths inline instead.
+    pub fn set_path_retention(&self, retain: bool) {
+        self.retain_paths.store(retain, Ordering::Relaxed);
+    }
+
     /// Omitted-path counts grouped by denying restriction.
     pub fn omitted_groups(&self) -> BTreeMap<DenyingRestriction, usize> {
-        self.groups.lock().expect("lock poisoned").clone()
+        self.groups
+            .lock()
+            .expect("lock poisoned")
+            .iter()
+            .map(|(restriction, group)| (restriction.clone(), group.count))
+            .collect()
+    }
+
+    /// Retained omitted paths grouped by denying restriction, in path
+    /// order. Empty unless retention was enabled; manifest denials carry
+    /// no path.
+    pub fn omitted_paths(&self) -> BTreeMap<DenyingRestriction, Vec<MPath>> {
+        self.groups
+            .lock()
+            .expect("lock poisoned")
+            .iter()
+            .map(|(restriction, group)| {
+                (restriction.clone(), group.paths.iter().cloned().collect())
+            })
+            .collect()
     }
 
     /// Record one omitted path, attributed to its denying restriction.
-    pub fn record(&self, restriction: &DenyingRestriction) {
+    /// `path` is `None` for manifest denials, which name no path.
+    pub fn record(&self, restriction: &DenyingRestriction, path: Option<&MPath>) {
         self.omitted.fetch_add(1, Ordering::Relaxed);
-        *self
-            .groups
-            .lock()
-            .expect("lock poisoned")
-            .entry(restriction.clone())
-            .or_default() += 1;
+        let mut groups = self.groups.lock().expect("lock poisoned");
+        let group = groups.entry(restriction.clone()).or_default();
+        group.count += 1;
+        if self.retain_paths.load(Ordering::Relaxed)
+            && let Some(path) = path
+        {
+            group.paths.insert(path.clone());
+        }
     }
 }
 
@@ -301,9 +342,17 @@ impl RestrictedPathsPolicy {
     }
 
     /// Record one omitted path, attributed to its denying restriction.
-    pub fn record_denial(&self, restriction: &DenyingRestriction) {
+    /// `path` is `None` for manifest denials, which name no path.
+    pub fn record_denial(&self, restriction: &DenyingRestriction, path: Option<&MPath>) {
         if let Self::SkipAndCollect(collector) = self {
-            collector.record(restriction);
+            collector.record(restriction, path);
+        }
+    }
+
+    /// Retain omitted paths per group from now on. No-op under `Strict`.
+    pub fn set_omitted_path_retention(&self, retain: bool) {
+        if let Self::SkipAndCollect(collector) = self {
+            collector.set_path_retention(retain);
         }
     }
 
@@ -322,6 +371,15 @@ impl RestrictedPathsPolicy {
         match self {
             Self::Strict => None,
             Self::SkipAndCollect(collector) => Some(collector.omitted_groups()),
+        }
+    }
+
+    /// Retained omitted paths grouped by denying restriction, or `None`
+    /// when partial responses are not allowed.
+    pub fn omitted_paths(&self) -> Option<BTreeMap<DenyingRestriction, Vec<MPath>>> {
+        match self {
+            Self::Strict => None,
+            Self::SkipAndCollect(collector) => Some(collector.omitted_paths()),
         }
     }
 
@@ -505,9 +563,9 @@ mod tests {
         let collector = OmissionCollector::default();
         let tent_a = denying_restriction("tent_a", "REPO_REGION:a_acl")?;
         let tent_b = denying_restriction("tent_b", "REPO_REGION:b_acl")?;
-        collector.record(&tent_a);
-        collector.record(&tent_b);
-        collector.record(&tent_a);
+        collector.record(&tent_a, Some(&MPath::new("tent_a/secret")?));
+        collector.record(&tent_b, None);
+        collector.record(&tent_a, Some(&MPath::new("tent_a/other")?));
 
         assert_eq!(collector.omitted_count(), 3);
         assert_eq!(
@@ -518,11 +576,41 @@ mod tests {
     }
 
     #[mononoke::test]
+    fn collect_retains_paths_only_when_enabled() -> Result<(), anyhow::Error> {
+        // Retention off: paths are dropped, counts still recorded.
+        let collector = OmissionCollector::default();
+        let tent = denying_restriction("tent", "REPO_REGION:tent_acl")?;
+        collector.record(&tent, Some(&MPath::new("tent/b")?));
+        collector.record(&tent, Some(&MPath::new("tent/a")?));
+        collector.record(&tent, Some(&MPath::new("tent/a")?));
+        assert_eq!(collector.omitted_count(), 3);
+        assert!(
+            collector
+                .omitted_paths()
+                .values()
+                .all(|paths| paths.is_empty())
+        );
+
+        // Retention on: paths are kept sorted and deduplicated per group.
+        // A path recorded twice still counts twice.
+        collector.set_path_retention(true);
+        collector.record(&tent, Some(&MPath::new("tent/b")?));
+        collector.record(&tent, Some(&MPath::new("tent/a")?));
+        collector.record(&tent, Some(&MPath::new("tent/a")?));
+        assert_eq!(collector.omitted_count(), 6);
+        assert_eq!(
+            collector.omitted_paths(),
+            BTreeMap::from([(tent, vec![MPath::new("tent/a")?, MPath::new("tent/b")?])]),
+        );
+        Ok(())
+    }
+
+    #[mononoke::test]
     fn policy_collects_groups_and_ignores_strict() -> Result<(), anyhow::Error> {
         let policy = RestrictedPathsPolicy::SkipAndCollect(Arc::new(OmissionCollector::default()));
         let restriction = denying_restriction("tent", "REPO_REGION:tent_acl")?;
-        policy.record_denial(&restriction);
-        policy.record_denial(&restriction);
+        policy.record_denial(&restriction, Some(&MPath::new("tent/secret")?));
+        policy.record_denial(&restriction, None);
 
         assert_eq!(policy.omitted_count(), Some(2));
         assert_eq!(
@@ -531,9 +619,10 @@ mod tests {
         );
 
         let strict = RestrictedPathsPolicy::Strict;
-        strict.record_denial(&denying_restriction("tent", "REPO_REGION:tent_acl")?);
+        strict.record_denial(&denying_restriction("tent", "REPO_REGION:tent_acl")?, None);
         assert_eq!(strict.omitted_count(), None);
         assert_eq!(strict.omitted_groups(), None);
+        assert_eq!(strict.omitted_paths(), None);
         Ok(())
     }
 

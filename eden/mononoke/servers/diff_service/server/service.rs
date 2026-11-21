@@ -533,16 +533,22 @@ mod tests {
         // Denials are grouped by restriction; group counts sum to the total.
         let policy = collecting();
         let acl = MononokeIdentity::from_str("REPO_REGION:tent_acl")?;
-        policy.record_denial(&DenyingRestriction {
-            restriction_root: Some(NonRootMPath::new("tent")?),
-            repo_region_acl: acl.clone(),
-            permission_request_group: acl,
-        });
-        policy.record_denial(&DenyingRestriction {
-            restriction_root: Some(NonRootMPath::new("tent")?),
-            repo_region_acl: MononokeIdentity::from_str("REPO_REGION:tent_acl")?,
-            permission_request_group: MononokeIdentity::from_str("REPO_REGION:tent_acl")?,
-        });
+        policy.record_denial(
+            &DenyingRestriction {
+                restriction_root: Some(NonRootMPath::new("tent")?),
+                repo_region_acl: acl.clone(),
+                permission_request_group: acl,
+            },
+            None,
+        );
+        policy.record_denial(
+            &DenyingRestriction {
+                restriction_root: Some(NonRootMPath::new("tent")?),
+                repo_region_acl: MononokeIdentity::from_str("REPO_REGION:tent_acl")?,
+                permission_request_group: MononokeIdentity::from_str("REPO_REGION:tent_acl")?,
+            },
+            None,
+        );
         let partial = partial_response_info(&policy).expect("populated when allowed");
         assert!(partial.partial);
         assert_eq!(partial.omitted_restricted_paths_count, Some(2));
