@@ -626,6 +626,36 @@ def _quote(s):
     return "'%s'" % util.escapestr(str(s))
 
 
+def _hexnode(arg):
+    if not isinstance(arg, bytes):
+        raise error.Abort(
+            _("%%n expects a binary node, not %r") % (arg,),
+            hint=_("use %s for a hex node"),
+        )
+    return node.hex(arg)
+
+
+def _nodelist(arg):
+    if isinstance(arg, (str, bytes)):
+        # list() would give the characters of a str or the ints of a node.
+        hint = (
+            _("use %s for a hex node")
+            if isinstance(arg, str)
+            else _("use %n for a binary node")
+        )
+        raise error.Abort(
+            _("%%ln expects a list of binary nodes, not %r") % (arg,), hint=hint
+        )
+    nodes = list(arg)
+    for n in nodes:
+        if not isinstance(n, bytes):
+            raise error.Abort(
+                _("%%ln expects a list of binary nodes, but it has %r") % (n,),
+                hint=_("use %ls for a list of hex nodes"),
+            )
+    return nodes
+
+
 def formatspec(expr, *args):
     """
     This is a convenience function for using revsets internally, and
@@ -660,6 +690,26 @@ def formatspec(expr, *args):
     "root(_list('a\\x00b\\x00c\\x00d'))"
     >>> formatspec('foo(%vs,%vd,%vz)', ['a', 'b'], [], [1, 2])
     "foo('a','b',1,2)"
+    >>> formatspec('%n', b'\\x11' * 20)
+    "'1111111111111111111111111111111111111111'"
+    >>> formatspec('%ln', [b'\\x11' * 20, b'\\x22' * 20])
+    "_hexlist('1111111111111111111111111111111111111111\\x002222222222222222222222222222222222222222')"
+    >>> formatspec('%n', '1' * 40)
+    Traceback (most recent call last):
+      ...
+    sapling.error.Abort: %n expects a binary node, not '1111111111111111111111111111111111111111'
+    >>> formatspec('%ln', '1' * 40)
+    Traceback (most recent call last):
+      ...
+    sapling.error.Abort: %ln expects a list of binary nodes, not '1111111111111111111111111111111111111111'
+    >>> formatspec('%ln', b'ab')
+    Traceback (most recent call last):
+      ...
+    sapling.error.Abort: %ln expects a list of binary nodes, not b'ab'
+    >>> formatspec('%ln', ['1' * 40])
+    Traceback (most recent call last):
+      ...
+    sapling.error.Abort: %ln expects a list of binary nodes, but it has '1111111111111111111111111111111111111111'
     """
 
     def argtype(c, arg):
@@ -677,7 +727,7 @@ def formatspec(expr, *args):
             parse(arg)  # make sure syntax errors are confined
             return "(%s)" % arg
         elif c == "n":
-            return _quote(node.hex(arg))
+            return _quote(_hexnode(arg))
         elif c == "b":
             return _quote("default")
 
@@ -719,7 +769,8 @@ def formatspec(expr, *args):
                 # a list of some type
                 pos += 1
                 d = expr[pos]
-                ret += listexp(list(args[arg]), d)
+                items = _nodelist(args[arg]) if d == "n" else list(args[arg])
+                ret += listexp(items, d)
                 arg += 1
             elif d == "v":
                 pos += 1
