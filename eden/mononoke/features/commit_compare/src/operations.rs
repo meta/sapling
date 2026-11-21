@@ -65,10 +65,12 @@ pub fn unordered_max_paths() -> Result<usize> {
 /// downgrades denied entries per the per-side absent rule, recording them
 /// against their denying restriction.
 ///
-/// Limit semantics: filtering happens before the page budget, so denied
-/// entries never consume `limit`/`max_paths` and an all-denied page still
-/// advances. A partial page may therefore contain fewer visible entries
-/// than the limit without implying the end of the diff.
+/// Limit semantics: when the policy retains omitted paths, the page
+/// budget covers scanned entries, so denied entries consume
+/// `limit`/`max_paths`; otherwise filtering happens before the budget and
+/// pages fill with visible entries. An all-denied page still advances. A
+/// partial page may therefore contain fewer visible entries than the limit
+/// without implying the end of the diff.
 pub async fn commit_compare<R: crate::Repo>(
     ctx: &CoreContext,
     repo: &RepoContext<R>,
@@ -181,7 +183,8 @@ pub async fn commit_compare_with_generation_logging<R: crate::Repo>(
             };
 
             let diff_count = diff.len();
-            if diff_count > max_paths {
+            let scanned = diff_count + policy.omitted_entry_count().unwrap_or(0);
+            if scanned > max_paths {
                 return Err(MononokeError::InvalidRequest(format!(
                     "commit_compare: unordered diff has more than {max_paths} entries. \
                      Use ordered_params with pagination instead.",
@@ -256,6 +259,7 @@ pub async fn commit_compare_with_generation_logging<R: crate::Repo>(
             };
 
             let diff_count = diff.len();
+            let scanned = diff_count + policy.omitted_entry_count().unwrap_or(0);
 
             let diff_items: Vec<CommitComparePath> = stream::iter(diff)
                 .map(|diff| CommitComparePath::from_path_diff(diff, &params.identity_schemes))
@@ -263,10 +267,11 @@ pub async fn commit_compare_with_generation_logging<R: crate::Repo>(
                 .try_collect()
                 .await?;
 
-            if diff_items.len() >= limit {
-                if let Some(item) = diff_items.last() {
-                    last_path = Some(item.path()?.to_string());
-                }
+            if scanned >= limit {
+                // Resume after the last scanned path, whether visible or
+                // omitted, so the next page continues past both.
+                let visible_last = diff_items.last().map(|item| item.path()).transpose()?;
+                last_path = policy.last_scanned_path(visible_last);
             }
 
             let (files, trees) = diff_items.into_iter().partition_map(|diff| match diff {

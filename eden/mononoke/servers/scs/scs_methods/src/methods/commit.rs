@@ -303,35 +303,50 @@ impl CommitFileDiffsResponseElement {
     }
 }
 
-/// Filter enumerated find-files paths by per-path visibility, keeping at
-/// most `limit` visible paths and recording an omission for each denied
-/// path dropped from the page.
+/// Filter enumerated find-files paths by per-path visibility.
 ///
-/// Recording happens downstream of the concurrency buffer, so buffered
-/// lookahead past `limit` is dropped without counting.
-fn filter_visible_paths<S, F, Fut>(
+/// When the caller asked for omitted paths, `limit` covers scanned
+/// paths, so denials consume it; otherwise pages fill with visible
+/// paths. Recording and entry noting happen downstream of the
+/// concurrency buffer, so buffered lookahead past `limit` is dropped
+/// without counting.
+fn filter_visible_paths<'a, S, F, Fut>(
     paths: S,
     limit: usize,
-    policy: &RestrictedPathsPolicy,
+    policy: &'a RestrictedPathsPolicy,
     check: F,
-) -> impl Stream<Item = Result<String, MononokeError>> + Send
+) -> BoxStream<'a, Result<String, MononokeError>>
 where
-    S: Stream<Item = Result<MPath, MononokeError>> + Send,
-    F: FnMut(MPath) -> Fut + Send,
+    S: Stream<Item = Result<MPath, MononokeError>> + Send + 'a,
+    F: FnMut(MPath) -> Fut + Send + 'a,
     Fut: Future<
             Output = Result<(Option<String>, Option<(DenyingRestriction, MPath)>), MononokeError>,
-        > + Send,
+        > + Send
+        + 'a,
 {
-    paths
-        .map_ok(check)
-        .try_buffered(50)
-        .try_filter_map(move |(kept, denial)| {
-            if let Some((restriction, path)) = denial {
-                policy.record_denial(&restriction, Some(&path));
-            }
-            futures::future::ready(Ok(kept))
-        })
-        .take(limit)
+    let checked = paths.map_ok(check).try_buffered(50);
+    if policy.omitted_path_retention() {
+        checked
+            .take(limit)
+            .try_filter_map(move |(kept, denial)| {
+                if let Some((restriction, path)) = denial {
+                    policy.record_denial(&restriction, Some(&path));
+                    policy.note_omitted_entry(Some(&path));
+                }
+                futures::future::ready(Ok(kept))
+            })
+            .boxed()
+    } else {
+        checked
+            .try_filter_map(move |(kept, denial)| {
+                if let Some((restriction, path)) = denial {
+                    policy.record_denial(&restriction, Some(&path));
+                }
+                futures::future::ready(Ok(kept))
+            })
+            .take(limit)
+            .boxed()
+    }
 }
 
 impl SourceControlServiceImpl {
@@ -1149,11 +1164,12 @@ impl SourceControlServiceImpl {
         };
         policy.set_partial_if_omitted(&ctx);
 
-        // Ordered requests that reached the limit carry the continuation,
-        // so callers paginate without re-deriving it. Unordered requests
-        // and short pages leave it unset.
-        let last_path = if ordered && files.len() == limit {
-            files.last().cloned()
+        // Ordered requests that reached the limit carry the continuation:
+        // the last scanned path, whether visible or omitted. Unordered
+        // requests and short pages leave it unset.
+        let scanned = files.len() + policy.omitted_entry_count().unwrap_or(0);
+        let last_path = if ordered && scanned >= limit {
+            policy.last_scanned_path(files.last().map(String::as_str))
         } else {
             None
         };
@@ -1244,7 +1260,6 @@ impl SourceControlServiceImpl {
                         }
                     }
                 })
-                .boxed()
             } else {
                 path_stream
                     .map_ok(|path| path.to_string())
@@ -2249,11 +2264,19 @@ mod run_as_tests {
 
 #[cfg(test)]
 mod find_files_filter_tests {
+    use std::collections::HashMap;
     use std::str::FromStr;
     use std::sync::Arc;
 
+    use context::CoreContext;
+    use fbinit::FacebookInit;
+    use futures::FutureExt;
     use futures::stream;
+    use justknobs::test_helpers::JustKnobsInMemory;
+    use justknobs::test_helpers::KnobVal;
+    use justknobs::test_helpers::with_just_knobs_async;
     use mononoke_api::OmissionCollector;
+    use mononoke_api::restricted_paths::SCS_ENABLE_PARTIAL_RESPONSES_JK;
     use mononoke_macros::mononoke;
     use mononoke_types::NonRootMPath;
     use restricted_paths::DenyingRestriction;
@@ -2278,6 +2301,13 @@ mod find_files_filter_tests {
             .map(|i| MPath::try_from(format!("file{i:03}").as_str()))
             .collect::<Result<Vec<_>, _>>()
             .expect("test paths are valid")
+    }
+
+    fn knobs(enabled: bool) -> JustKnobsInMemory {
+        JustKnobsInMemory::new(HashMap::from([(
+            SCS_ENABLE_PARTIAL_RESPONSES_JK.to_string(),
+            KnobVal::Bool(enabled),
+        )]))
     }
 
     #[mononoke::test]
@@ -2354,5 +2384,55 @@ mod find_files_filter_tests {
                 3
             )])),
         );
+    }
+
+    #[mononoke::fbinit_test]
+    async fn retained_denials_consume_the_limit(fb: FacebookInit) -> Result<(), anyhow::Error> {
+        // Retention on: the limit covers scanned paths, so the window of
+        // file000 (denied), file001 (visible), file002 (denied) yields one
+        // visible file and notes two omitted entries ending at file002.
+        // Retention comes from the request block via the constructor.
+        let ctx = CoreContext::test_mock(fb);
+        let block = thrift::PartialOptions {
+            include_omitted_paths: Some(true),
+            ..Default::default()
+        };
+        with_just_knobs_async(
+            knobs(false),
+            async move {
+                let policy = RestrictedPathsPolicy::for_scs_request(&ctx, "repo", Some(&block));
+                let paths = numbered_paths(6);
+                let files: Vec<String> = filter_visible_paths(
+                    stream::iter(paths.into_iter().map(Ok)),
+                    3,
+                    &policy,
+                    |path| async move {
+                        let n: usize = path
+                            .to_string()
+                            .strip_prefix("file")
+                            .expect("numbered test path")
+                            .parse()
+                            .expect("numbered test path");
+                        if n % 2 == 1 {
+                            Ok((Some(path.to_string()), None))
+                        } else {
+                            Ok((None, Some((denying_restriction(), path))))
+                        }
+                    },
+                )
+                .try_collect()
+                .await?;
+                assert_eq!(files, vec!["file001".to_string()]);
+                assert_eq!(policy.omitted_count(), Some(2));
+                assert_eq!(policy.omitted_entry_count(), Some(2));
+                assert_eq!(
+                    policy.last_scanned_path(files.last().map(String::as_str)),
+                    Some("file002".to_string())
+                );
+                Ok(())
+            }
+            .boxed(),
+        )
+        .await
     }
 }

@@ -245,7 +245,9 @@ pub enum RestrictedPathsPolicy {
 #[derive(Debug, Default)]
 pub struct OmissionCollector {
     omitted: AtomicUsize,
+    omitted_entries: AtomicUsize,
     groups: Mutex<BTreeMap<DenyingRestriction, OmissionGroup>>,
+    max_omitted: Mutex<Option<MPath>>,
     retain_paths: AtomicBool,
 }
 
@@ -260,6 +262,18 @@ impl OmissionCollector {
     /// Total omitted paths recorded so far.
     pub fn omitted_count(&self) -> usize {
         self.omitted.load(Ordering::Relaxed)
+    }
+
+    /// Total fully-omitted entries noted so far. Unlike the side-based
+    /// count, one entry counts once however many sides denied it.
+    pub fn omitted_entry_count(&self) -> usize {
+        self.omitted_entries.load(Ordering::Relaxed)
+    }
+
+    /// Whether omitted paths are being retained (and counted toward page
+    /// budgets) for this request.
+    pub fn omitted_path_retention(&self) -> bool {
+        self.retain_paths.load(Ordering::Relaxed)
     }
 
     /// Retain omitted paths per group from now on. The constructor turns
@@ -305,6 +319,24 @@ impl OmissionCollector {
         {
             group.paths.insert(path.clone());
         }
+    }
+
+    /// Note one fully-omitted entry. Call downstream of the page take so
+    /// lookahead past the budget never counts. `path` feeds the maximum
+    /// omitted path; `None` (unparseable) still counts the entry.
+    pub fn note_omitted_entry(&self, path: Option<&MPath>) {
+        self.omitted_entries.fetch_add(1, Ordering::Relaxed);
+        if let Some(path) = path {
+            let mut max = self.max_omitted.lock().expect("lock poisoned");
+            if max.as_ref().is_none_or(|current| *current < *path) {
+                *max = Some(path.clone());
+            }
+        }
+    }
+
+    /// Maximum omitted path noted so far, if any.
+    pub fn max_omitted_mpath(&self) -> Option<MPath> {
+        self.max_omitted.lock().expect("lock poisoned").clone()
     }
 }
 
@@ -365,6 +397,56 @@ impl RestrictedPathsPolicy {
     pub fn record_denial(&self, restriction: &DenyingRestriction, path: Option<&MPath>) {
         if let Self::SkipAndCollect(collector) = self {
             collector.record(restriction, path);
+        }
+    }
+
+    /// Whether omitted paths are being retained for this request.
+    pub fn omitted_path_retention(&self) -> bool {
+        match self {
+            Self::Strict => false,
+            Self::SkipAndCollect(collector) => collector.omitted_path_retention(),
+        }
+    }
+
+    /// Note one fully-omitted entry. No-op under `Strict`.
+    pub fn note_omitted_entry(&self, path: Option<&MPath>) {
+        if let Self::SkipAndCollect(collector) = self {
+            collector.note_omitted_entry(path);
+        }
+    }
+
+    /// Fully-omitted entries noted so far, or `None` when partial
+    /// responses are not allowed.
+    pub fn omitted_entry_count(&self) -> Option<usize> {
+        match self {
+            Self::Strict => None,
+            Self::SkipAndCollect(collector) => Some(collector.omitted_entry_count()),
+        }
+    }
+
+    /// Last scanned path of the counted windows: the maximum of
+    /// `visible_last` and every noted omitted path, compared as paths.
+    /// `None` when both are absent. An unparseable visible path is
+    /// ignored, which understates rather than overstates the resume
+    /// point.
+    pub fn last_scanned_path(&self, visible_last: Option<&str>) -> Option<String> {
+        let visible = visible_last.and_then(|s| MPath::new(s).ok());
+        let omitted = match self {
+            Self::Strict => None,
+            Self::SkipAndCollect(collector) => collector.max_omitted_mpath(),
+        };
+        visible
+            .into_iter()
+            .chain(omitted)
+            .max()
+            .map(|path| path.to_string())
+    }
+
+    /// Maximum omitted path noted so far, if any.
+    pub fn max_omitted_mpath(&self) -> Option<MPath> {
+        match self {
+            Self::Strict => None,
+            Self::SkipAndCollect(collector) => collector.max_omitted_mpath(),
         }
     }
 
@@ -715,6 +797,71 @@ mod tests {
         assert_eq!(strict.omitted_count(), None);
         assert_eq!(strict.omitted_groups(), None);
         assert_eq!(strict.omitted_paths(), None);
+        Ok(())
+    }
+
+    #[mononoke::test]
+    fn noted_entries_track_count_and_max_omitted() -> Result<(), anyhow::Error> {
+        let collector = OmissionCollector::default();
+        assert_eq!(collector.omitted_entry_count(), 0);
+        assert_eq!(collector.max_omitted_mpath(), None);
+
+        let first = MPath::new("tent/a")?;
+        let second = MPath::new("tent/b")?;
+        collector.note_omitted_entry(Some(&first));
+        // A pathless note still counts the entry.
+        collector.note_omitted_entry(None);
+        collector.note_omitted_entry(Some(&second));
+        // Noting out of order keeps the maximum.
+        collector.note_omitted_entry(Some(&first));
+
+        assert_eq!(collector.omitted_entry_count(), 4);
+        assert_eq!(collector.max_omitted_mpath(), Some(second));
+        Ok(())
+    }
+
+    #[mononoke::test]
+    fn last_scanned_path_maxes_visible_and_omitted() -> Result<(), anyhow::Error> {
+        let policy = RestrictedPathsPolicy::SkipAndCollect(Arc::new(OmissionCollector::default()));
+        // Neither side noted: no continuation.
+        assert_eq!(policy.last_scanned_path(None), None);
+
+        policy.note_omitted_entry(Some(&MPath::new("tent/b")?));
+        // Omitted above visible wins ...
+        assert_eq!(
+            policy.last_scanned_path(Some("tent/a")),
+            Some("tent/b".to_string())
+        );
+        // ... and visible above omitted wins.
+        assert_eq!(
+            policy.last_scanned_path(Some("tent/c")),
+            Some("tent/c".to_string())
+        );
+        // An unparseable visible path is ignored, understating the resume.
+        assert_eq!(
+            policy.last_scanned_path(Some("tent/\u{0}")),
+            Some("tent/b".to_string())
+        );
+
+        // Comparison is in path space, not string space: component-wise
+        // "a-b" sorts after "a/b", while strings order them the other way.
+        let trap = RestrictedPathsPolicy::SkipAndCollect(Arc::new(OmissionCollector::default()));
+        trap.note_omitted_entry(Some(&MPath::new("a/b")?));
+        assert_eq!(trap.last_scanned_path(Some("a-b")), Some("a-b".to_string()));
+        Ok(())
+    }
+
+    #[mononoke::test]
+    fn strict_ignores_entry_noting() -> Result<(), anyhow::Error> {
+        let strict = RestrictedPathsPolicy::Strict;
+        strict.note_omitted_entry(Some(&MPath::new("tent/a")?));
+        assert_eq!(strict.omitted_entry_count(), None);
+        assert_eq!(strict.max_omitted_mpath(), None);
+        assert_eq!(
+            strict.last_scanned_path(Some("tent/a")),
+            Some("tent/a".to_string())
+        );
+        assert_eq!(strict.last_scanned_path(None), None);
         Ok(())
     }
 

@@ -354,6 +354,7 @@ async fn paged_commit_compare(
                     ..ordered_params.clone()
                 });
 
+                let entries_before = policy.omitted_entry_count().unwrap_or(0);
                 let page = operations::commit_compare_with_generation_logging(
                     ctx,
                     repo,
@@ -373,6 +374,11 @@ async fn paged_commit_compare(
                 }
 
                 let page_diff_count = page.diff_count;
+                // Scanned entries in this page: visible plus omitted. The
+                // supplement can overfill past the page budget, so the
+                // remaining budget saturates instead of underflowing.
+                let page_scanned =
+                    page_diff_count + (policy.omitted_entry_count().unwrap_or(0) - entries_before);
                 let source_control_thrift::CommitCompareResponse {
                     diff_files,
                     other_commit_ids,
@@ -388,7 +394,7 @@ async fn paged_commit_compare(
                 *page_count += 1;
                 *completed_path_count += page_diff_count;
                 diff_count += page_diff_count;
-                remaining -= page_diff_count;
+                remaining = remaining.saturating_sub(page_scanned);
 
                 if remaining == 0 {
                     if let Some(max_paths) = unordered_max_paths {
@@ -406,7 +412,7 @@ async fn paged_commit_compare(
                     break;
                 }
 
-                if page_diff_count < page_limit {
+                if page_scanned < page_limit {
                     response.last_path = None;
                     break;
                 }

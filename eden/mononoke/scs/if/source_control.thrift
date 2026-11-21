@@ -1647,12 +1647,14 @@ struct CommitCompareOrderedParams {
   // to continue diffing after a previous ordered request reached
   // its limit.
   1: optional Path after_path;
-  // Limit the number of returned paths to this many. Paths omitted by
-  // partial responses (restricted-path denials) never consume this budget:
-  // pages are filled up to the limit with visible entries. The end of
+  // Limit the number of scanned paths to this many. When the request
+  // asks for omitted paths (`partial_options.include_omitted_paths`),
+  // paths omitted by partial responses (restricted-path denials)
+  // consume this budget, so a page may hold fewer visible entries than
+  // the limit. The end of
   // pagination is signaled by the absence of `last_path` in the response
-  // (feed it back as `after_path` to continue), even if a page holds
-  // fewer entries than the limit or is empty.
+  // (feed it back as `after_path` to continue): otherwise it names the
+  // last scanned path, whether visible or omitted.
   2: i64 limit;
 }
 
@@ -1733,9 +1735,12 @@ struct CommitFileDiffsParams {
 const i64 COMMIT_FIND_FILES_MAX_LIMIT = 100000;
 
 struct CommitFindFilesParams {
-  /// Limit to the number of tree entries listed. If an ordered request
-  /// returns the limit, `last_path` in the response carries the
-  /// continuation: pass it as `after` to find the remaining files.
+  /// Limit to the number of scanned tree entries. When the request asks
+  /// for omitted paths (`partial_options.include_omitted_paths`),
+  /// omitted entries consume this budget, so fewer visible files may be
+  /// returned. If an ordered request reaches the limit, `last_path`
+  /// carries the continuation (the last scanned path, whether visible or
+  /// omitted): pass it as `after` to find the remaining files.
   1: i64 limit;
 
   /// Start listing files after this path, to be used for paging.  If
@@ -2975,8 +2980,9 @@ struct CommitCompareResponse {
   /// Only populated if TREES was specified.
   3: list<CommitCompareTree> diff_trees;
   /// Only set if commit compare was ordered, and the limit was reached.
-  /// This is the last path that was produced, suitable for passing into
-  /// the `after_path` parameter of a subsequent ordered request.
+  /// This is the last scanned path, whether visible or omitted, suitable
+  /// for passing into the `after_path` parameter of a subsequent ordered
+  /// request.
   4: optional Path last_path;
   /// Partial-response verdict. See PartialResponseInfo.
   5: optional PartialResponseInfo partial_info;
@@ -3033,9 +3039,9 @@ struct CommitFindFilesResponse {
   1: list<string> files;
   /// Partial-response verdict. See PartialResponseInfo.
   2: optional PartialResponseInfo partial_info;
-  /// Set when an ordered request reached its limit: the last path produced,
-  /// suitable for passing as `after` to continue. Absent for unordered
-  /// requests and when fewer than `limit` files were returned.
+  /// Set when an ordered request reached its limit: the last scanned path,
+  /// whether visible or omitted, suitable for passing as `after` to
+  /// continue. Absent for unordered requests and short pages.
   3: optional string last_path;
 }
 
