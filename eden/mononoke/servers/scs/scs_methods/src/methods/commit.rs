@@ -585,6 +585,7 @@ impl SourceControlServiceImpl {
             repo_name,
             params.partial_options.as_ref(),
         );
+        let include_paths = RestrictedPathsPolicy::paths_requested(params.partial_options.as_ref());
         // The subtree branch moves its policy into a coroutine; the other
         // branches only borrow.
         let subtree_policy = policy.clone();
@@ -862,7 +863,7 @@ impl SourceControlServiceImpl {
         Ok(thrift::CommitFileDiffsResponse {
             path_diffs,
             stopped_at_pair,
-            partial_info: super::partial_response_info(&policy),
+            partial_info: super::partial_response_info(&policy, include_paths),
             ..Default::default()
         })
     }
@@ -1046,6 +1047,7 @@ impl SourceControlServiceImpl {
             repo.name(),
             params.partial_options.as_ref(),
         );
+        let include_paths = RestrictedPathsPolicy::paths_requested(params.partial_options.as_ref());
         let result = commit_compare::operations::commit_compare(
             &ctx,
             &repo,
@@ -1066,7 +1068,7 @@ impl SourceControlServiceImpl {
         // context flag. Remote path returns early above with diff_service's
         // own verdict untouched.
         let mut response = result.response;
-        response.partial_info = super::partial_response_info(&policy);
+        response.partial_info = super::partial_response_info(&policy, include_paths);
         Ok(response)
     }
 
@@ -1112,6 +1114,7 @@ impl SourceControlServiceImpl {
             repo.name(),
             params.partial_options.as_ref(),
         );
+        let include_paths = RestrictedPathsPolicy::paths_requested(params.partial_options.as_ref());
         let partial = !matches!(policy, RestrictedPathsPolicy::Strict);
 
         let path_stream = changeset
@@ -1157,7 +1160,7 @@ impl SourceControlServiceImpl {
 
         Ok(thrift::CommitFindFilesResponse {
             files,
-            partial_info: super::partial_response_info(&policy),
+            partial_info: super::partial_response_info(&policy, include_paths),
             last_path,
             ..Default::default()
         })
@@ -1267,7 +1270,9 @@ impl SourceControlServiceImpl {
                 policy.set_partial_if_omitted(&ctx);
                 yield Ok(thrift::CommitFindFilesStreamItem {
                     files: vec![],
-                    partial_info: super::partial_response_info(&policy),
+                    // No paths on the terminal verdict: stream omissions go
+                    // inline per chunk.
+                    partial_info: super::partial_response_info(&policy, false),
                     ..Default::default()
                 });
             }

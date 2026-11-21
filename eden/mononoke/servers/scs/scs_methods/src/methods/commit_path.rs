@@ -137,6 +137,7 @@ impl SourceControlServiceImpl {
             repo.name(),
             params.partial_options.as_ref(),
         );
+        let include_paths = RestrictedPathsPolicy::paths_requested(params.partial_options.as_ref());
         let stream = changeset
             .paths_with_content(paths.into_iter(), &policy)
             .await?;
@@ -186,7 +187,7 @@ impl SourceControlServiceImpl {
 
         Ok(thrift::CommitMultiplePathInfoResponse {
             path_info: result,
-            partial_info: super::partial_response_info(&policy),
+            partial_info: super::partial_response_info(&policy, include_paths),
             ..Default::default()
         })
     }
@@ -720,6 +721,7 @@ impl SourceControlServiceImpl {
             repo.name(),
             params.partial_options.as_ref(),
         );
+        let include_paths = RestrictedPathsPolicy::paths_requested(params.partial_options.as_ref());
         let history_stream = changeset
             .paths_with_history(paths.iter().cloned(), &policy)
             .await?;
@@ -820,7 +822,7 @@ impl SourceControlServiceImpl {
 
         Ok(thrift::CommitMultiplePathLastChangedResponse {
             path_last_change,
-            partial_info: super::partial_response_info(&policy),
+            partial_info: super::partial_response_info(&policy, include_paths),
             ..Default::default()
         })
     }

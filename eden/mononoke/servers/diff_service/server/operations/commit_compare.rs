@@ -141,6 +141,7 @@ impl DiffServiceImpl {
     ) -> Result<source_control_thrift::CommitCompareResponse, ServerError> {
         let repo_name = &request.repo_name;
         let mut params = request.params;
+        let include_paths = RestrictedPathsPolicy::paths_requested(params.partial_options.as_ref());
         let specifier = commit_id_to_specifier(&request.commit_id)?;
         let other_specifier = params
             .other_commit_id
@@ -267,7 +268,7 @@ impl DiffServiceImpl {
 
         let result = result.map_err(map_commit_compare_error)?;
         let mut response = result.response;
-        response.partial_info = crate::service::partial_response_info(&policy);
+        response.partial_info = crate::service::partial_response_info(&policy, include_paths);
         Ok(response)
     }
 }

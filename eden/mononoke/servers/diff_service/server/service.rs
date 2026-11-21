@@ -5,6 +5,7 @@
  * GNU General Public License version 2.
  */
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
@@ -74,32 +75,45 @@ fn should_set_nocache(succeeded: bool, ctx: &CoreContext) -> bool {
 /// omission policy. Same contract as SCS `methods::partial_response_info`:
 /// `Some` carrying the exact signal when partial responses are allowed for
 /// this request, `None` (field unset) when not. Group counts reconcile with
-/// the total by construction. Agrees with the context flag (and hence
+/// the total by construction. When `include_paths`, each group also lists
+/// its retained omitted paths. Agrees with the context flag (and hence
 /// `nocache`) by construction.
 pub(crate) fn partial_response_info(
     policy: &RestrictedPathsPolicy,
+    include_paths: bool,
 ) -> Option<source_control_thrift::PartialResponseInfo> {
     let omitted_restricted_paths_count = policy.omitted_count()?;
-    let omitted_by_restriction = policy
-        .omitted_groups()
-        .map(|collected| {
-            collected
-                .into_iter()
-                .map(|(restriction, omitted_count)| {
-                    source_control_thrift::OmittedRestrictionGroup {
-                        restriction_root: restriction.restriction_root.map(|root| root.to_string()),
-                        repo_region_acl: restriction.repo_region_acl.to_string(),
-                        permission_request_group: restriction
-                            .permission_request_group
-                            .id_data()
-                            .to_string(),
-                        omitted_count: omitted_count as i64,
-                        ..Default::default()
-                    }
-                })
-                .collect::<Vec<_>>()
-        })
-        .filter(|groups| !groups.is_empty());
+    let groups = policy.omitted_groups().unwrap_or_default();
+    let paths = if include_paths {
+        policy.omitted_paths().unwrap_or_default()
+    } else {
+        BTreeMap::new()
+    };
+    let omitted_by_restriction = (!groups.is_empty()).then(|| {
+        groups
+            .into_iter()
+            .map(|(restriction, omitted_count)| {
+                let omitted_paths: Vec<String> = paths
+                    .get(&restriction)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|path| path.to_string())
+                    .collect();
+                source_control_thrift::OmittedRestrictionGroup {
+                    restriction_root: restriction.restriction_root.map(|root| root.to_string()),
+                    repo_region_acl: restriction.repo_region_acl.to_string(),
+                    permission_request_group: restriction
+                        .permission_request_group
+                        .id_data()
+                        .to_string(),
+                    omitted_count: omitted_count as i64,
+                    omitted_paths: (!omitted_paths.is_empty()).then_some(omitted_paths),
+                    ..Default::default()
+                }
+            })
+            .collect::<Vec<_>>()
+    });
     Some(source_control_thrift::PartialResponseInfo {
         partial: omitted_restricted_paths_count > 0,
         omitted_restricted_paths_count: Some(omitted_restricted_paths_count as i64),
@@ -519,13 +533,13 @@ mod tests {
     #[mononoke::test]
     fn test_partial_response_info() -> anyhow::Result<()> {
         // Not allowed: no field.
-        assert!(partial_response_info(&RestrictedPathsPolicy::Strict).is_none());
+        assert!(partial_response_info(&RestrictedPathsPolicy::Strict, false).is_none());
         // Allowed: always populated; `partial` iff count is positive,
         // agreeing with the `nocache` decision (set iff count positive) by
         // construction. A complete response carries no groups.
         let collecting =
             || RestrictedPathsPolicy::SkipAndCollect(Arc::new(OmissionCollector::default()));
-        let complete = partial_response_info(&collecting()).expect("populated when allowed");
+        let complete = partial_response_info(&collecting(), false).expect("populated when allowed");
         assert!(!complete.partial);
         assert_eq!(complete.omitted_restricted_paths_count, Some(0));
         assert_eq!(complete.omitted_by_restriction, None);
@@ -549,7 +563,7 @@ mod tests {
             },
             None,
         );
-        let partial = partial_response_info(&policy).expect("populated when allowed");
+        let partial = partial_response_info(&policy, false).expect("populated when allowed");
         assert!(partial.partial);
         assert_eq!(partial.omitted_restricted_paths_count, Some(2));
         let groups = partial
@@ -562,6 +576,30 @@ mod tests {
             "group names its restriction root"
         );
         assert_eq!(groups[0].omitted_count, 2);
+        assert_eq!(groups[0].omitted_paths, None);
+
+        // The flag alone invents no paths: without retention the lists
+        // stay unset even when asked for. Retention plumbing is covered
+        // where it lives, in mononoke_api's constructor tests.
+        let policy = collecting();
+        let acl = MononokeIdentity::from_str("REPO_REGION:tent_acl")?;
+        policy.record_denial(
+            &DenyingRestriction {
+                restriction_root: Some(NonRootMPath::new("tent")?),
+                repo_region_acl: acl.clone(),
+                permission_request_group: acl,
+            },
+            None,
+        );
+        let asked = partial_response_info(&policy, true).expect("populated when allowed");
+        assert!(
+            asked
+                .omitted_by_restriction
+                .expect("partial response carries groups")
+                .iter()
+                .all(|group| group.omitted_paths.is_none()),
+            "unretained paths stay unset when asked for",
+        );
         Ok(())
     }
 }

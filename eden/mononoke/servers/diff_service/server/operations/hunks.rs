@@ -56,6 +56,8 @@ impl DiffServiceImpl {
             &request.repo_name,
             request.partial_options.as_ref(),
         );
+        let include_paths =
+            mononoke_api::RestrictedPathsPolicy::paths_requested(request.partial_options.as_ref());
         let resolved = self
             .resolve_diff_inputs(&ctx, &request.repo_name, request.input, &policy)
             .await?;
@@ -74,7 +76,7 @@ impl DiffServiceImpl {
             scuba.log_with_msg("Computed diff hunks", None);
             let response = thrift::DiffHunksResponse {
                 num_hunks: 0,
-                partial_info: crate::service::partial_response_info(&policy),
+                partial_info: crate::service::partial_response_info(&policy, include_paths),
                 ..Default::default()
             };
             return Ok((response, Box::pin(futures::stream::empty())));
@@ -130,7 +132,7 @@ impl DiffServiceImpl {
 
         let response = thrift::DiffHunksResponse {
             num_hunks,
-            partial_info: crate::service::partial_response_info(&policy),
+            partial_info: crate::service::partial_response_info(&policy, include_paths),
             ..Default::default()
         };
         let stream = futures::stream::iter(hunk_stream);

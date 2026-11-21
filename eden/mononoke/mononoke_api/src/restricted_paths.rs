@@ -343,15 +343,21 @@ impl RestrictedPathsPolicy {
         let knob_on = justknobs::eval(SCS_ENABLE_PARTIAL_RESPONSES_JK, None, Some(repo_name));
         if client_opt_in || knob_on || partial_options.is_some() {
             let collector = OmissionCollector::default();
-            if let Some(options) = partial_options
-                && options.include_omitted_paths.unwrap_or(false)
-            {
+            if Self::paths_requested(partial_options) {
                 collector.set_path_retention(true);
             }
             Self::SkipAndCollect(Arc::new(collector))
         } else {
             Self::Strict
         }
+    }
+
+    /// Whether a partial-options block asks for withheld paths in the
+    /// response. An absent block or an unset flag means no paths. The
+    /// constructor and the render call sites share this predicate, so
+    /// retention and rendering cannot disagree.
+    pub fn paths_requested(partial_options: Option<&PartialOptions>) -> bool {
+        partial_options.is_some_and(|options| options.include_omitted_paths.unwrap_or(false))
     }
 
     /// Record one omitted path, attributed to its denying restriction.

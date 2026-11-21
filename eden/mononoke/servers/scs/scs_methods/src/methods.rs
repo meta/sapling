@@ -5,6 +5,8 @@
  * GNU General Public License version 2.
  */
 
+use std::collections::BTreeMap;
+
 use context::CoreContext;
 use itertools::Itertools;
 use metaconfig_types::CommitIdentityScheme;
@@ -36,32 +38,46 @@ pub(crate) mod tree;
 /// policy. `Some` carrying the exact signal when partial responses are
 /// allowed for this request (`None`, field unset, when not). Group counts
 /// reconcile with the total by construction: every recorded omission carries
-/// its denying restriction. The caller sets `nocache: 1` from the same flag,
+/// its denying restriction. When `include_paths`, each group also lists its
+/// retained omitted paths. The caller sets `nocache: 1` from the same flag,
 /// so a cached partial can never be served to an entitled caller.
 pub(crate) fn partial_response_info(
     policy: &RestrictedPathsPolicy,
+    include_paths: bool,
 ) -> Option<thrift::PartialResponseInfo> {
+    let omitted_count = policy.omitted_count()? as u64;
+    let groups = policy.omitted_groups().unwrap_or_default();
+    let paths = if include_paths {
+        policy.omitted_paths().unwrap_or_default()
+    } else {
+        BTreeMap::new()
+    };
     Some(partial_response_info_from_omissions(
-        policy.omitted_count()? as u64,
-        policy
-            .omitted_groups()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(restriction, count)| (restriction, count as u64)),
+        omitted_count,
+        groups.into_iter().map(|(restriction, count)| {
+            let paths: Vec<String> = paths
+                .get(&restriction)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|path| path.to_string())
+                .collect();
+            (restriction, count as u64, paths)
+        }),
     ))
 }
 
 /// Partial-response verdict from a count of omitted paths and its breakdown
 /// by denying restriction. `omitted_by_restriction` stays unset when there
-/// are no groups.
+/// are no groups; a group's path list stays unset when empty.
 pub(crate) fn partial_response_info_from_omissions(
     omitted_count: u64,
-    groups: impl IntoIterator<Item = (DenyingRestriction, u64)>,
+    groups: impl IntoIterator<Item = (DenyingRestriction, u64, Vec<String>)>,
 ) -> thrift::PartialResponseInfo {
     let groups = groups
         .into_iter()
         .map(
-            |(restriction, omitted_count)| thrift::OmittedRestrictionGroup {
+            |(restriction, omitted_count, omitted_paths)| thrift::OmittedRestrictionGroup {
                 restriction_root: restriction.restriction_root.map(|root| root.to_string()),
                 repo_region_acl: restriction.repo_region_acl.to_string(),
                 permission_request_group: restriction
@@ -69,6 +85,7 @@ pub(crate) fn partial_response_info_from_omissions(
                     .id_data()
                     .to_string(),
                 omitted_count: omitted_count as i64,
+                omitted_paths: (!omitted_paths.is_empty()).then_some(omitted_paths),
                 ..Default::default()
             },
         )
@@ -176,11 +193,12 @@ mod tests {
     #[mononoke::test]
     fn test_partial_response_info() -> anyhow::Result<()> {
         // Not allowed: no field.
-        assert!(partial_response_info(&RestrictedPathsPolicy::Strict).is_none());
+        assert!(partial_response_info(&RestrictedPathsPolicy::Strict, false).is_none());
         // Allowed: always populated; `partial` iff count is positive,
         // agreeing with the `nocache` decision (set iff count positive) by
         // construction. A complete response carries no groups.
-        let complete = partial_response_info(&collecting_policy()).expect("populated when allowed");
+        let complete =
+            partial_response_info(&collecting_policy(), false).expect("populated when allowed");
         assert!(!complete.partial);
         assert_eq!(complete.omitted_restricted_paths_count, Some(0));
         assert_eq!(complete.omitted_by_restriction, None);
@@ -195,7 +213,7 @@ mod tests {
         policy.record_denial(&tent_a, None);
         policy.record_denial(&rootless, None);
         policy.record_denial(&tent_a, None);
-        let partial = partial_response_info(&policy).expect("populated when allowed");
+        let partial = partial_response_info(&policy, false).expect("populated when allowed");
         assert!(partial.partial);
         assert_eq!(partial.omitted_restricted_paths_count, Some(3));
         let groups = partial
@@ -213,6 +231,7 @@ mod tests {
         assert_eq!(tent_group.repo_region_acl, "REPO_REGION:a_acl");
         assert_eq!(tent_group.permission_request_group, "a_group");
         assert_eq!(tent_group.omitted_count, 2);
+        assert_eq!(tent_group.omitted_paths, None);
         let rootless_group = groups
             .iter()
             .find(|group| group.restriction_root.is_none())
@@ -220,6 +239,53 @@ mod tests {
         assert_eq!(rootless_group.repo_region_acl, "REPO_REGION:manifest_acl");
         assert_eq!(rootless_group.permission_request_group, "manifest_acl");
         assert_eq!(rootless_group.omitted_count, 1);
+
+        // The flag alone invents no paths: without retention the lists
+        // stay unset even when asked for.
+        let unretained = collecting_policy();
+        unretained.record_denial(&tent_a, None);
+        let asked = partial_response_info(&unretained, true).expect("populated when allowed");
+        assert!(
+            asked
+                .omitted_by_restriction
+                .expect("partial response carries groups")
+                .iter()
+                .all(|group| group.omitted_paths.is_none()),
+            "unretained paths stay unset when asked for",
+        );
+
+        // Path rendering: groups list their paths; empty lists stay
+        // unset. Retention plumbing is covered where it lives, in
+        // mononoke_api's constructor tests.
+        let rendered = partial_response_info_from_omissions(
+            3,
+            [
+                (
+                    tent_a,
+                    2,
+                    vec!["tent_a/a".to_string(), "tent_a/b".to_string()],
+                ),
+                (rootless, 1, Vec::new()),
+            ],
+        );
+        assert!(rendered.partial);
+        assert_eq!(rendered.omitted_restricted_paths_count, Some(3));
+        let groups = rendered
+            .omitted_by_restriction
+            .expect("partial response carries groups");
+        let tent_group = groups
+            .iter()
+            .find(|group| group.restriction_root.as_deref() == Some("tent_a"))
+            .expect("tent_a group present");
+        assert_eq!(
+            tent_group.omitted_paths,
+            Some(vec!["tent_a/a".to_string(), "tent_a/b".to_string()]),
+        );
+        let rootless_group = groups
+            .iter()
+            .find(|group| group.restriction_root.is_none())
+            .expect("rootless group present");
+        assert_eq!(rootless_group.omitted_paths, None);
         Ok(())
     }
 }
