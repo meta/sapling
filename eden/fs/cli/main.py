@@ -2545,7 +2545,6 @@ Do you still want to delete {path}?"""
 @subcmd("unmount", "Temporarily unmount a specific checkout")
 class UnmountCmd(Subcmd):
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
-        parser.add_argument("--destroy", action="store_true", help=argparse.SUPPRESS)
         parser.add_argument(
             "paths",
             nargs=argparse.ONE_OR_MORE,
@@ -2563,12 +2562,6 @@ class UnmountCmd(Subcmd):
         )
 
     def run(self, args: argparse.Namespace) -> int:
-        if args.destroy:
-            print_stderr(
-                'note: "eden unmount --destroy" is deprecated; '
-                'prefer using "eden rm" instead'
-            )
-
         for path in args.paths:
             # Removing redirection targets from checkout config to allow deletion of redirected paths
             instance, checkout, _rel_path = require_checkout(args, path)
@@ -2585,8 +2578,6 @@ class UnmountCmd(Subcmd):
                     use_force=not args.no_force,
                     unintentional_unmount=args.debug_mark_unintentional,
                 )
-                if args.destroy:
-                    instance.destroy_mount(path)
             except (EdenError, EdenNotRunningError) as ex:
                 print_stderr(f"error: {ex}")
                 return 1
