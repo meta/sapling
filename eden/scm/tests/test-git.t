@@ -423,6 +423,11 @@ Test push:
      0de3093..a9d5bd6  a9d5bd6ac8bcf89de9cd99fd215cca243e8aeed9 -> main
   $ sl push -q --to stable
 
+ (nothing to push - already at a remote bookmark)
+  $ sl push
+  abort: nothing to push - current commit is already at remote/main, remote/stable
+  [255]
+
  (cannot pick with multiple candidates)
   $ sl commit -m D
   $ sl push
