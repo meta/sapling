@@ -9,7 +9,7 @@ import type {JSX, ReactNode} from 'react';
 import type {ContextMenuItem} from 'shared/ContextMenu';
 import type {UICodeReviewProvider} from './codeReview/UICodeReviewProvider';
 import type {DagCommitInfo} from './dag/dag';
-import type {CommitInfo, MergeConflicts, SuccessorInfo, WorktreeEntry} from './types';
+import type {CommitInfo, DiffId, MergeConflicts, SuccessorInfo, WorktreeEntry} from './types';
 import {succeedableRevset, WarningCheckResult} from './types';
 
 import {Button} from 'isl-components/Button';
@@ -48,6 +48,7 @@ import {
   allDiffSummaries,
   branchingDiffInfos,
   codeReviewProvider,
+  diffIdsByBranchName,
   diffSummary,
   latestCommitTitles,
 } from './codeReview/CodeReviewInfo';
@@ -763,7 +764,9 @@ export const Commit = memo(
               </span>
             )}
             <UnsavedEditedMessageIndicator commit={commit} />
-            {!isPublic && <BranchingPrs bookmarks={commit.remoteBookmarks} />}
+            {!isPublic && (
+              <BranchingPrs bookmarks={commit.remoteBookmarks} diffId={commit.diffId} />
+            )}
             <AllBookmarksTruncated
               local={commit.bookmarks}
               remote={
@@ -814,24 +817,36 @@ export const Commit = memo(
   },
 );
 
-function BranchingPrs({bookmarks}: {bookmarks: ReadonlyArray<string>}) {
+function BranchingPrs({bookmarks, diffId}: {bookmarks: ReadonlyArray<string>; diffId?: DiffId}) {
   const provider = useAtomValue(codeReviewProvider);
   if (provider == null || !provider.supportBranchingPrs) {
     // If we don't have a provider, just render them as bookmarks so they don't get hidden.
     return <Bookmarks bookmarks={bookmarks} kind="remote" />;
   }
   return bookmarks.map(bookmark => (
-    <BranchingPr key={bookmark} provider={provider} bookmark={bookmark} />
+    <BranchingPr key={bookmark} provider={provider} bookmark={bookmark} diffId={diffId} />
   ));
 }
 
-function BranchingPr({bookmark, provider}: {bookmark: string; provider: UICodeReviewProvider}) {
+function BranchingPr({
+  bookmark,
+  provider,
+  diffId,
+}: {
+  bookmark: string;
+  provider: UICodeReviewProvider;
+  diffId?: DiffId;
+}) {
   const branchName = nullthrows(provider.branchNameForRemoteBookmark)(bookmark);
   const info = useAtomValue(branchingDiffInfos(branchName));
+  // `sl pr submit` pushes each commit to its PR's head branch, so that bookmark resolves to the
+  // commit's own PR, whose badge `DiffInfo` already shows.
+  const branchDiffId = useAtomValue(diffIdsByBranchName).get(branchName);
+  const isOwnPr = diffId != null && branchDiffId === diffId;
   return (
     <>
       <Bookmark kind="remote">{bookmark}</Bookmark>
-      {info.value == null ? null : (
+      {info.value == null || isOwnPr ? null : (
         <DiffBadge diff={info.value} provider={provider} url={info.value.url} />
       )}
     </>
