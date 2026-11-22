@@ -3,7 +3,7 @@ We want to make contributing to this project as easy and transparent as
 possible.
 
 ## Our Development Process
-Sapling is currently developed in Facebook's internal repositories and then
+Sapling is currently developed in Meta's internal repositories and then
 exported out to GitHub by a Facebook team member; however, we invite you to
 submit pull requests as described below.
 
