@@ -10,7 +10,7 @@ import collections
 import os
 import sys
 from enum import Enum
-from typing import Union
+from typing import Callable, Union
 
 from sapling import error, scmutil, util
 from sapling.i18n import _, _x
@@ -73,26 +73,34 @@ def clearscreen(out):
 # Note: some changes have been made from the source code
 
 
-def getchar() -> Union[None, bytes, str]:
-    fd = sys.stdin.fileno()
-    if not os.isatty(fd):
-        # TODO: figure out tests
-        return None
+def _readraw(fd: int) -> bytes:
+    """read the bytes currently available on `fd` with the tty in raw mode"""
+    attr = termios.tcgetattr(fd)
     try:
-        attr = termios.tcgetattr(fd)
-        try:
-            tty.setraw(fd)
-            ch = os.read(fd, 32)
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, attr)
+        tty.setraw(fd)
+        return os.read(fd, 32)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, attr)
+
+
+def getchar(
+    stdin=None, readraw: Callable[[int], bytes] = _readraw
+) -> Union[None, bytes, str]:
+    # `stdin` and `readraw` are seams for tests. Production callers leave them
+    # unset and get sys.stdin plus the real raw terminal read.
+    if stdin is None:
+        stdin = sys.stdin
+    fd = stdin.fileno()
+    if not os.isatty(fd):
+        return None
+    ch = None
+    try:
+        ch = readraw(fd)
     except termios.error:
-        # pyre-fixme[61]: `ch` is undefined, or not always defined.
         if ch is None:
             ch = ""
-    # pyre-fixme[61]: `ch` is undefined, or not always defined.
     if ch == b"\x03" or ch == b"\x04":
         return None
-    # pyre-fixme[61]: `ch` is undefined, or not always defined.
     return ch
 
 
