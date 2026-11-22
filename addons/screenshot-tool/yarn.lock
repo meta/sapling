@@ -293,9 +293,9 @@ base64-arraybuffer@^1.0.1:
   integrity sha512-I3yl4r9QB5ZRY3XuJVEPfc2XhZO6YweFPI+UovAzn+8/hb3oJ6lnysaFcjVpkCPfVWFUDvoZ8kmVDP7WyRtYtQ==
 
 basic-ftp@>=5.2.0, basic-ftp@^5.0.2:
-  version "5.2.0"
-  resolved "https://registry.yarnpkg.com/basic-ftp/-/basic-ftp-5.2.0.tgz#7c2dff63c918bde60e6bad1f2ff93dcf5137a40a"
-  integrity sha512-VoMINM2rqJwJgfdHq6RiUudKt2BV+FY5ZFezP/ypmwayk68+NzzAQy4XXLlqsGD4MCzq3DrmNFD/uUmBJuGoXw==
+  version "6.0.1"
+  resolved "https://registry.yarnpkg.com/basic-ftp/-/basic-ftp-6.0.1.tgz#e8215520bcbb589be64821b47489e4ae20b9b35a"
+  integrity sha512-3ilxa3n4276wGQp/ImRAuz4ALdsj/2Wd3FqoZBZlajDYnByCZ0JMb4+26Rde0wGXIbM0G2HWSfr/Fi8b21KX8g==
 
 brace-expansion@^5.0.5:
   version "5.0.5"
