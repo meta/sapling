@@ -8,7 +8,7 @@
   },
   "devDependencies": {
     "@types/minimist": "^1.2.2",
-    "js-yaml": "^4.1.1",
+    "js-yaml": "^4.2.0",
     "jsonc-parser": "^2.2.1",
     "minimist": "^1.2.8",
     "prettier": "2.8.8",
