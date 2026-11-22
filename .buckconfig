@@ -1,0 +1,10 @@
+[cells]
+gh_facebook_sapling = .
+shim_DISABLED = shim
+
+[cell_aliases]
+root = gh_facebook_sapling
+
+[oss]
+internal_cell = fbcode
+project_dirs = eden
