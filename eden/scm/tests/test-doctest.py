@@ -33,6 +33,8 @@ def testmod(name, optionflags=0, testtarget=None):
 testmod("sapling.pathlog")
 testmod("sapling.repl_record")
 testmod("sapling.ext.github.archive_commit")
+testmod("sapling.ext.github.gh_submit")
+testmod("sapling.ext.github.github_gh_cli")
 testmod("sapling.ext.github.github_repo_util")
 testmod("sapling.ext.github.pr_parser")
 testmod("sapling.ext.github.pull_request_arg")
