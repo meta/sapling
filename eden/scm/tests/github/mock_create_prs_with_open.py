@@ -39,14 +39,15 @@ def setup_mock_github_server(ui) -> MockGitHubServer:
         (43, "two\n"),
     ]
 
-    single = ui.config("github", "pr-workflow") == "single"
+    # Both "single" and "stacked" chain each PR's base to the PR below it.
+    chained = ui.config("github", "pr-workflow") in ("single", "stacked")
 
     for idx, (num, msg) in enumerate(prs):
         title, body = title_and_body(msg)
         head = f"pr{num}"
 
         base = "main"
-        if single and idx > 0:
+        if chained and idx > 0:
             base = "pr%d" % prs[idx - 1][0]
 
         github_server.expect_create_pr_request(

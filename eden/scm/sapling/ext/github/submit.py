@@ -75,6 +75,19 @@ class SubmitWorkflow(Enum):
     """
     OVERLAP = "overlap"
 
+    """Like SINGLE, but additionally links the pull requests together using
+    GitHub's native "stacked pull requests" feature so GitHub renders the
+    stack natively and can merge/retarget it bottom-up:
+    https://docs.github.com/en/pull-requests/get-started/about-stacked-prs
+    """
+    STACKED = "stacked"
+
+    def uses_chained_bases(self) -> bool:
+        """Whether each PR in the stack uses the head branch of the PR below
+        it as its base branch (as opposed to all PRs sharing a common base).
+        """
+        return self in (SubmitWorkflow.SINGLE, SubmitWorkflow.STACKED)
+
     @staticmethod
     def from_config(ui) -> "SubmitWorkflow":
         workflow = ui.config(
@@ -85,6 +98,8 @@ class SubmitWorkflow(Enum):
             return SubmitWorkflow.OVERLAP
         elif workflow == "single":
             return SubmitWorkflow.SINGLE
+        elif workflow == "stacked":
+            return SubmitWorkflow.STACKED
         else:
             # Note that "classic" is not recognized yet.
             ui.warn(
@@ -217,13 +232,14 @@ async def update_commits_in_stack(
 
     repository = params.repository
 
-    # For the SINGLE workflow, we must update the base branch on existing PRs
-    # BEFORE pushing the new branch contents. Otherwise, when commits are
-    # reordered in the stack, GitHub may see that a PR's commits already exist
-    # in its (old) base branch and auto-close the PR as "merged".
+    # For workflows with chained base branches (SINGLE, STACKED), we must
+    # update the base branch on existing PRs BEFORE pushing the new branch
+    # contents. Otherwise, when commits are reordered in the stack, GitHub may
+    # see that a PR's commits already exist in its (old) base branch and
+    # auto-close the PR as "merged".
     #
     # See https://github.com/facebook/sapling/issues/1275
-    if workflow == SubmitWorkflow.SINGLE:
+    if workflow.uses_chained_bases():
         existing_prs = [
             p for p in partitions if p[0].pr and p[0].pr.state == PullRequestState.OPEN
         ]
@@ -240,8 +256,17 @@ async def update_commits_in_stack(
                 if not pr or pr.state != PullRequestState.OPEN:
                     continue
                 base = repository.get_base_branch()
-                if index < len(partitions) - 1:
-                    base = none_throws(partitions[index + 1][0].head_branch_name)
+                # Chain to the nearest partition below whose pull request is
+                # open (or that will get a new pull request). Closed/merged
+                # pull requests are skipped: using their head branches as
+                # bases would break the chain.
+                for below in partitions[index + 1 :]:
+                    below_head = below[0]
+                    below_pr = below_head.pr
+                    if below_pr and below_pr.state != PullRequestState.OPEN:
+                        continue
+                    base = none_throws(below_head.head_branch_name)
+                    break
                 result = await gh_submit.update_pull_request(
                     repository.hostname, pr.node_id, pr.title, pr.body, base
                 )
@@ -332,8 +357,19 @@ async def rewrite_pull_request_body(
     # stack to the bottom.
     partition = partitions[index]
     base = repository.get_base_branch()
-    if workflow == SubmitWorkflow.SINGLE and index < len(partitions) - 1:
-        base = none_throws(partitions[index + 1][0].head_branch_name)
+    if workflow.uses_chained_bases() and not repository.is_fork:
+        # Chain to the nearest partition below whose pull request is open (or
+        # new). Closed/merged pull requests are skipped: using their head
+        # branches as bases would break the chain. For forks, chained bases
+        # are not possible at all (the head branches live on the fork, but a
+        # base branch must be a branch on the upstream repository), so the
+        # default base branch is kept.
+        for below in partitions[index + 1 :]:
+            below_pr = below[0].pr
+            if below_pr and below_pr.state != PullRequestState.OPEN:
+                continue
+            base = none_throws(below[0].head_branch_name)
+            break
 
     head_commit_data = partition[0]
 
@@ -523,7 +559,7 @@ async def create_pull_requests_serially(
     parent = None
     for commit, branch_name in commits:
         base = repository.get_base_branch()
-        if workflow == SubmitWorkflow.SINGLE and parent:
+        if workflow.uses_chained_bases() and parent:
             base = none_throws(parent.head_branch_name)
 
         commit_msg = commit.get_msg()
@@ -613,7 +649,11 @@ async def create_placeholder_strategy_params(
                 commit=commit, parent=parent_commit
             )
             commits_that_need_pull_requests.append(commit_needs_pr)
-        parent_commit = commit
+        if not pr or pr.state == PullRequestState.OPEN:
+            # Only open pull requests (or commits that will get a new pull
+            # request) can serve as the parent for chained bases:
+            # closed/merged head branches would break the chain.
+            parent_commit = commit
 
     # Reserve one GitHub issue number for each pull request (in parallel) and
     # then assign them in increasing order. Also ensure head_branch_name is set
@@ -671,8 +711,11 @@ async def create_pull_requests_from_placeholder_issues(
         issue_number = params.number
 
         # Note that "overlapping" pull requests will all share the same base.
+        # For forks, chained bases are not possible either: the head branches
+        # live on the fork, but the base branch of a pull request must be a
+        # branch on the upstream repository.
         base = base_branch_for_repo
-        if workflow == SubmitWorkflow.SINGLE:
+        if workflow.uses_chained_bases() and not repository.is_fork:
             parent = params.parent
             if parent:
                 base = none_throws(parent.head_branch_name)
