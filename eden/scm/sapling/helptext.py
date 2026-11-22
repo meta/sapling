@@ -1734,6 +1734,17 @@ Setting used to control when to paginate and with what external tool. See
 
     Only affects streampager.
 
+``mouse``
+    Whether the pager handles the mouse, so that the scroll wheel scrolls
+    the output. Default: false.
+
+    Turning this on tells the terminal to send mouse events to the pager
+    instead of acting on them itself, which stops click-and-drag text
+    selection from working. Most terminals still let you select text while
+    holding shift.
+
+    Only affects streampager.
+
 ``wrapping-mode``
     Choose the line wrapping boundary: none, word, line.
 

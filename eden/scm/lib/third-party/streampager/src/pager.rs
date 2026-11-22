@@ -43,15 +43,18 @@ pub struct Pager {
 }
 
 /// Determine terminal capabilities.
-fn termcaps() -> Result<Capabilities> {
-    // Get terminal capabilities from the environment, but disable mouse
-    // reporting, as we don't want to change the terminal's mouse handling.
-    // Enable TrueColor support, which is backwards compatible with 16
-    // or 256 colors. Applications can still limit themselves to 16 or
-    // 256 colors if they want.
+///
+/// Mouse reporting is only enabled if the user asked for it, as it takes the
+/// mouse away from the terminal and so stops click-and-drag text selection
+/// from working.
+fn termcaps(mouse: bool) -> Result<Capabilities> {
+    // Get terminal capabilities from the environment. Enable TrueColor
+    // support, which is backwards compatible with 16 or 256 colors.
+    // Applications can still limit themselves to 16 or 256 colors if they
+    // want.
     let hints = ProbeHints::new_from_env()
         .color_level(Some(ColorLevel::TrueColor))
-        .mouse_reporting(Some(false));
+        .mouse_reporting(Some(mouse));
     let caps = Capabilities::new_with_hints(hints).map_err(Error::Termwiz)?;
     if cfg!(unix) && caps.terminfo_db().is_none() {
         Err(Error::TerminfoDatabaseMissing)
@@ -140,7 +143,7 @@ impl Pager {
         create_term: impl FnOnce(Capabilities) -> Result<SystemTerminal>,
         config: Config,
     ) -> Result<Self> {
-        let caps = termcaps()?;
+        let caps = termcaps(config.mouse)?;
         let term = create_term(caps.clone())?;
 
         let events = EventStream::new(term.waker());

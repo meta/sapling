@@ -31,6 +31,7 @@ use pipe::pipe;
 use spawn_ext::CommandExt;
 use streampager::Pager;
 use streampager::action::Action;
+use streampager::config::Config as PagerConfig;
 use streampager::config::InterfaceMode;
 use streampager::config::WrappingMode;
 use term::DEFAULT_TERM_HEIGHT;
@@ -660,8 +661,11 @@ impl IO {
 
         inner.set_progress(&[])?;
 
-        let mut pager = Pager::new_using_system_terminal()
-            .or_else(|_| Pager::new_using_stdio())
+        let mut pager_config = PagerConfig::from_config_file().with_env();
+        pager_config.mouse = config.must_get("pager", "mouse").unwrap_or(false);
+
+        let mut pager = Pager::new_using_system_terminal_with_config(pager_config.clone())
+            .or_else(|_| Pager::new_using_stdio_with_config(pager_config))
             .map_err(io::Error::other)?;
 
         // Configure the pager.
