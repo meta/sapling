@@ -22,6 +22,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -76,11 +77,17 @@ const MAX_CONCURRENT_REQUESTS: usize = 16;
 /// only bounds pathological hangs (at most one in-flight sweep).
 const SM_CLEANUP_TIMEOUT_SECS: u64 = 60;
 
+/// Upper bound for one sample. A read that hangs (e.g. on a stuck DB
+/// connection) would otherwise hold up the whole sweep: no heartbeat and no
+/// values until the read returns, which can take hours.
+const SAMPLE_TIMEOUT: Duration = Duration::from_secs(30);
+
 define_stats! {
     prefix = "mononoke.repo_state_logger";
     sampled_value: dynamic_timeseries("{}", (key: String); Average),
     heartbeat: timeseries(Average),
     sample_errors: counter(),
+    sample_timeouts: counter(),
     missing_values: counter(),
 }
 
@@ -336,22 +343,53 @@ async fn sample_source(ctx: &CoreContext, repo: &Repo, source: &Source) -> Resul
     }
 }
 
-/// Samples one source and emits the result (value, missing, or error count).
-/// Shared by the standalone sweep and the sharded per-repo sweep loop.
+#[derive(Debug)]
+enum SampleOutcome {
+    Value(i64),
+    Missing,
+    Failed(anyhow::Error),
+    TimedOut,
+}
+
+/// Awaits one sample for at most `limit`.
+async fn bounded_sample(
+    sample: impl Future<Output = Result<Option<i64>>>,
+    limit: Duration,
+) -> SampleOutcome {
+    match tokio::time::timeout(limit, sample).await {
+        Ok(Ok(Some(value))) => SampleOutcome::Value(value),
+        Ok(Ok(None)) => SampleOutcome::Missing,
+        Ok(Err(e)) => SampleOutcome::Failed(e),
+        Err(_) => SampleOutcome::TimedOut,
+    }
+}
+
+/// Samples one source and emits the result (value, missing, error or
+/// timeout count). Shared by the standalone sweep and the sharded per-repo
+/// sweep loop.
 async fn sample_and_emit(ctx: &CoreContext, repo: &Repo, name: &str, source: &Source) {
     let key = stats_key(name, source);
-    match sample_source(ctx, repo, source).await {
-        Ok(Some(value)) => {
+    match bounded_sample(sample_source(ctx, repo, source), SAMPLE_TIMEOUT).await {
+        SampleOutcome::Value(value) => {
             tracing::info!(repo = name, key, value, "sampled");
             STATS::sampled_value.add_value(value, (key,));
         }
-        Ok(None) => {
+        SampleOutcome::Missing => {
             tracing::info!(repo = name, key, "no value (absent counter or bookmark)");
             STATS::missing_values.increment_value(1);
         }
-        Err(e) => {
+        SampleOutcome::Failed(e) => {
             tracing::warn!(repo = name, key, "sample failed: {e:?}");
             STATS::sample_errors.increment_value(1);
+        }
+        SampleOutcome::TimedOut => {
+            tracing::warn!(
+                repo = name,
+                key,
+                "sample timed out after {SAMPLE_TIMEOUT:?}"
+            );
+            STATS::sample_errors.increment_value(1);
+            STATS::sample_timeouts.increment_value(1);
         }
     }
 }
@@ -611,6 +649,32 @@ mod tests {
     use repo_state_logger::RepoSelection;
 
     use super::*;
+
+    #[mononoke::test]
+    async fn bounded_sample_times_out_a_hung_read() {
+        let outcome = bounded_sample(std::future::pending(), Duration::from_millis(10)).await;
+        assert!(
+            matches!(outcome, SampleOutcome::TimedOut),
+            "a read that never returns must time out, got {outcome:?}"
+        );
+    }
+
+    #[mononoke::test]
+    async fn bounded_sample_passes_through_results_within_the_limit() {
+        let limit = Duration::from_secs(5);
+        assert!(matches!(
+            bounded_sample(async { Ok(Some(42)) }, limit).await,
+            SampleOutcome::Value(42)
+        ));
+        assert!(matches!(
+            bounded_sample(async { Ok(None) }, limit).await,
+            SampleOutcome::Missing
+        ));
+        assert!(matches!(
+            bounded_sample(async { Err(anyhow!("db error")) }, limit).await,
+            SampleOutcome::Failed(_)
+        ));
+    }
 
     #[mononoke::test]
     fn parses_counter_spec() {
