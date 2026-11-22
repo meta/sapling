@@ -37,7 +37,7 @@ def setup_mock_github_server(ui) -> MockGitHubServer:
         (43, "two\n"),
     ]
 
-    single = ui.config("github", "pr-workflow") == "single"
+    single = ui.config("github", "pr-workflow") != "overlap"
 
     for idx, (num, msg) in enumerate(prs):
         title, body = title_and_body(msg)
