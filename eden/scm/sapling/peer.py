@@ -31,7 +31,7 @@ class batcher:
     """base class for batches of commands submittable in a single request
 
     All methods invoked on instances of this class are simply queued and
-    return a a future for the result. Once you call submit(), all the queued
+    return a future for the result. Once you call submit(), all the queued
     calls are performed and the results set in their respective futures.
     """
 
