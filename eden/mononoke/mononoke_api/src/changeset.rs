@@ -2320,7 +2320,8 @@ where
                     };
                     Ok(entry)
                 }
-            });
+            })
+            .boxed();
         // Entries noted before this call, so the window below can measure
         // its own omissions against a shared per-request policy.
         let entries_before = policy.omitted_entry_count().unwrap_or(0);
