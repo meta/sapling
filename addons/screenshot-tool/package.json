@@ -13,7 +13,7 @@
     "execa": "^8.0.1",
     "puppeteer-core": "^24.0.0",
     "rrweb-player": "1.0.0-alpha.4",
-    "tmp": "^0.2.1"
+    "tmp": "^0.2.6"
   },
   "resolutions": {
     "basic-ftp": ">=5.2.0",
