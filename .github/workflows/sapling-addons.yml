@@ -5,6 +5,9 @@ env:
 on:
   public
 
+permissions:
+  contents: read
+
 jobs:
   verify-addons:
     runs-on: ubuntu-latest
