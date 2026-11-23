@@ -222,6 +222,7 @@ eden_add_library(eden_fs_service_server
     eden_fs_telemetry_log_info
     eden_fs_telemetry_structured_logger
     eden_fs_telemetry_task_trace
+    eden_fs_telemetry_throw_trace_capture
     eden_fs_telemetry_xplat_keys
     eden_fs_telemetry_xplat_logger
     eden_fs_utils_clock

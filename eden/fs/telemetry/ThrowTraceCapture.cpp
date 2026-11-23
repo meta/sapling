@@ -43,6 +43,8 @@ SkipRegistry& skipRegistry() {
   return registry;
 }
 
+std::atomic<bool> captureEnabled{false};
+
 bool isExpectedThrow(const void* exception, const std::type_info* type) {
   if (!exception || !type) {
     return false;
@@ -58,6 +60,9 @@ bool isExpectedThrow(const void* exception, const std::type_info* type) {
 }
 
 void onThrow(const void* exception, const std::type_info* type) {
+  if (!captureEnabled.load(std::memory_order_relaxed)) {
+    return;
+  }
   if (isExpectedThrow(exception, type)) {
     // Leave no trace behind: a later error must not report this throw's
     // predecessor as its own throw site.
@@ -86,6 +91,10 @@ void skipThrowTraceFor(
   }
   registry.types[n] = SkippedType{&type, isExpected};
   registry.count.store(n + 1, std::memory_order_release);
+}
+
+void setThrowTraceCaptureEnabled(bool enabled) {
+  captureEnabled.store(enabled, std::memory_order_relaxed);
 }
 } // namespace facebook::eden
 

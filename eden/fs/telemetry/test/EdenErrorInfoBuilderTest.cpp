@@ -32,6 +32,11 @@
 using namespace facebook::eden;
 
 namespace {
+const bool kCaptureEnabled = [] {
+  setThrowTraceCaptureEnabled(true);
+  return true;
+}();
+
 [[noreturn]] FOLLY_NOINLINE void throwRuntimeError() {
   throw std::runtime_error("fuse read failed");
 }

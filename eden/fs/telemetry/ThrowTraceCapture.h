@@ -25,6 +25,13 @@ void skipThrowTraceFor(
     bool (*isExpected)(const void* exception));
 
 /**
+ * Turn throw-site trace capture on or off for the whole process. It is off by
+ * default: the capture unwinds the stack on every throw, and only structured
+ * error logging reads the result.
+ */
+void setThrowTraceCaptureEnabled(bool enabled);
+
+/**
  * Returns the throw-site stack trace for the current exception.
  * Must be called inside a catch block.
  *

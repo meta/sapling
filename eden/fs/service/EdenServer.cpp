@@ -123,6 +123,7 @@
 #include "eden/fs/telemetry/ErrorLogger.h"
 #include "eden/fs/telemetry/IXplatLogger.h"
 #include "eden/fs/telemetry/LogEvent.h"
+#include "eden/fs/telemetry/ThrowTraceCapture.h"
 #ifdef EDEN_HAVE_LOGGER
 #include "eden/fs/telemetry/facebook/XplatLogger.h" // @manual
 #include "eden/fs/telemetry/facebook/XplatTransforms.h" // @manual
@@ -1107,6 +1108,9 @@ EdenServer::EdenServer(
   // here and again on every reload.
   SaplingBackingStore::setScribeLoggingEnabled(
       edenConfig->enableScribeLogging.getValue());
+  // Only structured error logging reads throw-site traces, so capture them
+  // only while it is on. Updated again on every reload.
+  setThrowTraceCaptureEnabled(errorLogger_->isEnabled());
 
   auto counters = fb303::ServiceData::get()->getDynamicCounters();
 
@@ -5529,6 +5533,7 @@ void EdenServer::reloadConfig() {
 
   SaplingBackingStore::setScribeLoggingEnabled(
       config->enableScribeLogging.getValue());
+  setThrowTraceCaptureEnabled(errorLogger_->isEnabled());
 
   // Update all periodic tasks that are controlled by config settings.
   // This should be cheap, so for now we just block on this to finish rather

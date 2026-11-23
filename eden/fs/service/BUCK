@@ -451,6 +451,7 @@ cpp_library(
         "//eden/fs/telemetry:log_info",
         "//eden/fs/telemetry:structured_logger",
         "//eden/fs/telemetry:task_trace",
+        "//eden/fs/telemetry:throw_trace_capture",
         "//eden/fs/telemetry:xplat_keys",
         "//eden/fs/telemetry:xplat_logger",
         "//eden/fs/telemetry/facebook:xplat_logger",  # @manual

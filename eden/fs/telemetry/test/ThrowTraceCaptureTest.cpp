@@ -16,6 +16,11 @@ using namespace facebook::eden;
 
 namespace {
 
+const bool kCaptureEnabled = [] {
+  setThrowTraceCaptureEnabled(true);
+  return true;
+}();
+
 [[noreturn]] FOLLY_NOINLINE void innerThrowingFunc() {
   throw std::runtime_error("inner error");
 }
@@ -73,4 +78,16 @@ TEST(ThrowTraceCaptureTest, SkipsRegisteredExpectedTypes) {
 TEST(ThrowTraceCaptureTest, ReturnsNulloptOutsideCatchBlock) {
   auto trace = getThrowSiteStackTrace();
   EXPECT_FALSE(trace.has_value());
+}
+
+TEST(ThrowTraceCaptureTest, CapturesNothingWhenDisabled) {
+  // Drop any trace an earlier test left on this thread.
+  (void)getThrowSiteStackTrace();
+  setThrowTraceCaptureEnabled(false);
+  try {
+    outerThrowingFunc();
+  } catch (const std::exception&) {
+    EXPECT_FALSE(getThrowSiteStackTrace().has_value());
+  }
+  setThrowTraceCaptureEnabled(true);
 }
