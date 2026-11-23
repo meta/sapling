@@ -646,13 +646,6 @@ class ThriftRequestScope {
 };
 
 template <typename ReturnType>
-Future<ReturnType> wrapFuture(
-    std::unique_ptr<ThriftRequestScope> logHelper,
-    folly::Future<ReturnType>&& f) {
-  return std::move(f).ensure([logHelper = std::move(logHelper)]() {});
-}
-
-template <typename ReturnType>
 ImmediateFuture<ReturnType> wrapImmediateFuture(
     std::unique_ptr<ThriftRequestScope> logHelper,
     ImmediateFuture<ReturnType>&& f) {
@@ -727,9 +720,9 @@ facebook::eden::InodePtr inodeFromUserPath(
 
 // INSTRUMENT_THRIFT_CALL returns a unique pointer to
 // ThriftRequestScope object. The returned pointer can be used to call
-// wrapFuture() to attach a log message on the completion of the Future. This
-// must be called in a Thrift worker thread because the calling pid of
-// getAndRegisterClientPid is stored in a thread local variable.
+// wrapImmediateFuture() to attach a log message on the completion of the
+// Future. This must be called in a Thrift worker thread because the calling pid
+// of getAndRegisterClientPid is stored in a thread local variable.
 //
 // For coroutine methods, thread-local storage is unreliable due to
 // potential thread switching. Use INSTRUMENT_THRIFT_CALL_WITH_CANCELLATION
