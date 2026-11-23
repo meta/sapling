@@ -307,6 +307,9 @@ def _ignore_already_removed(
 def _remove_client_dir(client_dir: Path) -> None:
     # EdenFS does not mount a client directory that has no SNAPSHOT.
     # edenfsctl reads config.toml to remove a partly deleted checkout.
+    # Unmount recovery leaves a checkout with the intentional-unmount marker
+    # alone, so an interrupted removal must not delete the marker before
+    # config.toml.
     # Another `eden rm` of the same checkout, or an earlier interrupted one,
     # may already have deleted any part of the client directory.
     (client_dir / SNAPSHOT).unlink(missing_ok=True)
@@ -316,13 +319,14 @@ def _remove_client_dir(client_dir: Path) -> None:
         log.warning(f"Client directory {client_dir} was already removed")
         return
     for entry in entries:
-        if entry.name == MOUNT_CONFIG:
+        if entry.name in (MOUNT_CONFIG, INTENTIONALLY_UNMOUNTED):
             continue
         if entry.is_dir() and not entry.is_symlink():
             shutil.rmtree(entry, onerror=_ignore_already_removed)
         else:
             entry.unlink(missing_ok=True)
     (client_dir / MOUNT_CONFIG).unlink(missing_ok=True)
+    (client_dir / INTENTIONALLY_UNMOUNTED).unlink(missing_ok=True)
     try:
         client_dir.rmdir()
     except FileNotFoundError:

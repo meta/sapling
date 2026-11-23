@@ -400,6 +400,24 @@ type = "{scm_type}"
         config_mod._remove_client_dir(client_dir)
         self.assertFalse(client_dir.exists())
 
+    def test_interrupted_remove_keeps_the_intentional_unmount_marker(self) -> None:
+        client_dir = self._state_dir / "clients" / "half-removed"
+        (client_dir / "local").mkdir(parents=True)
+        (client_dir / "SNAPSHOT").write_text("")
+        (client_dir / util.INTENTIONALLY_UNMOUNTED).write_text("")
+        # unlink() fails on a directory, so the removal stops at config.toml.
+        (client_dir / "config.toml").mkdir()
+
+        with self.assertRaises(OSError):
+            config_mod._remove_client_dir(client_dir)
+
+        self.assertFalse((client_dir / "local").exists())
+        self.assertTrue((client_dir / util.INTENTIONALLY_UNMOUNTED).exists())
+
+        (client_dir / "config.toml").rmdir()
+        config_mod._remove_client_dir(client_dir)
+        self.assertFalse(client_dir.exists())
+
     def test_remove_client_dir_removes_all_entries(self) -> None:
         client_dir = self._state_dir / "clients" / "removed"
         (client_dir / "local").mkdir(parents=True)
