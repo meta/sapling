@@ -697,6 +697,9 @@ fn parse_common_config(
             Ok((repo, path))
         })
         .collect::<Result<_>>()?;
+    let bookmark_events_category = common
+        .bookmark_events_category
+        .filter(|category| !category.is_empty());
 
     Ok(CommonConfig {
         trusted_parties_hipster_tier,
@@ -714,6 +717,7 @@ fn parse_common_config(
         multi_repo_land_manifest_repos,
         multi_repo_land_manifest_formats,
         multi_repo_land_pinned_manifest_paths,
+        bookmark_events_category,
     })
 }
 
@@ -1422,6 +1426,7 @@ mod test {
             trusted_parties_hipster_tier="tier1"
             git_memory_upper_bound=100
             edenapi_dumper_scuba_table="dumped_requests"
+            bookmark_events_category="bookmark_events"
 
             [internal_identity]
             identity_type = "SERVICE_IDENTITY"
@@ -1995,6 +2000,7 @@ mod test {
                 multi_repo_land_manifest_repos: BTreeMap::new(),
                 multi_repo_land_manifest_formats: BTreeMap::new(),
                 multi_repo_land_pinned_manifest_paths: BTreeMap::new(),
+                bookmark_events_category: Some("bookmark_events".to_string()),
             }
         );
 

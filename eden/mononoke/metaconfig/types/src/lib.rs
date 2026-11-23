@@ -175,6 +175,9 @@ pub struct CommonConfig {
     /// Manifest repo name -> where its pinned manifest lives, relative to the
     /// repo root. A manifest repo absent here uses its format's default.
     pub multi_repo_land_pinned_manifest_paths: BTreeMap<String, String>,
+    /// Scribe category of the process-wide bookmark event fan-out reader.
+    /// `None` keeps the per-repository bookmark event listeners.
+    pub bookmark_events_category: Option<String>,
 }
 
 /// The manifest format a Multi-Repo Land manifest repo holds.
