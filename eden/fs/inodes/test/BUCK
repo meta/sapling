@@ -482,7 +482,6 @@ cpp_unittest(
         "fbsource//xplat/folly/logging/test:test_handler",
         "fbsource//xplat/folly/synchronization:baton",
         "fbsource//xplat/folly/synchronization:lifo_sem",
-        "fbsource//xplat/folly/synchronization/test:barrier",
         "fbsource//xplat/folly/test:test_utils",
         "fbsource//xplat/folly/testing:test_util",
         ":overlay_test_util",

@@ -20,12 +20,13 @@
 #include <fmt/format.h>
 
 #include <folly/File.h>
+#include <folly/Utility.h>
 #include <folly/container/Array.h>
 #include <folly/init/Init.h>
 #include <folly/io/async/AsyncSocket.h>
 #include <folly/logging/xlog.h>
-#include <folly/synchronization/test/Barrier.h>
 #include <thrift/lib/cpp2/async/HeaderClientChannel.h>
+#include <latch>
 
 #include "eden/common/utils/XAttr.h"
 #include "eden/common/utils/benchharness/Bench.h"
@@ -321,7 +322,7 @@ int main(int argc, char** argv) {
   const unsigned samples_per_thread = 8192;
 
   std::vector<std::thread> threads;
-  folly::test::Barrier gate{static_cast<unsigned>(nthreads)};
+  std::latch gate{folly::to_signed(nthreads)};
   std::vector<uint64_t> thrift_samples(nthreads * samples_per_thread);
   std::vector<uint64_t> filesystem_samples(nthreads * samples_per_thread);
   // we are just going to do calculations based on the thrift_files size, so
@@ -356,7 +357,7 @@ int main(int argc, char** argv) {
         client = std::make_unique<EdenServiceAsyncClient>(std::move(channel));
       }
 
-      gate.wait();
+      gate.arrive_and_wait();
       auto xattr_type_size = getXAttrTypeSize(xAttrType);
       for (unsigned j = 0; j < samples_per_thread; ++j) {
         auto samples_index = thread_number * samples_per_thread + j;

@@ -8,12 +8,13 @@
 #include <fcntl.h>
 #include <folly/Exception.h>
 #include <folly/Likely.h>
+#include <folly/Utility.h>
 #include <folly/init/Init.h>
 #include <folly/portability/Unistd.h>
-#include <folly/synchronization/test/Barrier.h>
 #include <gflags/gflags.h>
 #include <inttypes.h>
 #include <string.h>
+#include <latch>
 #include <limits>
 #include <mutex>
 #include <system_error>
@@ -54,7 +55,7 @@ int main(int argc, char** argv) {
     ::close(fd);
   }
 
-  folly::test::Barrier gate{FLAGS_threads};
+  std::latch gate{folly::to_signed(FLAGS_threads)};
 
   std::mutex result_mutex;
   StatAccumulator combined_open;
@@ -65,7 +66,7 @@ int main(int argc, char** argv) {
     StatAccumulator close_accum;
     int file_index = 1;
 
-    gate.wait();
+    gate.arrive_and_wait();
 
     for (uint64_t i = 0; i < FLAGS_iterations; ++i) {
       const char* filename = argv[file_index];

@@ -23,7 +23,6 @@
 #include <folly/logging/test/TestLogHandler.h>
 #include <folly/synchronization/Baton.h>
 #include <folly/synchronization/LifoSem.h>
-#include <folly/synchronization/test/Barrier.h>
 #include <folly/test/TestUtils.h>
 #include <folly/testing/TestUtil.h>
 #include <gtest/gtest.h>
@@ -32,6 +31,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
+#include <latch>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -937,7 +937,7 @@ TEST_P(RawOverlayTest, closed_overlay_stress_test) {
 
   std::vector<folly::Future<folly::Unit>> futures;
   futures.reserve(kThreadCount);
-  folly::test::Barrier gate{kThreadCount + 1};
+  std::latch gate{kThreadCount + 1};
 
   for (unsigned i = 0; i < kThreadCount; ++i) {
     futures.emplace_back(folly::via(&executor, [&] {
@@ -953,12 +953,12 @@ TEST_P(RawOverlayTest, closed_overlay_stress_test) {
           throw e;
         }
         // The Overlay is already closed, so just return successfully.
-        gate.wait();
+        gate.arrive_and_wait();
         return;
       }
 
       // Block until after overlay has closed
-      gate.wait();
+      gate.arrive_and_wait();
 
       ASSERT_TRUE(overlay->isClosed());
 
@@ -986,7 +986,7 @@ TEST_P(RawOverlayTest, closed_overlay_stress_test) {
   overlay->close();
 
   // Wake the waiting threads
-  gate.wait();
+  gate.arrive_and_wait();
 
   auto finished = folly::collectAllUnsafe(futures).get();
   for (auto& f : finished) {
@@ -1874,9 +1874,9 @@ TEST(PlainOverlayTest, no_semaphore_allows_concurrent_fsck) {
   // A barrier that unblocks only when both threads reach it.  If fsck
   // operations were serialized this would deadlock, proving that both
   // callbacks must be executing concurrently for the test to pass.
-  folly::test::Barrier gate(2);
+  std::latch gate(2);
 
-  auto cb = [&] { gate.wait(); };
+  auto cb = [&] { gate.arrive_and_wait(); };
   ov1->setFsckCallback(cb);
   ov2->setFsckCallback(cb);
 

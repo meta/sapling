@@ -27,7 +27,6 @@ cpp_unittest(
         "fbsource//xplat/folly/io:iobuf",
         "fbsource//xplat/folly/logging:logging",
         "fbsource//xplat/folly/logging/test:test_handler",
-        "fbsource//xplat/folly/synchronization/test:barrier",
         "fbsource//xplat/folly/test:test_utils",
         "fbsource//xplat/folly/testing:test_util",
         "//eden/common/testharness:temp_file",
