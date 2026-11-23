@@ -58,6 +58,8 @@ use unodes::RootUnodeManifestId;
 
 use super::*;
 
+mod listing_window;
+
 #[facet::container]
 struct TestRepo {
     #[facet]

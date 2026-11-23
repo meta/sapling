@@ -116,6 +116,12 @@ struct ImportArgs {
     /// finished, and the rest are left for the next batch
     #[clap(long)]
     max_batch_build_secs: Option<u64>,
+
+    /// Changelist numbers a batch's first listing covers after the last one imported; each
+    /// listing that leaves the batch short covers twice as many. Unset: one listing up to
+    /// the server's latest
+    #[clap(long)]
+    listing_window: Option<NonZeroU64>,
 }
 
 impl ImportArgs {
@@ -129,6 +135,7 @@ impl ImportArgs {
             max_build_time: self
                 .max_batch_build_secs
                 .map_or(defaults.max_build_time, Duration::from_secs),
+            listing_window: self.listing_window,
             ..defaults
         }
     }

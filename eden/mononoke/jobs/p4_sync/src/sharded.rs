@@ -492,6 +492,11 @@ impl P4SyncProcessExecutor {
             progress: last_progress.steps(),
             ..self.settings.import_options.clone()
         };
+        // A caught-up depot has little to list, and windows would only add listings.
+        let caught_up_options = ImportOptions {
+            listing_window: None,
+            ..options.clone()
+        };
 
         let mut state = None;
         let mut failures = 0;
@@ -529,7 +534,10 @@ impl P4SyncProcessExecutor {
                 depot,
                 &bookmark,
                 batch_size.get(),
-                &options,
+                match state {
+                    Some(State::CaughtUp) => &caught_up_options,
+                    _ => &options,
+                },
             );
             // A batch can outlast `SM_CLEANUP_TIMEOUT_SECS` (derivation included), so a stop
             // drops it: its bookmark and mapping move in one transaction, all or nothing, and

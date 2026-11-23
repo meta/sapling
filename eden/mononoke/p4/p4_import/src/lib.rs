@@ -8,6 +8,7 @@
 //! Imports a Perforce depot into a repo.
 
 use std::collections::HashMap;
+use std::num::NonZeroU64;
 use std::pin::pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -185,6 +186,11 @@ pub struct ImportOptions {
     /// Incremented for each file stored and each changeset built, so a caller can tell that
     /// a long batch is moving. A failed batch's steps stay counted.
     pub progress: Arc<AtomicU64>,
+    /// How many changelist numbers after the resume point `import_next`'s first listing
+    /// covers (see `next_changes_in_windows`). `None` lists up to the server's latest in one
+    /// listing (`next_changes`), which a server may answer no faster for a few changelists
+    /// than for all of them.
+    pub listing_window: Option<NonZeroU64>,
 }
 
 impl Default for ImportOptions {
@@ -195,6 +201,7 @@ impl Default for ImportOptions {
             changelist_lookahead: 2,
             max_build_time: Duration::from_mins(10),
             progress: Arc::default(),
+            listing_window: None,
         }
     }
 }
@@ -639,6 +646,42 @@ pub async fn next_changes(
     source
         .submitted_changes(depot_root, after, latest, limit)
         .await
+}
+
+/// What `next_changes` returns, from listings that each cover a range of changelist numbers:
+/// the first covers `first_window` numbers after `after`, and each one that leaves the batch
+/// short starts where it ended and covers twice as many, up to the server's latest. A
+/// listing short of what it was asked for holds every changelist the depot has in its
+/// range, so the ranges together list what one listing up to the latest would. The latest is
+/// read once. A quiet depot on a busy server costs a few listings, the last of them wide.
+pub async fn next_changes_in_windows(
+    source: &impl ChangeSource,
+    depot_root: &str,
+    after: Option<u64>,
+    limit: usize,
+    first_window: NonZeroU64,
+) -> Result<Vec<u64>> {
+    let latest = source.latest_change().await?;
+    let mut changes = Vec::new();
+    let mut listed_upto = after;
+    let mut window = first_window.get();
+    while changes.len() < limit && listed_upto.is_none_or(|upto| upto < latest) {
+        let upto = listed_upto.unwrap_or(0).saturating_add(window).min(latest);
+        let wanted = limit - changes.len();
+        let listed = source
+            .submitted_changes(depot_root, listed_upto, upto, wanted)
+            .await?;
+        ensure!(
+            listed.len() <= wanted,
+            "listing {depot_root} after {listed_upto:?} up to {upto} returned {} changelists, \
+             {wanted} asked for",
+            listed.len()
+        );
+        changes.extend(listed);
+        listed_upto = Some(upto);
+        window = window.saturating_mul(2);
+    }
+    Ok(changes)
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -1197,7 +1240,12 @@ pub async fn import_next(
         check_depot_root(source, depot_root).await?;
         check_resume_continuity(ctx, repo, source, bookmark).await?;
         let after = resume_point(ctx, repo, bookmark).await?;
-        next_changes(source, depot_root, after, limit).await
+        match options.listing_window {
+            None => next_changes(source, depot_root, after, limit).await,
+            Some(first_window) => {
+                next_changes_in_windows(source, depot_root, after, limit, first_window).await
+            }
+        }
     }
     .await
     .map_err(|error| {
