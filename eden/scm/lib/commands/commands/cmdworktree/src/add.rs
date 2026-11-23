@@ -115,10 +115,11 @@ fn worktree_limit_reached_message(repo: &Repo, max_count: u64, current: usize) -
     )
 }
 
-/// Record free space for every measured add and the warning shown to this caller.
+/// Record free space and the warning shown to this caller for a
+/// below-threshold add.
 fn record_disk_check_metrics(available: u64, below_warning: bool, is_agent: bool) {
-    hg_metrics::max_counter("worktree.disk.free_gb", available >> 30);
     if below_warning {
+        hg_metrics::max_counter("worktree.disk.free_gb", available >> 30);
         hg_metrics::increment_counter(
             if is_agent {
                 "worktree.disk.agent_warned"

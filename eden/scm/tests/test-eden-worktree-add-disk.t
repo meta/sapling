@@ -46,12 +46,11 @@ test worktree add - agent warning remains advisory
   worktree.disk.agent_warned: 1
   worktree.disk.free_gb: * (glob)
 
-test worktree add - measured ample space has no warning counter
+test worktree add - measured ample space records no counters
 
   $ setconfig worktree.disk-warning-threshold=1B
   $ sl worktree add $TESTTMP/plenty
   created linked worktree at $TESTTMP/plenty
-  worktree.disk.free_gb: * (glob)
 
 test worktree add - zero turns off the check and the counters
 
