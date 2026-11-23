@@ -58,6 +58,7 @@ use unodes::RootUnodeManifestId;
 
 use super::*;
 
+mod content_reuse;
 mod copy_sources_with_uploads;
 mod listing_window;
 

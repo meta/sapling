@@ -24,6 +24,7 @@ use anyhow::bail;
 use anyhow::ensure;
 use clap::Args;
 use clap::Parser;
+use clap::ValueEnum;
 use executor_lib::args::ShardedExecutorArgs;
 use fbinit::FacebookInit;
 use mononoke_app::MononokeApp;
@@ -33,6 +34,7 @@ use mononoke_app::args::RepoFilterAppExtension;
 use mononoke_app::args::TLSArgs;
 use mononoke_app::monitoring::AliveService;
 use mononoke_app::monitoring::MonitoringAppExtension;
+use p4_import::ContentReuse;
 use p4_import::ImportOptions;
 use p4_source::Keychain;
 use p4_source::P4Args;
@@ -126,6 +128,29 @@ struct ImportArgs {
     /// Ask for a changelist's integration records while its files are fetched, not after
     #[clap(long)]
     copy_sources_with_uploads: bool,
+
+    /// Whether a branch, move/add or integrate whose content is already stored, found by
+    /// its MD5 and size, is printed: `verify` looks the content up but prints every file
+    #[clap(long, value_enum, default_value_t = ContentReuseFlag::Off)]
+    content_reuse: ContentReuseFlag,
+}
+
+/// `--content-reuse`'s values, one per `ContentReuse`, which p4_import keeps free of clap.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ContentReuseFlag {
+    Off,
+    Verify,
+    On,
+}
+
+impl From<ContentReuseFlag> for ContentReuse {
+    fn from(flag: ContentReuseFlag) -> Self {
+        match flag {
+            ContentReuseFlag::Off => ContentReuse::Off,
+            ContentReuseFlag::Verify => ContentReuse::Verify,
+            ContentReuseFlag::On => ContentReuse::On,
+        }
+    }
 }
 
 impl ImportArgs {
@@ -141,6 +166,7 @@ impl ImportArgs {
                 .map_or(defaults.max_build_time, Duration::from_secs),
             listing_window: self.listing_window,
             copy_sources_with_uploads: self.copy_sources_with_uploads,
+            content_reuse: self.content_reuse.into(),
             ..defaults
         }
     }

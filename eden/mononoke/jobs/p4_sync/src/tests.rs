@@ -38,6 +38,8 @@ use crate::sharded::retry_delay;
 use crate::sharded::secs_since_success_key;
 use crate::sharded::servers;
 
+mod content_reuse_flag;
+
 #[mononoke::test]
 fn test_a_repo_gets_the_entry_of_the_server_its_config_names() {
     let config = |alias: &str| RepoConfig {

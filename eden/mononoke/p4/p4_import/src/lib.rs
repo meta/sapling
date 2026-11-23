@@ -83,7 +83,15 @@ use thiserror::Error;
 define_stats! {
     prefix = "mononoke.p4_import";
     failed_batches: dynamic_timeseries("failed_batches.{}", (stage: &'static str); Rate, Sum),
+    content_reuse_collisions: timeseries(Rate, Sum),
+    content_reuse_lookup_failures: timeseries(Rate, Sum),
+    content_reuse_digest_mismatches: timeseries(Rate, Sum),
 }
+
+mod content_reuse;
+
+pub use content_reuse::ContentReuse;
+pub use content_reuse::ContentReuseReport;
 
 /// Stores a file revision's content in the repo's filestore. `size` is the size
 /// Perforce reports for the revision: content of any other length is rejected.
@@ -194,6 +202,8 @@ pub struct ImportOptions {
     /// Asks for a changelist's integration records while its contents are stored, not
     /// after: with many copies in a changelist, the records take long enough to matter.
     pub copy_sources_with_uploads: bool,
+    /// Whether a copy whose content is already stored, found by MD5 and size, is printed.
+    pub content_reuse: ContentReuse,
 }
 
 impl Default for ImportOptions {
@@ -206,6 +216,7 @@ impl Default for ImportOptions {
             progress: Arc::default(),
             listing_window: None,
             copy_sources_with_uploads: false,
+            content_reuse: ContentReuse::Off,
         }
     }
 }
@@ -317,9 +328,11 @@ pub struct BuiltChangeset {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ChangelistTimings {
     pub describe: Duration,
-    /// Printing and storing the content of `uploaded_files` files.
+    /// Printing and storing the content of `uploaded_files` files, and reusing stored content.
     pub upload: Duration,
+    /// Files printed and stored, not those reused.
     pub uploaded_files: usize,
+    pub content_reuse: ContentReuseReport,
     /// `filelog` of each branch and move/add.
     pub integrations: Duration,
     /// Whether each copy source is a file in the parent.
@@ -436,6 +449,8 @@ struct FetchedChangelist {
     copy_sources: HashMap<String, NonRootMPath>,
     ambiguous_copy_sources: usize,
     timings: ChangelistTimings,
+    /// The revisions whose content was reused, not printed.
+    reused: Vec<FileRevision>,
 }
 
 async fn fetch_changelist(
@@ -447,18 +462,44 @@ async fn fetch_changelist(
     options: &ImportOptions,
 ) -> Result<FetchedChangelist> {
     let (describe, changelist) = source.describe(change).try_timed().await?;
-    let upload = upload_changelist_contents(
-        ctx,
-        repo,
-        source,
-        depot_root,
-        &changelist,
-        options.file_concurrency.max(1),
-        &options.progress,
-    )
+    let upload = async {
+        let concurrency = options.file_concurrency.max(1);
+        let mode = match options.content_reuse {
+            ContentReuse::Off => {
+                let contents = upload_changelist_contents(
+                    ctx,
+                    repo,
+                    source,
+                    depot_root,
+                    &changelist,
+                    concurrency,
+                    &options.progress,
+                )
+                .await?;
+                return anyhow::Ok(content_reuse::Uploaded {
+                    printed_files: contents.len(),
+                    contents,
+                    ..Default::default()
+                });
+            }
+            ContentReuse::Verify => content_reuse::Mode::Verify,
+            ContentReuse::On => content_reuse::Mode::On,
+        };
+        content_reuse::upload_changelist_contents_reusing(
+            ctx,
+            repo,
+            source,
+            depot_root,
+            &changelist,
+            concurrency,
+            &options.progress,
+            mode,
+        )
+        .await
+    }
     .try_timed();
     let integrations = copy_sources(source, depot_root, &changelist).try_timed();
-    let ((upload, contents), (integrations, (copy_sources, ambiguous_copy_sources))) =
+    let ((upload, uploaded), (integrations, (copy_sources, ambiguous_copy_sources))) =
         if options.copy_sources_with_uploads {
             future::try_join(upload, integrations).await?
         } else {
@@ -468,14 +509,16 @@ async fn fetch_changelist(
         timings: ChangelistTimings {
             describe: describe.completion_time,
             upload: upload.completion_time,
-            uploaded_files: contents.len(),
+            uploaded_files: uploaded.printed_files,
+            content_reuse: uploaded.report,
             integrations: integrations.completion_time,
             ..Default::default()
         },
         changelist,
-        contents,
+        contents: uploaded.contents,
         copy_sources,
         ambiguous_copy_sources,
+        reused: uploaded.reused,
     })
 }
 
@@ -495,6 +538,7 @@ async fn build_changeset(
         mut copy_sources,
         ambiguous_copy_sources,
         mut timings,
+        reused: _,
     } = fetched;
     // Mononoke doesn't check that copy_from exists in the parent, but derived data and
     // blame would follow it anyway.
@@ -599,8 +643,20 @@ pub async fn build_changesets(
         while (built.is_empty() || started.elapsed() < options.max_build_time)
             && let Some(fetched) = receiver.next().await
         {
-            let fetched: FetchedChangelist = fetched?;
+            let mut fetched: FetchedChangelist = fetched?;
             let change = fetched.changelist.number;
+            // Every earlier changelist has been fetched by now.
+            let reused = std::mem::take(&mut fetched.reused);
+            let reprinted = content_reuse::reprint_collided(ctx, repo, source, reused, concurrency)
+                .await
+                .with_context(|| BuildingChangelist(change))?;
+            for (depot_path, metadata) in reprinted {
+                let reuse = &mut fetched.timings.content_reuse;
+                reuse.reused_files -= 1;
+                reuse.reused_bytes -= metadata.total_size;
+                fetched.timings.uploaded_files += 1;
+                fetched.contents.insert(depot_path, metadata);
+            }
             let changeset = build_changeset(
                 ctx,
                 repo,
@@ -1024,7 +1080,7 @@ pub async fn import_changelists(
         commit: commit.completion_time,
     };
     // Synchronous, so a stop during the update-feed await below can't skip them.
-    log_imported(ctx, &imported);
+    log_imported(ctx, &imported, options.content_reuse);
     trace_imported(ctx, depot_root, bookmark, old, new, &imported);
     log_repo_update(ctx, repo, bookmark, old, new, commit_infos).await;
     Ok(imported)
@@ -1148,7 +1204,7 @@ async fn log_repo_update(
     log_bookmark_operation(ctx, repo, &info).await;
 }
 
-fn log_imported(ctx: &CoreContext, batch: &ImportedBatch) {
+fn log_imported(ctx: &CoreContext, batch: &ImportedBatch, content_reuse: ContentReuse) {
     let micros = |duration: Duration| duration.as_micros() as u64;
     for imported in &batch.changelists {
         let timings = &imported.timings;
@@ -1167,6 +1223,16 @@ fn log_imported(ctx: &CoreContext, batch: &ImportedBatch) {
             .add("batch_build_us", micros(batch.build))
             .add("batch_save_and_derive_us", micros(batch.save_and_derive))
             .add("batch_commit_us", micros(batch.commit));
+        let reuse = &timings.content_reuse;
+        if content_reuse != ContentReuse::Off {
+            scuba
+                .add("content_reuse", format!("{content_reuse:?}").to_lowercase())
+                .add("reused_files", reuse.reused_files)
+                .add("reused_bytes", reuse.reused_bytes)
+                .add("reusable_files", reuse.reusable_files)
+                .add("reusable_bytes", reuse.reusable_bytes)
+                .add("content_reuse_lookup_us", micros(reuse.lookup));
+        }
         scuba.log_with_msg("P4 changelist imported", None);
     }
 }
