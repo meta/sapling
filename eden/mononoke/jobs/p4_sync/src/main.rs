@@ -122,6 +122,10 @@ struct ImportArgs {
     /// the server's latest
     #[clap(long)]
     listing_window: Option<NonZeroU64>,
+
+    /// Ask for a changelist's integration records while its files are fetched, not after
+    #[clap(long)]
+    copy_sources_with_uploads: bool,
 }
 
 impl ImportArgs {
@@ -136,6 +140,7 @@ impl ImportArgs {
                 .max_batch_build_secs
                 .map_or(defaults.max_build_time, Duration::from_secs),
             listing_window: self.listing_window,
+            copy_sources_with_uploads: self.copy_sources_with_uploads,
             ..defaults
         }
     }

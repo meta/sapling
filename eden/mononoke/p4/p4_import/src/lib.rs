@@ -191,6 +191,9 @@ pub struct ImportOptions {
     /// listing (`next_changes`), which a server may answer no faster for a few changelists
     /// than for all of them.
     pub listing_window: Option<NonZeroU64>,
+    /// Asks for a changelist's integration records while its contents are stored, not
+    /// after: with many copies in a changelist, the records take long enough to matter.
+    pub copy_sources_with_uploads: bool,
 }
 
 impl Default for ImportOptions {
@@ -202,6 +205,7 @@ impl Default for ImportOptions {
             max_build_time: Duration::from_mins(10),
             progress: Arc::default(),
             listing_window: None,
+            copy_sources_with_uploads: false,
         }
     }
 }
@@ -440,25 +444,26 @@ async fn fetch_changelist(
     source: &impl ChangeSource,
     depot_root: &str,
     change: u64,
-    concurrency: usize,
-    progress: &AtomicU64,
+    options: &ImportOptions,
 ) -> Result<FetchedChangelist> {
     let (describe, changelist) = source.describe(change).try_timed().await?;
-    let (upload, contents) = upload_changelist_contents(
+    let upload = upload_changelist_contents(
         ctx,
         repo,
         source,
         depot_root,
         &changelist,
-        concurrency,
-        progress,
+        options.file_concurrency.max(1),
+        &options.progress,
     )
-    .try_timed()
-    .await?;
-    let (integrations, (copy_sources, ambiguous_copy_sources)) =
-        copy_sources(source, depot_root, &changelist)
-            .try_timed()
-            .await?;
+    .try_timed();
+    let integrations = copy_sources(source, depot_root, &changelist).try_timed();
+    let ((upload, contents), (integrations, (copy_sources, ambiguous_copy_sources))) =
+        if options.copy_sources_with_uploads {
+            future::try_join(upload, integrations).await?
+        } else {
+            (upload.await?, integrations.await?)
+        };
     Ok(FetchedChangelist {
         timings: ChangelistTimings {
             describe: describe.completion_time,
@@ -575,17 +580,9 @@ pub async fn build_changesets(
         let mut fetched = pin!(
             stream::iter(changes.iter().copied())
                 .map(|change| async move {
-                    fetch_changelist(
-                        ctx,
-                        repo,
-                        source,
-                        depot_root,
-                        change,
-                        concurrency,
-                        &options.progress,
-                    )
-                    .await
-                    .with_context(|| BuildingChangelist(change))
+                    fetch_changelist(ctx, repo, source, depot_root, change, options)
+                        .await
+                        .with_context(|| BuildingChangelist(change))
                 })
                 .buffered(options.changelist_lookahead.max(1))
         );

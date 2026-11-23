@@ -58,6 +58,7 @@ use unodes::RootUnodeManifestId;
 
 use super::*;
 
+mod copy_sources_with_uploads;
 mod listing_window;
 
 #[facet::container]
