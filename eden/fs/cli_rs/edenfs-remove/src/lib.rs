@@ -30,6 +30,7 @@ use edenfs_core::checkout::get_mounts;
 use edenfs_core::fsutil;
 use edenfs_core::fsutil::forcefully_remove_dir_all;
 use edenfs_core::instance::EdenFsInstance;
+use edenfs_core::instance::INTENTIONAL_UNMOUNT_MARKER;
 use edenfs_core::redirect::Redirection;
 use edenfs_core::redirect::RedirectionBackingCleanupAction;
 use edenfs_core::redirect::RedirectionBackingCleanupPlanner;
@@ -1102,10 +1103,13 @@ fn remove_client_config_dir(
 fn remove_client_dir(client_dir: &Path) -> std::io::Result<()> {
     // EdenFS does not mount a client directory that has no SNAPSHOT.
     // edenfsctl reads config.toml to remove a partly deleted checkout.
+    // Unmount recovery leaves a checkout with the intentional-unmount marker alone, so an
+    // interrupted removal must not delete the marker before config.toml.
     fsutil::remove_file(&client_dir.join("SNAPSHOT"))?;
     for entry in fs::read_dir(client_dir)? {
         let entry = entry?;
-        if entry.file_name() == "config.toml" {
+        let name = entry.file_name();
+        if name == "config.toml" || name == INTENTIONAL_UNMOUNT_MARKER {
             continue;
         }
         if entry.file_type()?.is_dir() {
@@ -1115,6 +1119,7 @@ fn remove_client_dir(client_dir: &Path) -> std::io::Result<()> {
         }
     }
     fsutil::remove_file(&client_dir.join("config.toml"))?;
+    fsutil::remove_file(&client_dir.join(INTENTIONAL_UNMOUNT_MARKER))?;
     fs::remove_dir(client_dir)
 }
 
@@ -1756,6 +1761,38 @@ mod tests {
             "config.toml is deleted last"
         );
 
+        remove_client_config_dir(&instance, temp_dir.path(), "test")
+            .expect("a retry removes the rest of the client directory");
+        assert!(!client_dir.exists());
+    }
+
+    #[test]
+    fn interrupted_removal_keeps_the_intentional_unmount_marker() {
+        let temp_dir = tempdir().expect("temporary directory");
+        let config_dir = temp_dir.path().join("eden");
+        let client_dir = config_dir.join("clients/test");
+        fs::create_dir_all(client_dir.join("local")).expect("overlay directory");
+        fs::write(client_dir.join("SNAPSHOT"), b"").expect("snapshot");
+        fs::write(client_dir.join(INTENTIONAL_UNMOUNT_MARKER), b"").expect("marker");
+        // Removing a directory as a file fails, so the removal stops at config.toml.
+        fs::create_dir(client_dir.join("config.toml")).expect("client config");
+        let instance = EdenFsInstance::with_daemon(
+            config_dir.clone(),
+            config_dir,
+            None,
+            Arc::new(DisconnectedDaemon),
+        );
+
+        let result = remove_client_config_dir(&instance, temp_dir.path(), "test");
+
+        assert!(result.is_err(), "removing config.toml should fail");
+        assert!(!client_dir.join("local").exists(), "the overlay is deleted");
+        assert!(
+            client_dir.join(INTENTIONAL_UNMOUNT_MARKER).exists(),
+            "the marker outlives config.toml"
+        );
+
+        fs::remove_dir(client_dir.join("config.toml")).expect("client config");
         remove_client_config_dir(&instance, temp_dir.path(), "test")
             .expect("a retry removes the rest of the client directory");
         assert!(!client_dir.exists());

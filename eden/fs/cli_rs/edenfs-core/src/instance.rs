@@ -129,6 +129,8 @@ const CLIENTS_DIR: &str = "clients";
 const CONFIG_JSON: &str = "config.json";
 const CONFIG_JSON_LOCK: &str = "config.json.lock";
 const CONFIG_JSON_MODE: u32 = 0o664;
+/// In a client directory: unmount recovery does not remount a checkout that has it.
+pub const INTENTIONAL_UNMOUNT_MARKER: &str = "intentionally-unmounted";
 
 /// Manages daemon-related (EdenFS) resources besides the Thrift connection.
 ///
@@ -778,8 +780,8 @@ impl EdenFsInstance {
         Ok(self.clients_dir().join(self.client_name(path)?))
     }
 
-    /// If the unmount succeeded, this function creates a file in the client directory
-    /// to indicate that the unmount was intentional. This will prevent
+    /// If the unmount succeeded, this function creates `INTENTIONAL_UNMOUNT_MARKER` in the
+    /// client directory to indicate that the unmount was intentional. This will prevent
     /// periodic unmount recovery from remounting this repo.
     pub fn create_intentional_unmount_flag(&self, path: &Path) -> Result<()> {
         let client_dir = self.client_dir_for_mount_point(path).with_context(|| {
@@ -790,7 +792,7 @@ impl EdenFsInstance {
         })?;
 
         // Create a file to indicate that the unmount was intentional
-        let unmount_marker_path = client_dir.join("intentionally-unmounted");
+        let unmount_marker_path = client_dir.join(INTENTIONAL_UNMOUNT_MARKER);
         std::fs::File::create(&unmount_marker_path).with_context(|| {
             format!(
                 "Failed to create unmount marker file at {}",
