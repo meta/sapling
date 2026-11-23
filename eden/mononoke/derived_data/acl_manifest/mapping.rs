@@ -6,6 +6,7 @@
  */
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::Error;
 use anyhow::Result;
@@ -13,6 +14,7 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use basename_suffix_skeleton_manifest_v3::RootBssmV3DirectoryId;
 use blobstore::BlobstoreGetData;
+use blobstore::KeyedBlobstore;
 use content_manifest_derivation::RootContentManifestId;
 use context::CoreContext;
 use derived_data_manager::BonsaiDerivable;
@@ -26,11 +28,11 @@ use mononoke_types::BonsaiChangeset;
 use mononoke_types::ChangesetId;
 use mononoke_types::DerivableUntopologicallyVariant;
 use mononoke_types::ThriftConvert;
-use mononoke_types::acl_manifest::AclManifest;
 use mononoke_types::typed_hash::AclManifestId;
 
 use crate::derive::derive_from_scratch;
 use crate::derive::derive_single;
+use crate::derive::empty_root_acl_manifest_id;
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct RootAclManifestId(pub(crate) AclManifestId);
@@ -70,10 +72,17 @@ impl RootAclManifestId {
     }
 
     /// The root ACL manifest an augmented manifest root points at through
-    /// `acl_manifest_directory_id`, where `None` stands for the canonical empty
-    /// manifest.
-    pub fn from_augmented_root_pointer(acl_manifest_directory_id: Option<AclManifestId>) -> Self {
-        RootAclManifestId(acl_manifest_directory_id.unwrap_or_else(AclManifest::empty_id))
+    /// `acl_manifest_directory_id`. `None` stands for the canonical empty
+    /// manifest, which is stored because readers load the root they are given.
+    pub async fn from_augmented_root_pointer(
+        ctx: &CoreContext,
+        blobstore: &Arc<dyn KeyedBlobstore>,
+        acl_manifest_directory_id: Option<AclManifestId>,
+    ) -> Result<Self> {
+        match acl_manifest_directory_id {
+            Some(id) => Ok(RootAclManifestId(id)),
+            None => empty_root_acl_manifest_id(ctx, blobstore).await,
+        }
     }
 }
 

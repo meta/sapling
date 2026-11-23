@@ -745,8 +745,11 @@ impl<R: MononokeRepo> HgRepoContext<R> {
                     // The augmented manifest depends on the ACL manifest, so
                     // that is mapped first.
                     RootAclManifestId::from_augmented_root_pointer(
+                        self.ctx(),
+                        derivation_ctx.blobstore(),
                         envelope.augmented_manifest.acl_manifest_directory_id,
                     )
+                    .await?
                     .store_mapping(self.ctx(), &derivation_ctx, bcs.get_changeset_id())
                     .await?;
                     RootHgAugmentedManifestId::new(root)
@@ -1838,6 +1841,16 @@ mod tests {
             Some(uploaded.root),
             "a permanent commit is still mapped in the permanent store"
         );
+        let acl_root = repo
+            .repo_derived_data()
+            .fetch_derived::<RootAclManifestId>(&ctx, cs_id)
+            .await?
+            .expect("the commit is mapped to a root ACL manifest");
+        acl_root
+            .inner_id()
+            .load(&ctx, repo.repo_blobstore())
+            .await
+            .context("the mapped root ACL manifest is stored")?;
         Ok(())
     }
 
