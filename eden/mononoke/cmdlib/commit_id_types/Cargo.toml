@@ -13,7 +13,7 @@ path = "src/commit_id_types.rs"
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.2", features = ["derive", "env", "string", "unicode", "wrap_help"] }
-faster-hex = "1.0.0"
+faster-hex = "2.0.0"
 
 [lints]
 workspace = true
