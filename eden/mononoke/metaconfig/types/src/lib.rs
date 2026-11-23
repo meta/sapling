@@ -178,6 +178,9 @@ pub struct CommonConfig {
     /// Scribe category of the process-wide bookmark event fan-out reader.
     /// `None` keeps the per-repository bookmark event listeners.
     pub bookmark_events_category: Option<String>,
+    /// The Perforce servers p4_sync imports from, by the alias repos name in
+    /// `p4_source.server_alias`.
+    pub p4_servers: BTreeMap<String, P4ServerConfig>,
 }
 
 /// The manifest format a Multi-Repo Land manifest repo holds.
@@ -2636,14 +2639,27 @@ pub struct GitConfigs {
 /// depot of one server.
 #[derive(Debug, Clone, Default, Eq, PartialEq)]
 pub struct P4SourceConfig {
-    /// The server, as the p4_sync job names it in `--p4-server-alias`
-    /// (e.g. `test1`), not a P4PORT.
+    /// The server: a key of [`CommonConfig::p4_servers`] (e.g. `test1`), not a P4PORT.
     pub server_alias: String,
     /// The depot root as a depot path, `//name/`.
     pub depot: String,
     /// The charsets depot paths are decoded with, as encoding_rs labels, tried in order.
     /// `None`: UTF-8 only.
     pub path_charsets: Option<Vec<String>>,
+}
+
+/// A Perforce server the `repos/p4/` mirrors import from. Secrets are Keychain names, never
+/// values.
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+pub struct P4ServerConfig {
+    /// The host the mirrors read from: the server's primary or its standby.
+    pub host: String,
+    /// That host's SSL fingerprint as `p4 trust -l` prints it, pinned.
+    pub fingerprint: String,
+    /// The service account the mirrors import as.
+    pub user: String,
+    /// Keychain secret holding an all-hosts ticket for `user`.
+    pub ticket_secret: String,
 }
 
 /// Configuration for x repo syncs

@@ -8,6 +8,7 @@
 //! Deployments: everything one fleet of Mononoke jobs loads, seen by one
 //! service, and where deployments are read from.
 
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -25,6 +26,7 @@ use repos::Deployment;
 use repos::DeploymentRepo;
 use repos::MononokeService;
 use repos::RawCommonConfig;
+use repos::RawP4ServerConfig;
 use repos::RawStorageConfig;
 use repos::TierManifest;
 use repos::TierRepoEntry;
@@ -49,6 +51,9 @@ pub struct ServiceManifest {
     /// Named presets, which repo configs refer to by name. Only a deployment
     /// has them.
     pub presets: Option<Presets>,
+    /// The Perforce servers, by alias. Read only from a tier manifest: p4_sync
+    /// loads the p4_sync tier.
+    pub p4_servers: BTreeMap<String, RawP4ServerConfig>,
 }
 
 impl ServiceManifest {
@@ -69,6 +74,7 @@ impl ServiceManifest {
             common,
             storage,
             presets,
+            p4_servers: BTreeMap::new(),
         }
     }
 
@@ -84,13 +90,16 @@ impl ServiceManifest {
 
     /// The parsed common and storage config.
     pub fn parse_common_and_storage(&self) -> Result<(CommonConfig, StorageConfigs)> {
-        parse_common_and_storage(&self.common, &self.storage)
+        parse_common_and_storage(&self.common, &self.storage, &self.p4_servers)
     }
 }
 
 impl From<TierManifest> for ServiceManifest {
     fn from(manifest: TierManifest) -> Self {
-        Self::new(manifest.repos, manifest.common, manifest.storage, None)
+        Self {
+            p4_servers: manifest.p4_servers.unwrap_or_default(),
+            ..Self::new(manifest.repos, manifest.common, manifest.storage, None)
+        }
     }
 }
 

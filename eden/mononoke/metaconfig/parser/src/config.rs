@@ -39,6 +39,7 @@ use metaconfig_types::StorageConfig;
 use mononoke_types::NonRootMPath;
 use mononoke_types::RepositoryId;
 use repos::RawCommonConfig;
+use repos::RawP4ServerConfig;
 use repos::RawRepoConfig;
 use repos::RawRestrictedPathsConfig;
 use repos::RawStorageConfig;
@@ -179,15 +180,20 @@ pub fn load_repo_configs_from_manifest(
 pub fn parse_manifest_common_and_storage(
     manifest: &TierManifest,
 ) -> Result<(CommonConfig, StorageConfigs)> {
-    parse_common_and_storage(&manifest.common, &manifest.storage)
+    parse_common_and_storage(
+        &manifest.common,
+        &manifest.storage,
+        &manifest.p4_servers.clone().unwrap_or_default(),
+    )
 }
 
 /// Parses a manifest's common config and named storage configs.
 pub(crate) fn parse_common_and_storage(
     common: &RawCommonConfig,
     storage: &HashMap<String, RawStorageConfig>,
+    p4_servers: &BTreeMap<String, RawP4ServerConfig>,
 ) -> Result<(CommonConfig, StorageConfigs)> {
-    let common = parse_common_config(common.clone(), storage)
+    let common = parse_common_config(common.clone(), storage, p4_servers.clone())
         .context("Failed to parse common config from the manifest")?;
     let storage = storage
         .clone()
@@ -598,6 +604,7 @@ pub struct StorageConfigs {
 fn parse_common_config(
     common: RawCommonConfig,
     common_storage_config: &HashMap<String, RawStorageConfig>,
+    p4_servers: BTreeMap<String, RawP4ServerConfig>,
 ) -> Result<CommonConfig> {
     let trusted_parties_hipster_tier = common
         .trusted_parties_hipster_tier
@@ -700,6 +707,18 @@ fn parse_common_config(
     let bookmark_events_category = common
         .bookmark_events_category
         .filter(|category| !category.is_empty());
+    // A bad entry leaves only its own alias unconfigured, so one server's typo cannot
+    // stop every job that loads this config.
+    let p4_servers = p4_servers
+        .into_iter()
+        .filter_map(|(alias, server)| match server.convert() {
+            Ok(server) => Some((alias, server)),
+            Err(error) => {
+                tracing::error!("Ignoring p4_servers[{alias}]: {error:#}");
+                None
+            }
+        })
+        .collect();
 
     Ok(CommonConfig {
         trusted_parties_hipster_tier,
@@ -718,6 +737,7 @@ fn parse_common_config(
         multi_repo_land_manifest_formats,
         multi_repo_land_pinned_manifest_paths,
         bookmark_events_category,
+        p4_servers,
     })
 }
 
@@ -861,6 +881,7 @@ mod test {
     use metaconfig_types::MetadataLoggerConfig;
     use metaconfig_types::MultiplexId;
     use metaconfig_types::MultiplexedStoreType;
+    use metaconfig_types::P4ServerConfig;
     use metaconfig_types::P4SourceConfig;
     use metaconfig_types::PushParams;
     use metaconfig_types::PushrebaseFlags;
@@ -2001,6 +2022,7 @@ mod test {
                 multi_repo_land_manifest_formats: BTreeMap::new(),
                 multi_repo_land_pinned_manifest_paths: BTreeMap::new(),
                 bookmark_events_category: Some("bookmark_events".to_string()),
+                p4_servers: BTreeMap::new(),
             }
         );
 
@@ -3618,5 +3640,110 @@ mod test {
                 "depot {depot:?} is not a depot root and must be rejected"
             );
         }
+    }
+
+    fn parse_p4_servers(
+        servers: BTreeMap<String, repos::RawP4ServerConfig>,
+    ) -> Result<CommonConfig> {
+        let manifest = TierManifest {
+            p4_servers: Some(servers),
+            ..Default::default()
+        };
+        Ok(parse_manifest_common_and_storage(&manifest)?.0)
+    }
+
+    fn raw_p4_host(host: &str) -> repos::RawP4Host {
+        repos::RawP4Host {
+            host: host.to_string(),
+            fingerprint: format!("{host}-fingerprint"),
+        }
+    }
+
+    fn raw_p4_server(read_from: repos::RawP4ReadFrom) -> repos::RawP4ServerConfig {
+        repos::RawP4ServerConfig {
+            primary: Some(raw_p4_host("p4-primary.test1.perforce.metafb.cloud")),
+            standby: Some(raw_p4_host("p4-secondary.test1.perforce.metafb.cloud")),
+            mirror: repos::RawP4MirrorAccess {
+                read_from,
+                user: "svc-scm-p4mirror".to_string(),
+                ticket_secret: "SCM_P4MIRROR_P4TICKET".to_string(),
+            },
+        }
+    }
+
+    fn p4_server_error(server: repos::RawP4ServerConfig) -> String {
+        let error = server.convert().unwrap_err();
+        format!("{error:#}")
+    }
+
+    #[mononoke::test]
+    fn test_common_config_has_the_p4_servers_by_alias() {
+        let common = parse_p4_servers(btreemap! {
+            "test1".to_string() => raw_p4_server(repos::RawP4ReadFrom::STANDBY),
+        })
+        .expect("parse should succeed");
+        assert_eq!(
+            common.p4_servers,
+            btreemap! {
+                "test1".to_string() => P4ServerConfig {
+                    host: "p4-secondary.test1.perforce.metafb.cloud".to_string(),
+                    fingerprint: "p4-secondary.test1.perforce.metafb.cloud-fingerprint".to_string(),
+                    user: "svc-scm-p4mirror".to_string(),
+                    ticket_secret: "SCM_P4MIRROR_P4TICKET".to_string(),
+                },
+            }
+        );
+    }
+
+    #[mononoke::test]
+    fn test_a_p4_server_reads_from_the_host_read_from_names() {
+        let common = parse_p4_servers(btreemap! {
+            "test1".to_string() => raw_p4_server(repos::RawP4ReadFrom::PRIMARY),
+        })
+        .expect("parse should succeed");
+        let server = &common.p4_servers["test1"];
+        assert_eq!(server.host, "p4-primary.test1.perforce.metafb.cloud");
+        assert_eq!(
+            server.fingerprint,
+            "p4-primary.test1.perforce.metafb.cloud-fingerprint"
+        );
+    }
+
+    #[mononoke::test]
+    fn test_a_bad_p4_server_is_skipped_and_the_rest_load() {
+        let common = parse_p4_servers(btreemap! {
+            "test1".to_string() => raw_p4_server(repos::RawP4ReadFrom::UNKNOWN),
+            "test2".to_string() => raw_p4_server(repos::RawP4ReadFrom::STANDBY),
+        })
+        .expect("a bad p4_servers entry should not fail the load");
+        assert_eq!(
+            common.p4_servers.keys().collect::<Vec<_>>(),
+            vec!["test2"],
+            "test1 is bad so only test2 should be configured"
+        );
+    }
+
+    #[mononoke::test]
+    fn test_a_p4_server_with_read_from_unknown_is_refused() {
+        let message = p4_server_error(raw_p4_server(repos::RawP4ReadFrom::UNKNOWN));
+        assert!(message.contains("read_from"), "{message}");
+    }
+
+    #[mononoke::test]
+    fn test_a_p4_server_reading_from_an_unset_host_is_refused() {
+        let server = repos::RawP4ServerConfig {
+            standby: None,
+            ..raw_p4_server(repos::RawP4ReadFrom::STANDBY)
+        };
+        let message = p4_server_error(server);
+        assert!(message.contains("STANDBY"), "{message}");
+    }
+
+    #[mononoke::test]
+    fn test_a_p4_server_with_an_empty_field_is_refused() {
+        let mut server = raw_p4_server(repos::RawP4ReadFrom::STANDBY);
+        server.mirror.ticket_secret = String::new();
+        let message = p4_server_error(server);
+        assert!(message.contains("ticket_secret"), "{message}");
     }
 }
