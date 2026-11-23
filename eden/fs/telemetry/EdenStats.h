@@ -863,6 +863,9 @@ struct CheckoutRecoveryStats : StatsGroup<CheckoutRecoveryStats> {
   Counter gaveUp{"checkout_recovery.gave_up"};
   Counter notServed{"checkout_recovery.not_served"};
   Counter flapLimited{"checkout_recovery.flap_limited"};
+  // Not-served checkouts left alone because their SNAPSHOT is gone, counted
+  // on every check.
+  Counter skippedNoSnapshot{"checkout_recovery.skipped_no_snapshot"};
   // Queued recoveries dropped because EdenFS left RUNNING before they mounted.
   Counter cancelled{"checkout_recovery.cancelled"};
   // Channel stops that did not trigger a recovery, by reason.

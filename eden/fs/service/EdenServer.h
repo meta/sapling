@@ -790,7 +790,8 @@ class EdenServer : private TakeoverHandler {
   void garbageCollectAllMounts();
 
   // Returns the config of a checkout from config.json that the daemon is not
-  // serving and was not asked to stop serving, or nullptr. May throw.
+  // serving, was not asked to stop serving and still has its SNAPSHOT, or
+  // nullptr. May throw.
   std::unique_ptr<CheckoutConfig> loadCheckoutNotServed(
       const AbsolutePath& mountPath,
       const AbsolutePath& clientDirectory);

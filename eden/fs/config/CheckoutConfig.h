@@ -114,6 +114,12 @@ class CheckoutConfig {
 
   bool isIntentionallyUnmounted() const;
 
+  /**
+   * False only when the SNAPSHOT file is known to be missing. EdenFS cannot
+   * mount a checkout without it, and removing a checkout deletes it first.
+   */
+  bool hasSnapshot() const;
+
   const AbsolutePath& getMountPath() const {
     return mountPath_;
   }

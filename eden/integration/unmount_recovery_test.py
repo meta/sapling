@@ -58,6 +58,13 @@ class RecoveryTestBase(testcase.EdenRepoTest):
         client_dir = self.eden.client_dir_for_mount(Path(self.mount))
         return client_dir / INTENTIONALLY_UNMOUNTED
 
+    def unmount_like_an_interrupted_removal(self) -> None:
+        """Leave the checkout as `eden rm` does when it stops after deleting
+        SNAPSHOT and the intentional-unmount marker."""
+        client_dir = self.eden.client_dir_for_mount(Path(self.mount))
+        (client_dir / "SNAPSHOT").unlink()
+        self.eden.run_cmd("unmount", "--debug-mark-unintentional", self.mount)
+
     def assert_stays_unmounted(self, mount: Optional[str] = None) -> None:
         time.sleep(SETTLE_SECONDS)
         self.assertEqual("NOT_RUNNING", self.mount_state(mount))
@@ -98,6 +105,12 @@ class UnmountRecoveryTest(RecoveryTestBase):
         self.eden.unmount(Path(self.mount))
         self.assert_stays_unmounted()
         self.assertEqual(0, self.recovery_counter("attempt"))
+
+    def test_checkout_without_snapshot_is_not_remounted(self) -> None:
+        self.unmount_like_an_interrupted_removal()
+        self.assert_stays_unmounted()
+        self.assertEqual(0, self.recovery_counter("attempt"))
+        self.assertGreater(self.recovery_counter("skipped_no_snapshot"), 0)
 
     def test_aborted_fuse_connection_is_remounted(self) -> None:
         self.abort_fuse_connection()
@@ -257,6 +270,11 @@ class HealthCheckNotServedTest(RecoveryTestBase):
 
     def test_eden_unmount_is_not_reported(self) -> None:
         self.eden.unmount(Path(self.mount))
+        self.assert_stays_unmounted()
+        self.assertEqual(0, self.recovery_counter("not_served"))
+
+    def test_checkout_without_snapshot_is_not_reported(self) -> None:
+        self.unmount_like_an_interrupted_removal()
         self.assert_stays_unmounted()
         self.assertEqual(0, self.recovery_counter("not_served"))
 

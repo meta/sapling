@@ -350,6 +350,11 @@ void CheckoutConfig::setIntentionallyUnmountedFlag() const {
       .value();
 }
 
+bool CheckoutConfig::hasSnapshot() const {
+  std::error_code ec;
+  return std::filesystem::exists(getSnapshotPath().c_str(), ec) || ec;
+}
+
 bool CheckoutConfig::isIntentionallyUnmounted() const {
   auto intentionallyUnmountedFile =
       clientDirectory_ + kIntentionallyUnmountedFile;

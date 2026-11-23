@@ -5070,6 +5070,13 @@ std::unique_ptr<CheckoutConfig> EdenServer::loadCheckoutNotServed(
     XLOGF(DBG5, "Mount point {} is intentionally unmounted.", mountPath);
     return nullptr;
   }
+  if (!config->hasSnapshot()) {
+    // A removal in progress, or one that was interrupted after deleting the
+    // intentional-unmount marker.
+    XLOGF(DBG5, "Mount point {} has no SNAPSHOT.", mountPath);
+    getStats()->increment(&CheckoutRecoveryStats::skippedNoSnapshot);
+    return nullptr;
+  }
   if (config->getInodeCatalogType() == InodeCatalogType::LegacyEphemeral) {
     // An ephemeral overlay does not survive an unmount, so a remount would
     // not bring back the checkout's local state.
