@@ -2357,6 +2357,24 @@ struct CustomAclParams {
   /// checked to exist before the create, other identity types are validated
   /// by Hipster.
   2: list<AclIdentity> writers;
+  /// Make the ACL private: it gets none of the standard grants. An ACL that
+  /// already exists is accepted only if it grants nothing a private one would
+  /// not.
+  3: optional PrivateAclParams private_acl;
+}
+
+/// A private ACL lets in `hipster_group` (maintainer, `read`, `write`), the
+/// `writers` (`read`, `write`), the `readers` (`read`) and what each
+/// integration named here needs. Nobody and nothing else can read the repo
+/// until a maintainer adds them in Hipster.
+struct PrivateAclParams {
+  /// The repo has diffs: Phabricator's web controller and its import jobs get
+  /// `read`, and the land command gets `read` and `write`. Without it the repo
+  /// takes pushes only.
+  1: bool phabricator;
+  /// Identities granted `read` only. `AUTH_SET` entries are checked to exist
+  /// before the create, other identity types are validated by Hipster.
+  2: list<AclIdentity> readers;
 }
 
 /// A Hipster identity, as `<id_type>:<id_data>` spells it (e.g. AUTH_SET:scm).
