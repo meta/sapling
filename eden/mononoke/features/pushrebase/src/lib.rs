@@ -884,7 +884,12 @@ pub async fn rebase_stack_onto_with_baseline(
 /// as `sl rebase` does. Moves no bookmark, runs no hooks, writes no
 /// changesets; merged content is stored when merge resolution is on.
 /// Requires `rewritedates == false`. `max_paths` bounds the stack's changed
-/// paths, which is what the manifest lookups scale with.
+/// paths, which is what the manifest lookups scale with. When
+/// `casefolding_check` is set, the stack's own changes are checked for case
+/// conflicts, as the land path checks its client changesets; collisions
+/// with onto-side changes outside the stack's paths are not visible here
+/// (there is no server-side commit range) and are still caught when the
+/// rebased stack lands.
 pub async fn rebase_stack_onto_manifest(
     ctx: &CoreContext,
     repo: &impl Repo,
@@ -930,6 +935,13 @@ pub async fn rebase_stack_onto_manifest(
             "rebase_stack_onto_manifest does not support merge commits in the stack: {}",
             merge.get_changeset_id()
         )));
+    }
+    if config.casefolding_check {
+        if let Some(conflict) =
+            check_case_conflicts(client_bcs.iter(), &config.casefolding_check_excluded_paths)
+        {
+            return Err(PushrebaseError::PotentialCaseConflict(conflict.1));
+        }
     }
     let client_cf = find_changed_files_with(
         ctx,

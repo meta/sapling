@@ -8764,6 +8764,52 @@ async fn manifest_rebase_forward_clean_and_deterministic(fb: FacebookInit) -> Re
 }
 
 #[mononoke::fbinit_test]
+async fn manifest_rebase_casefolding_check(fb: FacebookInit) -> Result<(), Error> {
+    init_just_knobs_for_test();
+    let ctx = CoreContext::test_mock(fb);
+    let repo: PushrebaseTestRepo = TestRepoFactory::new(fb)?.build().await?;
+
+    let root = CreateCommitContext::new_root(&ctx, &repo)
+        .add_file("base", "base")
+        .commit()
+        .await?;
+    let a = CreateCommitContext::new(&ctx, &repo, vec![root])
+        .add_file("Foo", "upper")
+        .commit()
+        .await?;
+    let b = CreateCommitContext::new(&ctx, &repo, vec![a])
+        .add_file("foo", "lower")
+        .commit()
+        .await?;
+    let onto = CreateCommitContext::new(&ctx, &repo, vec![root])
+        .add_file("server_file", "server")
+        .commit()
+        .await?;
+    derive_content_manifests(&ctx, &repo, &[root, onto]).await?;
+
+    let flags = PushrebaseFlags {
+        casefolding_check: true,
+        ..manifest_rebase_flags(MergeResolutionOverride::ForceOn)
+    };
+    match rebase_stack_onto_manifest(&ctx, &repo, &flags, root, b, onto, MAX_PATHS).await {
+        Err(PushrebaseError::PotentialCaseConflict(conflict)) => {
+            assert_eq!(conflict, NonRootMPath::new("foo")?);
+        }
+        Err(err) => panic!("expected PotentialCaseConflict, got {err}"),
+        Ok(_) => panic!("expected PotentialCaseConflict, stack rebased"),
+    }
+
+    // With the check off, the same stack rebases.
+    let flags = PushrebaseFlags {
+        casefolding_check: false,
+        ..manifest_rebase_flags(MergeResolutionOverride::ForceOn)
+    };
+    let rebased = rebase_stack_onto_manifest(&ctx, &repo, &flags, root, b, onto, MAX_PATHS).await?;
+    assert_eq!(rebased.rebased_changesets.len(), 2);
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
 async fn manifest_rebase_backward_onto_ancestor(fb: FacebookInit) -> Result<(), Error> {
     init_just_knobs_for_test();
     let ctx = CoreContext::test_mock(fb);
