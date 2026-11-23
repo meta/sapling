@@ -34,6 +34,7 @@ use metaconfig_types::RepoConfigRef;
 use mononoke_app::MononokeApp;
 use mononoke_app::args::RepoArgs;
 use p4_import::ImportOptions;
+use p4_source::Keychain;
 use p4_source::P4Cli;
 use p4_source::P4CliSource;
 use p4_source::PathCharsets;
@@ -377,9 +378,9 @@ impl RepoShardedProcess for P4SyncProcess {
                 let (from, p4) = match p4 {
                     Server::Tier(server) => {
                         let p4 = server::client(
-                            alias,
                             server,
                             &self.settings.p4_binary,
+                            Arc::new(Keychain(self.app.fb)),
                             self.app.environment().scuba_sample_builder.clone(),
                         )
                         .await

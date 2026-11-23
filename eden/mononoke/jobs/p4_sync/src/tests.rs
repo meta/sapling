@@ -203,8 +203,8 @@ fn test_each_server_is_given_once() {
     assert!(error.to_string().contains("test1"), "{error}");
 }
 
-#[mononoke::test]
-fn test_every_ticket_file_must_exist_at_startup() {
+#[mononoke::fbinit_test]
+fn test_every_ticket_file_must_exist_at_startup(fb: FacebookInit) {
     let secrets = tempfile::tempdir().unwrap();
     let with_ticket = |alias: &str| P4Server {
         ticket_file: secrets.path().join(format!("p4ticket-{alias}")),
@@ -214,7 +214,15 @@ fn test_every_ticket_file_must_exist_at_startup() {
     let scuba = MononokeScubaSampleBuilder::with_discard();
     let binary = Path::new("/mononoke/p4");
 
-    let clients = p4_clients(vec![with_ticket("test1")], binary, "user", &scuba).unwrap();
+    let keychain = Arc::new(Keychain(fb));
+    let clients = p4_clients(
+        vec![with_ticket("test1")],
+        binary,
+        "user",
+        keychain.clone(),
+        &scuba,
+    )
+    .unwrap();
     assert_eq!(clients.len(), 1);
     assert!(clients.contains_key("test1"));
 
@@ -222,6 +230,7 @@ fn test_every_ticket_file_must_exist_at_startup() {
         vec![with_ticket("test1"), with_ticket("p4htl")],
         binary,
         "user",
+        keychain,
         &scuba,
     )
     .unwrap_err();
@@ -231,11 +240,11 @@ fn test_every_ticket_file_must_exist_at_startup() {
     assert!(message.contains("does not exist"), "{message}");
 }
 
-#[mononoke::test]
-fn test_a_server_gets_p4imports_flags_with_its_own_port_fingerprint_and_ticket() {
+#[mononoke::fbinit_test]
+fn test_a_server_gets_p4imports_flags_with_its_own_port_fingerprint_and_ticket(fb: FacebookInit) {
     let config = server("p4htl")
         .p4_args(Path::new("/mononoke/p4"), "svc-scm-p4mirror")
-        .config()
+        .config(Arc::new(Keychain(fb)))
         .unwrap();
     assert_eq!(config.binary, PathBuf::from("/mononoke/p4"));
     assert_eq!(config.port, "ssl6:[2001:db8::1]:1818");

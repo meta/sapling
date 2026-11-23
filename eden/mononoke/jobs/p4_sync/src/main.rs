@@ -15,6 +15,7 @@ use std::num::NonZeroU64;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -33,9 +34,11 @@ use mononoke_app::args::TLSArgs;
 use mononoke_app::monitoring::AliveService;
 use mononoke_app::monitoring::MonitoringAppExtension;
 use p4_import::ImportOptions;
+use p4_source::Keychain;
 use p4_source::P4Args;
 use p4_source::P4AuthArgs;
 use p4_source::P4Cli;
+use p4_source::SecretReader;
 use scuba_ext::MononokeScubaSampleBuilder;
 
 mod repo;
@@ -150,6 +153,7 @@ impl P4Server {
             p4_auth: P4AuthArgs {
                 p4_password_file: None,
                 p4_ticket_file: Some(self.ticket_file.clone()),
+                p4_ticket_secret: None,
             },
             p4_fingerprint: Some(self.fingerprint.clone()),
         }
@@ -203,6 +207,7 @@ fn p4_clients(
     servers: Vec<P4Server>,
     binary: &Path,
     user: &str,
+    keychain: Arc<dyn SecretReader>,
     scuba: &MononokeScubaSampleBuilder,
 ) -> Result<HashMap<String, P4Cli>> {
     by_alias(servers)?
@@ -215,7 +220,7 @@ fn p4_clients(
             );
             let p4 = server
                 .p4_args(binary, user)
-                .client(scuba.clone())
+                .client(keychain.clone(), scuba.clone())
                 .with_context(|| format!("--p4-server {alias}"))?;
             Ok((alias, p4))
         })
@@ -246,6 +251,7 @@ async fn async_main(app: MononokeApp) -> Result<()> {
         args.p4_servers,
         &args.p4_binary,
         &args.p4_user.unwrap_or_default(),
+        Arc::new(Keychain(app.fb)),
         &app.environment().scuba_sample_builder,
     )?;
     let settings = sharded::Settings {
