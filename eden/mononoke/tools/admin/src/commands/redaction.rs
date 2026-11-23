@@ -7,7 +7,7 @@
 
 mod aws_sync;
 mod create_key_list;
-mod delete_from_cas;
+pub(crate) mod delete_from_cas;
 mod list;
 
 use anyhow::Result;

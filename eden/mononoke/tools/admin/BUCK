@@ -61,6 +61,7 @@ rust_binary(
         "fbsource//third-party/rust:futures",
         "fbsource//third-party/rust:gix-hash",
         "fbsource//third-party/rust:gix-object",
+        "fbsource//third-party/rust:governor",
         "fbsource//third-party/rust:hex",
         "fbsource//third-party/rust:itertools",
         "fbsource//third-party/rust:k8s-openapi",

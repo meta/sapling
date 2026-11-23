@@ -179,3 +179,64 @@ A scan from another start time refuses the folder.
   $ mononoke_admin cas-store --repo-name repo acl-parent-trees -s now --output-dir "$TESTTMP/out"
   Error: $TESTTMP/out has slices that do not continue a scan from *, the earliest being digests-*. Use a new folder for a new scan (glob)
   [1]
+
+`delete-digests` deletes the digests in its files, one per line. None of the
+parent trees is in CAS, so the tree of "public" stands in for one uploaded
+before uploads skipped them.
+  $ cut -d' ' -f1 "$TESTTMP"/out/digests-*.txt | sort -u > "$TESTTMP/digests.txt"
+  $ ROOT="$(grep -h ' /$' "$TESTTMP"/out/digests-*.txt | head -1 | cut -d' ' -f3)"
+  $ mononoke_admin cas-store --repo-name repo tree-info -i "$ROOT" -c | grep '^public -> ' | cut -d' ' -f6 > "$TESTTMP/public.txt"
+
+A dry run counts each digest once, finds only "public" in CAS, and records the
+state of each digest.
+  $ mononoke_admin cas-store --repo-name repo delete-digests --digests-per-second 1000 --dry-run --output-file "$TESTTMP/dry.txt" "$TESTTMP/digests.txt" "$TESTTMP/public.txt" "$TESTTMP/public.txt"
+  [INFO] Read 8 digests from 3 files
+  [INFO] source-control-testing: looked up 8 of 8 digests, 1 present
+  $ wc -l < "$TESTTMP/dry.txt"
+  8
+  $ grep -v ' missing source-control-testing$' "$TESTTMP/dry.txt" | sed "s/$(cat "$TESTTMP/public.txt")/PUBLIC/"
+  PUBLIC present source-control-testing
+
+The rate limits the digests sent to CAS: at 1 per second, looking up 8
+digests takes at least 7 seconds after the first.
+  $ START_SECS=$(date +%s)
+  $ mononoke_admin cas-store --repo-name repo delete-digests --digests-per-second 1 --dry-run --output-file "$TESTTMP/throttled.txt" "$TESTTMP/digests.txt" "$TESTTMP/public.txt"
+  [INFO] Read 8 digests from 2 files
+  [INFO] source-control-testing: looked up 8 of 8 digests, 1 present
+  $ [ $(( $(date +%s) - START_SECS )) -ge 7 ] && echo throttled
+  throttled
+
+Delete it. Running again finds nothing to delete.
+  $ mononoke_admin cas-store --repo-name repo delete-digests --digests-per-second 1000 --output-file "$TESTTMP/deleted.txt" "$TESTTMP/digests.txt" "$TESTTMP/public.txt"
+  [INFO] Read 8 digests from 2 files
+  [INFO] source-control-testing: looked up 8 of 8 digests, 1 present and deleted
+  $ grep -v ' missing source-control-testing$' "$TESTTMP/deleted.txt" | sed "s/$(cat "$TESTTMP/public.txt")/PUBLIC/"
+  PUBLIC deleted source-control-testing
+  $ mononoke_admin cas-store --repo-name repo delete-digests --digests-per-second 1000 --output-file "$TESTTMP/again.txt" "$TESTTMP/digests.txt" "$TESTTMP/public.txt"
+  [INFO] Read 8 digests from 2 files
+  [INFO] source-control-testing: looked up 8 of 8 digests, 0 present and deleted
+  $ grep -c ' missing source-control-testing$' "$TESTTMP/again.txt"
+  8
+
+The output file of an earlier run is not overwritten.
+  $ mononoke_admin cas-store --repo-name repo delete-digests --digests-per-second 1000 --output-file "$TESTTMP/deleted.txt" "$TESTTMP/public.txt"
+  [INFO] Read 1 digests from 1 files
+  Error: Failed to create $TESTTMP/deleted.txt
+  
+  Caused by:
+      File exists (os error 17)
+  [1]
+
+A full walk of A uploads "public" again, and nothing else was deleted.
+  $ mononoke_admin cas-store --repo-name repo upload --full -i $A
+  [INFO] Skipped 4 restriction root trees for changeset * (glob)
+  [INFO] Skipped 3 parent trees of restriction roots for changeset * (glob)
+  [INFO] Upload completed. Upload stats: uploaded digests: 1, already present digests: 7, uploaded bytes: *, the largest uploaded blob: * (glob)
+
+A line that is not just a digest fails the whole run, so the lines of
+`acl-parent-trees` need converting first.
+  $ mononoke_admin cas-store --repo-name repo delete-digests --digests-per-second 1000 --output-file "$TESTTMP/bad.txt" "$TESTTMP/public.txt" "$TESTTMP"/out/digests-*.txt
+  Error: $TESTTMP/out/digests-*.txt has a line that is not <blake3>:<size>: "*:* unchecked * /" (glob)
+  [1]
+  $ [ -e "$TESTTMP/bad.txt" ] || echo "no output file"
+  no output file

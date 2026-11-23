@@ -6,6 +6,7 @@
  */
 
 mod acl_parent_trees;
+mod delete_digests;
 mod file_info;
 mod tree_info;
 mod upload;
@@ -22,6 +23,7 @@ use bookmarks::Bookmarks;
 use clap::Parser;
 use clap::Subcommand;
 use commit_graph::CommitGraph;
+use delete_digests::CasStoreDeleteDigestsArgs;
 use file_info::CasStoreFileInfoArgs;
 use metaconfig_types::RepoConfig;
 use mononoke_app::MononokeApp;
@@ -99,6 +101,8 @@ pub enum CasStoreSubcommand {
     Upload(CasStoreUploadArgs),
     /// Find the trees uploaded to the cas store that have a restriction root as a direct child.
     AclParentTrees(CasStoreAclParentTreesArgs),
+    /// Delete digests from the cas store.
+    DeleteDigests(CasStoreDeleteDigestsArgs),
 }
 
 pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
@@ -117,6 +121,9 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
         }
         CasStoreSubcommand::AclParentTrees(acl_parent_trees_args) => {
             acl_parent_trees::acl_parent_trees(&ctx, &repo, acl_parent_trees_args).await
+        }
+        CasStoreSubcommand::DeleteDigests(delete_digests_args) => {
+            delete_digests::delete_digests(&ctx, &repo, delete_digests_args).await
         }
     }
 }

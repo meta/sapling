@@ -189,8 +189,6 @@ async fn redacted_digests(
     Ok(digests.into_iter().collect())
 }
 
-/// The CAS delete call reports no per-digest status, so anything still
-/// present afterwards is an error.
 async fn delete_digests(
     client: &impl CasClient,
     use_case: &str,
@@ -210,22 +208,32 @@ async fn delete_digests(
         return Ok(());
     }
 
-    stream::iter(present.chunks(CAS_BATCH_SIZE).map(Ok))
-        .try_for_each_concurrent(CAS_CONCURRENCY, |chunk| client.delete_blobs(chunk))
-        .await?;
-
-    let still_present = still_present_after_delete(client, &present).await?;
-    if !still_present.is_empty() {
-        bail!(
-            "{} files are still present in CAS after deleting them: {}",
-            still_present.len(),
-            still_present.iter().join(", ")
-        );
-    }
+    delete_present_digests(client, &present).await?;
     println!(
         "{use_case}: deleted {} redacted files and verified they are absent",
         present.len()
     );
+    Ok(())
+}
+
+/// The CAS delete call reports no per-digest status, so anything still
+/// present afterwards is an error.
+pub(crate) async fn delete_present_digests(
+    client: &impl CasClient,
+    present: &[MononokeDigest],
+) -> Result<()> {
+    stream::iter(present.chunks(CAS_BATCH_SIZE).map(Ok))
+        .try_for_each_concurrent(CAS_CONCURRENCY, |chunk| client.delete_blobs(chunk))
+        .await?;
+
+    let still_present = still_present_after_delete(client, present).await?;
+    if !still_present.is_empty() {
+        bail!(
+            "{} blobs are still present in CAS after deleting them: {}",
+            still_present.len(),
+            still_present.iter().join(", ")
+        );
+    }
     Ok(())
 }
 
@@ -246,7 +254,7 @@ async fn still_present_after_delete(
     Ok(still_present)
 }
 
-async fn present_digests(
+pub(crate) async fn present_digests(
     client: &impl CasClient,
     digests: &[MononokeDigest],
 ) -> Result<Vec<MononokeDigest>> {
