@@ -84,8 +84,6 @@ rerun-cli-0-40 = { package = "rerun-cli", git = "https://github.com/a7or/rerun.g
 riscv = { git = "https://github.com/rust-embedded/riscv", rev = "c2c9c7b77091a43b64bf0fd6a876c81a29438cf5" }
 riscv-macros = { git = "https://github.com/rust-embedded/riscv", rev = "c2c9c7b77091a43b64bf0fd6a876c81a29438cf5" }
 riscv-types = { git = "https://github.com/rust-embedded/riscv", rev = "c2c9c7b77091a43b64bf0fd6a876c81a29438cf5" }
-rootcause = { git = "https://github.com/rootcause-rs/rootcause.git", rev = "5010b020a57786de6f18bad027560d54b73875b0" }
-rootcause-backtrace = { git = "https://github.com/rootcause-rs/rootcause.git", rev = "5010b020a57786de6f18bad027560d54b73875b0" }
 rust-stemmers = { git = "https://github.com/fbsource/rust-stemmers", rev = "3b2545218f76e797baecbf91fa1cbd2c0db60726" }
 rustls-native-certs = { git = "https://github.com/rustls/rustls-native-certs", rev = "9734b4cc0bfa88224e0fc49867abafa1c56fa28d" }
 spm_precompiled = { version = "0.1.4", git = "https://github.com/huggingface/spm_precompiled", rev = "6e3ffb3ef2504f38e66273002fca0661da4121cc" }
