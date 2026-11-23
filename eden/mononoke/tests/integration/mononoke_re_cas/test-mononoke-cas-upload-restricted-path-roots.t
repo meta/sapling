@@ -45,6 +45,11 @@ shared backend may already hold them: the last walk pins the totals.
   [INFO] Skipped 3 parent trees of restriction roots for changeset * (glob)
   [INFO] Upload completed. Upload stats: uploaded digests: *, already present digests: *, uploaded bytes: *, the largest uploaded blob: * (glob)
 
+START is a time between A's and B's bookmark moves, where the scans into an
+output folder at the end of this test start.
+  $ sleep 1
+  $ START="$(date -u '+%Y-%m-%d %H:%M:%SZ')"
+
 A trees-only walk starting at the outer `.slacl` root skips it, the nested root
 and the nested root's parent, and covers the tree below them.
   $ mononoke_admin cas-store --repo-name repo upload --full --trees-only -i $A -p tent
@@ -92,3 +97,85 @@ to the shared CAS backend, so the upload totals are exact.
   [INFO] Filtered out 1 of 6 entries (trees under restricted paths) for changeset * (glob)
   [INFO] Skipped 2 parent trees of restriction roots for changeset * (glob)
   [INFO] Upload completed. Upload stats: uploaded digests: 0, already present digests: 0, uploaded bytes: 0 B, the largest uploaded blob: 0 B
+
+The finder lists every parent tree in B. It looks them up in CAS only when
+asked to, and none of them is there.
+  $ mononoke_admin cas-store --repo-name repo acl-parent-trees -s now
+  *:* unchecked * / (glob)
+  *:* unchecked * /cfg/inner (glob)
+  *:* unchecked * /open (glob)
+  *:* unchecked * /tent/inner (glob)
+  [INFO] Slice 1/1 from * to *: 1 commits, 4 parent trees, scanned in * (glob)
+  [INFO] Scanned 1 commits of master_bookmark from * to * in 1 slices: 4 parent trees of restriction roots, counted once per slice (glob)
+  $ mononoke_admin cas-store --repo-name repo acl-parent-trees -s now --check-presence
+  *:* missing * / (glob)
+  *:* missing * /cfg/inner (glob)
+  *:* missing * /open (glob)
+  *:* missing * /tent/inner (glob)
+  [INFO] Slice 1/1 from * to *: 1 commits, 4 parent trees, scanned in * (glob)
+  [INFO] Scanned 1 commits of master_bookmark from * to * in 1 slices: 4 parent trees of restriction roots, 0 of them in CAS, counted once per slice (glob)
+
+With an output folder, each slice's trees go to a file named after the slice's
+start and end in UTC. The scan from START covers B and its start commit A,
+whose root tree is a parent too.
+  $ mononoke_admin cas-store --repo-name repo acl-parent-trees -s "$START" --output-dir "$TESTTMP/out"
+  [INFO] Slice 1/1 from * to *: 2 commits, 5 parent trees, scanned in * (glob)
+  [INFO] Scanned 2 commits of master_bookmark from * to * in 1 slices: 5 parent trees of restriction roots, counted once per slice (glob)
+  $ ls -A "$TESTTMP/out"
+  .lock
+  digests-*Z-*Z.txt (glob)
+  $ cat "$TESTTMP"/out/digests-*.txt
+  *:* unchecked * / (glob)
+  *:* unchecked * / (glob)
+  *:* unchecked * /cfg/inner (glob)
+  *:* unchecked * /open (glob)
+  *:* unchecked * /tent/inner (glob)
+
+The same command again has nothing new to scan.
+  $ mononoke_admin cas-store --repo-name repo acl-parent-trees -s "$START" --output-dir "$TESTTMP/out"
+  [INFO] Resuming at *, where the slices in $TESTTMP/out from * end (glob)
+  [INFO] Nothing to scan from * to * (glob)
+
+MID is a time between B's and C's bookmark moves.
+  $ MID="$(date -u '+%Y-%m-%d %H:%M:%SZ')"
+
+After C moves the bookmark, the same command resumes where the last file ends.
+It looks up its first commit a little before that, but not before START, so the
+new slice starts at A again and lists A's and B's trees a second time. The
+merge drops them.
+  $ testtool_drawdag -R repo --no-default-files --derive-all <<EOF
+  > C
+  > |
+  > B
+  > # exists: B $B
+  > # modify: C open/readme "$(head -c 20 /dev/urandom | base64)"
+  > # bookmark: C master_bookmark
+  > EOF
+  B=* (glob)
+  C=* (glob)
+  $ mononoke_admin cas-store --repo-name repo acl-parent-trees -s "$START" --output-dir "$TESTTMP/out"
+  [INFO] Resuming at *, where the slices in $TESTTMP/out from * end (glob)
+  [INFO] Slice 1/1 from * to *: 3 commits, 7 parent trees, scanned in * (glob)
+  [INFO] Scanned 3 commits of master_bookmark from * to * in 1 slices: 7 parent trees of restriction roots, counted once per slice (glob)
+  $ ls "$TESTTMP/out" | wc -l
+  2
+  $ cat "$TESTTMP"/out/digests-*.txt | sort -u -k1,1 | wc -l
+  7
+
+Run again, it follows both files and has nothing new to scan.
+  $ mononoke_admin cas-store --repo-name repo acl-parent-trees -s "$START" --output-dir "$TESTTMP/out"
+  [INFO] Resuming at *, where the slices in $TESTTMP/out from * end (glob)
+  [INFO] Nothing to scan from * to * (glob)
+
+An end time before the bookmark's latest move ends the scan there: the scan from
+START to MID covers B and A only, and its file is named after MID.
+  $ mononoke_admin cas-store --repo-name repo acl-parent-trees -s "$START" -e "$MID" --output-dir "$TESTTMP/out2"
+  [INFO] Slice 1/1 from * to *: 2 commits, 5 parent trees, scanned in * (glob)
+  [INFO] Scanned 2 commits of master_bookmark from * to * in 1 slices: 5 parent trees of restriction roots, counted once per slice (glob)
+  $ ls "$TESTTMP/out2" | sed "s/$(date -u -d "$MID" '+%Y%m%dT%H%M%SZ')/MID/"
+  digests-*Z-MID.txt (glob)
+
+A scan from another start time refuses the folder.
+  $ mononoke_admin cas-store --repo-name repo acl-parent-trees -s now --output-dir "$TESTTMP/out"
+  Error: $TESTTMP/out has slices that do not continue a scan from *, the earliest being digests-*. Use a new folder for a new scan (glob)
+  [1]

@@ -5,19 +5,23 @@
  * GNU General Public License version 2.
  */
 
+mod acl_parent_trees;
 mod file_info;
 mod tree_info;
 mod upload;
 
+use acl_parent_trees::CasStoreAclParentTreesArgs;
 use anyhow::Result;
 use bonsai_git_mapping::BonsaiGitMapping;
 use bonsai_globalrev_mapping::BonsaiGlobalrevMapping;
 use bonsai_hg_mapping::BonsaiHgMapping;
 use bonsai_p4_mapping::BonsaiP4Mapping;
 use bonsai_svnrev_mapping::BonsaiSvnrevMapping;
+use bookmarks::BookmarkUpdateLog;
 use bookmarks::Bookmarks;
 use clap::Parser;
 use clap::Subcommand;
+use commit_graph::CommitGraph;
 use file_info::CasStoreFileInfoArgs;
 use metaconfig_types::RepoConfig;
 use mononoke_app::MononokeApp;
@@ -43,6 +47,7 @@ pub struct CommandArgs {
 }
 
 #[facet::container]
+#[derive(Clone)]
 pub struct Repo {
     #[facet]
     repo_identity: RepoIdentity,
@@ -72,6 +77,12 @@ pub struct Repo {
     bookmarks: dyn Bookmarks,
 
     #[facet]
+    bookmark_update_log: dyn BookmarkUpdateLog,
+
+    #[facet]
+    commit_graph: CommitGraph,
+
+    #[facet]
     repo_derived_data: RepoDerivedData,
 
     #[facet]
@@ -86,6 +97,8 @@ pub enum CasStoreSubcommand {
     FileInfo(CasStoreFileInfoArgs),
     /// Upload a specific (augmented) tree, file or data for a given commit recursively into the cas store.
     Upload(CasStoreUploadArgs),
+    /// Find the trees uploaded to the cas store that have a restriction root as a direct child.
+    AclParentTrees(CasStoreAclParentTreesArgs),
 }
 
 pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
@@ -101,6 +114,9 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
         }
         CasStoreSubcommand::FileInfo(file_info_args) => {
             file_info::file_info(&ctx, &repo, file_info_args).await
+        }
+        CasStoreSubcommand::AclParentTrees(acl_parent_trees_args) => {
+            acl_parent_trees::acl_parent_trees(&ctx, &repo, acl_parent_trees_args).await
         }
     }
 }

@@ -855,7 +855,7 @@ where
     /// Whether a directory child of this tree is a restriction root. SLAPI marks such a child
     /// with `has_acl`, which CAS trees cannot carry, so a client reading this tree from CAS would
     /// see the child as unrestricted.
-    async fn has_restricted_child<'a>(
+    pub async fn has_restricted_child<'a>(
         &self,
         ctx: &'a CoreContext,
         repo: &impl Repo,
