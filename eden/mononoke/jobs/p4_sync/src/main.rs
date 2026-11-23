@@ -6,8 +6,8 @@
  */
 
 //! Perforce -> Mononoke mirror tailer: for each repo ShardManager assigns it, imports the
-//! depot's new changelists in batches with `p4_import::import_next`, from whichever of its
-//! Perforce servers the repo's `p4_source.server_alias` names.
+//! depot's new changelists in batches with `p4_import::import_next`, from the server the repo's
+//! `p4_source.server_alias` names: its `--p4-server`, else its entry in the tier's `p4_servers`.
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -39,6 +39,7 @@ use p4_source::P4Cli;
 use scuba_ext::MononokeScubaSampleBuilder;
 
 mod repo;
+mod server;
 mod sharded;
 
 use crate::repo::Repo;
@@ -65,20 +66,21 @@ struct P4SyncArgs {
     #[clap(long, help_heading = "PERFORCE OPTIONS")]
     p4_binary: PathBuf,
 
-    /// Perforce user to connect as, on every server
+    /// Perforce user to connect as, on every `--p4-server`
     #[clap(long, help_heading = "PERFORCE OPTIONS")]
-    p4_user: String,
+    p4_user: Option<String>,
 
     /// A Perforce server this job imports from, as `<alias>=<p4port>,<fingerprint>,<ticket-file>`:
     /// the alias as repo configs name it in `p4_source.server_alias` (e.g. `test1`), the
     /// server's address as `P4PORT` (e.g. `ssl6:[2001:db8::1]:1818`), its SSL fingerprint as
     /// `p4 trust` prints it, and a file holding a ticket for `--p4-user` on it. Once per
-    /// server; shards of repos on any other server are held.
+    /// server; it wins over the tier's `p4_servers` entry for the same alias. Shards of repos
+    /// on any other server are held.
     #[clap(
         long = "p4-server",
         value_name = "ALIAS=P4PORT,FINGERPRINT,TICKET-FILE",
         value_parser = parse_server,
-        required = true,
+        requires = "p4_user",
         help_heading = "PERFORCE OPTIONS"
     )]
     p4_servers: Vec<P4Server>,
@@ -239,15 +241,17 @@ fn main(fb: FacebookInit) -> Result<()> {
 
 async fn async_main(app: MononokeApp) -> Result<()> {
     let args = app.args::<P4SyncArgs>()?;
+    // `--p4-server` requires `--p4-user`, so the empty default never reaches a server.
     let servers = p4_clients(
         args.p4_servers,
         &args.p4_binary,
-        &args.p4_user,
+        &args.p4_user.unwrap_or_default(),
         &app.environment().scuba_sample_builder,
     )?;
     let settings = sharded::Settings {
         exit_file: args.exit_file,
         servers,
+        p4_binary: args.p4_binary,
         batch_size: args.batch_size,
         idle_interval: args.idle_interval_secs,
         import_options: args.import_args.import_options(),

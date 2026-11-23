@@ -5,6 +5,7 @@
  * GNU General Public License version 2.
  */
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::future::Future;
 use std::num::NonZeroUsize;
@@ -16,6 +17,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
@@ -26,6 +28,7 @@ use executor_lib::RepoShardedProcess;
 use executor_lib::RepoShardedProcessExecutor;
 use executor_lib::args::ShardedExecutorArgs;
 use fbinit::FacebookInit;
+use metaconfig_types::P4ServerConfig;
 use metaconfig_types::RepoConfig;
 use metaconfig_types::RepoConfigRef;
 use mononoke_app::MononokeApp;
@@ -45,6 +48,7 @@ use tokio::sync::Notify;
 use tokio::time::Instant;
 
 use crate::Repo;
+use crate::server;
 
 const SM_CLEANUP_TIMEOUT_SECS: u64 = 120;
 const BOOKMARK: &str = "master";
@@ -73,8 +77,9 @@ pub(crate) fn secs_since_success_key(repo_name: &str) -> String {
 
 pub(crate) struct Settings {
     pub(crate) exit_file: PathBuf,
-    /// The Perforce servers this job imports from, by `p4_source.server_alias`.
+    /// The `--p4-server` clients, by alias: each wins over the tier's `p4_servers` entry.
     pub(crate) servers: HashMap<String, P4Cli>,
+    pub(crate) p4_binary: PathBuf,
     pub(crate) batch_size: NonZeroUsize,
     pub(crate) idle_interval: Duration,
     pub(crate) import_options: ImportOptions,
@@ -260,12 +265,12 @@ fn log_state(current: &mut Option<State>, new: State, message: impl FnOnce() -> 
     }
 }
 
-/// Only `Depot` imports; the others hold the shard. `P` is the server entry, a `P4Cli` in
+/// Only `Depot` imports; the others hold the shard. `P` is the server entry, a [`Server`] in
 /// the job.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ConfiguredDepot<'a, P> {
     NotAMirror,
-    /// `p4_source.server_alias` names a server this job has no `--p4-server` for.
+    /// `p4_source.server_alias` is neither in the tier's `p4_servers` nor a `--p4-server`.
     UnknownServer {
         configured: String,
     },
@@ -277,6 +282,33 @@ pub(crate) enum ConfiguredDepot<'a, P> {
         path_charsets: PathCharsets,
         p4: &'a P,
     },
+}
+
+/// A server of [`servers`].
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Server<'a, F> {
+    /// An entry of the tier's `p4_servers`; its client is built at shard setup, so a running
+    /// shard keeps it until the task restarts or the shard moves, whatever configerator says.
+    Tier(&'a P4ServerConfig),
+    /// A `--p4-server`'s client.
+    Flag(&'a F),
+}
+
+/// Every alias's server: its `--p4-server` while the spec gives one, else its entry in the
+/// tier's `p4_servers`. Dropping an alias's flag from the spec moves that alias to the map;
+/// putting the flag back rolls it back.
+pub(crate) fn servers<'a, F>(
+    tier: &'a BTreeMap<String, P4ServerConfig>,
+    flags: &'a HashMap<String, F>,
+) -> HashMap<String, Server<'a, F>> {
+    tier.iter()
+        .map(|(alias, server)| (alias.clone(), Server::Tier(server)))
+        .chain(
+            flags
+                .iter()
+                .map(|(alias, p4)| (alias.clone(), Server::Flag(p4))),
+        )
+        .collect()
 }
 
 pub(crate) fn configured_depot<'a, P>(
@@ -333,20 +365,43 @@ impl RepoShardedProcess for P4SyncProcess {
         }
         let repo_args = RepoArgs::from_repo_name(shard.repo_name.clone());
         let repo: Repo = self.app.open_repo(&repo_args).await?;
-        let source = match configured_depot(repo.repo_config(), &self.settings.servers) {
+        let repo_configs = self.app.repo_configs();
+        let servers = servers(&repo_configs.common.p4_servers, &self.settings.servers);
+        let source = match configured_depot(repo.repo_config(), &servers) {
             ConfiguredDepot::Depot {
                 alias,
                 depot,
                 path_charsets,
                 p4,
-            } => Ok(Source {
-                alias: alias.to_owned(),
-                depot,
-                p4: p4.with_path_charsets(path_charsets),
-            }),
+            } => {
+                let (from, p4) = match p4 {
+                    Server::Tier(server) => {
+                        let p4 = server::client(
+                            alias,
+                            server,
+                            &self.settings.p4_binary,
+                            self.app.environment().scuba_sample_builder.clone(),
+                        )
+                        .await
+                        .with_context(|| format!("{}: p4_servers[{alias}]", shard.repo_name))?;
+                        ("its p4_servers entry", p4)
+                    }
+                    Server::Flag(p4) => ("its --p4-server", P4Cli::clone(p4)),
+                };
+                tracing::info!(
+                    "{}: server {alias} from {from}, at {}",
+                    shard.repo_name,
+                    p4.port()
+                );
+                Ok(Source {
+                    alias: alias.to_owned(),
+                    depot,
+                    p4: p4.with_path_charsets(path_charsets),
+                })
+            }
             ConfiguredDepot::NotAMirror => Err("no p4_source in its repo config".to_owned()),
             ConfiguredDepot::UnknownServer { configured } => Err(format!(
-                "its p4_source.server_alias is {configured}, which this job has no --p4-server for"
+                "its p4_source.server_alias is {configured}, which is in neither the tier's p4_servers nor a --p4-server"
             )),
             ConfiguredDepot::InvalidCharsets(err) => {
                 Err(format!("its p4_source.path_charsets: {err}"))

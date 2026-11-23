@@ -12,7 +12,9 @@ use std::time::Duration;
 use justknobs::test_helpers::JustKnobsInMemory;
 use justknobs::test_helpers::KnobVal;
 use justknobs::test_helpers::with_just_knobs;
+use maplit::btreemap;
 use maplit::hashmap;
+use metaconfig_types::P4ServerConfig;
 use metaconfig_types::P4SourceConfig;
 use metaconfig_types::RepoConfig;
 use mononoke_macros::mononoke;
@@ -28,11 +30,13 @@ use super::*;
 use crate::sharded::BatchSize;
 use crate::sharded::ConfiguredDepot;
 use crate::sharded::LastProgress;
+use crate::sharded::Server;
 use crate::sharded::configured_depot;
 use crate::sharded::import_enabled;
 use crate::sharded::report_freshness;
 use crate::sharded::retry_delay;
 use crate::sharded::secs_since_success_key;
+use crate::sharded::servers;
 
 #[mononoke::test]
 fn test_a_repo_gets_the_entry_of_the_server_its_config_names() {
@@ -110,6 +114,51 @@ fn test_a_repo_gets_the_path_charsets_its_config_lists() {
     assert_eq!(
         configured_depot(&config(&[]), &servers),
         ConfiguredDepot::InvalidCharsets(PathCharsetsError::Empty)
+    );
+}
+
+#[mononoke::test]
+fn test_a_flag_wins_over_the_tiers_entry_and_an_alias_without_one_takes_its_entry() {
+    let entry = |host: &str| P4ServerConfig {
+        host: host.to_owned(),
+        ..Default::default()
+    };
+    let tier = btreemap! {
+        "test1".to_owned() => entry("test1-host"),
+        "p4main".to_owned() => entry("p4main-host"),
+    };
+    let flags = hashmap! {
+        "test1".to_owned() => "test1-port",
+        "p4htl".to_owned() => "p4htl-port",
+    };
+    assert_eq!(
+        servers(&tier, &flags),
+        hashmap! {
+            "test1".to_owned() => Server::Flag(&flags["test1"]),
+            "p4main".to_owned() => Server::Tier(&tier["p4main"]),
+            "p4htl".to_owned() => Server::Flag(&flags["p4htl"]),
+        },
+        "test1 has both so its flag wins; p4main has only an entry, p4htl only a flag"
+    );
+}
+
+#[mononoke::test]
+fn test_an_alias_with_neither_a_flag_nor_an_entry_is_an_unknown_server() {
+    let config = RepoConfig {
+        p4_source: Some(P4SourceConfig {
+            server_alias: "test1".to_owned(),
+            depot: "//project_test_stream/".to_owned(),
+            path_charsets: None,
+        }),
+        ..Default::default()
+    };
+    let tier = btreemap! { "p4main".to_owned() => P4ServerConfig::default() };
+    let flags = hashmap! { "p4htl".to_owned() => "p4htl-port" };
+    assert_eq!(
+        configured_depot(&config, &servers(&tier, &flags)),
+        ConfiguredDepot::UnknownServer {
+            configured: "test1".to_owned(),
+        }
     );
 }
 
