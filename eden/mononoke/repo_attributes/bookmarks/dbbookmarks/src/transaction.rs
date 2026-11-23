@@ -108,13 +108,14 @@ mononoke_queries! {
         "SELECT MAX(id) FROM bookmarks_update_log WHERE repo_id = {repo_id}"
     }
 
-    pub read FindMaxBookmarkLogIdsByName(
+    // Keep this an equality lookup: MySQL then reads MAX(id) straight from the
+    // (repo_id, name, id) key, while `name IN (...) GROUP BY name` scans every
+    // log row of the repository.
+    pub read FindMaxBookmarkLogIdForName(
         repo_id: RepositoryId,
-        >list names: BookmarkName
-    ) -> (BookmarkName, u64) {
-        "SELECT name, MAX(id) FROM bookmarks_update_log
-         WHERE repo_id = {repo_id} AND name IN {names}
-         GROUP BY name"
+        name: BookmarkName
+    ) -> (Option<u64>) {
+        "SELECT MAX(id) FROM bookmarks_update_log WHERE repo_id = {repo_id} AND name = {name}"
     }
 
     pub read FindMaxBookmarkLogLockId(repo_id: RepositoryId) -> (Option<u64>) {
@@ -305,7 +306,7 @@ pub fn bookmark_log_guard_required(
 
 /// Read allocation state after capturing any required migration guard ticket.
 pub async fn find_next_bookmark_log_ids(
-    txn: SqlTransaction,
+    mut txn: SqlTransaction,
     repo_id: RepositoryId,
     names: &HashSet<BookmarkName>,
     by_name: bool,
@@ -326,20 +327,23 @@ pub async fn find_next_bookmark_log_ids(
         return Ok((txn, NextBookmarkLogId::Repo(next)));
     }
 
-    let mut ids: HashMap<BookmarkName, u64> = names.iter().cloned().map(|name| (name, 1)).collect();
-    if names.is_empty() {
-        return Ok((txn, NextBookmarkLogId::ByName(ids)));
-    }
-    let names: Vec<_> = names.iter().cloned().collect();
-    let (txn, rows) =
-        FindMaxBookmarkLogIdsByName::query_with_transaction(txn, &repo_id, &names).await?;
-    for (name, max_id) in rows {
-        let next = ids.get_mut(&name).ok_or_else(|| {
-            anyhow!("max log query returned unexpected bookmark {name} in repo {repo_id}")
-        })?;
-        *next = max_id
-            .checked_add(1)
-            .ok_or_else(|| anyhow!("bookmark log ID overflow for {name} in repo {repo_id}"))?;
+    let mut ids = HashMap::with_capacity(names.len());
+    for name in names {
+        let (next_txn, rows) =
+            FindMaxBookmarkLogIdForName::query_with_transaction(txn, &repo_id, name).await?;
+        txn = next_txn;
+        let next = match rows.as_slice() {
+            [(None,)] => 1,
+            [(Some(id),)] => id
+                .checked_add(1)
+                .ok_or_else(|| anyhow!("bookmark log ID overflow for {name} in repo {repo_id}"))?,
+            _ => {
+                return Err(anyhow!(
+                    "unexpected max log ID rows for {name} in repo {repo_id}: {rows:?}"
+                ));
+            }
+        };
+        ids.insert(name.clone(), next);
     }
     Ok((txn, NextBookmarkLogId::ByName(ids)))
 }
