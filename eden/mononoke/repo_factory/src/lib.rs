@@ -189,6 +189,8 @@ use repo_cross_repo::RepoCrossRepo;
 use repo_derivation_queues::ArcRepoDerivationQueues;
 use repo_derived_data::ArcRepoDerivedData;
 use repo_derived_data::RepoDerivedData;
+#[cfg(fbcode_build)]
+use repo_event_publisher::ArcBookmarkEventFanoutListener;
 use repo_event_publisher::ArcRepoEventPublisher;
 #[cfg(fbcode_build)]
 use repo_event_publisher::ScribeRepoEventPublisher;
@@ -365,6 +367,8 @@ pub struct RepoFactory {
     #[cfg(fbcode_build)]
     zelos_clients: RepoFactoryCache<ZelosConfig, Arc<dyn ZeusClient>>,
     repo_event_publishers: RepoFactoryCache<Option<MetadataCacheConfig>, ArcRepoEventPublisher>,
+    #[cfg(fbcode_build)]
+    bookmark_event_fanout_listener: ArcBookmarkEventFanoutListener,
     blobstore_override: Option<Arc<dyn RepoFactoryOverride<Arc<dyn Blobstore>>>>,
     scrub_handler: Arc<dyn ScrubHandler>,
     blobstore_component_sampler: Option<Arc<dyn ComponentSamplingHandler>>,
@@ -382,6 +386,8 @@ impl RepoFactory {
             #[cfg(fbcode_build)]
             zelos_clients: RepoFactoryCache::new(env.fb, "zelos_clients"),
             repo_event_publishers: RepoFactoryCache::new(env.fb, "repo_event_publishers"),
+            #[cfg(fbcode_build)]
+            bookmark_event_fanout_listener: Default::default(),
             blobstore_override: None,
             scrub_handler: default_scrub_handler(),
             blobstore_component_sampler: None,
@@ -2210,7 +2216,10 @@ impl RepoFactory {
                         self.env.fb,
                         self.configs.clone(),
                         repo_config.metadata_cache_config.as_ref(),
-                    )?;
+                    )?
+                    .with_bookmark_event_fanout_listener(
+                        self.bookmark_event_fanout_listener.clone(),
+                    );
                     Ok(Arc::new(event_publisher) as ArcRepoEventPublisher)
                 }
                 #[cfg(not(fbcode_build))]

@@ -35,6 +35,8 @@ pub use facebook::repo_id_provider::RepoIdProvider;
 #[cfg(fbcode_build)]
 pub use facebook::scribe_listener::ScribeListener;
 #[cfg(fbcode_build)]
+pub use facebook::scribe_repo_event_publisher::ArcBookmarkEventFanoutListener;
+#[cfg(fbcode_build)]
 pub use facebook::scribe_repo_event_publisher::ScribeRepoEventPublisher;
 #[cfg(fbcode_build)]
 pub use mononoke_bookmark_event_notification::BookmarkCategory;
