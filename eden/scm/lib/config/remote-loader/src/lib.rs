@@ -16,6 +16,8 @@ pub use fb::remote_loader::maybe_set_http_cat_header;
 #[cfg(feature = "fb")]
 pub use fb::remote_loader::read_local_config;
 #[cfg(feature = "fb")]
+pub use fb::remote_loader::resolve_client_identity;
+#[cfg(feature = "fb")]
 pub use fb::remote_loader::should_fetch_configs;
 #[cfg(not(feature = "fb"))]
 pub use oss::get_remote_configs;
