@@ -923,7 +923,13 @@ class patchfile:
             if self.remove:
                 self.backend.unlink(self.fname)
             else:
-                l = h.new(self.lines)
+                try:
+                    l = h.new(self.lines)
+                except PatchError as inst:
+                    self.printfile(True)
+                    self.ui.warn(_("Hunk #%d FAILED: %s\n") % (self.hunks, inst))
+                    self.rej.append(h)
+                    return -1
                 self.lines[:] = l
                 self.offset += len(l)
                 self.dirty = True
@@ -2201,32 +2207,45 @@ def iterhunks(fp):
         yield "file", ("a/" + file, "b/" + file, None, gp.copy())
 
 
+# The smallest delta git writes (`DELTA_SIZE_MIN` in git's delta.h).
+GIT_DELTA_SIZE_MIN = 4
+
+
 def applybindelta(binchunk, data):
     """Apply a binary delta hunk
-    The algorithm used is the algorithm from git's patch-delta.c
+    The algorithm used is the algorithm from git's patch-delta.c, including
+    its checks that the delta was made against ``data``.
     """
 
-    def deltahead(binchunk):
-        i = 0
-        for c in binchunk:
-            if not isinstance(c, int):
-                c = ord(c)
+    def deltahead(i):
+        size = 0
+        shift = 0
+        while i < len(binchunk):
+            c = binchunk[i]
             i += 1
+            size |= (c & 0x7F) << shift
+            shift += 7
             if not (c & 0x80):
-                return i
-        return i
+                return size, i
+        raise PatchError(_("corrupt binary delta"))
 
+    if len(binchunk) < GIT_DELTA_SIZE_MIN:
+        raise PatchError(_("corrupt binary delta"))
+    srcsize, i = deltahead(0)
+    if srcsize != len(data):
+        raise PatchError(
+            _("binary delta is for a %d-byte file, but the file has %d bytes")
+            % (srcsize, len(data))
+        )
+    dstsize, i = deltahead(i)
     out = b""
-    s = deltahead(binchunk)
-    binchunk = binchunk[s:]
-    s = deltahead(binchunk)
-    binchunk = binchunk[s:]
-    i = 0
     binarray = bytearray(binchunk)
     while i < len(binarray):
         cmd = binarray[i]
         i += 1
         if cmd & 0x80:
+            if i + bin(cmd & 0x7F).count("1") > len(binarray):
+                raise PatchError(_("corrupt binary delta"))
             offset = 0
             size = 0
             if cmd & 0x01:
@@ -2253,13 +2272,19 @@ def applybindelta(binchunk, data):
             if size == 0:
                 size = 0x10000
             offset_end = offset + size
+            if offset_end > len(data) or size > dstsize - len(out):
+                raise PatchError(_("corrupt binary delta"))
             out += data[offset:offset_end]
         elif cmd != 0:
             offset_end = i + cmd
+            if offset_end > len(binarray) or cmd > dstsize - len(out):
+                raise PatchError(_("corrupt binary delta"))
             out += binchunk[i:offset_end]
             i += cmd
         else:
             raise PatchError(_("unexpected delta opcode 0"))
+    if len(out) != dstsize:
+        raise PatchError(_("corrupt binary delta"))
     return out
 
 
@@ -2297,6 +2322,9 @@ def _applydiff(ui, fp, patcher, backend, store, strip=1, prefix="", eolmode="str
     rejects = 0
     err = 0
     current_file = None
+    # The source of a binary rename is deleted only once its hunk applies, so
+    # that a rejected hunk does not lose the file.
+    binary_rename_source = None
 
     for state, values in iterhunks(fp):
         if state == "hunk":
@@ -2305,10 +2333,14 @@ def _applydiff(ui, fp, patcher, backend, store, strip=1, prefix="", eolmode="str
             ret = current_file.apply(values)
             if ret > 0:
                 err = 1
+            if ret >= 0 and binary_rename_source:
+                backend.unlink(binary_rename_source)
+                binary_rename_source = None
         elif state == "file":
             if current_file:
                 rejects += current_file.close()
                 current_file = None
+            binary_rename_source = None
             afile, bfile, first_hunk, gp = values
             if gp:
                 gp.path = pstrip(gp.path)
@@ -2349,7 +2381,10 @@ def _applydiff(ui, fp, patcher, backend, store, strip=1, prefix="", eolmode="str
                     rejects += 1
 
             if gp.op == "RENAME":
-                backend.unlink(gp.oldpath)
+                if isinstance(first_hunk, binhunk):
+                    binary_rename_source = gp.oldpath
+                else:
+                    backend.unlink(gp.oldpath)
         elif state == "git":
             for gp in values:
                 path = pstrip(gp.oldpath)

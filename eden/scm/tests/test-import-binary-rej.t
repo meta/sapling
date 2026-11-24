@@ -124,28 +124,36 @@ alone.
 
   $ hg revert -q f
   >>> writedelta("past-end.patch", header(35, 8) + copy(32, 8))
-# BUG: the delta is applied, and f is replaced with the last 3 bytes of the base,
-# fixed in the next diff
   $ hg import --no-commit $TESTTMP/past-end.patch
   applying $TESTTMP/past-end.patch
+  patching file f
+  Hunk #1 FAILED: corrupt binary delta
+  1 out of 1 hunks FAILED -- saving rejects to file f.rej
+  abort: patch failed to apply
+  [255]
   $ cat f
-  le
+  hello world, this is the base file
 
 On a different file the delta is rejected too, and f is left alone.
 
   $ newclientrepo
   $ printf 'short\n' > f
   $ hg ci -Aqm base
-# BUG: the delta is applied, and f becomes neither its old nor its new content,
-# fixed in the next diff
   $ hg import --no-commit $TESTTMP/delta.patch
   applying $TESTTMP/delta.patch
+  patching file f
+  Hunk #1 FAILED: binary delta is for a 35-byte file, but the file has 6 bytes
+  1 out of 1 hunks FAILED -- saving rejects to file f.rej
+  abort: patch failed to apply
+  [255]
   $ cat f
   short
-  BASE (no-eol)
   $ cat f.rej
-  cat: f.rej: $ENOENT$
-  [1]
+  --- f
+  +++ f
+  GIT binary patch
+  delta 13
+  Uc$`yKp2#4{;^Y|YI#HGl01~bO!~g&Q
 
 The same delta can also rename f to g. On its own base, f is renamed and
 patched:
@@ -171,41 +179,49 @@ created.
   $ newclientrepo
   $ printf 'short\n' > f
   $ hg ci -Aqm base
-# BUG: f is deleted, and g gets neither the old nor the new content,
-# fixed in the next diff
   $ hg import --no-commit $TESTTMP/rename.patch
   applying $TESTTMP/rename.patch
+  patching file g
+  Hunk #1 FAILED: binary delta is for a 35-byte file, but the file has 6 bytes
+  1 out of 1 hunks FAILED -- saving rejects to file g.rej
+  abort: patch failed to apply
+  [255]
   $ hg st -C
-  A g
-    f
-  R f
+  ? g.rej
   $ cat f
-  cat: f: $ENOENT$
-  [1]
-  $ cat g
   short
-  BASE (no-eol)
+  $ cat g
+  cat: g: $ENOENT$
+  [1]
 
 Without --no-commit, nothing is committed.
 
   $ hg revert -qa
   $ rm -f g g.rej
-# BUG: the rename is committed, fixed in the next diff
   $ hg import -m rename $TESTTMP/rename.patch
   applying $TESTTMP/rename.patch
+  patching file g
+  Hunk #1 FAILED: binary delta is for a 35-byte file, but the file has 6 bytes
+  1 out of 1 hunks FAILED -- saving rejects to file g.rej
+  abort: patch failed to apply
+  [255]
   $ hg log -r . -T '{desc}\n'
-  rename
+  base
   $ hg st -C
+  ? g.rej
 
 With --partial, the commit does not delete f.
 
   $ hg up -q 'desc(base)'
   $ rm -f g.rej
-# BUG: the commit deletes f and adds the wrong g, fixed in the next diff
   $ hg import --partial -m rename $TESTTMP/rename.patch
   applying $TESTTMP/rename.patch
+  patching file g
+  Hunk #1 FAILED: binary delta is for a 35-byte file, but the file has 6 bytes
+  1 out of 1 hunks FAILED -- saving rejects to file g.rej
+  patch applied partially
+  (fix the .rej files and run `hg commit --amend`)
+  [1]
   $ hg st -C --change .
-  A g
-    f
-  R f
   $ hg st -C
+  ? g.rej

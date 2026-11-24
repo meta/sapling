@@ -45,24 +45,21 @@ class ApplyBinDeltaTest(unittest.TestCase):
         self.assertEqual(check(header(10, 4) + copy(2, 4)), b"2345")
 
     def test_malformed(self) -> None:
-        # BUG: none of these deltas is rejected, fixed in the next diff.
+        corrupt = "PatchError: corrupt binary delta"
         # Shorter than any delta git writes:
-        self.assertEqual(check(header(10, 0)), b"")
+        self.assertEqual(check(header(10, 0)), corrupt)
         # The source size never ends, as every byte sets the continuation bit:
-        self.assertEqual(check(bytes([0x80 | 10, 0x80, 0x80, 0x80])), b"")
+        self.assertEqual(check(bytes([0x80 | 10, 0x80, 0x80, 0x80])), corrupt)
         # Copy arguments cut off:
-        self.assertEqual(
-            check(header(10, 4) + copy(2, 4)[:-1]),
-            "IndexError: bytearray index out of range",
-        )
+        self.assertEqual(check(header(10, 4) + copy(2, 4)[:-1]), corrupt)
         # Copy past the result size:
-        self.assertEqual(check(header(10, 2) + copy(2, 4)), b"2345")
+        self.assertEqual(check(header(10, 2) + copy(2, 4)), corrupt)
         # Insert past the end of the delta:
-        self.assertEqual(check(header(10, 4) + insert(b"abcd")[:-2]), b"ab")
+        self.assertEqual(check(header(10, 4) + insert(b"abcd")[:-2]), corrupt)
         # Insert past the result size:
-        self.assertEqual(check(header(10, 1) + insert(b"ab")), b"ab")
+        self.assertEqual(check(header(10, 1) + insert(b"ab")), corrupt)
         # Result shorter than its size:
-        self.assertEqual(check(header(10, 8) + copy(2, 4)), b"2345")
+        self.assertEqual(check(header(10, 8) + copy(2, 4)), corrupt)
 
 
 if __name__ == "__main__":
