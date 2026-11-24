@@ -1049,6 +1049,7 @@ function _megarepo_async_worker_cmd {
     --config-tier "$MONONOKE_CONFIG_TIER" \
     --scuba-log-file "$TESTTMP/async-worker.json" \
     --tracing-test-format \
+    --runtime-thread-stack-size 8388608 \
     "${CACHE_ARGS[@]}" \
     "${COMMON_ARGS[@]}"
 }
@@ -2077,6 +2078,7 @@ function diff_service() {
       --scuba-log-file "$TESTTMP/diff-service.json" \
       --bound-address-file "$DIFF_SERVICE_SERVER_ADDR_FILE" \
       --tracing-test-format \
+      --runtime-thread-stack-size 8388608 \
       "${CACHE_ARGS[@]}" \
       "${COMMON_ARGS[@]}" >> "$TESTTMP/diff_service.out" 2>&1 &
 
