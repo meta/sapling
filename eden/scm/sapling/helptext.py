@@ -1773,7 +1773,8 @@ command or with @Product@ Queues extension.
     ``auto``, end of lines are again ignored while patching but line
     endings in patched files are normalized to their original setting
     on a per-file basis. If target file does not exist or has no end
-    of line, patch line endings are preserved.
+    of line, patch line endings are preserved. GIT binary patches
+    always apply to the file's exact bytes, whatever this setting.
     (default: strict)
 
 ``fuzz``

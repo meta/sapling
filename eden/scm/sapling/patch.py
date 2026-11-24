@@ -779,6 +779,10 @@ eolmodes = ["strict", "crlf", "lf", "auto"]
 class patchfile:
     def __init__(self, ui, gp, backend, store, eolmode="strict"):
         self.fname = gp.path
+        if gp.binary:
+            # Binary hunks read and write the file's exact bytes: a delta's
+            # copy offsets and sizes are relative to them.
+            eolmode = "strict"
         self.eolmode = eolmode
         self.eol = None
         self.backend = backend
@@ -2267,7 +2271,8 @@ def applydiff(ui, fp, backend, store, strip=1, prefix="", eolmode="strict"):
 
     If 'eolmode' is 'strict', the patch content and patched file are
     read in binary mode. Otherwise, line endings are ignored when
-    patching then normalized according to 'eolmode'.
+    patching then normalized according to 'eolmode'. GIT binary hunks
+    always apply to the file's exact bytes.
     """
     return _applydiff(
         ui, fp, patchfile, backend, store, strip=strip, prefix=prefix, eolmode=eolmode
@@ -2464,7 +2469,8 @@ def patch(
     - 'crlf': EOLs are ignored when patching and reset to CRLF
     - 'lf': EOLs are ignored when patching and reset to LF
     - None: get it from user settings, default to 'strict'
-    'eolmode' is ignored when using an external patcher program.
+    'eolmode' is ignored when using an external patcher program, and for
+    GIT binary hunks, which always apply to the file's exact bytes.
 
     Returns whether patch was applied with fuzz factor.
     """

@@ -153,9 +153,8 @@ a binary file ending in CRLF is written back unchanged
   $ sl revert --no-backup b
   $ sl import --config patch.eol='CRLF' -m changeb2 bin2.diff
   applying bin2.diff
-# BUG: patch.eol=CRLF adds a CR before the last LF, fixed in the next diff
   $ $PYTHON -c "print(repr(open('b', 'rb').read()))"
-  b'a\x00\nc\r\r\n'
+  b'a\x00\nc\r\n'
   $ sl st
 
 a binary delta applies to the exact bytes, CRLFs included: this one turns
@@ -172,9 +171,7 @@ a binary delta applies to the exact bytes, CRLFs included: this one turns
   > EOF
   $ sl import --config patch.eol='auto' -m changec delta.diff
   applying delta.diff
-# BUG: patch.eol=auto turns the CRLFs into LFs before the delta copies from the
-# file, so the copies come from the wrong offsets, fixed in the next diff
   $ $PYTHON -c "print(repr(open('c', 'rb').read()))"
-  b'za\nbX\r\n'
+  b'za\r\nXb\r\n'
   $ sl st
   $ cd ..
