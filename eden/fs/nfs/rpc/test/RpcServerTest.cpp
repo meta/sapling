@@ -550,6 +550,43 @@ TEST_F(RpcServerTest, normal_proc_not_fast_pathed) {
   cleanup(clientFd, server);
 }
 
+class FastPathShutdownRecordingProcessor : public ShutdownRecordingProcessor {
+ public:
+  bool shouldFastPathRPCs() const override {
+    return true;
+  }
+};
+
+TEST_F(RpcServerTest, failed_inline_reply_stops_reading_requests) {
+  auto proc = std::make_shared<FastPathShutdownRecordingProcessor>();
+  auto server = createTestServerWithManualExecutor(proc);
+  auto clientFd = connectClient(*server);
+
+  // The client sends a null RPC, answered inline, and a request for the thread
+  // pool, then disconnects without reading. Both requests arrive in one read;
+  // writing the null RPC's reply fails, and the socket reports the error to
+  // the connection handler before the write returns.
+  folly::IOBufQueue requests;
+  requests.append(buildNullRpcRequest(1));
+  requests.append(buildRpcRequest(2, /*proc=*/1));
+  auto requestBuf = requests.move();
+  auto bytes = requestBuf->coalesce();
+  ASSERT_EQ(
+      static_cast<ssize_t>(bytes.size()),
+      write(clientFd, bytes.data(), bytes.size()));
+  close(clientFd);
+
+  drive([&] { return proc->shutdownCount() > 0; });
+  EXPECT_EQ(0u, manualExecutor_->drain());
+  evb.loopOnce(EVLOOP_NONBLOCK);
+
+  EXPECT_EQ(1, proc->shutdownCount());
+  EXPECT_EQ(RpcStopReason::ERROR, proc->lastReason_);
+
+  server.reset();
+  evb.loopOnce();
+}
+
 TEST_F(RpcServerTest, request_split_into_two_fragments) {
   auto server =
       createTestServerWithManualExecutor(std::make_shared<TestEchoProcessor>());

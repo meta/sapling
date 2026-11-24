@@ -364,9 +364,12 @@ void RpcConnectionHandler::writeInlineReply(F&& serializeBody) {
 }
 
 void RpcConnectionHandler::tryConsumeReadBuffer() noexcept {
+  // writeInlineReply() can synchronously trigger readErr() and complete
+  // shutdown; keep `this` alive and stop dispatching once stopReason is set.
+  DestructorGuard dg{this};
   // Iterate over all the complete fragments and dispatch these to the
   // threadPool_.
-  while (true) {
+  while (!state_.get().stopReason.has_value()) {
     auto buf = readOneRequest();
     if (!buf) {
       break;
