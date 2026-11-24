@@ -34,24 +34,6 @@ cpp_library(
 )
 
 cpp_library(
-    name = "glob_filter",
-    srcs = ["GlobFilter.cpp"],
-    headers = ["GlobFilter.h"],
-    deps = [
-        "//eden/common/utils:immediate_future",
-    ],
-    exported_deps = [
-        "fbsource//xplat/folly/coro/safe:now_task",
-        ":filters",
-        "//eden/common/utils:case_sensitivity",
-        "//eden/fs/utils:eden_error",
-        "//eden/scm/lib/edenfs_ffi:edenfs_ffi",  # @manual
-        "//eden/scm/lib/edenfs_ffi:edenfs_ffi-wrapper",  # @manual
-        "//eden/scm/lib/edenfs_ffi:edenfs_ffi@header",  # @manual
-    ],
-)
-
-cpp_library(
     name = "hg_sparse_filter",
     srcs = ["HgSparseFilter.cpp"],
     headers = ["HgSparseFilter.h"],

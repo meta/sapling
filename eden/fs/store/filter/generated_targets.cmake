@@ -25,17 +25,6 @@ eden_add_library(eden_fs_store_filter_filters
     edencommon::edencommon_utils
 )
 
-eden_add_library(eden_fs_store_filter_glob_filter
-  SRCS
-    GlobFilter.cpp
-  EXPORTED_DEPS
-    Folly::folly_coro_safe_now_task
-    eden_fs_store_filter_filters
-    eden_fs_utils_eden_error
-    edencommon::edencommon_utils
-    edenfs_ffi
-)
-
 set(EDEN_FS_STORE_FILTER_HG_SPARSE_FILTER_SELECT_DEPS)
 if (WIN32)
   list(APPEND EDEN_FS_STORE_FILTER_HG_SPARSE_FILTER_SELECT_DEPS rust_cxx)

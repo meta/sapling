@@ -8,19 +8,11 @@
 eden_add_test(eden_fs_store_filter_test
   SRCS
     FilteredObjectIdTest.cpp
-    GlobFilterTest.cpp
   DEPS
     ${LIBGMOCK_LIBRARIES}
-    Folly::folly_executors_manual_executor
     Folly::folly_range
     Folly::folly_varint
-    eden_fs_config
     eden_fs_model
-    eden_fs_store
-    eden_fs_store_backing_store_interface
     eden_fs_store_filter_filtered_object_id
-    eden_fs_store_filter_glob_filter
-    eden_fs_testharness_fake_backing_store_and_tree_builder
-    edencommon::edencommon_telemetry
     edencommon::edencommon_utils
 )

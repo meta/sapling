@@ -16,7 +16,6 @@ use std::time::Instant;
 use anyhow::Context;
 use anyhow::anyhow;
 use configmodel::config::ConfigExt;
-use cxx::SharedPtr;
 use cxx::UniquePtr;
 use cxxerror::Result;
 use filters::filter::FilterGenerator;
@@ -24,17 +23,14 @@ use metrics::Counter;
 use parking_lot::Mutex;
 use pathmatcher::AlwaysMatcher;
 use pathmatcher::DirectoryMatch;
-use pathmatcher::TreeMatcher;
 use repo::repo::Repo;
 use sparse::Root;
 use types::RepoPath;
 use workingcopy::sparse::fetch_sparse_profile_content;
 
 use crate::ffi::MatcherPromise;
-use crate::ffi::MatcherWrapper;
 use crate::ffi::set_matcher_promise_error;
 use crate::ffi::set_matcher_promise_result;
-use crate::ffi::set_matcher_result;
 
 struct CachedObjects {
     expiration: Option<Instant>,
@@ -164,11 +160,6 @@ impl MercurialMatcher {
         }
         Ok(res.into())
     }
-
-    fn matches_file(self: &MercurialMatcher, path: &str) -> Result<bool> {
-        let repo_path = RepoPath::from_str(path)?;
-        Ok(self.matcher.matches_file(repo_path)?)
-    }
 }
 
 // It's safe to move MatcherPromises between threads
@@ -194,9 +185,6 @@ mod ffi {
         type MatcherPromise;
 
         #[namespace = "facebook::eden"]
-        type MatcherWrapper;
-
-        #[namespace = "facebook::eden"]
         fn set_matcher_promise_result(
             promise: UniquePtr<MatcherPromise>,
             value: Box<MercurialMatcher>,
@@ -204,9 +192,6 @@ mod ffi {
 
         #[namespace = "facebook::eden"]
         fn set_matcher_promise_error(promise: UniquePtr<MatcherPromise>, error: String);
-
-        #[namespace = "facebook::eden"]
-        fn set_matcher_result(wrapper: SharedPtr<MatcherWrapper>, value: Box<MercurialMatcher>);
     }
 
     #[namespace = "facebook::eden"]
@@ -227,15 +212,6 @@ mod ffi {
         // Returns true if the given path and all of its children are unfiltered.
         fn matches_directory(self: &MercurialMatcher, path: &str) -> Result<FilterDirectoryMatch>;
 
-        // Returns true if the given path is unfiltered.
-        fn matches_file(self: &MercurialMatcher, path: &str) -> Result<bool>;
-
-        fn create_tree_matcher(
-            globs: Vec<String>,
-            case_sensitive: bool,
-            matcher_wrapper: SharedPtr<MatcherWrapper>,
-        ) -> Result<()>;
-
         // Checks if two FilterIds are identical by parsing and comparing their
         // underlying Filter objects. Returns true if both FilterIds parse to
         // the same commit_id and filter_paths
@@ -251,19 +227,6 @@ impl From<DirectoryMatch> for ffi::FilterDirectoryMatch {
             DirectoryMatch::ShouldTraverse => Self::Unfiltered,
         }
     }
-}
-
-fn create_tree_matcher(
-    globs: Vec<String>,
-    case_sensitive: bool,
-    matcher_wrapper: SharedPtr<MatcherWrapper>,
-) -> Result<()> {
-    let matcher = TreeMatcher::from_rules(globs.iter(), case_sensitive)?;
-    let mercurial_matcher = Box::new(MercurialMatcher {
-        matcher: Box::new(matcher),
-    });
-    set_matcher_result(matcher_wrapper, mercurial_matcher);
-    Ok(())
 }
 
 // Checks if two filterIds are identical by parsing and comparing their underlying Filter objects.
@@ -438,6 +401,8 @@ pub fn profile_from_filter_id(
 
 #[cfg(test)]
 mod tests {
+    use pathmatcher::TreeMatcher;
+
     use super::*;
 
     fn glob_matcher(globs: &[&str]) -> MercurialMatcher {
@@ -455,7 +420,6 @@ mod tests {
             matcher.matches_directory("a.cpp").ok().unwrap()
                 == ffi::FilterDirectoryMatch::Unfiltered
         );
-        assert!(matcher.matches_file("a.cpp").ok().unwrap());
         // Unmatched paths with no matching subpaths stay filtered.
         assert!(
             matcher.matches_directory("a.txt").ok().unwrap()

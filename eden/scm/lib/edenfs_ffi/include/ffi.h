@@ -31,21 +31,4 @@ void set_matcher_promise_error(
     std::unique_ptr<MatcherPromise> promise,
     rust::String error);
 
-// synchronized version of above class
-class MatcherWrapper {
- public:
-  explicit MatcherWrapper() = default;
-
-  std::unique_ptr<rust::Box<MercurialMatcher>> matcher_ = nullptr;
-  rust::String error_;
-};
-
-void set_matcher_result(
-    std::shared_ptr<MatcherWrapper> wrapper,
-    rust::Box<::facebook::eden::MercurialMatcher>);
-
-void set_matcher_error(
-    std::shared_ptr<MatcherWrapper> wrapper,
-    rust::String error);
-
 } // namespace facebook::eden
