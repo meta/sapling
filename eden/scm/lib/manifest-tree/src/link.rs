@@ -246,6 +246,10 @@ impl DurableEntry {
         matches!(self.links.get(), Some(MaybeLinks::Links(_)))
     }
 
+    pub fn get_tree_entry(&self) -> Option<&Arc<dyn storemodel::TreeEntry>> {
+        self.tree_entry.get()
+    }
+
     /// Returns the tree entry, loading it from `store` if the links were set without one: by the
     /// batch prefetch, or for a tree written by this process.
     pub fn get_or_load_tree_entry(

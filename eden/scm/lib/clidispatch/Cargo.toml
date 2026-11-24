@@ -32,6 +32,7 @@ sapling-hook = { version = "0.1.0", path = "../hook" }
 sapling-identity = { version = "0.1.0", path = "../identity" }
 sapling-indexedlog-config = { version = "0.1.0", path = "../indexedlog/config" }
 sapling-io = { version = "0.1.0", path = "../io" }
+sapling-manifest-tree = { version = "0.1.0", path = "../manifest-tree" }
 sapling-network-doctor = { version = "0.1.0", path = "../doctor/network" }
 sapling-repo = { version = "0.1.0", path = "../repo", features = ["wdir"] }
 sapling-repourl = { version = "0.1.0", path = "../repo/url" }

@@ -51,6 +51,7 @@ sl_rust_library(
         "//eden/scm/lib/io:io",
         "//eden/scm/lib/io/term/logger:termlogger",
         "//eden/scm/lib/io/term/style:termstyle",
+        "//eden/scm/lib/manifest-tree:manifest-tree",
         "//eden/scm/lib/repo:repo",
         "//eden/scm/lib/repo/url:repourl",
         "//eden/scm/lib/sampling:sampling",

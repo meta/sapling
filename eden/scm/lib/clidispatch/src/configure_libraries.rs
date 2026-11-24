@@ -40,6 +40,11 @@ impl Dispatcher {
         if let Some(limit) = config.get_opt::<usize>("dag", "idmap-cache-flush-limit")? {
             dag::config::set_idmap_cache_flush_limit(limit);
         }
+        manifest_tree::config::set_load_parent_tree_entry(config.get_or(
+            "treemanifest",
+            "load-parent-tree-entry",
+            || true,
+        )?);
         gitcompat::GlobalGit::set_default_config(config);
         initialize_hgtime(config)?;
         initialize_blackbox(&self.optional_repo)?;

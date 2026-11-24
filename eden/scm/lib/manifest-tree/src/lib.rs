@@ -7,6 +7,7 @@
 
 mod acl_metrics;
 mod bfs;
+pub mod config;
 mod diff;
 mod factory_impls;
 mod iter;
@@ -889,6 +890,7 @@ fn finalize_trees<P: ParentTreeTracker>(
     path: &mut RepoPathBuf,
     link: &mut Link,
     format: SerializationFormat,
+    load_parent_tree_entry: bool,
     tracker: &mut P,
     active: P::ActiveParents,
 ) -> Result<(HgId, store::Flag)> {
@@ -914,7 +916,15 @@ fn finalize_trees<P: ParentTreeTracker>(
     for (component, child_link) in links.iter_mut() {
         path.push(component.as_path_component());
         let child_active = tracker.for_subdirectory(&active, path)?;
-        let (hgid, flag) = finalize_trees(store, path, child_link, format, tracker, child_active)?;
+        let (hgid, flag) = finalize_trees(
+            store,
+            path,
+            child_link,
+            format,
+            load_parent_tree_entry,
+            tracker,
+            child_active,
+        )?;
         path.pop();
         let element = store::Element::new(component.clone(), hgid, flag);
         elements.push(element);
@@ -922,11 +932,16 @@ fn finalize_trees<P: ParentTreeTracker>(
     let entry = store::Entry::from_elements(elements, format);
 
     // Read after `advance()`, which loads an unloaded p1 directory together with its tree entry.
-    let p1_tree_entry = p1_entry
-        .map(|p1| p1.get_or_load_tree_entry(store, path).cloned())
-        .transpose()
-        .with_context(|| format!("failed to load parent tree '{path}' to migrate ACL children"))?;
-    let acl_children_indices = migrate_acl_children(p1_tree_entry.as_ref(), &entry);
+    let p1_tree_entry = match &p1_entry {
+        Some(p1) if load_parent_tree_entry => {
+            Some(p1.get_or_load_tree_entry(store, path).with_context(|| {
+                format!("failed to load parent tree '{path}' to migrate ACL children")
+            })?)
+        }
+        Some(p1) => p1.get_tree_entry(),
+        None => None,
+    };
+    let acl_children_indices = migrate_acl_children(p1_tree_entry, &entry);
 
     let cell = OnceLock::new();
     // TODO: remove clone
@@ -993,6 +1008,14 @@ impl TreeManifest {
     /// For Hg format, parent trees are used to compute tree hgids and
     /// parent info is written to the history store.
     pub fn persist(&mut self, parent_trees: &[&TreeManifest]) -> Result<HgId> {
+        self.persist_with(parent_trees, config::load_parent_tree_entry())
+    }
+
+    fn persist_with(
+        &mut self,
+        parent_trees: &[&TreeManifest],
+        load_parent_tree_entry: bool,
+    ) -> Result<HgId> {
         let mut path = RepoPathBuf::new();
         let format = self.store.format();
         let (hgid, _) = match format {
@@ -1004,6 +1027,7 @@ impl TreeManifest {
                     &mut path,
                     &mut self.root,
                     format,
+                    load_parent_tree_entry,
                     &mut tracker,
                     active,
                 )?
@@ -1015,6 +1039,7 @@ impl TreeManifest {
                     &mut path,
                     &mut self.root,
                     format,
+                    load_parent_tree_entry,
                     &mut tracker,
                     (),
                 )?
@@ -2820,10 +2845,9 @@ mod tests {
         assert_eq!(store.get_acl_children_indices(second_a), Some(vec![3]));
     }
 
-    #[test]
-    fn test_persist_fails_when_parent_tree_entry_cannot_be_loaded() {
-        // The parent tree comes from another store, so its tree entries can't be loaded from this
-        // one. Persisting must fail rather than write "a" without its ACL child.
+    /// Returns a prefetched parent from its own store, and a tree in another store, so the
+    /// parent's tree entries can't be loaded from the tree's store.
+    fn tree_with_parent_from_another_store() -> (TreeManifest, TreeManifest, Arc<TestStore>) {
         let parent_store = Arc::new(TestStore::new());
         let root = persist_tree_with_acl_child(&parent_store);
         let parent = TreeManifest::durable(parent_store.clone(), root);
@@ -2836,14 +2860,34 @@ mod tests {
             .into_iter()
             .collect::<Result<Vec<_>>>()
             .unwrap();
-        let mut tree = TreeManifest::ephemeral(Arc::new(TestStore::new()));
+        let store = Arc::new(TestStore::new());
+        let mut tree = TreeManifest::ephemeral(store.clone());
         tree.insert(repo_path_buf("a/g"), make_meta("30")).unwrap();
+        (tree, parent, store)
+    }
+
+    #[test]
+    fn test_persist_fails_when_parent_tree_entry_cannot_be_loaded() {
+        // Persisting must fail rather than write "a" without its ACL child.
+        let (mut tree, parent, _store) = tree_with_parent_from_another_store();
 
         let err = tree.persist(&[&parent]).unwrap_err();
         assert!(
             format!("{err:#}").contains("failed to load parent tree 'a' to migrate ACL children"),
             "unexpected error: {err:#}"
         );
+    }
+
+    #[test]
+    fn test_persist_without_loading_parent_tree_entry() {
+        // With the load disabled, the parent's tree entry isn't loaded: persisting succeeds and
+        // "a" is written without its ACL child.
+        let (mut tree, parent, store) = tree_with_parent_from_another_store();
+
+        tree.persist_with(&[&parent], false).unwrap();
+
+        let a = get_hgid(&tree, repo_path("a"));
+        assert_eq!(store.get_acl_children_indices(a), None);
     }
 
     #[derive(Debug)]
