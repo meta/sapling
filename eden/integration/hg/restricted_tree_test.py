@@ -819,6 +819,56 @@ class RestrictedTreeOmittedModeTest(_RestrictedTreeTestBase):
 
 
 @hg_test
+class RestrictedTreeOmittedModeRebaseTest(_RestrictedTreeTestBase):
+    """Rebase rewrites a directory that has a restricted child, in omitted mode."""
+
+    restricted_content_mode: str = "omitted"
+
+    base_commit: str = ""
+    dest_commit: str = ""
+
+    def populate_backing_repo(self, repo: hgrepo.HgRepository) -> None:
+        eagerepo_path = repo.eagerepo
+        assert eagerepo_path is not None, (
+            "backing HgRepository.init() must populate self.eagerepo before "
+            "populate_backing_repo runs"
+        )
+        eager = EagerRepo(
+            eagerepo_path,
+            hg_environment=repo.hg_environment,
+            system_hgrc=None,
+        )
+        eager.init()
+
+        eager.write_file("dir/open.txt", "open\n")
+        eager.write_file("dir/restricted/.slacl", "acl config\n")
+        eager.write_file("dir/restricted/secret.txt", "secret\n")
+        self.base_commit = eager.commit("Initial restricted tree.")
+
+        # The destination changes "dir", so the rebase writes a new "dir" tree.
+        eager.write_file("dir/other.txt", "destination\n")
+        self.dest_commit = eager.commit("Change dir.")
+
+        repo.hg("pull", "-r", self.base_commit)
+        repo.hg("pull", "-r", self.dest_commit)
+        repo.hg("update", self.base_commit)
+
+    def test_listdir_after_rebase(self) -> None:
+        self.assertNotIn("restricted", os.listdir(os.path.join(self.mount, "dir")))
+
+        self.write_file("dir/new.txt", "new\n")
+        self.repo.add_file("dir/new.txt")
+        local_commit = self.repo.commit("Add a file under dir.")
+        self.hg("rebase", "-r", local_commit, "-d", self.dest_commit)
+
+        entries = os.listdir(os.path.join(self.mount, "dir"))
+        self.assertIn("new.txt", entries)
+        self.assertIn("other.txt", entries)
+        # The rebased "dir" is stored without its ACL child, so "restricted" is listed.
+        self.assertIn("restricted", entries)
+
+
+@hg_test
 # pyre-ignore[13]: T62487924
 class RestrictedTreeRebaseCombinedEnforcementTest(_RestrictedTreeTestBase):
     """Rebase over a destination that removes a loaded restricted child."""

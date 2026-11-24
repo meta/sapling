@@ -2759,6 +2759,66 @@ mod tests {
         assert_eq!(result, None);
     }
 
+    /// Persists a tree whose directory "a" lists "f" and "restricted", with "restricted" (index
+    /// 1) marked as having an ACL, and returns the root id.
+    fn persist_tree_with_acl_child(store: &Arc<TestStore>) -> HgId {
+        let mut tree = TreeManifest::ephemeral(store.clone());
+        tree.insert(repo_path_buf("a/f"), make_meta("10")).unwrap();
+        tree.insert(repo_path_buf("a/restricted/f"), make_meta("20"))
+            .unwrap();
+        let root = tree.persist(&[]).unwrap();
+        store.set_acl_children_indices(get_hgid(&tree, repo_path("a")), vec![1]);
+        root
+    }
+
+    #[test]
+    fn test_persist_acl_children_with_parent_prefetched() {
+        // Rebase diffs the destination tree to find merge inputs. The diff's batch prefetch sets
+        // the directories' links without keeping their tree entries.
+        let store = Arc::new(TestStore::new());
+        let root = persist_tree_with_acl_child(&store);
+        let parent = TreeManifest::durable(store.clone(), root);
+        parent
+            .diff(
+                &TreeManifest::ephemeral(store.clone()),
+                AlwaysMatcher::new(),
+            )
+            .unwrap()
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        let mut tree = parent.clone();
+        tree.insert(repo_path_buf("a/g"), make_meta("30")).unwrap();
+        tree.persist(&[&parent]).unwrap();
+
+        // "a" now lists "f", "g" and "restricted", but its ACL child is lost: it should be [2].
+        let a = get_hgid(&tree, repo_path("a"));
+        assert_eq!(store.get_acl_children_indices(a), None);
+    }
+
+    #[test]
+    fn test_persist_acl_children_with_parent_persisted_in_process() {
+        // The second tree's parent is the first tree, just persisted by this process.
+        let store = Arc::new(TestStore::new());
+        let root = persist_tree_with_acl_child(&store);
+        let mut first = TreeManifest::durable(store.clone(), root);
+        let first_parent = first.clone();
+        first.insert(repo_path_buf("a/g"), make_meta("30")).unwrap();
+        first.persist(&[&first_parent]).unwrap();
+        let first_a = get_hgid(&first, repo_path("a"));
+        assert_eq!(store.get_acl_children_indices(first_a), Some(vec![2]));
+
+        let mut second = first.clone();
+        second
+            .insert(repo_path_buf("a/h"), make_meta("40"))
+            .unwrap();
+        second.persist(&[&first]).unwrap();
+
+        // "a" now lists "f", "g", "h" and "restricted", but its ACL child is lost: it should be [3].
+        let second_a = get_hgid(&second, repo_path("a"));
+        assert_eq!(store.get_acl_children_indices(second_a), None);
+    }
+
     #[derive(Debug)]
     struct TestTranslator;
 
