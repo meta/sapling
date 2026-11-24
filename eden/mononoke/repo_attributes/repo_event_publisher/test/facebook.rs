@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
+use std::time::Duration;
 
 use fbinit::FacebookInit;
 use metaconfig_parser::RepoConfigs;
@@ -117,7 +118,7 @@ async fn test_listener_with_single_subscriber(fb: FacebookInit) -> anyhow::Resul
         }
     "#;
     let consumer = Arc::new(consumer);
-    let mut listener = ScribeListener::<PlainBookmarkInfo, _>::new_with_client(
+    let listener = ScribeListener::<PlainBookmarkInfo, _>::new_with_client(
         fb,
         mononoke_configs(),
         consumer.clone(),
@@ -125,7 +126,6 @@ async fn test_listener_with_single_subscriber(fb: FacebookInit) -> anyhow::Resul
         AllBookmarksFilter {},
     )
     .expect("Failed to create scribe listener");
-    listener.listen_and_notify();
     let mut receiver = listener.subscribe(&"test_repo".to_string());
     producer.write_message(&mut Cursor::new(bookmark_info_json.as_bytes()), None)?;
     let notification_bookmark_info = receiver.recv().await.expect("Failed to receive message");
@@ -232,7 +232,7 @@ async fn test_listener_with_multiple_subscriber_same_repo(fb: FacebookInit) -> a
             }
         }
     "#;
-    let mut listener = ScribeListener::<PlainBookmarkInfo, _>::new_with_client(
+    let listener = ScribeListener::<PlainBookmarkInfo, _>::new_with_client(
         fb,
         mononoke_configs(),
         Arc::new(consumer),
@@ -240,7 +240,6 @@ async fn test_listener_with_multiple_subscriber_same_repo(fb: FacebookInit) -> a
         AllBookmarksFilter {},
     )
     .expect("Failed to create scribe listener");
-    listener.listen_and_notify();
     let mut receiver_1 = listener.subscribe(&"test_repo".to_string());
     let mut receiver_2 = listener.subscribe(&"test_repo".to_string());
     let mut receiver_3 = listener.subscribe(&"test_repo".to_string());
@@ -291,7 +290,7 @@ async fn test_listener_with_multiple_subscriber_multiple_repo(
             }
         }
     "#;
-    let mut listener = ScribeListener::<PlainBookmarkInfo, _>::new_with_client(
+    let listener = ScribeListener::<PlainBookmarkInfo, _>::new_with_client(
         fb,
         mononoke_configs(),
         Arc::new(consumer),
@@ -299,7 +298,6 @@ async fn test_listener_with_multiple_subscriber_multiple_repo(
         AllBookmarksFilter {},
     )
     .expect("Failed to create scribe listener");
-    listener.listen_and_notify();
     let mut receiver_1 = listener.subscribe(&"test_repo".to_string());
     let mut receiver_2 = listener.subscribe(&"other_repo".to_string());
     let mut receiver_3 = listener.subscribe(&"another_repo".to_string());
@@ -350,5 +348,85 @@ async fn test_listener_with_multiple_subscriber_multiple_repo(
     assert_eq!(other_repo_bookmark.repo_name, "other_repo".to_string());
     assert_eq!(another_repo_bookmark.repo_name, "another_repo".to_string());
 
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_no_reads_before_first_subscribe(fb: FacebookInit) -> anyhow::Result<()> {
+    unsafe {
+        std::env::set_var("MONONOKE_TEST_SCRIBE_LOGGING_DIRECTORY", "log");
+    }
+    let producer_options = ScribeProducerOptions::builder()
+        .name("test_producer")
+        .build();
+    let consumer_options = ScribeConsumerOptions::builder()
+        .backlog(100)
+        .serialization_format(SerializationFormat::SCUBA_JSON)
+        .build();
+    let (consumer, producer) =
+        create_consumer_producer_pair(fb, "test_category", consumer_options, producer_options)?;
+
+    let listener = ScribeListener::<PlainBookmarkInfo, _>::new_with_client(
+        fb,
+        mononoke_configs(),
+        Arc::new(consumer),
+        "test_category".to_string(),
+        AllBookmarksFilter {},
+    )?;
+
+    // Written before any subscription exists. A read loop running from
+    // construction would consume this while no sender is registered and drop
+    // it; with lazy start it stays buffered until the loop starts.
+    let first_bookmark_json = r#"
+        {
+            "int": {
+                "time": 1744712410
+            },
+            "normal": {
+                "repo_name": "test_repo",
+                "bookmark_kind": "test_bookmark_kind",
+                "bookmark_name": "first_bookmark",
+                "old_bookmark_value": "test_old_bookmark_value",
+                "new_bookmark_value": "test_new_bookmark_value",
+                "update_reason": "test_update_reason",
+                "operation": "test_operation",
+                "tw_job_handle": "test_tw_job_handle",
+                "client_entry_point": "test_client_entry_point"
+            }
+        }
+    "#;
+    producer.write_message(&mut Cursor::new(first_bookmark_json.as_bytes()), None)?;
+    // Give a read loop running from construction time to consume (and drop)
+    // the message above. In-memory reads take milliseconds, so with lazy
+    // start this only costs test time and the message stays buffered.
+    std::thread::sleep(Duration::from_secs(3));
+
+    let mut receiver = listener.subscribe(&"test_repo".to_string());
+
+    let second_bookmark_json = r#"
+        {
+            "int": {
+                "time": 1744712410
+            },
+            "normal": {
+                "repo_name": "test_repo",
+                "bookmark_kind": "test_bookmark_kind",
+                "bookmark_name": "second_bookmark",
+                "old_bookmark_value": "test_old_bookmark_value",
+                "new_bookmark_value": "test_new_bookmark_value",
+                "update_reason": "test_update_reason",
+                "operation": "test_operation",
+                "tw_job_handle": "test_tw_job_handle",
+                "client_entry_point": "test_client_entry_point"
+            }
+        }
+    "#;
+    producer.write_message(&mut Cursor::new(second_bookmark_json.as_bytes()), None)?;
+
+    // The pre-subscribe message arrives first: it was never consumed early.
+    let first = receiver.recv().await?;
+    assert_eq!(first.bookmark_name, "first_bookmark".to_string());
+    let second = receiver.recv().await?;
+    assert_eq!(second.bookmark_name, "second_bookmark".to_string());
     Ok(())
 }
