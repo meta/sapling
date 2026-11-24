@@ -790,6 +790,27 @@ TEST(
 }
 #endif
 
+TEST(ObjectCache, clearedObjectIsDestroyedAfterTheLockIsReleased) {
+  auto cache =
+      ObjectCache<CacheObject, ObjectCacheFlavor::Simple, FakeStats>::create(
+          10, 0, makeRefPtr<EdenStats>());
+  size_t objectCountSeenByDeleter = 1;
+  size_t totalSizeSeenByDeleter = 3;
+  cache->insertSimple(
+      id3,
+      std::shared_ptr<const CacheObject>{
+          new CacheObject{id3, 3}, [&](const CacheObject* object) {
+            objectCountSeenByDeleter = cache->getObjectCount();
+            totalSizeSeenByDeleter = cache->getTotalSizeBytes();
+            delete object;
+          }});
+
+  cache->clear();
+
+  EXPECT_EQ(0, objectCountSeenByDeleter);
+  EXPECT_EQ(0, totalSizeSeenByDeleter);
+}
+
 TEST(ObjectCache, objectWithFutureExpiryIsServed) {
   auto cache =
       ObjectCache<CacheObject, ObjectCacheFlavor::Simple, FakeStats>::create(

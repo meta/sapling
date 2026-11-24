@@ -436,10 +436,11 @@ template <
 void ObjectCache<ObjectType, Flavor, ObjectCacheStats>::clear() {
   XLOG(DBG6, "ObjectCache::clear");
   for (auto& shard : shards_) {
+    folly::F14NodeMap<ObjectId, CacheItem> evicted;
     auto state = shard.lock();
     state->totalSize = 0;
     state->evictionQueue.clear();
-    state->items.clear();
+    state->items.swap(evicted);
   }
 }
 
