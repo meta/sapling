@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use std::time::Instant;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -49,6 +50,21 @@ define_stats! {
     changesets_queue_capacity: dynamic_singleton_counter("{}.changesets.queue_capacity", (repo: String)),
     changesets_queue_len: dynamic_quantile_stat("{}.changesets.queue_len", (repo: String); Average; P 50, P 75, P 95, P 99; Duration::from_secs(60), Duration::from_secs(600), Duration::from_secs(3600)),
     changesets_queue_max_capacity: dynamic_singleton_counter("{}.changesets.queue_max_capacity", (repo: String)),
+}
+
+/// How long, in flush intervals, a timer tick lets accumulated work wait for
+/// the changesets queued behind it before flushing it anyway.
+const MAX_PARTIAL_BATCH_HOLD_TICKS: u32 = 10;
+
+/// Whether a flush-timer tick flushes the work accumulated so far.
+///
+/// The tick exists for the tail of the queue: the last changesets of an entry
+/// and the bookmark move after them. While more messages are already queued,
+/// the loop keeps receiving instead, so a backlog goes up in full batches.
+/// `max_hold` bounds the wait for the case where an upstream files/trees wait
+/// held up the loop with a partial batch pending.
+fn flush_on_tick(queued: usize, since_last_flush: Duration, max_hold: Duration) -> bool {
+    queued == 0 || since_last_flush >= max_hold
 }
 
 async fn advance_completed_counter(
@@ -227,7 +243,10 @@ impl Manager for ChangesetManager {
         let mut pending_notification = None;
 
         let mut current_batch = Vec::new();
-        let mut flush_timer = interval(Duration::from_millis(self.config.flush_interval_ms as u64));
+        let flush_interval = Duration::from_millis(self.config.flush_interval_ms as u64);
+        let max_partial_batch_hold = flush_interval * MAX_PARTIAL_BATCH_HOLD_TICKS;
+        let mut flush_timer = interval(flush_interval);
+        let mut last_flush = Instant::now();
 
         while !cancellation_requested.load(Ordering::Relaxed) {
             tokio::select! {
@@ -338,6 +357,7 @@ impl Manager for ChangesetManager {
                         {
                             Ok(()) => {
                                 stat::log_upload_changeset_done(&ctx, changeset_ids, now.elapsed());
+                                last_flush = Instant::now();
                             }
                             Err(e) => {
                                 stat::log_upload_changeset_error(&ctx, changeset_ids, &e, now.elapsed());
@@ -348,6 +368,9 @@ impl Manager for ChangesetManager {
                 }
                 _ = flush_timer.tick() =>
                 {
+                    if !flush_on_tick(changeset_recv.len(), last_flush.elapsed(), max_partial_batch_hold) {
+                        continue;
+                    }
                     let now = std::time::Instant::now();
                     let changeset_ids = current_batch.iter().map(|c| c.1.get_changeset_id()).collect::<Vec<_>>();
                     stat::log_upload_changeset_start(&ctx, changeset_ids.clone());
@@ -356,6 +379,7 @@ impl Manager for ChangesetManager {
                     {
                         Ok(()) => {
                                 stat::log_upload_changeset_done(&ctx, changeset_ids, now.elapsed());
+                                last_flush = Instant::now();
                         }
                         Err(e) => {
                             stat::log_upload_changeset_error(&ctx, changeset_ids, &e, now.elapsed());
@@ -376,11 +400,233 @@ mod tests {
     use std::sync::RwLock;
 
     use async_trait::async_trait;
+    use edenapi_types::AnyFileContentId;
     use fbinit::FacebookInit;
+    use mercurial_types::HgChangesetId;
+    use mercurial_types::HgFileNodeId;
+    use mercurial_types::HgManifestId;
+    use mercurial_types::HgParents;
+    use mercurial_types::NULL_CSID;
+    use mercurial_types::NULL_HASH;
+    use mercurial_types::blobs::ChangesetMetadata;
+    use mercurial_types::blobs::HgChangesetContent;
+    use minibytes::Bytes;
     use mononoke_macros::mononoke;
+    use mononoke_types::BonsaiChangesetMut;
+    use mononoke_types::ChangesetId;
+    use mononoke_types::DateTime;
 
     use super::*;
     use crate::sender::edenapi::NoopEdenapiSender;
+
+    /// Records the size of every changeset batch it uploads. Each upload takes
+    /// `upload_time`, like a round trip to the replica.
+    struct RecordingSender {
+        upload_time: Duration,
+        batches: std::sync::Mutex<Vec<usize>>,
+    }
+
+    impl RecordingSender {
+        fn new(upload_time: Duration) -> Self {
+            Self {
+                upload_time,
+                batches: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn batches(&self) -> Vec<usize> {
+            self.batches.lock().expect("batches lock poisoned").clone()
+        }
+    }
+
+    #[async_trait]
+    impl EdenapiSender for RecordingSender {
+        async fn upload_contents(&self, _contents: Vec<(AnyFileContentId, Bytes)>) -> Result<()> {
+            Ok(())
+        }
+
+        async fn upload_trees(&self, _trees: Vec<HgManifestId>) -> Result<()> {
+            Ok(())
+        }
+
+        async fn upload_filenodes(&self, _fn_ids: Vec<HgFileNodeId>) -> Result<()> {
+            Ok(())
+        }
+
+        async fn set_bookmark(&self, _bookmark: String, _moves: Vec<BookmarkMove>) -> Result<()> {
+            Ok(())
+        }
+
+        async fn upload_identical_changeset(
+            &self,
+            css: Vec<(HgBlobChangeset, BonsaiChangeset)>,
+        ) -> Result<()> {
+            tokio::time::sleep(self.upload_time).await;
+            self.batches
+                .lock()
+                .expect("batches lock poisoned")
+                .push(css.len());
+            Ok(())
+        }
+
+        async fn filter_existing_commits(
+            &self,
+            ids: Vec<(HgChangesetId, ChangesetId)>,
+        ) -> Result<Vec<ChangesetId>> {
+            Ok(ids.into_iter().map(|(_, cs_id)| cs_id).collect())
+        }
+
+        async fn read_bookmark(&self, _bookmark: String) -> Result<Option<HgChangesetId>> {
+            Ok(None)
+        }
+    }
+
+    fn test_changeset() -> Result<(HgBlobChangeset, BonsaiChangeset)> {
+        let time = DateTime::from_timestamp(0, 0)?;
+        let bcs = BonsaiChangesetMut {
+            parents: Vec::new(),
+            author: "author".to_owned(),
+            author_date: time,
+            committer: None,
+            committer_date: None,
+            message: "message".to_owned(),
+            hg_extra: Default::default(),
+            git_extra_headers: None,
+            file_changes: Default::default(),
+            is_snapshot: false,
+            git_tree_hash: None,
+            git_annotated_tag: None,
+            subtree_changes: Default::default(),
+        }
+        .freeze()?;
+        let content = HgChangesetContent::new_from_parts(
+            HgParents::None,
+            HgManifestId::new(NULL_HASH),
+            ChangesetMetadata {
+                user: "author".to_owned(),
+                time,
+                extra: Default::default(),
+                message: "message".to_owned(),
+            },
+            Vec::new(),
+        );
+        Ok((HgBlobChangeset::new_with_id(NULL_CSID, content), bcs))
+    }
+
+    /// Runs a changeset manager whose uploads take `upload_time` each. Returns
+    /// its message sender and the batch sizes it uploads.
+    fn spawn_manager(
+        ctx: CoreContext,
+        flush_interval: Duration,
+        upload_time: Duration,
+    ) -> (
+        mpsc::Sender<ChangesetMessage>,
+        Arc<RecordingSender>,
+        tokio::task::JoinHandle<Result<()>>,
+    ) {
+        let config = ModernSyncChannelConfig {
+            batch_size: 20,
+            channel_size: 100,
+            flush_interval_ms: flush_interval.as_millis() as i64,
+            ..Default::default()
+        };
+        let (changeset_send, changeset_recv) = mpsc::channel(config.channel_size as usize);
+        let sender = Arc::new(RecordingSender::new(upload_time));
+        let es: Arc<dyn EdenapiSender + Send + Sync> = sender.clone();
+        let mut manager = ChangesetManager::new(
+            config,
+            changeset_recv,
+            Arc::new(TestMutableCounters::default()),
+        );
+        let handle = mononoke::spawn_task(async move {
+            manager
+                .run(ctx, "repo".to_owned(), es, Arc::new(AtomicBool::new(false)))
+                .await
+        });
+        (changeset_send, sender, handle)
+    }
+
+    #[mononoke::test]
+    fn tick_flushes_only_when_nothing_is_queued_or_the_batch_waited_too_long() {
+        let max_hold = Duration::from_secs(10);
+        assert!(
+            flush_on_tick(0, Duration::ZERO, max_hold),
+            "an idle queue flushes on every tick"
+        );
+        assert!(
+            !flush_on_tick(5, Duration::from_secs(3), max_hold),
+            "queued changesets keep filling the batch"
+        );
+        assert!(
+            flush_on_tick(5, max_hold, max_hold),
+            "work held for max_hold is flushed even with more queued"
+        );
+    }
+
+    #[mononoke::fbinit_test]
+    async fn backlog_is_uploaded_in_full_batches(fb: FacebookInit) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        // Each upload outlasts two flush intervals, as a busy replica's do.
+        let (changeset_send, sender, handle) =
+            spawn_manager(ctx, Duration::from_millis(20), Duration::from_millis(50));
+
+        // A backlog: 45 changesets are already queued when the manager reads.
+        for _ in 0..45 {
+            changeset_send
+                .send(ChangesetMessage::Changeset(test_changeset()?))
+                .await?;
+        }
+        let (done_send, done_recv) = oneshot::channel();
+        changeset_send
+            .send(ChangesetMessage::NotifyCompletion(done_send))
+            .await?;
+
+        done_recv.await??;
+        drop(changeset_send);
+        handle.await??;
+
+        assert_eq!(
+            sender.batches(),
+            vec![20, 20, 5],
+            "two full batches, then the tail once the queue is empty"
+        );
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn changeset_reaching_an_idle_manager_is_flushed_by_the_next_tick(
+        fb: FacebookInit,
+    ) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let flush_interval = Duration::from_millis(20);
+        let (changeset_send, sender, handle) =
+            spawn_manager(ctx, flush_interval, Duration::from_millis(1));
+        tokio::time::sleep(flush_interval * 3).await;
+
+        let sent = Instant::now();
+        changeset_send
+            .send(ChangesetMessage::Changeset(test_changeset()?))
+            .await?;
+        let (done_send, done_recv) = oneshot::channel();
+        changeset_send
+            .send(ChangesetMessage::NotifyCompletion(done_send))
+            .await?;
+        done_recv.await??;
+        let waited = sent.elapsed();
+        drop(changeset_send);
+        handle.await??;
+
+        assert_eq!(
+            sender.batches(),
+            vec![1],
+            "a lone changeset is not held back"
+        );
+        assert!(
+            waited < flush_interval * MAX_PARTIAL_BATCH_HOLD_TICKS,
+            "a lone changeset goes up at the next tick, not after the max hold (took {waited:?})"
+        );
+        Ok(())
+    }
 
     #[derive(Default)]
     struct TestMutableCounters {
