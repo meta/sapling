@@ -19,6 +19,8 @@ use mononoke_types_mocks::contentid::ONES_CTID;
 
 use super::*;
 
+mod unreadable;
+
 const DEPOT: &str = "//test1/";
 const SERVER_ID: &str = "commit-standby";
 

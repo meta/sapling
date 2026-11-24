@@ -39,6 +39,7 @@ use mononoke_types::P4ChangelistId;
 use mononoke_types_mocks::changesetid::ONES_CSID;
 use mononoke_types_mocks::contentid::ONES_CTID;
 use p4_types::Action;
+use p4_types::ArchiveUnreadable;
 use p4_types::CaseHandling;
 use p4_types::Depot;
 use p4_types::DepotType;
@@ -61,6 +62,7 @@ use super::*;
 mod content_reuse;
 mod copy_sources_with_uploads;
 mod listing_window;
+mod unreadable_revisions;
 
 #[facet::container]
 struct TestRepo {
@@ -336,6 +338,9 @@ struct FakeSource {
     contents: HashMap<String, &'static [u8]>,
     /// Keyed by `path#rev`.
     integrations: HashMap<String, Vec<Integration>>,
+    /// Keyed by `path#rev`: the print yields the first half of the content, then fails with
+    /// `ArchiveUnreadable`.
+    unreadable: HashSet<String>,
     /// The server's latest changelist, if not its newest one here.
     latest: Option<u64>,
     /// How long the `describe` of each of these changelists takes, on tokio's clock.
@@ -485,6 +490,15 @@ impl ChangeSource for FakeSource {
             .contents
             .get(&key(file))
             .ok_or_else(|| anyhow!("unexpected print of {}", key(file)))?;
+        if self.unreadable.contains(&key(file)) {
+            let half = Bytes::copy_from_slice(&content[..content.len() / 2]);
+            let unreadable = ArchiveUnreadable {
+                depot_path: file.depot_path.clone(),
+                revision: file.revision,
+            };
+            let error = anyhow!("Librarian checkout failed").context(unreadable);
+            return Ok(stream::iter([Ok(half), Err(error)]).boxed());
+        }
         Ok(chunks(&[content]).boxed())
     }
 

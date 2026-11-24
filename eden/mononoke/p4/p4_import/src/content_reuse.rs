@@ -7,13 +7,16 @@
 
 //! Reuse of stored content by MD5 and size. A record in the repo blobstore maps the MD5 and
 //! size describe gives for a revision to the content id stored for it, so a later copy of
-//! that content can skip `p4 print`.
+//! that content can skip `p4 print`. Its uploader is also the one for approved unreadable
+//! revisions (see `crate::unreadable`), with or without reuse.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt;
 use std::hash::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::pin::pin;
 use std::str::FromStr;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -48,6 +51,9 @@ use tokio::sync::Mutex;
 
 use crate::STATS;
 use crate::in_depot;
+use crate::unreadable;
+use crate::unreadable::Unapproved;
+use crate::unreadable::UnreadableRevision;
 use crate::upload_file_content;
 
 /// Whether the import skips `p4 print` for content it has already stored.
@@ -79,9 +85,11 @@ pub struct ContentReuseReport {
     pub lookup: Duration,
 }
 
-/// `ContentReuse` other than `Off`.
+/// How `upload_changelist_contents_reusing` treats records.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Mode {
+    /// Prints every revision and keeps no records, as `ContentReuse::Off`.
+    Off,
     Verify,
     On,
 }
@@ -95,6 +103,9 @@ pub(crate) struct Uploaded {
     pub(crate) report: ContentReuseReport,
     /// The revisions not printed, for `reprint_collided`.
     pub(crate) reused: Vec<FileRevision>,
+    /// Depot paths of the approved revisions whose archive the server cannot read: they have
+    /// no content.
+    pub(crate) unreadable: HashSet<String>,
 }
 
 impl Uploaded {
@@ -232,41 +243,69 @@ struct StoredRevision {
     lookup: Duration,
 }
 
-/// Like `upload_changelist_contents`, but each revision that `mode` allows to be reused is
+/// How `upload_changelist_contents_reusing` stores a changelist's contents.
+pub(crate) struct Upload<'a> {
+    pub(crate) concurrency: usize,
+    pub(crate) progress: &'a AtomicU64,
+    pub(crate) mode: Mode,
+    /// Revisions that have no content if the server cannot read their archive.
+    pub(crate) approved_unreadable: &'a HashSet<UnreadableRevision>,
+}
+
+/// Like `upload_changelist_contents`, but each revision that the mode allows to be reused is
 /// looked up by MD5 and size first, and the content of each revision printed is recorded
 /// under its MD5 and size if its own MD5 is describe's. Adds one to `progress` per file
-/// stored or reused.
+/// stored or reused. A revision whose archive the server cannot read has no content if it is
+/// approved; otherwise the rest are stored and the changelist fails with
+/// `UnreadableRevisions`, at once after `MAX_REPORTED` of them. Any other error fails it at
+/// once.
 pub(crate) async fn upload_changelist_contents_reusing(
     ctx: &CoreContext,
     repo: &(impl RepoBlobstoreRef + FilestoreConfigRef),
     source: &impl ChangeSource,
     depot_root: &str,
     changelist: &Changelist,
-    concurrency: usize,
-    progress: &AtomicU64,
-    mode: Mode,
+    upload: Upload<'_>,
 ) -> Result<Uploaded> {
+    let Upload {
+        concurrency,
+        progress,
+        mode,
+        approved_unreadable,
+    } = upload;
+    let change = changelist.number;
     let revisions = in_depot(depot_root, changelist, |revision| {
         revision.action.has_content()
     })?;
     // Owned items, as in `upload_changelist_contents`.
-    stream::iter(revisions.into_iter().cloned())
-        .map(|revision| async move {
-            let stored = store_revision(ctx, repo, source, &revision, mode).await?;
-            anyhow::Ok((revision, stored))
-        })
-        .buffer_unordered(concurrency)
-        .inspect_ok(|_| {
-            progress.fetch_add(1, Ordering::Relaxed);
-        })
-        .try_fold(
-            Uploaded::default(),
-            |mut uploaded, (revision, stored)| async move {
+    let mut stored = pin!(
+        stream::iter(revisions.into_iter().cloned())
+            .map(|revision| async move {
+                let approved = unreadable::is_approved(approved_unreadable, change, &revision);
+                let stored = store_revision(ctx, repo, source, &revision, mode, approved).await;
+                (revision, approved, stored)
+            })
+            .buffer_unordered(concurrency)
+    );
+    let mut uploaded = Uploaded::default();
+    let mut unapproved = Unapproved::new(change);
+    while let Some((revision, approved, stored)) = stored.next().await {
+        match stored {
+            Ok(stored) => {
+                progress.fetch_add(1, Ordering::Relaxed);
                 uploaded.add(revision, stored);
-                Ok(uploaded)
-            },
-        )
-        .await
+            }
+            Err(error) if !unreadable::is_archive_unreadable(&error, &revision) => {
+                return Err(error);
+            }
+            Err(_) if approved => {
+                uploaded.unreadable.insert(revision.depot_path);
+            }
+            Err(_) => unapproved.add(&revision)?,
+        }
+    }
+    unapproved.finish()?;
+    Ok(uploaded)
 }
 
 /// Prints each of `reused` whose MD5 and size have a collision marker by now, or whose
@@ -294,7 +333,7 @@ pub(crate) async fn reprint_collided(
                 return anyhow::Ok(None);
             }
             // Its lookup misses, with the marker there: it prints and checks its record.
-            let stored = store_revision(ctx, repo, source, &revision, Mode::Verify).await?;
+            let stored = store_revision(ctx, repo, source, &revision, Mode::Verify, false).await?;
             Ok(Some((revision.depot_path, stored.metadata)))
         })
         .buffer_unordered(concurrency)
@@ -303,19 +342,22 @@ pub(crate) async fn reprint_collided(
         .await
 }
 
+/// An `approved` revision is never looked up, so always printed: its archive may be one the
+/// server cannot read.
 async fn store_revision(
     ctx: &CoreContext,
     repo: &(impl RepoBlobstoreRef + FilestoreConfigRef),
     source: &impl ChangeSource,
     revision: &FileRevision,
     mode: Mode,
+    approved: bool,
 ) -> Result<StoredRevision> {
     let name = || format!("{}#{}", revision.depot_path, revision.revision);
     let size = revision
         .size
         .with_context(|| format!("describe gave no size for {}", name()))?;
-    let identity = Identity::of(revision);
-    let (lookup, reusable) = match identity.filter(|_| may_reuse(revision.action)) {
+    let identity = Identity::of(revision).filter(|_| mode != Mode::Off);
+    let (lookup, reusable) = match identity.filter(|_| may_reuse(revision.action) && !approved) {
         Some(identity) => {
             let (stats, found) = look_up(ctx, repo, identity).timed().await;
             // A record that cannot be looked up is a record not found: the revision prints.

@@ -14,6 +14,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::BoxStream;
+use thiserror::Error;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Changelist {
@@ -408,6 +409,15 @@ impl fmt::Display for DepotType {
     }
 }
 
+/// The server says it cannot read its own archive of a revision: `p4 print` fails, however
+/// often it is retried. See `ChangeSource::print`.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+#[error("the server cannot read its archive of {depot_path}#{revision}")]
+pub struct ArchiveUnreadable {
+    pub depot_path: String,
+    pub revision: u32,
+}
+
 /// Where the importer reads Perforce from. Only the implementation knows how: the importer
 /// sees nothing but these domain types. The importer makes several calls at once, so an
 /// implementation must not rely on them coming one at a time.
@@ -435,7 +445,10 @@ pub trait ChangeSource: Send + Sync {
 
     /// The revision's content. The stream ends only after the content has been checked
     /// against the revision's `size` and `digest`; any failure, a mismatch included, is its
-    /// last item.
+    /// last item. When the server says it cannot read its own archive of the revision, the
+    /// error, from `print` itself or as the stream's last item, has an `ArchiveUnreadable`
+    /// in its chain (`anyhow::Error::downcast_ref` finds it). Only then: never for a
+    /// transport error, a timeout, a revision not found, or a size or digest mismatch.
     async fn print(&self, file: &FileRevision) -> Result<BoxStream<'static, Result<Bytes>>>;
 
     /// The integration records of each of these revisions, not of the files' other

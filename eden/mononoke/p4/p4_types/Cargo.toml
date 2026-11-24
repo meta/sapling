@@ -12,6 +12,7 @@ anyhow = "1.0.104"
 async-trait = "0.1.92"
 bytes = { version = "1.12.1", features = ["serde"] }
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
+thiserror = "2.0.21"
 
 [dev-dependencies]
 mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }

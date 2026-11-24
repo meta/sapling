@@ -9,6 +9,7 @@
 //! I/O, so the same inputs always give the same result.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use mononoke_types::BonsaiChangeset;
 use mononoke_types::BonsaiChangesetMut;
@@ -68,6 +69,11 @@ pub const FILE_REVS_EXTRA: &str = mononoke_types::P4_FILE_REVS_EXTRA;
 /// this is what ties a repo's history to one server, whichever replica it is read from.
 pub const SERVER_ID_EXTRA: &str = "p4-server-id";
 
+/// The changelist's revisions whose content the server cannot read, in `FILE_REVS_EXTRA`'s
+/// encoding: only when there are some. Each is a deletion of its path, as a purged or archived
+/// revision is, and keeps its line in `FILE_REVS_EXTRA`.
+pub const UNREADABLE_REVS_EXTRA: &str = "p4-unreadable-revs";
+
 /// For a description that isn't UTF-8, its original bytes; the message is their
 /// `String::from_utf8_lossy` decoding.
 pub const DESCRIPTION_BYTES_EXTRA: &str = "p4-description-bytes";
@@ -86,6 +92,28 @@ pub fn changeset(
     contents: &HashMap<String, ContentMetadataV2>,
     copy_sources: &HashMap<String, NonRootMPath>,
 ) -> Result<BonsaiChangeset, TransformError> {
+    changeset_with_unreadable(
+        depot_root,
+        server_id,
+        changelist,
+        parent,
+        contents,
+        copy_sources,
+        &HashSet::new(),
+    )
+}
+
+/// Like `changeset`, but each revision whose depot path is in `unreadable` has no content: it
+/// is a deletion of its path, without a copy source, and is listed in `UNREADABLE_REVS_EXTRA`.
+pub fn changeset_with_unreadable(
+    depot_root: &str,
+    server_id: &str,
+    changelist: &Changelist,
+    parent: Option<ChangesetId>,
+    contents: &HashMap<String, ContentMetadataV2>,
+    copy_sources: &HashMap<String, NonRootMPath>,
+    unreadable: &HashSet<String>,
+) -> Result<BonsaiChangeset, TransformError> {
     if changelist.user.contains('\n') {
         return Err(TransformError::NewlineInAuthor {
             changelist: changelist.number,
@@ -101,13 +129,16 @@ pub fn changeset(
         .map_err(invalid)?;
     let mut file_changes = Vec::new();
     for revision in &changelist.files {
-        // Without a parent the source can't be in it, so the copy is dropped.
-        let copy_from = parent
-            .and_then(|parent| Some((copy_sources.get(&revision.depot_path)?.clone(), parent)));
-        let content = contents.get(&revision.depot_path);
-        if let Some(file_change) = file_change(depot_root, revision, content, copy_from)? {
-            file_changes.push(file_change);
-        }
+        let file_change = if unreadable.contains(&revision.depot_path) {
+            repo_path(depot_root, &revision.depot_path)?.map(|path| (path, FileChange::Deletion))
+        } else {
+            // Without a parent the source can't be in it, so the copy is dropped.
+            let copy_from = parent
+                .and_then(|parent| Some((copy_sources.get(&revision.depot_path)?.clone(), parent)));
+            let content = contents.get(&revision.depot_path);
+            file_change(depot_root, revision, content, copy_from)?
+        };
+        file_changes.extend(file_change);
     }
     let mut bonsai = BonsaiChangesetMut {
         parents: parent.into_iter().collect(),
@@ -125,6 +156,18 @@ pub fn changeset(
         FILE_REVS_EXTRA.to_owned(),
         file_revs(depot_root, changelist)?,
     );
+    let unreadable_revs = revs(
+        depot_root,
+        changelist
+            .files
+            .iter()
+            .filter(|revision| unreadable.contains(&revision.depot_path)),
+    )?;
+    if !unreadable_revs.is_empty() {
+        bonsai
+            .hg_extra
+            .insert(UNREADABLE_REVS_EXTRA.to_owned(), unreadable_revs);
+    }
     bonsai
         .hg_extra
         .insert(SERVER_ID_EXTRA.to_owned(), server_id.as_bytes().to_vec());
@@ -145,21 +188,29 @@ pub fn changeset(
 
 /// The `FILE_REVS_EXTRA` value of `changelist`'s changeset in the depot at `depot_root`.
 pub fn file_revs(depot_root: &str, changelist: &Changelist) -> Result<Vec<u8>, TransformError> {
-    let mut revisions = Vec::new();
-    for revision in &changelist.files {
+    revs(depot_root, &changelist.files)
+}
+
+/// `revisions` in the depot at `depot_root`, in `FILE_REVS_EXTRA`'s encoding.
+fn revs<'a>(
+    depot_root: &str,
+    revisions: impl IntoIterator<Item = &'a FileRevision>,
+) -> Result<Vec<u8>, TransformError> {
+    let mut in_depot = Vec::new();
+    for revision in revisions {
         if let Some(path) = repo_path(depot_root, &revision.depot_path)? {
-            revisions.push((path, revision.revision));
+            in_depot.push((path, revision.revision));
         }
     }
-    revisions.sort_unstable();
+    in_depot.sort_unstable();
     // A newline would end the line early; a tab is fine after the first.
-    if let Some((path, _)) = revisions
+    if let Some((path, _)) = in_depot
         .iter()
         .find(|(path, _)| path.to_vec().contains(&b'\n'))
     {
         return Err(TransformError::NewlineInPath(path.to_string()));
     }
-    let revs: P4FileRevs = revisions.into_iter().collect();
+    let revs: P4FileRevs = in_depot.into_iter().collect();
     Ok(revs.as_bytes().to_vec())
 }
 

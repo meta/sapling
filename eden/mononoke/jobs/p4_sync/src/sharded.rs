@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::future::Future;
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -34,6 +35,7 @@ use metaconfig_types::RepoConfigRef;
 use mononoke_app::MononokeApp;
 use mononoke_app::args::RepoArgs;
 use p4_import::ImportOptions;
+use p4_import::UnreadableRevision;
 use p4_source::Keychain;
 use p4_source::P4Cli;
 use p4_source::P4CliSource;
@@ -81,6 +83,8 @@ pub(crate) struct Settings {
     /// The `--p4-server` clients, by alias: each wins over the tier's `p4_servers` entry.
     pub(crate) servers: HashMap<String, P4Cli>,
     pub(crate) p4_binary: PathBuf,
+    /// The revisions imported without content if their server cannot read them, by alias.
+    pub(crate) unreadable_revisions: HashMap<String, Arc<HashSet<UnreadableRevision>>>,
     pub(crate) batch_size: NonZeroUsize,
     pub(crate) idle_interval: Duration,
     pub(crate) import_options: ImportOptions,
@@ -355,6 +359,23 @@ pub(crate) struct Source {
     alias: String,
     depot: String,
     p4: P4Cli,
+    /// Its server's `--unreadable-revision`s in its depot only.
+    unreadable_revisions: Arc<HashSet<UnreadableRevision>>,
+}
+
+/// Those of a server's `--unreadable-revision`s that are under `depot_root`: another depot's
+/// do not concern this repo's import.
+pub(crate) fn unreadable_in_depot(
+    of_server: Option<&Arc<HashSet<UnreadableRevision>>>,
+    depot_root: &str,
+) -> Arc<HashSet<UnreadableRevision>> {
+    let in_depot = of_server
+        .into_iter()
+        .flat_map(|revisions| revisions.iter())
+        .filter(|revision| revision.depot_path.starts_with(depot_root))
+        .cloned()
+        .collect();
+    Arc::new(in_depot)
 }
 
 #[async_trait]
@@ -395,6 +416,10 @@ impl RepoShardedProcess for P4SyncProcess {
                     p4.port()
                 );
                 Ok(Source {
+                    unreadable_revisions: unreadable_in_depot(
+                        self.settings.unreadable_revisions.get(alias),
+                        &depot,
+                    ),
                     alias: alias.to_owned(),
                     depot,
                     p4: p4.with_path_charsets(path_charsets),
@@ -490,6 +515,11 @@ impl P4SyncProcessExecutor {
         let bookmark = BookmarkKey::new(BOOKMARK)?;
         let options = ImportOptions {
             progress: last_progress.steps(),
+            unreadable_revisions: self
+                .source
+                .as_ref()
+                .map(|source| source.unreadable_revisions.clone())
+                .unwrap_or_default(),
             ..self.settings.import_options.clone()
         };
         // A caught-up depot has little to list, and windows would only add listings.
@@ -506,7 +536,9 @@ impl P4SyncProcessExecutor {
             repo_name: repo_name.to_owned(),
         };
         while !self.should_stop() {
-            let Source { alias, depot, p4 } = match &self.source {
+            let Source {
+                alias, depot, p4, ..
+            } = match &self.source {
                 Ok(source) => source,
                 Err(reason) => {
                     log_state(&mut state, State::Held, || {

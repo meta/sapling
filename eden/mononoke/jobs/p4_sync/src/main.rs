@@ -10,6 +10,7 @@
 //! `p4_source.server_alias` names: its `--p4-server`, else its entry in the tier's `p4_servers`.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::hash_map::Entry;
 use std::num::NonZeroU64;
 use std::num::NonZeroUsize;
@@ -36,6 +37,7 @@ use mononoke_app::monitoring::AliveService;
 use mononoke_app::monitoring::MonitoringAppExtension;
 use p4_import::ContentReuse;
 use p4_import::ImportOptions;
+use p4_import::UnreadableRevision;
 use p4_source::Keychain;
 use p4_source::P4Args;
 use p4_source::P4AuthArgs;
@@ -89,6 +91,20 @@ struct P4SyncArgs {
         help_heading = "PERFORCE OPTIONS"
     )]
     p4_servers: Vec<P4Server>,
+
+    /// A revision whose archive the Perforce admins have confirmed is gone from the server,
+    /// as `<alias>:<change>:<depot path>#<rev>`, e.g.
+    /// `p4main:7881://depot/dir/file.h#3`: the server's alias, the changelist, and the
+    /// depot path exactly as `p4 describe` lists it. If the server cannot read that revision's
+    /// archive, it is imported as a deletion of its path instead of failing the changelist.
+    /// Once per revision; any other revision the server cannot read still fails.
+    #[clap(
+        long = "unreadable-revision",
+        value_name = "ALIAS:CHANGE:DEPOT-PATH#REV",
+        value_parser = parse_unreadable_revision,
+        help_heading = "PERFORCE OPTIONS"
+    )]
+    unreadable_revisions: Vec<UnreadableRevisionFlag>,
 
     /// Changelists imported per batch (at least 1)
     #[clap(long, default_value = "100")]
@@ -239,6 +255,70 @@ fn by_alias(servers: Vec<P4Server>) -> Result<HashMap<String, P4Server>> {
     Ok(by_alias)
 }
 
+/// One `--unreadable-revision`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct UnreadableRevisionFlag {
+    alias: String,
+    revision: UnreadableRevision,
+}
+
+/// `<alias>:<change>:<depot path>#<rev>`: the alias up to the first `:`, the changelist up to
+/// the next, the depot path up to the last `#`, taken as given. The path must start with `//`.
+fn parse_unreadable_revision(arg: &str) -> Result<UnreadableRevisionFlag> {
+    const SHAPE: &str = "<alias>:<change>:<depot path>#<rev>";
+    let Some((alias, rest)) = arg.split_once(':') else {
+        bail!("--unreadable-revision {arg:?} is not {SHAPE}");
+    };
+    let Some((change, rest)) = rest.split_once(':') else {
+        bail!("--unreadable-revision {arg:?} is not {SHAPE}");
+    };
+    let Some((depot_path, revision)) = rest.rsplit_once('#') else {
+        bail!("--unreadable-revision {arg:?} is not {SHAPE}");
+    };
+    ensure!(
+        !alias.is_empty(),
+        "--unreadable-revision {arg:?} has no server alias"
+    );
+    ensure!(
+        depot_path.starts_with("//") && depot_path.len() > 2,
+        "--unreadable-revision {arg:?}: {depot_path:?} is not a depot path"
+    );
+    let change: u64 = change
+        .parse()
+        .with_context(|| format!("--unreadable-revision {arg:?}: bad changelist {change:?}"))?;
+    let revision: u32 = revision
+        .parse()
+        .with_context(|| format!("--unreadable-revision {arg:?}: bad revision {revision:?}"))?;
+    ensure!(
+        change > 0 && revision > 0,
+        "--unreadable-revision {arg:?}: changelists and revisions start at 1"
+    );
+    Ok(UnreadableRevisionFlag {
+        alias: alias.to_owned(),
+        revision: UnreadableRevision {
+            change,
+            depot_path: depot_path.to_owned(),
+            revision,
+        },
+    })
+}
+
+/// The `--unreadable-revision`s by server alias, so each repo's import gets its own server's.
+/// An alias no repo's server has applies to nothing: a server can come from the tier's
+/// `p4_servers` as well as from a `--p4-server`, so it is not an error here.
+fn unreadable_by_server(
+    flags: Vec<UnreadableRevisionFlag>,
+) -> HashMap<String, Arc<HashSet<UnreadableRevision>>> {
+    let mut by_server: HashMap<String, HashSet<UnreadableRevision>> = HashMap::new();
+    for UnreadableRevisionFlag { alias, revision } in flags {
+        by_server.entry(alias).or_default().insert(revision);
+    }
+    by_server
+        .into_iter()
+        .map(|(alias, revisions)| (alias, Arc::new(revisions)))
+        .collect()
+}
+
 /// A logged-in-on-demand client per server, by alias. Each ticket file must exist now: a
 /// missing secret mount fails the job at startup, not at its first batch.
 fn p4_clients(
@@ -292,10 +372,12 @@ async fn async_main(app: MononokeApp) -> Result<()> {
         Arc::new(Keychain(app.fb)),
         &app.environment().scuba_sample_builder,
     )?;
+    let unreadable_revisions = unreadable_by_server(args.unreadable_revisions);
     let settings = sharded::Settings {
         exit_file: args.exit_file,
         servers,
         p4_binary: args.p4_binary,
+        unreadable_revisions,
         batch_size: args.batch_size,
         idle_interval: args.idle_interval_secs,
         import_options: args.import_args.import_options(),

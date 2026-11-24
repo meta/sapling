@@ -8,6 +8,7 @@
 //! Imports a Perforce depot into a repo.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::num::NonZeroU64;
 use std::pin::pin;
 use std::sync::Arc;
@@ -86,12 +87,16 @@ define_stats! {
     content_reuse_collisions: timeseries(Rate, Sum),
     content_reuse_lookup_failures: timeseries(Rate, Sum),
     content_reuse_digest_mismatches: timeseries(Rate, Sum),
+    unreadable_revisions: timeseries(Rate, Sum),
 }
 
 mod content_reuse;
+mod unreadable;
 
 pub use content_reuse::ContentReuse;
 pub use content_reuse::ContentReuseReport;
+pub use unreadable::UnreadableRevision;
+pub use unreadable::UnreadableRevisions;
 
 /// Stores a file revision's content in the repo's filestore. `size` is the size
 /// Perforce reports for the revision: content of any other length is rejected.
@@ -204,6 +209,9 @@ pub struct ImportOptions {
     pub copy_sources_with_uploads: bool,
     /// Whether a copy whose content is already stored, found by MD5 and size, is printed.
     pub content_reuse: ContentReuse,
+    /// Revisions imported as deletions if the server cannot read their archive. Any other
+    /// revision the server cannot read fails its changelist.
+    pub unreadable_revisions: Arc<HashSet<UnreadableRevision>>,
 }
 
 impl Default for ImportOptions {
@@ -217,6 +225,7 @@ impl Default for ImportOptions {
             listing_window: None,
             copy_sources_with_uploads: false,
             content_reuse: ContentReuse::Off,
+            unreadable_revisions: Arc::default(),
         }
     }
 }
@@ -321,6 +330,8 @@ pub struct BuiltChangeset {
     pub dropped_copy_sources: usize,
     /// Several sources, so none is used.
     pub ambiguous_copy_sources: usize,
+    /// Approved revisions whose archive the server cannot read, imported as deletions.
+    pub unreadable_revisions: usize,
     pub timings: ChangelistTimings,
 }
 
@@ -351,6 +362,7 @@ pub struct ImportedChangelist {
     pub shadowed_deletions: usize,
     pub dropped_copy_sources: usize,
     pub ambiguous_copy_sources: usize,
+    pub unreadable_revisions: usize,
     pub timings: ChangelistTimings,
 }
 
@@ -451,6 +463,8 @@ struct FetchedChangelist {
     timings: ChangelistTimings,
     /// The revisions whose content was reused, not printed.
     reused: Vec<FileRevision>,
+    /// Depot paths of the approved revisions whose archive the server cannot read.
+    unreadable: HashSet<String>,
 }
 
 async fn fetch_changelist(
@@ -465,6 +479,9 @@ async fn fetch_changelist(
     let upload = async {
         let concurrency = options.file_concurrency.max(1);
         let mode = match options.content_reuse {
+            ContentReuse::Off if !options.unreadable_revisions.is_empty() => {
+                content_reuse::Mode::Off
+            }
             ContentReuse::Off => {
                 let contents = upload_changelist_contents(
                     ctx,
@@ -491,9 +508,12 @@ async fn fetch_changelist(
             source,
             depot_root,
             &changelist,
-            concurrency,
-            &options.progress,
-            mode,
+            content_reuse::Upload {
+                concurrency,
+                progress: &options.progress,
+                mode,
+                approved_unreadable: &options.unreadable_revisions,
+            },
         )
         .await
     }
@@ -519,6 +539,7 @@ async fn fetch_changelist(
         copy_sources,
         ambiguous_copy_sources,
         reused: uploaded.reused,
+        unreadable: uploaded.unreadable,
     })
 }
 
@@ -539,7 +560,10 @@ async fn build_changeset(
         ambiguous_copy_sources,
         mut timings,
         reused: _,
+        unreadable,
     } = fetched;
+    // Unreadable revisions are deletions, so have no copy source to check.
+    copy_sources.retain(|target, _| !unreadable.contains(target));
     // Mononoke doesn't check that copy_from exists in the parent, but derived data and
     // blame would follow it anyway.
     let (copy_source_checks, missing) = async {
@@ -566,13 +590,14 @@ async fn build_changeset(
         .last()
         .map(|b| b.changeset.get_changeset_id())
         .or(base);
-    let changeset = p4_transform::changeset(
+    let changeset = p4_transform::changeset_with_unreadable(
         depot_root,
         commit_server_id,
         &changelist,
         parent,
         &contents,
         &copy_sources,
+        &unreadable,
     )?;
     let mut other_depot_files = 0;
     for revision in &changelist.files {
@@ -589,6 +614,7 @@ async fn build_changeset(
         changeset,
         dropped_copy_sources: missing.len(),
         ambiguous_copy_sources,
+        unreadable_revisions: unreadable.len(),
         timings,
     })
 }
@@ -1025,6 +1051,7 @@ pub async fn import_changelists(
                 shadowed_deletions: built.shadowed_deletions,
                 dropped_copy_sources: built.dropped_copy_sources,
                 ambiguous_copy_sources: built.ambiguous_copy_sources,
+                unreadable_revisions: built.unreadable_revisions,
                 timings: built.timings,
             };
             (imported, built.changeset)
@@ -1223,6 +1250,10 @@ fn log_imported(ctx: &CoreContext, batch: &ImportedBatch, content_reuse: Content
             .add("batch_build_us", micros(batch.build))
             .add("batch_save_and_derive_us", micros(batch.save_and_derive))
             .add("batch_commit_us", micros(batch.commit));
+        if imported.unreadable_revisions > 0 {
+            STATS::unreadable_revisions.add_value(imported.unreadable_revisions as i64);
+            scuba.add("unreadable_revisions", imported.unreadable_revisions);
+        }
         let reuse = &timings.content_reuse;
         if content_reuse != ContentReuse::Off {
             scuba
@@ -1256,6 +1287,15 @@ fn trace_imported(
             imported.timings.uploaded_files,
             imported.timings.upload,
         );
+        if imported.unreadable_revisions > 0 {
+            tracing::warn!(
+                "changelist {} -> {}: {} approved revisions the server cannot read imported as deletions; session {}",
+                imported.change,
+                imported.cs_id,
+                imported.unreadable_revisions,
+                ctx.metadata().session_id(),
+            );
+        }
     }
     let (Some(first), Some(last)) = (batch.changelists.first(), batch.changelists.last()) else {
         return;
