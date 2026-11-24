@@ -860,6 +860,7 @@ mod test {
     use metaconfig_types::DerivedDataConfig;
     use metaconfig_types::DerivedDataTypesConfig;
     use metaconfig_types::EphemeralBlobstoreConfig;
+    use metaconfig_types::EphemeralCommitsConfig;
     use metaconfig_types::FilestoreParams;
     use metaconfig_types::GitConcurrencyParams;
     use metaconfig_types::GitConfigs;
@@ -1520,6 +1521,9 @@ mod test {
 
         [files.ephemeral_blobstore.blobstore.blob_files]
         path = "/tmp/www-ephemeral"
+
+        [files.ephemeral_commits.metadata.local]
+        local_db_path = "/tmp/www-ephemeral-commits"
         "#;
 
         let paths = btreemap! {
@@ -1614,6 +1618,7 @@ mod test {
                 repo_manifest_mapping: None,
             }),
             ephemeral_blobstore: None,
+            ephemeral_commits: None,
             mutable_blobstore: multiplex,
         };
 
@@ -1925,6 +1930,11 @@ mod test {
                         initial_bubble_lifespan: Duration::from_hours(24),
                         bubble_expiration_grace: Duration::from_hours(1),
                         bubble_deletion_mode: BubbleDeletionMode::MarkOnly,
+                    }),
+                    ephemeral_commits: Some(EphemeralCommitsConfig {
+                        metadata: DatabaseConfig::Local(LocalDatabaseConfig {
+                            path: "/tmp/www-ephemeral-commits".into(),
+                        }),
                     }),
                     mutable_blobstore: BlobConfig::Files {
                         path: "/tmp/www".into(),
@@ -2464,6 +2474,7 @@ mod test {
                         repo_manifest_mapping: None,
                     }),
                     ephemeral_blobstore: None,
+                    ephemeral_commits: None,
                     mutable_blobstore: BlobConfig::MultiplexedWal {
                         multiplex_id: MultiplexId::new(1),
                         inner_blobstores_scuba_table: None,
@@ -3039,6 +3050,7 @@ mod test {
             }),
             blobstore: RawBlobstoreConfig::disabled(RawBlobstoreDisabled {}),
             ephemeral_blobstore: None,
+            ephemeral_commits: None,
             mutable_blobstore: RawBlobstoreConfig::disabled(RawBlobstoreDisabled {}),
         }
     }

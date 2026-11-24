@@ -1580,6 +1580,9 @@ pub struct StorageConfig {
     /// Blobstore for ephemeral changesets and snapshots.  If omitted
     /// then this repo cannot store ephemeral changesets or snapshots.
     pub ephemeral_blobstore: Option<EphemeralBlobstoreConfig>,
+    /// Storage for ephemeral commits. If omitted then this repo cannot
+    /// store ephemeral commits.
+    pub ephemeral_commits: Option<EphemeralCommitsConfig>,
     /// Mutable blobstore, for storing mutable data.
     pub mutable_blobstore: BlobConfig,
 }
@@ -1941,6 +1944,14 @@ pub struct EphemeralBlobstoreConfig {
     /// Mode deciding if the bubbles should be simply marked as
     /// expired or completely deleted from the backing store.
     pub bubble_deletion_mode: BubbleDeletionMode,
+}
+
+/// Configuration for ephemeral commits, which are commits stored with an
+/// expiry.
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct EphemeralCommitsConfig {
+    /// Database that holds the ephemeral commit tables.
+    pub metadata: DatabaseConfig,
 }
 
 /// Regex for valid branches that Infinite Pushes can be directed to.

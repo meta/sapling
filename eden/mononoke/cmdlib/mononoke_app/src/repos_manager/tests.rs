@@ -622,6 +622,7 @@ fn manifest_json(entries: &[(&str, String)]) -> String {
                 }),
                 blobstore: RawBlobstoreConfig::disabled(RawBlobstoreDisabled {}),
                 ephemeral_blobstore: None,
+                ephemeral_commits: None,
                 mutable_blobstore: RawBlobstoreConfig::disabled(RawBlobstoreDisabled {}),
             },
         )]),

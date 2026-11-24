@@ -20,6 +20,7 @@ use metaconfig_types::BlobstoreId;
 use metaconfig_types::BubbleDeletionMode;
 use metaconfig_types::DatabaseConfig;
 use metaconfig_types::EphemeralBlobstoreConfig;
+use metaconfig_types::EphemeralCommitsConfig;
 use metaconfig_types::FilestoreParams;
 use metaconfig_types::LocalDatabaseConfig;
 use metaconfig_types::MetadataDatabaseConfig;
@@ -47,6 +48,7 @@ use repos::RawDbRemote;
 use repos::RawDbShardableRemote;
 use repos::RawDbShardedRemote;
 use repos::RawEphemeralBlobstoreConfig;
+use repos::RawEphemeralCommitsConfig;
 use repos::RawFilestoreParams;
 use repos::RawMetadataConfig;
 use repos::RawMultiplexedStoreNormal;
@@ -68,6 +70,10 @@ impl Convert for RawStorageConfig {
             ephemeral_blobstore: self
                 .ephemeral_blobstore
                 .map(RawEphemeralBlobstoreConfig::convert)
+                .transpose()?,
+            ephemeral_commits: self
+                .ephemeral_commits
+                .map(RawEphemeralCommitsConfig::convert)
                 .transpose()?,
             mutable_blobstore: self.mutable_blobstore.convert()?,
         })
@@ -106,6 +112,16 @@ impl Convert for RawEphemeralBlobstoreConfig {
                     .context("Failed to convert bubble_expiration_grace")?,
             ),
             bubble_deletion_mode: self.bubble_deletion_mode.convert()?,
+        })
+    }
+}
+
+impl Convert for RawEphemeralCommitsConfig {
+    type Output = EphemeralCommitsConfig;
+
+    fn convert(self) -> Result<Self::Output> {
+        Ok(EphemeralCommitsConfig {
+            metadata: self.metadata.convert()?,
         })
     }
 }

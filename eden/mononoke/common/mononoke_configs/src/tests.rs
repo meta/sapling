@@ -237,6 +237,7 @@ pub(crate) fn test_raw_storage_config() -> RawStorageConfig {
         }),
         blobstore: RawBlobstoreConfig::disabled(RawBlobstoreDisabled {}),
         ephemeral_blobstore: None,
+        ephemeral_commits: None,
         mutable_blobstore: RawBlobstoreConfig::disabled(RawBlobstoreDisabled {}),
     }
 }
