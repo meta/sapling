@@ -341,17 +341,16 @@ impl<R> MononokeRepos<R> {
     pub fn reload_if_present(&self, id: i32, name: String, repo: R) -> bool {
         let lock = self.update_lock.lock();
         // Presence check under update_lock is atomic vs remove/reload/populate.
-        if !self.name_to_repo_map.load().contains_key(&name) {
+        let Some(old_slot) = self.name_to_repo_map.load().get(&name).cloned() else {
             drop(lock);
             return false;
-        }
+        };
         let mut id_to_name_map: HashMap<i32, String> =
             Arc::<_>::unwrap_or_clone(self.id_to_name_map.load().clone());
         let mut name_to_repo_map: HashMap<String, Arc<RepoSlot<R>>> =
             Arc::<_>::unwrap_or_clone(self.name_to_repo_map.load().clone());
         id_to_name_map.insert(id, name.clone());
-        let repo_slot = RepoSlot::eager(name.clone(), Arc::new(repo));
-        name_to_repo_map.insert(name, Arc::new(repo_slot));
+        name_to_repo_map.insert(name, Arc::new(old_slot.rebuilt(Arc::new(repo))));
         self.id_to_name_map.store(Arc::new(id_to_name_map));
         self.name_to_repo_map.store(Arc::new(name_to_repo_map));
         drop(lock);
@@ -387,7 +386,9 @@ impl<R> MononokeRepos<R> {
     /// before `now` and nothing outside this collection holds it. The next
     /// `get` builds it again; until then `get_by_name` and `get_by_id` return
     /// `None`, as for a placeholder. Listing and rebuild checks do not count
-    /// as reads. Never unloads without a loader, which nothing could rebuild.
+    /// as reads. Never unloads without a loader, which nothing could rebuild,
+    /// nor an eager repo, which its readers may not build again. Call it only
+    /// while every reader of the repo goes through `get`.
     /// Returns whether the repo was unloaded.
     pub fn unload_if_idle(&self, repo_name: &str, window: Duration, now: Instant) -> bool {
         if self.loader.is_none() {

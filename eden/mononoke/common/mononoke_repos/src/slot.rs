@@ -74,6 +74,12 @@ pub struct RepoSlot<R> {
     /// When the repo was last handed to a caller or built, in nanoseconds
     /// since `BASE`. An atomic so lookups can stamp it without the lock.
     last_used_nanos: AtomicU64,
+    /// Whether the repo stays built however long it is idle. Every eager repo
+    /// is sticky for now; a lazy one is not, as its readers build it on
+    /// demand. A deep-sharded rebuild (`reload_if_present`) keeps the flag;
+    /// `reload` makes the repo eager, as reconcile uses it for shallow repos,
+    /// which it keeps built.
+    sticky: bool,
 }
 
 enum SlotState<R> {
@@ -107,22 +113,28 @@ enum Claim<R> {
 
 impl<R> RepoSlot<R> {
     /// A slot for a lazy repo: assigned to this service, but not built until
-    /// its first `get`.
+    /// its first `get`. Not sticky.
     pub(crate) fn lazy(name: String) -> Self {
-        Self::in_state(name, SlotState::Empty)
+        Self::in_state(name, SlotState::Empty, false)
     }
 
-    /// A slot for an eager repo, built before it is added.
+    /// A slot for an eager repo, built before it is added. Sticky.
     pub(crate) fn eager(name: String, repo: Arc<R>) -> Self {
-        Self::in_state(name, SlotState::Ready(repo))
+        Self::in_state(name, SlotState::Ready(repo), true)
     }
 
-    fn in_state(name: String, state: SlotState<R>) -> Self {
+    /// A slot for a new build of this slot's repo, as sticky as this one.
+    pub(crate) fn rebuilt(&self, repo: Arc<R>) -> Self {
+        Self::in_state(self.name.clone(), SlotState::Ready(repo), self.sticky)
+    }
+
+    fn in_state(name: String, state: SlotState<R>, sticky: bool) -> Self {
         let repo_slot = Self {
             name,
             state: ArcSwap::from_pointee(state),
             transition: RwLock::new(()),
             last_used_nanos: AtomicU64::new(0),
+            sticky,
         };
         repo_slot.record_use();
         repo_slot
@@ -161,6 +173,9 @@ impl<R> RepoSlot<R> {
     /// Resets a built repo to unbuilt if nobody has used it for `window` and
     /// the slot holds the only reference to it. Returns whether it did.
     pub(crate) fn unload_if_idle(&self, window: Duration, now: Instant) -> bool {
+        if self.sticky {
+            return false;
+        }
         let _transition = self.transition.write();
         let state = self.state.load();
         let SlotState::Ready(repo) = &**state else {

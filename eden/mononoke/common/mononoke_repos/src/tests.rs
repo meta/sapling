@@ -574,22 +574,26 @@ async fn test_unload_if_idle_keeps_a_lazy_repo_lazy_across_a_reload() {
 }
 
 #[mononoke::test]
-async fn test_unload_if_idle_unloads_a_lazy_repo_after_a_shallow_reload() {
+async fn test_unload_if_idle_keeps_a_repo_after_a_shallow_reload() {
     let repos = built_lazy_repo(Arc::new(NeverLoads)).await;
     repos.reload(vec![(1, "foo".to_string(), 7)]);
 
-    // FIXME: reconcile reloads only shallow repos, which it keeps built.
-    assert!(repos.unload_if_idle("foo", IDLE_WINDOW, Instant::now() + IDLE_WINDOW));
+    assert!(
+        !repos.unload_if_idle("foo", IDLE_WINDOW, Instant::now() + IDLE_WINDOW),
+        "reconcile reloads only shallow repos, which it keeps built"
+    );
 }
 
 #[mononoke::test]
-fn test_unload_if_idle_unloads_an_eager_repo() {
+fn test_unload_if_idle_keeps_an_eager_repo() {
     let repos: MononokeRepos<i32> = MononokeRepos::new_lazy(Arc::new(NeverLoads));
     repos.add("foo", 1, 100);
 
-    // FIXME: an eager repo may be read with `get_by_name` alone, which never
-    // builds it again, so it should stay built.
-    assert!(repos.unload_if_idle("foo", IDLE_WINDOW, Instant::now() + IDLE_WINDOW));
+    assert!(
+        !repos.unload_if_idle("foo", IDLE_WINDOW, Instant::now() + IDLE_WINDOW),
+        "its readers may use `get_by_name` alone, which never builds it again"
+    );
+    assert_eq!(repos.get_by_name("foo").as_deref(), Some(&100));
 }
 
 #[mononoke::test]
