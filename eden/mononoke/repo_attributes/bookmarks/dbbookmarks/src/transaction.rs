@@ -118,6 +118,13 @@ mononoke_queries! {
         "SELECT MAX(id) FROM bookmarks_update_log WHERE repo_id = {repo_id} AND name = {name}"
     }
 
+    pub read FindMaxBookmarkLogIdsForNames(
+        repo_id: RepositoryId,
+        >union_list name: BookmarkName
+    ) -> (BookmarkName, Option<u64>) {
+        "SELECT {name}, MAX(id) FROM bookmarks_update_log WHERE repo_id = {repo_id} AND name = {name}"
+    }
+
     pub read FindMaxBookmarkLogLockId(repo_id: RepositoryId) -> (Option<u64>) {
         "SELECT MAX(id) FROM bookmarks_update_log_lock WHERE repo_id = {repo_id}"
     }
@@ -325,6 +332,34 @@ pub async fn find_next_bookmark_log_ids(
             }
         };
         return Ok((txn, NextBookmarkLogId::Repo(next)));
+    }
+
+    let repo_key = repo_id.to_string();
+    if justknobs::eval(
+        "scm/mononoke_bookmark_log_migration:bookmark_log_ids_union_all",
+        Some(&repo_key),
+        Some(&repo_key),
+    ) {
+        let names: Vec<_> = names.iter().cloned().collect();
+        let mut rows = Vec::with_capacity(names.len());
+        for chunk in names.chunks(sql_ext::MAX_UNION_LIST_LEN) {
+            let (next_txn, chunk_rows) =
+                FindMaxBookmarkLogIdsForNames::query_with_transaction(txn, &repo_id, chunk).await?;
+            txn = next_txn;
+            rows.extend(chunk_rows);
+        }
+        let ids = rows
+            .into_iter()
+            .map(|(name, max_id)| {
+                let next = max_id
+                    .map_or(Some(1), |id| id.checked_add(1))
+                    .ok_or_else(|| {
+                        anyhow!("bookmark log ID overflow for {name} in repo {repo_id}")
+                    })?;
+                Ok((name, next))
+            })
+            .collect::<Result<_>>()?;
+        return Ok((txn, NextBookmarkLogId::ByName(ids)));
     }
 
     let mut ids = HashMap::with_capacity(names.len());

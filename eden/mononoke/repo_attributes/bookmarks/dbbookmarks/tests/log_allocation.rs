@@ -6,6 +6,7 @@
  */
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use anyhow::Error;
 use anyhow::Result;
@@ -188,6 +189,53 @@ async fn repo_and_name_allocation_state_can_share_a_transaction(fb: FacebookInit
     assert_eq!(by_repo.next(a.name())?, 3);
     assert_eq!(by_repo.next(b.name())?, 4);
     txn.commit().await?;
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn union_all_reads_the_same_next_ids_as_per_name_lookups(fb: FacebookInit) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let store = SqlBookmarksBuilder::with_sqlite_in_memory()?.with_repo_id(REPO_ZERO);
+    let quote = BookmarkKey::new("heads/it's")?;
+    let backslash = BookmarkKey::new("heads/back\\slash")?;
+    let unused = BookmarkKey::new("heads/never-logged")?;
+    let mut txn = store.create_transaction(ctx.clone());
+    txn.create(&quote, ONES_CSID, BookmarkUpdateReason::TestMove)?;
+    txn.create(&backslash, ONES_CSID, BookmarkUpdateReason::TestMove)?;
+    assert!(txn.commit().await?.is_some());
+    let mut txn = store.create_transaction(ctx.clone());
+    txn.force_set(&quote, TWOS_CSID, BookmarkUpdateReason::TestMove)?;
+    assert!(txn.commit().await?.is_some());
+
+    let names: HashSet<_> = [&quote, &backslash, &unused]
+        .into_iter()
+        .map(|key| key.name().clone())
+        .collect();
+    for union_all in [false, true] {
+        let knobs = JustKnobsInMemory::new(HashMap::from([(
+            "scm/mononoke_bookmark_log_migration:bookmark_log_ids_union_all".to_owned(),
+            KnobVal::Bool(union_all),
+        )]));
+        with_just_knobs_async(
+            knobs,
+            async {
+                let txn = store
+                    .write_connection()
+                    .start_transaction(ctx.sql_query_telemetry())
+                    .await?;
+                let (txn, mut ids) =
+                    find_next_bookmark_log_ids(txn, REPO_ZERO, &names, true).await?;
+                // Repo-wide allocation gave the quote name IDs 1 and 3 and the backslash name 2.
+                assert_eq!(ids.next(quote.name())?, 4, "union_all={union_all}");
+                assert_eq!(ids.next(backslash.name())?, 3, "union_all={union_all}");
+                assert_eq!(ids.next(unused.name())?, 1, "union_all={union_all}");
+                txn.commit().await?;
+                Ok::<_, Error>(())
+            }
+            .boxed(),
+        )
+        .await?;
+    }
     Ok(())
 }
 

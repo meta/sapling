@@ -3,6 +3,7 @@
     "scm/mononoke_bookmark_log_migration:wbc_use_fanout_listener": false,
     "scm/mononoke_bookmark_log_migration:bookmark_log_guard_enabled": false,
     "scm/mononoke_bookmark_log_migration:bookmark_log_ids_by_name": false,
+    "scm/mononoke_bookmark_log_migration:bookmark_log_ids_union_all": false,
     "scm/mononoke_bookmark_log_migration:bookmark_log_guard_retired": false,
     "scm/mononoke_bookmark_log_migration:mrls_bookmark_log_guard_enabled": false,
     "scm/mononoke_bookmark_log_migration:mrls_bookmark_log_ids_by_name": false,
