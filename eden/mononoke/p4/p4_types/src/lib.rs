@@ -416,6 +416,10 @@ impl fmt::Display for DepotType {
 pub struct ArchiveUnreadable {
     pub depot_path: String,
     pub revision: u32,
+    /// The server says the archive file, or the revision in it, is not there, said nothing
+    /// else, and sent no content. Otherwise it failed to read the archive for another reason
+    /// (an I/O or permission error, say), or the source cannot tell.
+    pub missing: bool,
 }
 
 /// Where the importer reads Perforce from. Only the implementation knows how: the importer

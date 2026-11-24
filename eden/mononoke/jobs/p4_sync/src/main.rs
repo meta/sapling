@@ -9,6 +9,7 @@
 //! depot's new changelists in batches with `p4_import::import_next`, from the server the repo's
 //! `p4_source.server_alias` names: its `--p4-server`, else its entry in the tier's `p4_servers`.
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::hash_map::Entry;
@@ -37,6 +38,7 @@ use mononoke_app::monitoring::AliveService;
 use mononoke_app::monitoring::MonitoringAppExtension;
 use p4_import::ContentReuse;
 use p4_import::ImportOptions;
+use p4_import::SkipUnreadable;
 use p4_import::UnreadableRevision;
 use p4_source::Keychain;
 use p4_source::P4Args;
@@ -105,6 +107,40 @@ struct P4SyncArgs {
         help_heading = "PERFORCE OPTIONS"
     )]
     unreadable_revisions: Vec<UnreadableRevisionFlag>,
+
+    /// A server, by alias, on which any revision the server says it has no archive of (the
+    /// file, or the revision in it, is not there) is imported as a deletion of its path, once
+    /// `--unreadable-retries` more prints of it have failed the same way. Each is recorded in
+    /// its changeset and in Scuba. Any other failed print still fails the changelist. A
+    /// storage outage on the server can look the same as a lost archive, and what is imported
+    /// cannot be changed afterwards. Without this, such a revision fails its changelist unless
+    /// it has an `--unreadable-revision`. Once per server
+    #[clap(
+        long = "skip-unreadable-revisions",
+        value_name = "ALIAS",
+        help_heading = "PERFORCE OPTIONS"
+    )]
+    skip_unreadable_servers: Vec<String>,
+
+    /// Prints of a revision tried again while its server says it has no archive of it, before
+    /// `--skip-unreadable-revisions` skips it (3 to 10)
+    #[clap(
+        long,
+        default_value = "5",
+        value_parser = clap::value_parser!(u32).range(3..=10),
+        help_heading = "PERFORCE OPTIONS"
+    )]
+    unreadable_retries: u32,
+
+    /// Milliseconds before the first of `--unreadable-retries` (1000 to 60000); each later wait
+    /// is twice the one before
+    #[clap(
+        long,
+        default_value = "4000",
+        value_parser = clap::value_parser!(u64).range(1000..=60_000),
+        help_heading = "PERFORCE OPTIONS"
+    )]
+    unreadable_retry_delay_ms: u64,
 
     /// Changelists imported per batch (at least 1)
     #[clap(long, default_value = "100")]
@@ -319,6 +355,19 @@ fn unreadable_by_server(
         .collect()
 }
 
+/// The `--skip-unreadable-revisions` aliases that are neither a `--p4-server` nor in the
+/// tier's `p4_servers`: they skip nothing.
+fn aliases_without_a_server<'a, F, T>(
+    skip: &'a [String],
+    flags: &HashMap<String, F>,
+    tier: &BTreeMap<String, T>,
+) -> Vec<&'a str> {
+    skip.iter()
+        .map(String::as_str)
+        .filter(|alias| !flags.contains_key(*alias) && !tier.contains_key(*alias))
+        .collect()
+}
+
 /// A logged-in-on-demand client per server, by alias. Each ticket file must exist now: a
 /// missing secret mount fails the job at startup, not at its first batch.
 fn p4_clients(
@@ -373,11 +422,23 @@ async fn async_main(app: MononokeApp) -> Result<()> {
         &app.environment().scuba_sample_builder,
     )?;
     let unreadable_revisions = unreadable_by_server(args.unreadable_revisions);
+    // Not fatal: a mistyped alias must not stop the other servers' imports.
+    let tier = &app.repo_configs().common.p4_servers;
+    for alias in aliases_without_a_server(&args.skip_unreadable_servers, &servers, tier) {
+        tracing::error!(
+            "--skip-unreadable-revisions {alias}: no --p4-server or p4_servers entry has that alias, so it skips nothing"
+        );
+    }
     let settings = sharded::Settings {
         exit_file: args.exit_file,
         servers,
         p4_binary: args.p4_binary,
         unreadable_revisions,
+        skip_unreadable_servers: args.skip_unreadable_servers.into_iter().collect(),
+        skip_unreadable: SkipUnreadable {
+            retries: args.unreadable_retries,
+            first_retry_delay: Duration::from_millis(args.unreadable_retry_delay_ms),
+        },
         batch_size: args.batch_size,
         idle_interval: args.idle_interval_secs,
         import_options: args.import_args.import_options(),

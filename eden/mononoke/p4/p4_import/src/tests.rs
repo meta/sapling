@@ -62,6 +62,7 @@ use super::*;
 mod content_reuse;
 mod copy_sources_with_uploads;
 mod listing_window;
+mod skip_unreadable;
 mod unreadable_revisions;
 
 #[facet::container]
@@ -495,6 +496,7 @@ impl ChangeSource for FakeSource {
             let unreadable = ArchiveUnreadable {
                 depot_path: file.depot_path.clone(),
                 revision: file.revision,
+                missing: true,
             };
             let error = anyhow!("Librarian checkout failed").context(unreadable);
             return Ok(stream::iter([Ok(half), Err(error)]).boxed());

@@ -88,6 +88,7 @@ define_stats! {
     content_reuse_lookup_failures: timeseries(Rate, Sum),
     content_reuse_digest_mismatches: timeseries(Rate, Sum),
     unreadable_revisions: timeseries(Rate, Sum),
+    unreadable_revisions_skipped_after_retries: timeseries(Rate, Sum),
 }
 
 mod content_reuse;
@@ -95,6 +96,9 @@ mod unreadable;
 
 pub use content_reuse::ContentReuse;
 pub use content_reuse::ContentReuseReport;
+pub use unreadable::SkipReason;
+pub use unreadable::SkipUnreadable;
+pub use unreadable::SkippedRevision;
 pub use unreadable::UnreadableRevision;
 pub use unreadable::UnreadableRevisions;
 
@@ -210,8 +214,11 @@ pub struct ImportOptions {
     /// Whether a copy whose content is already stored, found by MD5 and size, is printed.
     pub content_reuse: ContentReuse,
     /// Revisions imported as deletions if the server cannot read their archive. Any other
-    /// revision the server cannot read fails its changelist.
+    /// revision the server cannot read fails its changelist, unless `skip_unreadable` is set.
     pub unreadable_revisions: Arc<HashSet<UnreadableRevision>>,
+    /// Whether any other revision the server cannot read is imported as a deletion too, once
+    /// its retries have failed. `None` fails its changelist.
+    pub skip_unreadable: Option<SkipUnreadable>,
 }
 
 impl Default for ImportOptions {
@@ -226,6 +233,7 @@ impl Default for ImportOptions {
             copy_sources_with_uploads: false,
             content_reuse: ContentReuse::Off,
             unreadable_revisions: Arc::default(),
+            skip_unreadable: None,
         }
     }
 }
@@ -330,8 +338,8 @@ pub struct BuiltChangeset {
     pub dropped_copy_sources: usize,
     /// Several sources, so none is used.
     pub ambiguous_copy_sources: usize,
-    /// Approved revisions whose archive the server cannot read, imported as deletions.
-    pub unreadable_revisions: usize,
+    /// The revisions whose archive the server cannot read, imported as deletions.
+    pub skipped_revisions: Vec<SkippedRevision>,
     pub timings: ChangelistTimings,
 }
 
@@ -463,8 +471,8 @@ struct FetchedChangelist {
     timings: ChangelistTimings,
     /// The revisions whose content was reused, not printed.
     reused: Vec<FileRevision>,
-    /// Depot paths of the approved revisions whose archive the server cannot read.
-    unreadable: HashSet<String>,
+    /// The revisions whose archive the server cannot read.
+    unreadable: Vec<SkippedRevision>,
 }
 
 async fn fetch_changelist(
@@ -479,7 +487,10 @@ async fn fetch_changelist(
     let upload = async {
         let concurrency = options.file_concurrency.max(1);
         let mode = match options.content_reuse {
-            ContentReuse::Off if !options.unreadable_revisions.is_empty() => {
+            ContentReuse::Off
+                if !options.unreadable_revisions.is_empty()
+                    || options.skip_unreadable.is_some() =>
+            {
                 content_reuse::Mode::Off
             }
             ContentReuse::Off => {
@@ -513,6 +524,7 @@ async fn fetch_changelist(
                 progress: &options.progress,
                 mode,
                 approved_unreadable: &options.unreadable_revisions,
+                skip_unreadable: options.skip_unreadable,
             },
         )
         .await
@@ -562,8 +574,12 @@ async fn build_changeset(
         reused: _,
         unreadable,
     } = fetched;
+    let unreadable_paths: HashSet<String> = unreadable
+        .iter()
+        .map(|skipped| skipped.depot_path.clone())
+        .collect();
     // Unreadable revisions are deletions, so have no copy source to check.
-    copy_sources.retain(|target, _| !unreadable.contains(target));
+    copy_sources.retain(|target, _| !unreadable_paths.contains(target));
     // Mononoke doesn't check that copy_from exists in the parent, but derived data and
     // blame would follow it anyway.
     let (copy_source_checks, missing) = async {
@@ -597,7 +613,7 @@ async fn build_changeset(
         parent,
         &contents,
         &copy_sources,
-        &unreadable,
+        &unreadable_paths,
     )?;
     let mut other_depot_files = 0;
     for revision in &changelist.files {
@@ -614,7 +630,7 @@ async fn build_changeset(
         changeset,
         dropped_copy_sources: missing.len(),
         ambiguous_copy_sources,
-        unreadable_revisions: unreadable.len(),
+        skipped_revisions: unreadable,
         timings,
     })
 }
@@ -1040,21 +1056,25 @@ pub async fn import_changelists(
     }
     let changes = &changes[..built.len()];
     let batch = Batch { changes, ..batch };
-    let (imported, changesets): (Vec<_>, Vec<_>) = built
+    let ((imported, changesets), skipped): ((Vec<_>, Vec<_>), Vec<_>) = built
         .into_iter()
         .map(|built| {
+            let cs_id = built.changeset.get_changeset_id();
             let imported = ImportedChangelist {
                 change: built.change,
-                cs_id: built.changeset.get_changeset_id(),
+                cs_id,
                 file_changes: built.changeset.file_changes().count(),
                 other_depot_files: built.other_depot_files,
                 shadowed_deletions: built.shadowed_deletions,
                 dropped_copy_sources: built.dropped_copy_sources,
                 ambiguous_copy_sources: built.ambiguous_copy_sources,
-                unreadable_revisions: built.unreadable_revisions,
+                unreadable_revisions: built.skipped_revisions.len(),
                 timings: built.timings,
             };
-            (imported, built.changeset)
+            (
+                (imported, built.changeset),
+                (built.change, cs_id, built.skipped_revisions),
+            )
         })
         .unzip();
     // Each `CommitInfo` holds up to 10k paths; `log_new_commits` ignores them without a destination.
@@ -1108,6 +1128,7 @@ pub async fn import_changelists(
     };
     // Synchronous, so a stop during the update-feed await below can't skip them.
     log_imported(ctx, &imported, options.content_reuse);
+    log_skipped(ctx, &skipped);
     trace_imported(ctx, depot_root, bookmark, old, new, &imported);
     log_repo_update(ctx, repo, bookmark, old, new, commit_infos).await;
     Ok(imported)
@@ -1231,6 +1252,26 @@ async fn log_repo_update(
     log_bookmark_operation(ctx, repo, &info).await;
 }
 
+/// One Scuba row per revision imported without content, once its changelist is committed:
+/// the list to go by if they are ever to be imported again.
+fn log_skipped(ctx: &CoreContext, skipped: &[(u64, ChangesetId, Vec<SkippedRevision>)]) {
+    for (change, cs_id, revisions) in skipped {
+        for revision in revisions {
+            if revision.reason == SkipReason::RetriesFailed {
+                STATS::unreadable_revisions_skipped_after_retries.add_value(1);
+            }
+            let mut scuba = ctx.scuba().clone();
+            scuba
+                .add("p4_change", *change)
+                .add("changeset_id", cs_id.to_string())
+                .add("depot_path", revision.depot_path.as_str())
+                .add("revision", revision.revision)
+                .add("skip_reason", revision.reason.as_str());
+            scuba.log_with_msg("P4 revision skipped", None);
+        }
+    }
+}
+
 fn log_imported(ctx: &CoreContext, batch: &ImportedBatch, content_reuse: ContentReuse) {
     let micros = |duration: Duration| duration.as_micros() as u64;
     for imported in &batch.changelists {
@@ -1289,7 +1330,7 @@ fn trace_imported(
         );
         if imported.unreadable_revisions > 0 {
             tracing::warn!(
-                "changelist {} -> {}: {} approved revisions the server cannot read imported as deletions; session {}",
+                "changelist {} -> {}: {} revisions the server cannot read imported as deletions; session {}",
                 imported.change,
                 imported.cs_id,
                 imported.unreadable_revisions,

@@ -52,6 +52,9 @@ use tokio::sync::Mutex;
 use crate::STATS;
 use crate::in_depot;
 use crate::unreadable;
+use crate::unreadable::SkipReason;
+use crate::unreadable::SkipUnreadable;
+use crate::unreadable::SkippedRevision;
 use crate::unreadable::Unapproved;
 use crate::unreadable::UnreadableRevision;
 use crate::upload_file_content;
@@ -103,9 +106,8 @@ pub(crate) struct Uploaded {
     pub(crate) report: ContentReuseReport,
     /// The revisions not printed, for `reprint_collided`.
     pub(crate) reused: Vec<FileRevision>,
-    /// Depot paths of the approved revisions whose archive the server cannot read: they have
-    /// no content.
-    pub(crate) unreadable: HashSet<String>,
+    /// The revisions whose archive the server cannot read: they have no content.
+    pub(crate) unreadable: Vec<SkippedRevision>,
 }
 
 impl Uploaded {
@@ -250,15 +252,18 @@ pub(crate) struct Upload<'a> {
     pub(crate) mode: Mode,
     /// Revisions that have no content if the server cannot read their archive.
     pub(crate) approved_unreadable: &'a HashSet<UnreadableRevision>,
+    /// Whether any other revision has no content if the server still cannot read its archive
+    /// after retries.
+    pub(crate) skip_unreadable: Option<SkipUnreadable>,
 }
 
 /// Like `upload_changelist_contents`, but each revision that the mode allows to be reused is
 /// looked up by MD5 and size first, and the content of each revision printed is recorded
 /// under its MD5 and size if its own MD5 is describe's. Adds one to `progress` per file
-/// stored or reused. A revision whose archive the server cannot read has no content if it is
-/// approved; otherwise the rest are stored and the changelist fails with
-/// `UnreadableRevisions`, at once after `MAX_REPORTED` of them. Any other error fails it at
-/// once.
+/// stored, reused or skipped. A revision whose archive the server cannot read has no content
+/// if it is approved, or if `skip_unreadable` is set and its retries fail too; otherwise the
+/// rest are stored and the changelist fails with `UnreadableRevisions`, at once after
+/// `MAX_REPORTED` of them. Any other error fails it at once.
 pub(crate) async fn upload_changelist_contents_reusing(
     ctx: &CoreContext,
     repo: &(impl RepoBlobstoreRef + FilestoreConfigRef),
@@ -272,6 +277,7 @@ pub(crate) async fn upload_changelist_contents_reusing(
         progress,
         mode,
         approved_unreadable,
+        skip_unreadable,
     } = upload;
     let change = changelist.number;
     let revisions = in_depot(depot_root, changelist, |revision| {
@@ -281,27 +287,53 @@ pub(crate) async fn upload_changelist_contents_reusing(
     let mut stored = pin!(
         stream::iter(revisions.into_iter().cloned())
             .map(|revision| async move {
-                let approved = unreadable::is_approved(approved_unreadable, change, &revision);
-                let stored = store_revision(ctx, repo, source, &revision, mode, approved).await;
-                (revision, approved, stored)
+                let (skip, stored) =
+                    if unreadable::is_approved(approved_unreadable, change, &revision) {
+                        let stored = store_revision(ctx, repo, source, &revision, mode, true).await;
+                        (Some(SkipReason::Approved), stored)
+                    } else if let Some(policy) = skip_unreadable {
+                        let stored =
+                            store_revision_retrying(ctx, repo, source, &revision, mode, policy)
+                                .await;
+                        (Some(SkipReason::RetriesFailed), stored)
+                    } else {
+                        let stored =
+                            store_revision(ctx, repo, source, &revision, mode, false).await;
+                        (None, stored)
+                    };
+                (revision, skip, stored)
             })
             .buffer_unordered(concurrency)
     );
     let mut uploaded = Uploaded::default();
     let mut unapproved = Unapproved::new(change);
-    while let Some((revision, approved, stored)) = stored.next().await {
-        match stored {
+    while let Some((revision, skip, stored)) = stored.next().await {
+        let error = match stored {
             Ok(stored) => {
                 progress.fetch_add(1, Ordering::Relaxed);
                 uploaded.add(revision, stored);
+                continue;
             }
             Err(error) if !unreadable::is_archive_unreadable(&error, &revision) => {
                 return Err(error);
             }
-            Err(_) if approved => {
-                uploaded.unreadable.insert(revision.depot_path);
+            Err(error) => error,
+        };
+        // Retries are only for an archive the server says is not there.
+        let skip = skip.filter(|reason| match reason {
+            SkipReason::Approved => true,
+            SkipReason::RetriesFailed => unreadable::is_archive_missing(&error, &revision),
+        });
+        match skip {
+            Some(reason) => {
+                progress.fetch_add(1, Ordering::Relaxed);
+                uploaded.unreadable.push(SkippedRevision {
+                    depot_path: revision.depot_path,
+                    revision: revision.revision,
+                    reason,
+                });
             }
-            Err(_) => unapproved.add(&revision)?,
+            None => unapproved.add(&revision)?,
         }
     }
     unapproved.finish()?;
@@ -340,6 +372,32 @@ pub(crate) async fn reprint_collided(
         .try_filter_map(|reprinted| async move { Ok(reprinted) })
         .try_collect()
         .await
+}
+
+/// `store_revision`, tried again up to `policy.retries` times for as long as the server says
+/// it has no archive of the revision. Any other failure is returned at once.
+async fn store_revision_retrying(
+    ctx: &CoreContext,
+    repo: &(impl RepoBlobstoreRef + FilestoreConfigRef),
+    source: &impl ChangeSource,
+    revision: &FileRevision,
+    mode: Mode,
+    policy: SkipUnreadable,
+) -> Result<StoredRevision> {
+    let mut delay = policy.first_retry_delay;
+    let mut retried = 0;
+    loop {
+        match store_revision(ctx, repo, source, revision, mode, false).await {
+            Err(error)
+                if retried < policy.retries && unreadable::is_archive_missing(&error, revision) =>
+            {
+                tokio::time::sleep(delay).await;
+                delay = delay.saturating_mul(2);
+                retried += 1;
+            }
+            stored => return stored,
+        }
+    }
 }
 
 /// An `approved` revision is never looked up, so always printed: its archive may be one the

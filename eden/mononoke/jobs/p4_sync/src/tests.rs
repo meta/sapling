@@ -39,6 +39,7 @@ use crate::sharded::secs_since_success_key;
 use crate::sharded::servers;
 
 mod content_reuse_flag;
+mod skip_unreadable_flag;
 mod unreadable_revision_flag;
 
 #[mononoke::test]

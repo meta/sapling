@@ -14,7 +14,7 @@ use p4_types::Md5Digest;
 use super::*;
 
 /// Approves each `(change, depot path, revision)`.
-fn approving(entries: &[(u64, &str, u32)]) -> ImportOptions {
+pub(super) fn approving(entries: &[(u64, &str, u32)]) -> ImportOptions {
     let approved = entries
         .iter()
         .map(|&(change, depot_path, revision)| UnreadableRevision {
@@ -30,7 +30,7 @@ fn approving(entries: &[(u64, &str, u32)]) -> ImportOptions {
 }
 
 /// `source` whose prints of these `path#rev` fail with `ArchiveUnreadable` halfway.
-fn unreadable_halfway(source: FakeSource, keys: &[&str]) -> FakeSource {
+pub(super) fn unreadable_halfway(source: FakeSource, keys: &[&str]) -> FakeSource {
     FakeSource {
         unreadable: keys.iter().map(|key| key.to_string()).collect(),
         ..source
@@ -80,6 +80,7 @@ impl ChangeSource for UnreadableAtPrint {
             return Err(ArchiveUnreadable {
                 depot_path: file.depot_path.clone(),
                 revision: file.revision,
+                missing: true,
             }
             .into());
         }
@@ -94,13 +95,13 @@ impl ChangeSource for UnreadableAtPrint {
     }
 }
 
-fn prints(source: &FakeSource) -> usize {
+pub(super) fn prints(source: &FakeSource) -> usize {
     let calls = source.calls.lock().unwrap();
     calls.iter().filter(|call| **call == "print").count()
 }
 
 /// 7 adds `a.txt` and `keep.txt`, 9 edits `a.txt` and adds `b.txt`, 11 edits `a.txt` again.
-fn edits_of_a() -> FakeSource {
+pub(super) fn edits_of_a() -> FakeSource {
     FakeSource::default()
         .with_changelist(
             7,
@@ -119,7 +120,7 @@ fn edits_of_a() -> FakeSource {
         .with_changelist(11, &[("//test1/a.txt", 3, Action::Edit, Some(b"three\n"))])
 }
 
-fn extra<'a>(changeset: &'a BonsaiChangeset, key: &str) -> Option<&'a [u8]> {
+pub(super) fn extra<'a>(changeset: &'a BonsaiChangeset, key: &str) -> Option<&'a [u8]> {
     changeset
         .hg_extra()
         .find_map(|(extra_key, value)| (extra_key == key).then_some(value))
@@ -314,7 +315,8 @@ async fn test_an_approval_applies_to_its_changelist_path_and_revision_only(
     )
     .await?;
     assert_eq!(
-        1, built[1].unreadable_revisions,
+        1,
+        built[1].skipped_revisions.len(),
         "the exact approval applies"
     );
     Ok(())
@@ -345,7 +347,7 @@ async fn test_an_approved_revision_that_prints_keeps_its_content(fb: FacebookIni
         files(&ctx, &repo, changeset).await?
     );
     assert_eq!(None, extra(changeset, p4_transform::UNREADABLE_REVS_EXTRA));
-    assert_eq!(0, built[1].unreadable_revisions);
+    assert_eq!(0, built[1].skipped_revisions.len());
     Ok(())
 }
 
@@ -489,7 +491,7 @@ async fn test_an_approved_revision_is_printed_not_reused(fb: FacebookInit) -> Re
     assert_eq!(
         (1, ContentReuseReport::default()),
         (
-            built[0].unreadable_revisions,
+            built[0].skipped_revisions.len(),
             built[0].timings.content_reuse.clone()
         ),
         "nothing looked up or reused"
@@ -616,6 +618,7 @@ fn test_an_error_naming_another_revision_is_not_this_revisions() {
         let unreadable = ArchiveUnreadable {
             depot_path: depot_path.to_owned(),
             revision,
+            missing: true,
         };
         anyhow!("Librarian checkout failed")
             .context(unreadable)

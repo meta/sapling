@@ -35,6 +35,7 @@ use metaconfig_types::RepoConfigRef;
 use mononoke_app::MononokeApp;
 use mononoke_app::args::RepoArgs;
 use p4_import::ImportOptions;
+use p4_import::SkipUnreadable;
 use p4_import::UnreadableRevision;
 use p4_source::Keychain;
 use p4_source::P4Cli;
@@ -85,6 +86,10 @@ pub(crate) struct Settings {
     pub(crate) p4_binary: PathBuf,
     /// The revisions imported without content if their server cannot read them, by alias.
     pub(crate) unreadable_revisions: HashMap<String, Arc<HashSet<UnreadableRevision>>>,
+    /// The servers, by alias, whose other unreadable revisions are skipped after retries.
+    pub(crate) skip_unreadable_servers: HashSet<String>,
+    /// How those servers' revisions are retried.
+    pub(crate) skip_unreadable: SkipUnreadable,
     pub(crate) batch_size: NonZeroUsize,
     pub(crate) idle_interval: Duration,
     pub(crate) import_options: ImportOptions,
@@ -361,6 +366,8 @@ pub(crate) struct Source {
     p4: P4Cli,
     /// Its server's `--unreadable-revision`s in its depot only.
     unreadable_revisions: Arc<HashSet<UnreadableRevision>>,
+    /// Set if its server is one of the `--skip-unreadable-revisions`.
+    skip_unreadable: Option<SkipUnreadable>,
 }
 
 /// Those of a server's `--unreadable-revision`s that are under `depot_root`: another depot's
@@ -420,6 +427,11 @@ impl RepoShardedProcess for P4SyncProcess {
                         self.settings.unreadable_revisions.get(alias),
                         &depot,
                     ),
+                    skip_unreadable: self
+                        .settings
+                        .skip_unreadable_servers
+                        .contains(alias)
+                        .then_some(self.settings.skip_unreadable),
                     alias: alias.to_owned(),
                     depot,
                     p4: p4.with_path_charsets(path_charsets),
@@ -520,6 +532,11 @@ impl P4SyncProcessExecutor {
                 .as_ref()
                 .map(|source| source.unreadable_revisions.clone())
                 .unwrap_or_default(),
+            skip_unreadable: self
+                .source
+                .as_ref()
+                .ok()
+                .and_then(|source| source.skip_unreadable),
             ..self.settings.import_options.clone()
         };
         // A caught-up depot has little to list, and windows would only add listings.

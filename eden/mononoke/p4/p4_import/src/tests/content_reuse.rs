@@ -21,14 +21,14 @@ use p4_types::Md5Digest;
 use super::*;
 
 /// A revision: depot path, revision, action, Perforce type and content.
-type Spec = (&'static str, u32, Action, &'static str, &'static [u8]);
+pub(super) type Spec = (&'static str, u32, Action, &'static str, &'static [u8]);
 
 fn digest(content: &[u8]) -> Md5Digest {
     Md5Digest::new(Md5::digest(content).into())
 }
 
 /// `source` with changelist `number` of `files`, each with its content's real MD5 and size.
-fn with_revisions(source: FakeSource, number: u64, files: &[Spec]) -> FakeSource {
+pub(super) fn with_revisions(source: FakeSource, number: u64, files: &[Spec]) -> FakeSource {
     let mut source = source.with_changelist(number, &[]);
     for &(depot_path, rev, action, file_type, content) in files {
         let file = FileRevision {
