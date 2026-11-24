@@ -59,7 +59,7 @@ fn test_reload_if_present() {
 #[mononoke::test]
 fn test_placeholder_is_assigned_but_not_loaded() {
     let repos: MononokeRepos<i32> = MononokeRepos::new();
-    repos.add_placeholder("foo", 1);
+    repos.add_lazy_repo("foo", 1);
 
     // Assigned: the name and id are known to the service.
     assert_eq!(repos.iter_names().collect::<Vec<_>>(), vec!["foo"]);
@@ -74,7 +74,7 @@ fn test_placeholder_is_assigned_but_not_loaded() {
 #[mononoke::test]
 fn test_placeholder_becomes_visible_once_built() {
     let repos: MononokeRepos<i32> = MononokeRepos::new();
-    repos.add_placeholder("foo", 1);
+    repos.add_lazy_repo("foo", 1);
     assert!(repos.get_by_name("foo").is_none());
 
     repos.add("foo", 1, 100);
@@ -89,7 +89,7 @@ fn test_placeholder_becomes_visible_once_built() {
 #[mononoke::test]
 fn test_placeholder_counts_as_present_for_reload_if_present() {
     let repos: MononokeRepos<i32> = MononokeRepos::new();
-    repos.add_placeholder("foo", 1);
+    repos.add_lazy_repo("foo", 1);
 
     // A placeholder is an assigned repo, so a rebuild targeting it is not a
     // resurrection and must be applied.
@@ -98,13 +98,13 @@ fn test_placeholder_counts_as_present_for_reload_if_present() {
 }
 
 #[mononoke::test]
-fn test_add_placeholder_does_not_unbuild_a_loaded_repo() {
+fn test_add_lazy_repo_does_not_unbuild_a_loaded_repo() {
     let repos: MononokeRepos<i32> = MononokeRepos::new();
     repos.add("foo", 1, 100);
 
     // An assignment arriving for a repo that is already built must leave it
     // alone. Only `unload_if_idle` un-builds a repo.
-    repos.add_placeholder("foo", 1);
+    repos.add_lazy_repo("foo", 1);
 
     assert_eq!(repos.get_by_name("foo").as_deref(), Some(&100));
     assert_eq!(repos.get_by_id(1).as_deref(), Some(&100));
@@ -112,10 +112,10 @@ fn test_add_placeholder_does_not_unbuild_a_loaded_repo() {
 }
 
 #[mononoke::test]
-fn test_add_placeholder_twice_leaves_one_assignment() {
+fn test_add_lazy_repo_twice_leaves_one_assignment() {
     let repos: MononokeRepos<i32> = MononokeRepos::new();
-    repos.add_placeholder("foo", 1);
-    repos.add_placeholder("foo", 1);
+    repos.add_lazy_repo("foo", 1);
+    repos.add_lazy_repo("foo", 1);
 
     assert_eq!(repos.iter_names().count(), 1);
     assert_eq!(repos.iter_ids().count(), 1);
@@ -126,7 +126,7 @@ fn test_add_placeholder_twice_leaves_one_assignment() {
 fn test_iter_loaded_names_excludes_a_placeholder() {
     let repos: MononokeRepos<i32> = MononokeRepos::new();
     repos.add("built", 1, 100);
-    repos.add_placeholder("assigned", 2);
+    repos.add_lazy_repo("assigned", 2);
 
     let mut assigned: Vec<_> = repos.iter_names().collect();
     assigned.sort();
@@ -146,7 +146,7 @@ fn test_iter_loaded_names_excludes_a_placeholder() {
 #[mononoke::test]
 fn test_iter_loaded_names_includes_a_placeholder_once_built() {
     let repos: MononokeRepos<i32> = MononokeRepos::new();
-    repos.add_placeholder("foo", 1);
+    repos.add_lazy_repo("foo", 1);
     assert_eq!(repos.iter_loaded_names().count(), 0);
 
     repos.add("foo", 1, 100);
@@ -156,7 +156,7 @@ fn test_iter_loaded_names_includes_a_placeholder_once_built() {
 #[mononoke::test]
 fn test_remove_drops_a_placeholder() {
     let repos: MononokeRepos<i32> = MononokeRepos::new();
-    repos.add_placeholder("foo", 1);
+    repos.add_lazy_repo("foo", 1);
     repos.remove("foo");
 
     assert_eq!(repos.iter_names().count(), 0);
@@ -186,7 +186,7 @@ async fn test_a_built_repo_is_served_without_building() {
 #[mononoke::test]
 async fn test_an_unbuilt_repo_is_absent_without_a_loader() {
     let repos: MononokeRepos<i32> = MononokeRepos::new();
-    repos.add_placeholder("foo", 1);
+    repos.add_lazy_repo("foo", 1);
 
     // Pins the absence of a second error state: a caller never has to tell
     // this apart from a routing problem.
@@ -197,7 +197,7 @@ async fn test_an_unbuilt_repo_is_absent_without_a_loader() {
 async fn test_an_unbuilt_repo_is_built_on_first_request() {
     let loader = Arc::new(CountingLoader::default());
     let repos: MononokeRepos<i32> = MononokeRepos::new_lazy(loader.clone());
-    repos.add_placeholder("foo", 1);
+    repos.add_lazy_repo("foo", 1);
 
     let repo = repos.get("foo").await.unwrap().expect("foo is assigned");
     assert_eq!(*repo, 42);
@@ -248,7 +248,7 @@ async fn start_build(
     let repos = Arc::new(MononokeRepos::new_lazy(Arc::new(GatedLoader(Arc::clone(
         gate,
     )))));
-    repos.add_placeholder("foo", 1);
+    repos.add_lazy_repo("foo", 1);
     let request = {
         let repos = Arc::clone(&repos);
         mononoke::spawn_task(async move { repos.get("foo").await })
@@ -289,7 +289,7 @@ async fn test_a_shard_reassigned_mid_build_gets_a_fresh_build() {
 
     // Dropped and reassigned while the first build is in flight.
     repos.remove("foo");
-    repos.add_placeholder("foo", 1);
+    repos.add_lazy_repo("foo", 1);
     gate.release.notify_one();
     assert_eq!(request.await.unwrap().unwrap().as_deref(), Some(&42));
 
@@ -328,7 +328,7 @@ async fn test_rebuild_if_present_rebuilds_a_built_repo() {
 #[mononoke::test]
 async fn test_rebuild_if_present_leaves_an_absent_or_unbuilt_repo_alone() {
     let repos: MononokeRepos<i32> = MononokeRepos::new();
-    repos.add_placeholder("foo", 1);
+    repos.add_lazy_repo("foo", 1);
 
     assert!(
         repos
@@ -521,7 +521,7 @@ async fn test_unload_if_idle_leaves_unbuilt_and_unknown_repos_alone() {
     let later = Instant::now() + IDLE_WINDOW;
 
     let repos: MononokeRepos<i32> = MononokeRepos::new_lazy(Arc::new(NeverLoads));
-    repos.add_placeholder("foo", 1);
+    repos.add_lazy_repo("foo", 1);
     assert!(!repos.unload_if_idle("foo", IDLE_WINDOW, later));
     assert!(!repos.unload_if_idle("nope", IDLE_WINDOW, later));
     assert_eq!(repos.iter_names().collect::<Vec<_>>(), vec!["foo"]);
@@ -537,7 +537,7 @@ async fn test_unload_if_idle_leaves_unbuilt_and_unknown_repos_alone() {
     // Failed: the failure stays cached rather than the slot going back to
     // `Empty`, which would let the next request retry at once.
     let repos: MononokeRepos<i32> = MononokeRepos::new_lazy(Arc::new(FailingLoader));
-    repos.add_placeholder("foo", 1);
+    repos.add_lazy_repo("foo", 1);
     assert!(repos.get("foo").await.is_err());
     assert!(!repos.unload_if_idle("foo", IDLE_WINDOW, later));
     let err = repos.get("foo").await.unwrap_err();

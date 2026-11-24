@@ -1071,7 +1071,7 @@ async fn first_request_build_during_a_spec_change(
 
     // ShardManager assigns the repo; its first request builds it from the
     // spec as it is then.
-    repos.add_placeholder("a", 1);
+    repos.add_lazy_repo("a", 1);
     let first_request = {
         let repos = repos.clone();
         mononoke::spawn_task(async move { repos.get("a").await })

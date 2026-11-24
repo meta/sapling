@@ -415,7 +415,7 @@ impl<Repo> MononokeReposManager<Repo> {
         let entry = manifest.repo(repo_name).with_context(|| {
             format!("add_lazy_repo: repo {repo_name} is not in the tier manifest")
         })?;
-        self.repos.add_placeholder(repo_name, entry.repo_id);
+        self.repos.add_lazy_repo(repo_name, entry.repo_id);
         Ok(())
     }
 
@@ -630,7 +630,7 @@ where
     }
 
     // No-op if a concurrent request or the reconcile loop got there first.
-    repos.add_placeholder(repo_name, repo_id);
+    repos.add_lazy_repo(repo_name, repo_id);
     match repos.get(repo_name).await {
         Ok(Some(repo)) => {
             STATS::repo_loaded_on_demand.add_value(1);

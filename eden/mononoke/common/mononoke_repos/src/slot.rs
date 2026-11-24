@@ -106,13 +106,14 @@ enum Claim<R> {
 }
 
 impl<R> RepoSlot<R> {
-    /// A slot for a repo assigned to this service but not built.
-    pub(crate) fn empty(name: String) -> Self {
+    /// A slot for a lazy repo: assigned to this service, but not built until
+    /// its first `get`.
+    pub(crate) fn lazy(name: String) -> Self {
         Self::in_state(name, SlotState::Empty)
     }
 
-    /// A slot for a repo that is already built.
-    pub(crate) fn ready(name: String, repo: Arc<R>) -> Self {
+    /// A slot for an eager repo, built before it is added.
+    pub(crate) fn eager(name: String, repo: Arc<R>) -> Self {
         Self::in_state(name, SlotState::Ready(repo))
     }
 
@@ -427,7 +428,7 @@ mod tests {
 
     #[mononoke::test]
     fn test_empty_slot_holds_no_repo() {
-        let repo_slot: RepoSlot<i32> = RepoSlot::empty("foo".to_string());
+        let repo_slot: RepoSlot<i32> = RepoSlot::lazy("foo".to_string());
         assert!(
             repo_slot.loaded().is_none(),
             "an unbuilt slot must look absent to every reader"
@@ -436,14 +437,14 @@ mod tests {
 
     #[mononoke::test]
     fn test_ready_slot_hands_out_its_repo() {
-        let repo_slot = RepoSlot::ready("foo".to_string(), Arc::new(42));
+        let repo_slot = RepoSlot::eager("foo".to_string(), Arc::new(42));
         assert_eq!(repo_slot.loaded().as_deref(), Some(&42));
     }
 
     #[mononoke::test]
     fn test_reading_a_slot_shares_rather_than_copies() {
         let repo = Arc::new(42);
-        let repo_slot = RepoSlot::ready("foo".to_string(), Arc::clone(&repo));
+        let repo_slot = RepoSlot::eager("foo".to_string(), Arc::clone(&repo));
 
         // Two reads must hand back the same allocation, not clones of the repo:
         // a repo is expensive and callers rely on sharing one instance.
@@ -456,7 +457,7 @@ mod tests {
     #[mononoke::test]
     async fn test_concurrent_callers_share_one_build() {
         let gate = Arc::new(Gate::default());
-        let repo_slot = Arc::new(RepoSlot::empty("foo".to_string()));
+        let repo_slot = Arc::new(RepoSlot::lazy("foo".to_string()));
 
         let first = call(&repo_slot, &gate);
 
@@ -486,7 +487,7 @@ mod tests {
     #[mononoke::test]
     async fn test_build_survives_its_caller_being_cancelled() {
         let gate = Arc::new(Gate::default());
-        let repo_slot = Arc::new(RepoSlot::empty("foo".to_string()));
+        let repo_slot = Arc::new(RepoSlot::lazy("foo".to_string()));
 
         let caller = call(&repo_slot, &gate);
         gate.started.notified().await;
@@ -510,7 +511,7 @@ mod tests {
 
     #[mononoke::test]
     async fn test_a_built_slot_is_served_without_rebuilding() {
-        let repo_slot = Arc::new(RepoSlot::ready("foo".to_string(), Arc::new(100)));
+        let repo_slot = Arc::new(RepoSlot::eager("foo".to_string(), Arc::new(100)));
 
         let repo = repo_slot
             .get_or_build(Arc::new(TestLoader::Never))
@@ -521,7 +522,7 @@ mod tests {
 
     #[mononoke::test]
     async fn test_a_failed_build_is_reported_then_cached() {
-        let repo_slot = Arc::new(RepoSlot::empty("foo".to_string()));
+        let repo_slot = Arc::new(RepoSlot::lazy("foo".to_string()));
 
         let err = repo_slot
             .get_or_build(Arc::new(TestLoader::Failed))
@@ -548,7 +549,7 @@ mod tests {
 
     #[mononoke::test]
     async fn test_a_cached_failure_stops_holding_the_slot_once_it_expires() {
-        let repo_slot = Arc::new(RepoSlot::empty("foo".to_string()));
+        let repo_slot = Arc::new(RepoSlot::lazy("foo".to_string()));
 
         assert!(
             repo_slot
@@ -567,7 +568,7 @@ mod tests {
 
     #[mononoke::test]
     async fn test_a_panicking_build_leaves_the_slot_retryable() {
-        let repo_slot = Arc::new(RepoSlot::empty("foo".to_string()));
+        let repo_slot = Arc::new(RepoSlot::lazy("foo".to_string()));
 
         let err = repo_slot
             .get_or_build(Arc::new(TestLoader::Panics))
@@ -601,7 +602,7 @@ mod tests {
 
     #[mononoke::test]
     async fn test_a_loader_panicking_before_returning_a_future_finishes_the_build() {
-        let repo_slot = Arc::new(RepoSlot::empty("foo".to_string()));
+        let repo_slot = Arc::new(RepoSlot::lazy("foo".to_string()));
 
         assert!(
             repo_slot
@@ -621,11 +622,11 @@ mod tests {
 
     #[mononoke::test]
     fn test_replace_swaps_only_a_built_repo() {
-        let repo_slot = RepoSlot::ready("foo".to_string(), Arc::new(100));
+        let repo_slot = RepoSlot::eager("foo".to_string(), Arc::new(100));
         assert!(repo_slot.replace(Arc::new(42)));
         assert_eq!(repo_slot.loaded().as_deref(), Some(&42));
 
-        let repo_slot: RepoSlot<i32> = RepoSlot::empty("foo".to_string());
+        let repo_slot: RepoSlot<i32> = RepoSlot::lazy("foo".to_string());
         assert!(
             !repo_slot.replace(Arc::new(42)),
             "an unbuilt slot must not be filled by a rebuild"

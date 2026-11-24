@@ -142,7 +142,7 @@ where
             // Registered under the refs lock so a concurrent release cannot
             // remove the repo before this request holds its reference.
             info!("Loading repo {} (id={}) on-demand", repo_name, repo_id);
-            repos.add_placeholder(&repo_name, repo_id.id());
+            repos.add_lazy_repo(&repo_name, repo_id.id());
             refs.insert(
                 repo_id,
                 OndemandRepoRef {

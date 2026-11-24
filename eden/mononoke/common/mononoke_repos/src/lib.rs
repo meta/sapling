@@ -167,7 +167,7 @@ impl<R> MononokeRepos<R> {
         self.add_or_update_inner(
             repo_name,
             repo_id,
-            RepoSlot::ready(repo_name.to_string(), Arc::new(repo)),
+            RepoSlot::eager(repo_name.to_string(), Arc::new(repo)),
         );
         // Drop the lock to allow other threads to update the repos.
         drop(lock);
@@ -179,7 +179,7 @@ impl<R> MononokeRepos<R> {
     ///
     /// No-op if the repo is already present: registering an assignment only
     /// ever adds one, and never un-builds a repo that is already loaded.
-    pub fn add_placeholder(&self, repo_name: &str, repo_id: i32) {
+    pub fn add_lazy_repo(&self, repo_name: &str, repo_id: i32) {
         // Acquire the lock to avoid race conditions during update.
         let lock = self.update_lock.lock();
         // Presence check under update_lock is atomic vs add/remove/reload/populate.
@@ -187,7 +187,7 @@ impl<R> MononokeRepos<R> {
             drop(lock);
             return;
         }
-        self.add_or_update_inner(repo_name, repo_id, RepoSlot::empty(repo_name.to_string()));
+        self.add_or_update_inner(repo_name, repo_id, RepoSlot::lazy(repo_name.to_string()));
         // Drop the lock to allow other threads to update the repos.
         drop(lock);
     }
@@ -206,7 +206,7 @@ impl<R> MononokeRepos<R> {
                 self.add_or_update_inner(
                     repo_name,
                     repo_id,
-                    RepoSlot::ready(repo_name.to_string(), Arc::new(repo)),
+                    RepoSlot::eager(repo_name.to_string(), Arc::new(repo)),
                 );
                 drop(lock);
                 Ok(())
@@ -296,7 +296,7 @@ impl<R> MononokeRepos<R> {
         let mut name_to_repo_map: HashMap<String, Arc<RepoSlot<R>>> = HashMap::new();
         for (id, name, repo) in repos.into_iter() {
             id_to_name_map.insert(id, name.to_string());
-            let repo_slot = RepoSlot::ready(name.clone(), Arc::new(repo));
+            let repo_slot = RepoSlot::eager(name.clone(), Arc::new(repo));
             name_to_repo_map.insert(name, Arc::new(repo_slot));
         }
         self.id_to_name_map.store(Arc::new(id_to_name_map));
@@ -326,7 +326,7 @@ impl<R> MononokeRepos<R> {
             Arc::<_>::unwrap_or_clone(self.name_to_repo_map.load().clone());
         for (id, name, repo) in repos.into_iter() {
             id_to_name_map.insert(id, name.to_string());
-            let repo_slot = RepoSlot::ready(name.clone(), Arc::new(repo));
+            let repo_slot = RepoSlot::eager(name.clone(), Arc::new(repo));
             name_to_repo_map.insert(name, Arc::new(repo_slot));
         }
         self.id_to_name_map.store(Arc::new(id_to_name_map));
@@ -350,7 +350,7 @@ impl<R> MononokeRepos<R> {
         let mut name_to_repo_map: HashMap<String, Arc<RepoSlot<R>>> =
             Arc::<_>::unwrap_or_clone(self.name_to_repo_map.load().clone());
         id_to_name_map.insert(id, name.clone());
-        let repo_slot = RepoSlot::ready(name.clone(), Arc::new(repo));
+        let repo_slot = RepoSlot::eager(name.clone(), Arc::new(repo));
         name_to_repo_map.insert(name, Arc::new(repo_slot));
         self.id_to_name_map.store(Arc::new(id_to_name_map));
         self.name_to_repo_map.store(Arc::new(name_to_repo_map));
