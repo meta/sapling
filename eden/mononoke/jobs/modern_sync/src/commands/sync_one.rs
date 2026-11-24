@@ -26,6 +26,7 @@ use crate::sender::edenapi::DefaultEdenapiSenderBuilder;
 use crate::sender::edenapi::EdenapiConfig;
 use crate::sender::edenapi::EdenapiSender;
 use crate::sender::manager::ChangesetMessage;
+use crate::sender::manager::ContentLookup;
 use crate::sender::manager::SendManager;
 
 /// Sync one changeset (debug only)
@@ -101,7 +102,9 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
         cancellation_requested,
     );
 
-    let messages = crate::sync::process_one_changeset(&args.cs_id, &ctx, repo, false, "").await;
+    let messages =
+        crate::sync::process_one_changeset(&args.cs_id, &ctx, repo, false, "", ContentLookup::Skip)
+            .await;
     crate::sync::send_messages_in_order(messages, &mut send_manager).await?;
     let (finish_tx, finish_rx) = oneshot::channel();
     send_manager

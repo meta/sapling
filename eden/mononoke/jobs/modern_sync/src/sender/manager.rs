@@ -159,9 +159,18 @@ pub struct SendManager {
     first_failure: FirstFailure,
 }
 
+/// Whether a content upload asks the replica which contents it already has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContentLookup {
+    /// Upload every content.
+    Skip,
+    /// Upload only the contents the replica doesn't have.
+    Perform,
+}
+
 pub enum ContentMessage {
     // Send the content to remote end
-    Content(ContentId, u64),
+    Content(ContentId, u64, ContentLookup),
     // Finished sending content of a changeset. Go ahead with files and trees
     ContentDone(oneshot::Sender<Result<()>>, oneshot::Sender<Result<()>>),
 }

@@ -15,6 +15,7 @@ use mercurial_types::blobs::HgBlobChangeset;
 use minibytes::Bytes;
 use mononoke_types::BonsaiChangeset;
 use mononoke_types::ChangesetId;
+use mononoke_types::ContentId;
 
 use crate::sender::edenapi::BookmarkMove;
 use crate::sender::edenapi::EdenapiSender;
@@ -56,5 +57,9 @@ impl EdenapiSender for NoopEdenapiSender {
 
     async fn read_bookmark(&self, _bookmark: String) -> Result<Option<HgChangesetId>> {
         Ok(None)
+    }
+
+    async fn filter_existing_contents(&self, ids: Vec<ContentId>) -> Result<Vec<ContentId>> {
+        Ok(ids)
     }
 }

@@ -45,6 +45,7 @@ use mercurial_types::blobs::HgBlobChangeset;
 use minibytes::Bytes;
 use mononoke_types::BonsaiChangeset;
 use mononoke_types::ChangesetId;
+use mononoke_types::ContentId;
 use repo_blobstore::RepoBlobstore;
 use repo_blobstore::RepoBlobstoreRef;
 use repo_identity::RepoIdentityRef;
@@ -372,6 +373,19 @@ impl EdenapiSender for DefaultEdenapiSender {
             .flatten()
             .map(|id| id.into()))
     }
+
+    async fn filter_existing_contents(&self, ids: Vec<ContentId>) -> Result<Vec<ContentId>> {
+        let anyids = ids
+            .iter()
+            .map(|id| AnyId::AnyFileContentId(AnyFileContentId::ContentId((*id).into())))
+            .collect::<Vec<_>>();
+        let res = self
+            .client
+            .lookup_batch(anyids, None, None)
+            .await
+            .with_context(|| "filtering existing contents")?;
+        Ok(get_missing_contents_in_order(res, ids))
+    }
 }
 
 fn to_wire_reason(reason: BookmarkUpdateReason) -> MirrorBookmarkUpdateReason {
@@ -408,11 +422,8 @@ fn handle_replay_identical_response(response: ReplayIdenticalMovesResponse) -> R
     }
 }
 
-fn get_missing_in_order(
-    lookup_res: Vec<LookupResponse>,
-    ids: Vec<(HgChangesetId, ChangesetId)>,
-) -> Vec<ChangesetId> {
-    let present_ids: HashSet<_> = lookup_res
+fn get_present_ids(lookup_res: Vec<LookupResponse>) -> HashSet<AnyId> {
+    lookup_res
         .into_iter()
         .filter_map(|r| match r.result {
             LookupResult::Present(UploadToken {
@@ -426,8 +437,28 @@ fn get_missing_in_order(
             }) => Some(id),
             _ => None,
         })
-        .collect();
+        .collect()
+}
 
+fn get_missing_contents_in_order(
+    lookup_res: Vec<LookupResponse>,
+    ids: Vec<ContentId>,
+) -> Vec<ContentId> {
+    let present_ids = get_present_ids(lookup_res);
+    ids.into_iter()
+        .filter(|id| {
+            !present_ids.contains(&AnyId::AnyFileContentId(AnyFileContentId::ContentId(
+                (*id).into(),
+            )))
+        })
+        .collect()
+}
+
+fn get_missing_in_order(
+    lookup_res: Vec<LookupResponse>,
+    ids: Vec<(HgChangesetId, ChangesetId)>,
+) -> Vec<ChangesetId> {
+    let present_ids = get_present_ids(lookup_res);
     let missing: Vec<_> = ids
         .into_iter()
         .filter(|(hgid, _)| !present_ids.contains(&AnyId::HgChangesetId((*hgid).into())))
@@ -502,5 +533,49 @@ mod test {
         // This should preserve the ids order
         let missing = get_missing_in_order(responses, vec![(hg_id1, cs_id1), (hg_id2, cs_id2)]);
         assert_eq!(missing, vec![cs_id1, cs_id2]);
+    }
+
+    #[mononoke::test]
+    fn missing_contents_keep_order_and_drop_present_ones() {
+        let [c1, c2, c3] = [1, 2, 3].map(|b| ContentId::from_bytes([b; 32]).unwrap());
+        let file_id = |c: ContentId| AnyId::AnyFileContentId(AnyFileContentId::ContentId(c.into()));
+        let present = |c: ContentId| LookupResponse {
+            result: LookupResult::Present(UploadToken::new_fake_token(file_id(c), None)),
+        };
+        let not_present = |c: ContentId| LookupResponse {
+            result: LookupResult::NotPresent(IndexableId {
+                id: file_id(c),
+                bubble_id: None,
+            }),
+        };
+
+        // Responses come back in any order.
+        let responses = vec![not_present(c3), present(c2), not_present(c1)];
+
+        let missing = get_missing_contents_in_order(responses, vec![c1, c2, c3]);
+        assert_eq!(
+            missing,
+            vec![c1, c3],
+            "c2 is on the replica, so only c1 and c3 are left to upload, in request order"
+        );
+    }
+
+    #[mononoke::test]
+    fn contents_without_their_own_present_answer_stay_missing() {
+        let [c1, c2] = [1, 2].map(|b| ContentId::from_bytes([b; 32]).unwrap());
+        // A changeset with c2's bytes is present, but it is not c2.
+        let responses = vec![LookupResponse {
+            result: LookupResult::Present(UploadToken::new_fake_token(
+                AnyId::BonsaiChangesetId(ChangesetId::from_bytes([2; 32]).unwrap().into()),
+                None,
+            )),
+        }];
+
+        let missing = get_missing_contents_in_order(responses, vec![c1, c2]);
+        assert_eq!(
+            missing,
+            vec![c1, c2],
+            "c1 got no answer and c2 only a changeset's, so both are uploaded"
+        );
     }
 }

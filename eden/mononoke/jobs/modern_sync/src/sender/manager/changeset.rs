@@ -414,6 +414,7 @@ mod tests {
     use mononoke_macros::mononoke;
     use mononoke_types::BonsaiChangesetMut;
     use mononoke_types::ChangesetId;
+    use mononoke_types::ContentId;
     use mononoke_types::DateTime;
 
     use super::*;
@@ -478,6 +479,10 @@ mod tests {
 
         async fn read_bookmark(&self, _bookmark: String) -> Result<Option<HgChangesetId>> {
             Ok(None)
+        }
+
+        async fn filter_existing_contents(&self, ids: Vec<ContentId>) -> Result<Vec<ContentId>> {
+            Ok(ids)
         }
     }
 

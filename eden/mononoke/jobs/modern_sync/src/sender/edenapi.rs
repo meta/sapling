@@ -16,6 +16,7 @@ use mercurial_types::blobs::HgBlobChangeset;
 use minibytes::Bytes;
 use mononoke_types::BonsaiChangeset;
 use mononoke_types::ChangesetId;
+use mononoke_types::ContentId;
 use thiserror::Error;
 
 mod config;
@@ -82,4 +83,7 @@ pub(crate) trait EdenapiSender {
     ) -> Result<Vec<ChangesetId>>;
 
     async fn read_bookmark(&self, bookmark: String) -> Result<Option<HgChangesetId>>;
+
+    /// Returns the contents of `ids` that the replica doesn't have, in order.
+    async fn filter_existing_contents(&self, ids: Vec<ContentId>) -> Result<Vec<ContentId>>;
 }

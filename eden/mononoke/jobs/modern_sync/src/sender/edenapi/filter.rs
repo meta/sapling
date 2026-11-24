@@ -19,6 +19,7 @@ use mercurial_types::blobs::HgBlobChangeset;
 use minibytes::Bytes;
 use mononoke_types::BonsaiChangeset;
 use mononoke_types::ChangesetId;
+use mononoke_types::ContentId;
 
 use crate::sender::edenapi::BookmarkMove;
 use crate::sender::edenapi::EdenapiSender;
@@ -32,6 +33,7 @@ pub enum MethodFilter {
     UploadIdenticalChangeset,
     FilterExistingCommits,
     ReadBookmark,
+    FilterExistingContents,
 }
 
 pub struct FilterEdenapiSender {
@@ -137,6 +139,18 @@ impl EdenapiSender for FilterEdenapiSender {
             return self.inner.read_bookmark(bookmark).await;
         } else {
             Ok(None)
+        }
+    }
+
+    async fn filter_existing_contents(&self, ids: Vec<ContentId>) -> Result<Vec<ContentId>> {
+        if self
+            .allowed
+            .get(&MethodFilter::FilterExistingContents)
+            .map_or(false, |v| *v)
+        {
+            return self.inner.filter_existing_contents(ids).await;
+        } else {
+            Ok(ids)
         }
     }
 }

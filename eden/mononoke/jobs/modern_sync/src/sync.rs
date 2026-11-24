@@ -78,6 +78,7 @@ use crate::sender::edenapi::EdenapiSender;
 use crate::sender::edenapi::RetryEdenapiSender;
 use crate::sender::manager::BookmarkInfo;
 use crate::sender::manager::ChangesetMessage;
+use crate::sender::manager::ContentLookup;
 use crate::sender::manager::ContentMessage;
 use crate::sender::manager::FileMessage;
 use crate::sender::manager::MODERN_SYNC_COUNTER_NAME;
@@ -131,6 +132,32 @@ struct PollingState {
     mode: PollingMode,
     cursor: BookmarkUpdateLogId,
     counter_names: ModernSyncCounterNames,
+}
+
+/// Which bookmark-log reads look up their contents on the replica.
+///
+/// An earlier attempt may have uploaded part of the first entries this run
+/// syncs before it failed, so the first read with entries to sync looks
+/// them up. A read with none, such as a legacy read of other bookmarks'
+/// entries only, leaves the lookup to the next read.
+struct ContentLookupSchedule {
+    next: ContentLookup,
+}
+
+impl ContentLookupSchedule {
+    fn new() -> Self {
+        Self {
+            next: ContentLookup::Perform,
+        }
+    }
+
+    fn for_read(&mut self, entries_to_sync: usize) -> ContentLookup {
+        let lookup = self.next;
+        if entries_to_sync > 0 {
+            self.next = ContentLookup::Skip;
+        }
+        lookup
+    }
 }
 
 fn polling_mode(repo_name: &str) -> PollingMode {
@@ -352,6 +379,7 @@ pub async fn sync(
         );
         tracing::info!("Initialized channels");
         let mut last_entry = None;
+        let mut content_lookup_schedule = ContentLookupSchedule::new();
 
         loop {
             if cancellation_requested.load(Ordering::Relaxed) {
@@ -439,6 +467,7 @@ pub async fn sync(
                     .collect()
             };
 
+            let content_lookup = content_lookup_schedule.for_read(grouped_entries.len());
             for grouped_entry in grouped_entries {
                 let entry = &grouped_entry.upload_entry;
                 let now = std::time::Instant::now();
@@ -455,6 +484,7 @@ pub async fn sync(
                     last_entry,
                     mc.clone(),
                     counter_names.clone(),
+                    content_lookup,
                 )
                 .await;
                 match result {
@@ -563,6 +593,7 @@ pub async fn process_bookmark_update_log_entry(
     last_entry: Option<ChangesetId>,
     mc: Arc<dyn MutableCounters + Send + Sync>,
     counter_names: ModernSyncCounterNames,
+    content_lookup: ContentLookup,
 ) -> Result<()> {
     let repo_name = repo.repo_identity().name().to_string();
 
@@ -749,6 +780,7 @@ pub async fn process_bookmark_update_log_entry(
                                 repo,
                                 log_to_ods,
                                 &bookmark_name,
+                                content_lookup,
                             )
                             .await
                             {
@@ -824,6 +856,7 @@ pub async fn process_one_changeset(
     repo: Repo,
     log_to_ods: bool,
     bookmark_name: &str,
+    content_lookup: ContentLookup,
 ) -> Result<Messages> {
     stat::log_changeset_start(ctx, cs_id);
 
@@ -856,7 +889,16 @@ pub async fn process_one_changeset(
     if cids.is_empty() && hg_cs.manifestid().as_bytes() == [0; SHA1_HASH_LENGTH_BYTES] {
         tracing::info!("Changeset {} has no content", cs_id);
     } else {
-        process_one_changeset_contents(ctx, &mut messages, cs_info, &repo, &hg_cs, cids).await?;
+        process_one_changeset_contents(
+            ctx,
+            &mut messages,
+            cs_info,
+            &repo,
+            &hg_cs,
+            cids,
+            content_lookup,
+        )
+        .await?;
     }
 
     messages
@@ -905,6 +947,7 @@ pub async fn process_one_changeset_contents(
     repo: &Repo,
     hg_cs: &HgBlobChangeset,
     cids: Vec<ContentId>,
+    content_lookup: ContentLookup,
 ) -> Result<()> {
     // Read the sizes of the contents concurrently (by reading the metadata blobs from blobstore)
     // Larger commits/older not cached commits would benefit from this concurrency.
@@ -917,7 +960,11 @@ pub async fn process_one_changeset_contents(
                         .await?
                         .expect("blob not found");
 
-                anyhow::Ok(ContentMessage::Content(cid, metadata.total_size))
+                anyhow::Ok(ContentMessage::Content(
+                    cid,
+                    metadata.total_size,
+                    content_lookup,
+                ))
             }
         })
         .buffered(100)
@@ -1062,4 +1109,37 @@ pub(crate) async fn get_unsharded_repo_args(
         source_repo_name,
         target_repo_name,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use mononoke_macros::mononoke;
+
+    use super::*;
+
+    #[mononoke::test]
+    fn only_the_first_read_looks_up_contents() {
+        let mut schedule = ContentLookupSchedule::new();
+        assert_eq!(schedule.for_read(2), ContentLookup::Perform);
+        assert_eq!(
+            schedule.for_read(3),
+            ContentLookup::Skip,
+            "no earlier attempt started the entries of a later read"
+        );
+        assert_eq!(schedule.for_read(1), ContentLookup::Skip);
+    }
+
+    #[mononoke::test]
+    fn read_with_nothing_to_sync_keeps_the_lookup_for_the_next_read() {
+        let mut schedule = ContentLookupSchedule::new();
+        // A legacy read can hold only other bookmarks' entries, which are
+        // filtered out before syncing.
+        schedule.for_read(0);
+        assert_eq!(
+            schedule.for_read(2),
+            ContentLookup::Perform,
+            "the first entries this run syncs are looked up even after an empty read"
+        );
+        assert_eq!(schedule.for_read(2), ContentLookup::Skip);
+    }
 }

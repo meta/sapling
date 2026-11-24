@@ -20,6 +20,7 @@ use mercurial_types::blobs::HgBlobChangeset;
 use minibytes::Bytes;
 use mononoke_types::BonsaiChangeset;
 use mononoke_types::ChangesetId;
+use mononoke_types::ContentId;
 
 use crate::sender::edenapi::BookmarkMove;
 use crate::sender::edenapi::BookmarkMovesRejected;
@@ -98,6 +99,11 @@ impl EdenapiSender for RetryEdenapiSender {
 
     async fn read_bookmark(&self, bookmark: String) -> Result<Option<HgChangesetId>> {
         self.with_retry(|this| this.inner.read_bookmark(bookmark.clone()).boxed())
+            .await
+    }
+
+    async fn filter_existing_contents(&self, ids: Vec<ContentId>) -> Result<Vec<ContentId>> {
+        self.with_retry(|this| this.inner.filter_existing_contents(ids.clone()).boxed())
             .await
     }
 }
@@ -201,6 +207,10 @@ mod test {
         async fn read_bookmark(&self, _bookmark: String) -> Result<Option<HgChangesetId>> {
             self.fail_or_ok(Some(HgChangesetId::from_bytes(&[1; 20]).unwrap()))
         }
+
+        async fn filter_existing_contents(&self, ids: Vec<ContentId>) -> Result<Vec<ContentId>> {
+            self.fail_or_ok(ids)
+        }
     }
 
     fn ids() -> Vec<(HgChangesetId, ChangesetId)> {
@@ -254,6 +264,21 @@ mod test {
         assert_eq!(hgid, Some(HgChangesetId::from_bytes(&[1; 20]).unwrap()));
         assert_eq!(inner.calls.load(Ordering::SeqCst), 2);
     }
+
+    #[mononoke::test]
+    async fn filter_existing_contents_retries_transient_errors() {
+        let inner = Arc::new(FlakySender::new(1));
+        let sender = RetryEdenapiSender::new(inner.clone());
+        let ids = vec![ContentId::from_bytes([1; 32]).unwrap()];
+
+        let missing = sender
+            .filter_existing_contents(ids.clone())
+            .await
+            .expect("content lookup should succeed on the retry");
+
+        assert_eq!(missing, ids);
+        assert_eq!(inner.calls.load(Ordering::SeqCst), 2);
+    }
     /// Refuses every bookmark replay in-band, the way the replica answers a
     /// chain it will not apply.
     struct RejectingSender {
@@ -294,6 +319,10 @@ mod test {
         }
 
         async fn read_bookmark(&self, _bookmark: String) -> Result<Option<HgChangesetId>> {
+            unimplemented!()
+        }
+
+        async fn filter_existing_contents(&self, _ids: Vec<ContentId>) -> Result<Vec<ContentId>> {
             unimplemented!()
         }
     }
