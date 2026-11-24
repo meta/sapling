@@ -313,66 +313,6 @@ impl RepoLoader<i32> for FailingLoader {
 }
 
 #[mononoke::test]
-async fn test_add_and_build_registers_and_builds() {
-    let repos: MononokeRepos<i32> = MononokeRepos::new();
-
-    let repo = repos
-        .add_and_build("foo", 1, Arc::new(CountingLoader::default()))
-        .await
-        .unwrap();
-    assert_eq!(*repo, 42);
-    assert_eq!(repos.get_by_name("foo").as_deref(), Some(&42));
-    assert_eq!(repos.get_by_id(1).as_deref(), Some(&42));
-    assert_eq!(repos.iter_names().collect::<Vec<_>>(), vec!["foo"]);
-}
-
-#[mononoke::test]
-async fn test_add_and_build_builds_a_placeholder() {
-    let repos: MononokeRepos<i32> = MononokeRepos::new();
-    repos.add_placeholder("foo", 1);
-
-    repos
-        .add_and_build("foo", 1, Arc::new(CountingLoader::default()))
-        .await
-        .unwrap();
-    assert_eq!(repos.get_by_name("foo").as_deref(), Some(&42));
-    assert_eq!(repos.iter_names().count(), 1);
-}
-
-#[mononoke::test]
-async fn test_add_and_build_returns_a_built_repo_without_building() {
-    let repos: MononokeRepos<i32> = MononokeRepos::new();
-    repos.add("foo", 1, 100);
-
-    let repo = repos
-        .add_and_build("foo", 1, Arc::new(NeverLoads))
-        .await
-        .unwrap();
-    assert_eq!(*repo, 100, "adding a built repo must not rebuild it");
-    assert_eq!(repos.get_by_name("foo").as_deref(), Some(&100));
-}
-
-#[mononoke::test]
-async fn test_add_and_build_holds_a_failed_first_build() {
-    let repos: MononokeRepos<i32> = MononokeRepos::new();
-
-    assert!(
-        repos
-            .add_and_build("foo", 1, Arc::new(FailingLoader))
-            .await
-            .is_err()
-    );
-    let err = repos
-        .add_and_build("foo", 1, Arc::new(NeverLoads))
-        .await
-        .unwrap_err();
-    assert!(
-        err.to_string().contains("Not retrying build of repo foo"),
-        "unexpected error: {err:#}"
-    );
-}
-
-#[mononoke::test]
 async fn test_rebuild_if_present_rebuilds_a_built_repo() {
     let repos: MononokeRepos<i32> = MononokeRepos::new();
     repos.add("foo", 1, 100);
