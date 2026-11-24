@@ -128,3 +128,16 @@ TEST_F(BlobAccessTest, drops_oldest_blobs) {
   EXPECT_EQ(2, backingStore->getAccessCount(id4));
   EXPECT_EQ(1, backingStore->getAccessCount(id5));
 }
+
+TEST_F(BlobAccessTest, does_not_keep_blob_larger_than_cache) {
+  const auto id11 =
+      ObjectId::fromHex("0000000000000000000000000000000000000004");
+  backingStore->putBlob(id11, "11111111111"_sp)->setReady();
+
+  auto blob1 = getBlobBlocking(id11);
+  auto blob2 = getBlobBlocking(id11);
+
+  EXPECT_EQ(11, blob1->getSize());
+  EXPECT_EQ(11, blob2->getSize());
+  EXPECT_EQ(2, backingStore->getAccessCount(id11));
+}

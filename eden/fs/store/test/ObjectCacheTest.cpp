@@ -791,3 +791,33 @@ TEST(ObjectCache, duplicateInsertKeepsTheLiveEntryAndItsExpiry) {
 
   EXPECT_EQ(first, cache->getSimple(id3));
 }
+
+TEST(ObjectCache, interest_handle_object_larger_than_cache_is_not_kept) {
+  using Cache =
+      ObjectCache<CacheObject, ObjectCacheFlavor::InterestHandle, FakeStats>;
+  for (auto interest :
+       {Cache::Interest::WantHandle,
+        Cache::Interest::LikelyNeededAgain,
+        Cache::Interest::UnlikelyNeededAgain}) {
+    SCOPED_TRACE(static_cast<int>(interest));
+    auto cache = Cache::create(10, 0, makeRefPtr<EdenStats>());
+
+    auto handle = cache->insertInterestHandle(id11, object11, interest);
+
+    EXPECT_FALSE(cache->contains(id11));
+    EXPECT_EQ(0, cache->getTotalSizeBytes());
+    EXPECT_EQ(object11, handle.getObject());
+  }
+}
+
+TEST(ObjectCache, interest_handle_object_at_maximum_size_is_kept) {
+  auto cache =
+      ObjectCache<CacheObject, ObjectCacheFlavor::InterestHandle, FakeStats>::
+          create(10, 0, makeRefPtr<EdenStats>());
+  auto object10 = std::make_shared<CacheObject>(id11, 10);
+
+  cache->insertInterestHandle(id11, object10);
+
+  EXPECT_EQ(object10, cache->getInterestHandle(id11).object);
+  EXPECT_EQ(10, cache->getTotalSizeBytes());
+}

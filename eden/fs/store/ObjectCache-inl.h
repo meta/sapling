@@ -336,6 +336,8 @@ ObjectCache<ObjectType, Flavor, ObjectCacheStats>::insertInterestHandleCore(
   }
   if (inserted) { // new entry we need to set the generation number
     item->generation = cacheItemGeneration;
+    // This can evict the new entry itself, so item must not be used after it.
+    evictUntilFits(*state, evicted);
   } else {
     XLOGF(DBG6, "duplicate entry, using generation {}", item->generation);
     // Inserting duplicate entry - use its generation.
@@ -361,8 +363,11 @@ ObjectCache<ObjectType, Flavor, ObjectCacheStats>::insertSimple(
   auto size = object->getSizeBytes();
   EvictedObjects evicted;
   auto state = getShard(id).lock();
-  insertImpl(
-      std::move(id), std::move(object), size, expiresAt, *state, evicted);
+  if (insertImpl(
+          std::move(id), std::move(object), size, expiresAt, *state, evicted)
+          .second) {
+    evictUntilFits(*state, evicted);
+  }
 }
 
 template <
@@ -404,7 +409,6 @@ ObjectCache<ObjectType, Flavor, ObjectCacheStats>::insertImpl(
       throw;
     }
     state.totalSize += size;
-    evictUntilFits(state, evicted);
   } else {
     state.evictionQueue.splice(
         state.evictionQueue.end(),

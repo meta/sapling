@@ -435,11 +435,14 @@ class ObjectCache : public std::enable_shared_from_this<
   }
 
   /**
-   * Inserts an object into the cache for future lookup. If the new total size
-   * exceeds the maximum cache size and the minimum entry count, old entries are
-   * evicted. Returns the item inserted (or already in the cache if this is a
-   * duplicate insert) and a boolean indicating if this item was freshly
-   * inserted (returns false if this is a duplicate insert).
+   * Inserts an object into the cache for future lookup. Returns the item
+   * inserted (or already in the cache if this is a duplicate insert) and a
+   * boolean indicating if this item was freshly inserted (returns false if this
+   * is a duplicate insert).
+   *
+   * Does not evict to make room for a fresh insert. The caller calls
+   * evictUntilFits() once it is done with the returned item, because that can
+   * evict the item itself when it is larger than the maximum cache size.
    *
    * Does not do anything related to InterestHandles
    */
