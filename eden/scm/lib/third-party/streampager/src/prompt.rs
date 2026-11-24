@@ -5,7 +5,7 @@ use std::fmt::Write;
 
 use termwiz::cell::{AttributeChange, CellAttributes};
 use termwiz::color::{AnsiColor, ColorAttribute};
-use termwiz::input::KeyEvent;
+use termwiz::input::{KeyCode, KeyEvent};
 use termwiz::surface::change::Change;
 use termwiz::surface::Position;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -371,6 +371,13 @@ impl Prompt {
         const CTRL: Modifiers = Modifiers::CTRL;
         const NONE: Modifiers = Modifiers::NONE;
         const ALT: Modifiers = Modifiers::ALT;
+        // Strip SHIFT from Char keys (modifyOtherKeys=2 sends shifted char + SHIFT).
+        let mut key = key;
+        if key.modifiers.contains(Modifiers::SHIFT) {
+            if let KeyCode::Char(_) = key.key {
+                key.modifiers.remove(Modifiers::SHIFT);
+            }
+        }
         let value_width = width - self.prompt.width() - 4;
         let action = match (key.modifiers, key.key) {
             (NONE, Enter) | (CTRL, Char('j')) | (CTRL, Char('m')) => {
