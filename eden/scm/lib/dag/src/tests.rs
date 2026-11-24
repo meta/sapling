@@ -826,6 +826,16 @@ fn test_segment_ancestors_example1() {
         assert_eq!(dag.ancestors((*id).into()).unwrap().count(), *count);
     }
 
+    for a in (0..=11).map(Id) {
+        for b in (0..=11).map(Id) {
+            assert_eq!(
+                dag.is_ancestor(a, b).unwrap(),
+                dag.ancestors(b.into()).unwrap().contains(a),
+                "is_ancestor({a:?}, {b:?})"
+            );
+        }
+    }
+
     for (a, b, ancestor) in [
         (10, 3, 3.into()),
         (11, 0, 0.into()),
