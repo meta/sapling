@@ -14,6 +14,7 @@
 #include <folly/io/Cursor.h>
 #include <folly/io/IOBuf.h>
 #include <folly/json/json.h>
+#include <folly/logging/xlog.h>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -377,7 +378,19 @@ CheckoutConfig::getLatestRedirectionTargets() const {
       configRoot->get_table(kRedirectionTargetsSection.str());
   if (redirectionTargetsTable) {
     for (const auto& [path, target] : *redirectionTargetsTable) {
-      redirection_targets->emplace(path, target->as<std::string>()->get());
+      auto targetStr = target->as<std::string>();
+      if (!targetStr) {
+        // The config is re-read on every directory-delete pre-notification,
+        // so throttle this per call site rather than logging per entry.
+        XLOGF_EVERY_MS(
+            WARNING,
+            60000,
+            "Ignoring non-string redirection target for '{}' in {}",
+            path,
+            configPath);
+        continue;
+      }
+      redirection_targets->emplace(path, targetStr->get());
     }
   }
 

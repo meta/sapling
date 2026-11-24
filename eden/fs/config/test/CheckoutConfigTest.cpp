@@ -7,6 +7,9 @@
 
 #include "eden/fs/config/CheckoutConfig.h"
 
+#include <string>
+#include <unordered_map>
+
 #include <folly/test/TestUtils.h>
 #include <folly/testing/TestUtil.h>
 #include <gtest/gtest.h>
@@ -464,4 +467,30 @@ TEST_F(CheckoutConfigTest, testNonStringRepositoryPath) {
       CheckoutConfig::loadFromClientDirectory(mountPoint_, clientDir_),
       std::runtime_error,
       "config.toml: \\[repository\\] has no string key path");
+}
+
+TEST_F(CheckoutConfigTest, testNonStringRedirectionTargetsAreSkipped) {
+  writeFile(
+      configDotToml_,
+      folly::StringPiece{"[repository]\n"
+                         "path = \"/data/users/someone/fbsource\"\n"
+                         "type = \"hg\"\n"
+                         "\n"
+                         "[redirection-targets]\n"
+                         "\"good-a\" = \"/tmp/a\"\n"
+                         "\"int\" = 1\n"
+                         "\"good-b\" = \"/tmp/b\"\n"
+                         "\"flag\" = true\n"
+                         "\"ratio\" = 1.5\n"
+                         "\"list\" = [1, 2]\n"
+                         "\"table\" = {x = 1}\n"
+                         "\"when\" = 1979-05-27T07:32:00Z\n"
+                         "\"good-c\" = \"/tmp/c\"\n"})
+      .value();
+
+  auto config =
+      CheckoutConfig::loadFromClientDirectory(mountPoint_, clientDir_);
+  std::unordered_map<std::string, std::string> expected{
+      {"good-a", "/tmp/a"}, {"good-b", "/tmp/b"}, {"good-c", "/tmp/c"}};
+  EXPECT_EQ(expected, *config->getLatestRedirectionTargets());
 }
