@@ -335,6 +335,7 @@ members = [
   "repo_attributes/commit_rate_limit",
   "repo_attributes/deletion_log",
   "repo_attributes/enabled_derived_data_types",
+  "repo_attributes/ephemeral_commits",
   "repo_attributes/filenodes",
   "repo_attributes/filenodes/if",
   "repo_attributes/filenodes/if/clients",
