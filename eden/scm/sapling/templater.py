@@ -1273,8 +1273,19 @@ def shortest(context, mapping, args):
     # _partialmatch() of filtered changelog could take O(len(repo)) time,
     # which would be unacceptably slow. so we look for hash collision in
     # unfiltered space, which means some hashes may be slightly longer.
-    cl = mapping["ctx"]._repo.changelog
-    return cl.shortest(node, minlength)
+    ctx = mapping.get("ctx")
+    if ctx is not None:
+        repo = ctx._repo
+    else:
+        # A formatter template has no "ctx". A command can give it the "repo"
+        # with fm.templatedata().
+        repo = mapping.get("repo")
+        if repo is None:
+            raise error.Abort(
+                # i18n: "shortest" is a keyword
+                _("shortest() is not supported in the template of this command")
+            )
+    return repo.changelog.shortest(node, minlength)
 
 
 @templatefunc("strip(text[, chars])")

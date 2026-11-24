@@ -524,6 +524,7 @@ def journal(ui, repo, *args, **opts) -> None:
         )
 
         fm.startitem()
+        fm.templatedata(repo=repo)
         fm.condwrite(ui.verbose, "oldhashes", "%s -> ", oldhashesstr)
         fm.write("newhashes", "%s", newhashesstr)
         fm.condwrite(ui.verbose, "user", " %-8s", entry.user)

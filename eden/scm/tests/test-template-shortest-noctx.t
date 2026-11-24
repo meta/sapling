@@ -15,13 +15,15 @@ shortest() with a changeset context works as usual:
   $ sl log -r $B -T '{shortest(node)} {shortest(node, 8)}\n'
   1124 11247896
 
-BUG: the journal formatter has no changeset context, and shortest() crashes
-with a Python traceback:
+The journal formatter has no changeset context, but `sl journal` gives its
+template the repository, which is all shortest() needs:
 
-  $ sl journal -l 2 -T '{shortest(newhashes)} {command}\n' 2>&1 | grep -E '^KeyError'
-  KeyError: 'ctx'
+  $ sl journal -l 2 -T '{shortest(newhashes)} {command}\n'
+  1124 go -q 112478962961147124edd43549aedd1a335e44bf
+  426b go -q 426bada5c67598ca65036d57d9e4b64b0c1ce7a0
 
-BUG: so does the formatter of `sl files`:
+The formatter of `sl files` has no changeset context and no repository:
 
-  $ sl files -r $B -T '{shortest("112478962961")}\n' 2>&1 | grep -E '^KeyError'
-  KeyError: 'ctx'
+  $ sl files -r $B -T '{shortest("112478962961")}\n'
+  abort: shortest() is not supported in the template of this command
+  [255]
