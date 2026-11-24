@@ -1,3 +1,4 @@
+load("@fbcode_macros//build_defs/lib:rust_oss.bzl", "rust_oss")
 load("@fbsource//tools/build_defs:rust_library.bzl", "rust_library")
 
 oncall("scm_server_infra")
@@ -57,5 +58,14 @@ rust_library(
         "//eden/mononoke/servers/slapi/slapi_server/context:context",
         "//eden/scm/lib/cats/constants:cats_constants",
         "//eden/scm/lib/clientinfo:clientinfo",
-    ],
+    ]
+    + (
+        []
+        if rust_oss.is_oss_build()
+        else [
+            "//common/request/rust:request_data",
+            "//contextprop/if:context_prop_thrift_structs-rust",
+            "//thrift/lib/rust:fbthrift",
+        ]
+    ),
 )
