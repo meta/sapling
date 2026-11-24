@@ -286,8 +286,10 @@ class uiconfig:
                 _("%s.%s is not a valid %s ('%s')") % (section, name, desc, v)
             )
 
-    def configint(self, section, name, default=_unset):
+    def configint(self, section, name, default=_unset, minimal=None):
         """parse a configuration element as an integer
+
+        If ``minimal`` is set, a value below it is a config error.
 
         >>> u = uiconfig(); s = 'foo'
         >>> u.setconfig(s, 'int1', '42')
@@ -302,11 +304,24 @@ class uiconfig:
         >>> try: u.configint(s, 'invalid')
         ... except Exception as e: print(e)
         invalid config foo.invalid=somevalue: invalid digit found in string
+        >>> u.configint(s, 'int1', minimal=42)
+        42
+        >>> try: u.configint(s, 'int2', minimal=0)
+        ... except Exception as e: print(e)
+        invalid config foo.int2=-42: must be at least 0
+        >>> print(u.configint(s, 'unknown', minimal=0))
+        None
         """
         try:
-            return self._rcfg.get.as_int(section, name, default)
+            value = self._rcfg.get.as_int(section, name, default)
         except ValueError as e:
             raise error.ConfigError(e)
+        if minimal is not None and value is not None and value < minimal:
+            raise error.ConfigError(
+                _("invalid config %s.%s=%d: must be at least %d")
+                % (section, name, value, minimal)
+            )
+        return value
 
     def configbytes(self, section, name, default=_unset):
         """parse a configuration element as a quantity in bytes

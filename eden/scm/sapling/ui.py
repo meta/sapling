@@ -417,8 +417,10 @@ class ui:
 
         return self._uiconfig.configwith(convert, section, name, default, desc)
 
-    def configint(self, section, name, default=_unset):
+    def configint(self, section, name, default=_unset, minimal=None):
         """parse a configuration element as an integer
+
+        If ``minimal`` is set, a value below it is a config error.
 
         >>> u = ui(); s = 'foo'
         >>> u.setconfig(s, 'int1', '42')
@@ -433,8 +435,11 @@ class ui:
         >>> try: u.configint(s, 'invalid')
         ... except Exception as e: print(e)
         invalid config foo.invalid=somevalue: invalid digit found in string
+        >>> try: u.configint(s, 'int2', minimal=0)
+        ... except Exception as e: print(e)
+        invalid config foo.int2=-42: must be at least 0
         """
-        return self._uiconfig.configint(section, name, default)
+        return self._uiconfig.configint(section, name, default, minimal)
 
     def configbytes(self, section, name, default=_unset):
         """parse a configuration element as a quantity in bytes

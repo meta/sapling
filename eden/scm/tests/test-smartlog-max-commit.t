@@ -95,8 +95,7 @@ With a root commit:
   │
   ~
 
-FIXME(T297033474): a negative threshold crashes instead of aborting with a
-config error:
+A negative threshold aborts with a config error:
 
   $ newrepo
   $ drawdag << 'EOS'
@@ -105,24 +104,17 @@ config error:
   > A
   > EOS
   $ sl sl -T '{desc}' --config smartlog.max-commit-threshold=-1
-  smartlog: too many (2) commits, not rendering all of them
-  (consider running 'sl doctor' to hide unrelated commits)
-  ** Sapling SCM (version *) has crashed: (glob)
-  Traceback (most recent call last):
-  ...
-  OverflowError: can't convert negative int to unsigned
-  [1]
+  abort: invalid config smartlog.max-commit-threshold=-1: must be at least 0
+  [255]
 
-FIXME(T297033474): unsetting the threshold in a config file crashes instead of
-falling back to the builtin default of 1000:
+Unsetting the threshold in a config file falls back to the builtin default of
+1000:
 
   $ cat >> .sl/config << 'EOF'
   > [smartlog]
   > %unset max-commit-threshold
   > EOF
   $ sl sl -T '{desc}'
-  ** Sapling SCM (version *) has crashed: (glob)
-  Traceback (most recent call last):
-  ...
-  TypeError: '>' not supported between instances of 'int' and 'NoneType'
-  [1]
+  o  B
+  │
+  o  A

@@ -307,7 +307,9 @@ def smartlognodes(repo, headnodes, masternodes):
     # usually happen. But wrong visibleheads might trigger it (ex. large
     # draft() size). Note this is tested before "collapse-obsolete", because
     # "collapse-obsolete" can be very slow if there are too many nodes.
-    limit = repo.ui.configint("smartlog", "max-commit-threshold")
+    # Same as the builtin default in builtin_static/core.rs, which `%unset` in a
+    # config file removes.
+    limit = repo.ui.configint("smartlog", "max-commit-threshold", 1000, minimal=0)
     if len(nodes) > limit:
         repo.ui.warn(
             _("smartlog: too many (%d) commits, not rendering all of them\n")
