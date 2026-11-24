@@ -5234,6 +5234,14 @@ def _performrevert(
         except error.PatchError as err:
             raise error.Abort(_("error parsing patch: %s") % err)
 
+        # A binary file's patch only carries the content it changes to, so it
+        # cannot be reversed. Restore the selected binary files from ctx
+        # instead, as a non-interactive revert does.
+        binaryfiles = []
+        if reversehunks:
+            binaryfiles = [c.filename() for c in chunks if not ishunk(c) and c.binary()]
+            chunks = [c for c in chunks if ishunk(c) or not c.binary()]
+
         newlyaddedandmodifiedfiles = newandmodified(chunks, originalchunks)
         if tobackup is None:
             tobackup = set()
@@ -5256,6 +5264,12 @@ def _performrevert(
             except error.PatchError as err:
                 raise error.Abort(str(err))
         del fp
+        for f in binaryfiles:
+            if f in tobackup:
+                bakname = scmutil.origpath(repo.ui, repo, m.rel(f))
+                util.copyfile(repo.wjoin(f), bakname)
+            checkout(f)
+            normal(f)
     else:
         for f in actions["revert"][0]:
             checkout(f)

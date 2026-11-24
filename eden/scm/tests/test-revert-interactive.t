@@ -444,15 +444,13 @@ modified.
   this modifies a binary file (all or nothing)
   examine changes to 'b.bin'? [Ynesfdaq?] n
   
-# BUG: the selected a.bin stays modified and is not backed up, fixed in the next
-# diff
   $ sl st
-  M a.bin
   M b.bin
+  ? a.bin.orig
   >>> print(open('a.bin', 'rb').read())
-  b'a\x00changed\n'
+  b'a\x00base\n'
   >>> print(open('a.bin.orig', 'rb').read())
-  [Errno 2] $ENOENT$: 'a.bin.orig'
+  b'a\x00changed\n'
 
 Applying a binary file's change from another revision restores it from that
 revision.
