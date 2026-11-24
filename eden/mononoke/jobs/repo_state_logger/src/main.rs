@@ -62,9 +62,17 @@ use stats::define_stats;
 use stats::prelude::*;
 use tokio::sync::watch;
 
-/// Floor for the sampling interval: never poll faster than once a minute,
-// no matter what the config says.
-const MIN_POLL_INTERVAL: Duration = Duration::from_secs(60);
+/// Window of the exported `.avg.60` values (`define_stats!` timeseries default).
+const EXPORT_WINDOW: Duration = Duration::from_secs(60);
+
+/// Floor for the sampling interval, no matter what the config says. Two
+/// samples per export window: a sweep starts every period plus the sweep's own
+/// duration, so a period of a whole window drifts against the exporter and
+/// leaves some windows with no sample, which export as 0 for every key.
+const MIN_POLL_INTERVAL: Duration = Duration::from_secs(EXPORT_WINDOW.as_secs() / 2);
+const _: () = assert!(
+    MIN_POLL_INTERVAL.as_secs() > 0 && MIN_POLL_INTERVAL.as_secs() * 2 <= EXPORT_WINDOW.as_secs()
+);
 
 /// Max concurrent storage reads while sampling or opening repos. Each read is
 /// a cheap indexed lookup, so this bound only bites at hundreds of sources —
@@ -846,7 +854,8 @@ mod tests {
         };
         assert_eq!(clamp_poll_interval(&config(0)), MIN_POLL_INTERVAL);
         assert_eq!(clamp_poll_interval(&config(-5)), MIN_POLL_INTERVAL);
-        assert_eq!(clamp_poll_interval(&config(30)), MIN_POLL_INTERVAL);
+        assert_eq!(clamp_poll_interval(&config(10)), MIN_POLL_INTERVAL);
+        assert_eq!(clamp_poll_interval(&config(30)), Duration::from_secs(30));
         assert_eq!(clamp_poll_interval(&config(300)), Duration::from_secs(300));
     }
 
