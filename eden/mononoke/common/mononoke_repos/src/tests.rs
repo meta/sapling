@@ -419,15 +419,30 @@ async fn test_a_failed_rebuild_keeps_the_old_repo_without_a_hold() {
 const IDLE_WINDOW: Duration = Duration::from_secs(60);
 
 /// A lazy collection with `foo` built as `100`.
-fn built_lazy_repo(loader: Arc<dyn RepoLoader<i32>>) -> MononokeRepos<i32> {
+/// Hands out `100` for any name.
+struct LoadsHundred;
+
+impl RepoLoader<i32> for LoadsHundred {
+    fn load(&self, _repo_name: String) -> BoxFuture<'static, Result<i32>> {
+        async { Ok(100) }.boxed()
+    }
+}
+
+/// A lazy repo as its first request leaves it: registered unbuilt, then built.
+async fn built_lazy_repo(loader: Arc<dyn RepoLoader<i32>>) -> MononokeRepos<i32> {
     let repos = MononokeRepos::new_lazy(loader);
-    repos.add("foo", 1, 100);
+    repos.add_lazy_repo("foo", 1);
+    let repo_slot = repos.name_to_repo_map.load().get("foo").cloned().unwrap();
+    repo_slot
+        .get_or_build(Arc::new(LoadsHundred))
+        .await
+        .unwrap();
     repos
 }
 
 #[mononoke::test]
-fn test_unload_if_idle_unloads_an_idle_repo() {
-    let repos = built_lazy_repo(Arc::new(NeverLoads));
+async fn test_unload_if_idle_unloads_an_idle_repo() {
+    let repos = built_lazy_repo(Arc::new(NeverLoads)).await;
 
     assert!(repos.unload_if_idle("foo", IDLE_WINDOW, Instant::now() + IDLE_WINDOW));
 
@@ -442,7 +457,7 @@ fn test_unload_if_idle_unloads_an_idle_repo() {
 
 #[mononoke::test]
 async fn test_unload_if_idle_keeps_a_recently_looked_up_repo() {
-    let repos = built_lazy_repo(Arc::new(NeverLoads));
+    let repos = built_lazy_repo(Arc::new(NeverLoads)).await;
     let before_lookup = Instant::now();
     let _ = repos.get_by_name("foo");
     assert!(
@@ -450,7 +465,7 @@ async fn test_unload_if_idle_keeps_a_recently_looked_up_repo() {
         "get_by_name must count as use"
     );
 
-    let repos = built_lazy_repo(Arc::new(NeverLoads));
+    let repos = built_lazy_repo(Arc::new(NeverLoads)).await;
     let before_lookup = Instant::now();
     let _ = repos.get_by_id(1);
     assert!(
@@ -458,7 +473,7 @@ async fn test_unload_if_idle_keeps_a_recently_looked_up_repo() {
         "get_by_id must count as use"
     );
 
-    let repos = built_lazy_repo(Arc::new(NeverLoads));
+    let repos = built_lazy_repo(Arc::new(NeverLoads)).await;
     let before_lookup = Instant::now();
     let _ = repos.get("foo").await.unwrap();
     assert!(
@@ -469,7 +484,7 @@ async fn test_unload_if_idle_keeps_a_recently_looked_up_repo() {
 
 #[mononoke::test]
 async fn test_unload_if_idle_ignores_listing_and_rebuilds() {
-    let repos = built_lazy_repo(Arc::new(NeverLoads));
+    let repos = built_lazy_repo(Arc::new(NeverLoads)).await;
     let before_listing = Instant::now();
 
     // What periodic jobs do to every repo. None of it is a request for `foo`,
@@ -487,8 +502,8 @@ async fn test_unload_if_idle_ignores_listing_and_rebuilds() {
 }
 
 #[mononoke::test]
-fn test_unload_if_idle_keeps_a_repo_someone_holds() {
-    let repos = built_lazy_repo(Arc::new(NeverLoads));
+async fn test_unload_if_idle_keeps_a_repo_someone_holds() {
+    let repos = built_lazy_repo(Arc::new(NeverLoads)).await;
     let held = repos.get_by_name("foo").expect("foo is built");
 
     assert!(
@@ -504,7 +519,7 @@ fn test_unload_if_idle_keeps_a_repo_someone_holds() {
 #[mononoke::test]
 async fn test_an_unloaded_repo_is_rebuilt_on_the_next_get() {
     let loader = Arc::new(CountingLoader::default());
-    let repos = built_lazy_repo(loader.clone());
+    let repos = built_lazy_repo(loader.clone()).await;
     assert!(repos.unload_if_idle("foo", IDLE_WINDOW, Instant::now() + IDLE_WINDOW));
 
     // Only `get` builds, exactly as for a placeholder.
@@ -545,6 +560,36 @@ async fn test_unload_if_idle_leaves_unbuilt_and_unknown_repos_alone() {
         err.to_string().contains("Not retrying build of repo foo"),
         "unexpected error: {err:#}"
     );
+}
+
+#[mononoke::test]
+async fn test_unload_if_idle_keeps_a_lazy_repo_lazy_across_a_reload() {
+    let repos = built_lazy_repo(Arc::new(NeverLoads)).await;
+    assert!(repos.reload_if_present(1, "foo".to_string(), 7));
+
+    assert!(
+        repos.unload_if_idle("foo", IDLE_WINDOW, Instant::now() + IDLE_WINDOW),
+        "a config rebuild leaves the repo unloadable"
+    );
+}
+
+#[mononoke::test]
+async fn test_unload_if_idle_unloads_a_lazy_repo_after_a_shallow_reload() {
+    let repos = built_lazy_repo(Arc::new(NeverLoads)).await;
+    repos.reload(vec![(1, "foo".to_string(), 7)]);
+
+    // FIXME: reconcile reloads only shallow repos, which it keeps built.
+    assert!(repos.unload_if_idle("foo", IDLE_WINDOW, Instant::now() + IDLE_WINDOW));
+}
+
+#[mononoke::test]
+fn test_unload_if_idle_unloads_an_eager_repo() {
+    let repos: MononokeRepos<i32> = MononokeRepos::new_lazy(Arc::new(NeverLoads));
+    repos.add("foo", 1, 100);
+
+    // FIXME: an eager repo may be read with `get_by_name` alone, which never
+    // builds it again, so it should stay built.
+    assert!(repos.unload_if_idle("foo", IDLE_WINDOW, Instant::now() + IDLE_WINDOW));
 }
 
 #[mononoke::test]
