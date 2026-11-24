@@ -11,6 +11,7 @@ cpp_unittest(
     deps = [
         "fbsource//third-party/googletest:gtest",
         "fbsource//xplat/folly:range",
+        "fbsource//xplat/folly:varint",
         "fbsource//xplat/folly/executors:manual_executor",
         "//eden/common/telemetry:structured_logger",
         "//eden/common/utils:path",

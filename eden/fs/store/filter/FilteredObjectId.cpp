@@ -261,6 +261,8 @@ void FilteredObjectId::validate() {
         fmt::underlying(expectedSize.error()));
     throw std::invalid_argument(msg);
   }
+  // Reject an overlong path length, as for the filter above.
+  infoBytes.advance(*expectedSize);
 }
 
 std::string FilteredObjectId::renderFilteredObjectId(

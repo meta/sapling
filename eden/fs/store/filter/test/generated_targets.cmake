@@ -13,6 +13,7 @@ eden_add_test(eden_fs_store_filter_test
     ${LIBGMOCK_LIBRARIES}
     Folly::folly_executors_manual_executor
     Folly::folly_range
+    Folly::folly_varint
     eden_fs_config
     eden_fs_model
     eden_fs_store

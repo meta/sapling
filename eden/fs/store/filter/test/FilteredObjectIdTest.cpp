@@ -6,8 +6,10 @@
  */
 
 #include <folly/Range.h>
+#include <folly/Varint.h>
 #include <gtest/gtest.h>
 #include <stdexcept>
+#include <string>
 
 #include "eden/common/utils/PathFuncs.h"
 #include "eden/fs/model/ObjectId.h"
@@ -126,4 +128,51 @@ TEST(FilteredObjectIdTest, test_copy_and_move) {
   FilteredObjectId movedFilterId{std::move(filterId)};
   EXPECT_EQ(movedFilterId.objectType(), FilteredObjectIdType::OBJECT_TYPE_TREE);
   EXPECT_EQ(movedFilterId, movedFilterId);
+}
+
+TEST(FilteredObjectIdTest, test_tree_rejects_overlong_path_length) {
+  std::string buf;
+  buf.push_back(static_cast<char>(FilteredObjectIdType::OBJECT_TYPE_TREE));
+  std::string filter(40, 'f');
+  uint8_t varint[folly::kMaxVarintLength64] = {};
+  size_t n = folly::encodeVarint(filter.size(), varint);
+  buf.append(reinterpret_cast<const char*>(varint), n);
+  buf.append(filter);
+  // The path claims 4096 bytes; only 4 bytes follow.
+  n = folly::encodeVarint(4096, varint);
+  buf.append(reinterpret_cast<const char*>(varint), n);
+  buf.append("abcd");
+
+  ObjectId id{folly::ByteRange{folly::StringPiece{buf}}};
+  EXPECT_THROW(FilteredObjectId::fromObjectId(id), std::out_of_range);
+}
+
+TEST(FilteredObjectIdTest, test_tree_path_length_boundary) {
+  auto makeBytes = [](size_t claimedPathLen) {
+    std::string buf;
+    buf.push_back(static_cast<char>(FilteredObjectIdType::OBJECT_TYPE_TREE));
+    uint8_t varint[folly::kMaxVarintLength64] = {};
+    size_t n = folly::encodeVarint(1, varint);
+    buf.append(reinterpret_cast<const char*>(varint), n);
+    buf.append("f");
+    n = folly::encodeVarint(claimedPathLen, varint);
+    buf.append(reinterpret_cast<const char*>(varint), n);
+    buf.append("abcd");
+    return buf;
+  };
+
+  // A claimed length exactly matching the remaining bytes is accepted.
+  {
+    auto bytes = makeBytes(4);
+    ObjectId id{folly::ByteRange{folly::StringPiece{bytes}}};
+    auto foid = FilteredObjectId::fromObjectId(id);
+    EXPECT_EQ(foid.path(), RelativePath{"abcd"});
+  }
+
+  // A claimed length exceeding the remaining bytes by one is rejected.
+  {
+    auto bytes = makeBytes(5);
+    ObjectId id{folly::ByteRange{folly::StringPiece{bytes}}};
+    EXPECT_THROW(FilteredObjectId::fromObjectId(id), std::out_of_range);
+  }
 }
