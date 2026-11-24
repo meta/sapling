@@ -418,3 +418,54 @@ When a line without EOL is selected during "revert -i" (issue5651)
   0
 
   $ cd ..
+
+A binary file is all or nothing. Discarding it restores it from the parent and
+backs it up, as discarding a hunk does. A binary file not selected stays
+modified.
+
+  $ sl init $TESTTMP/revert-i-binary
+  $ cd $TESTTMP/revert-i-binary
+  >>> _ = open('a.bin', 'wb').write(b'a\0base\n')
+  >>> _ = open('b.bin', 'wb').write(b'b\0base\n')
+  $ sl ci -qAm base
+  >>> _ = open('a.bin', 'wb').write(b'a\0changed\n')
+  >>> _ = open('b.bin', 'wb').write(b'b\0changed\n')
+  $ sl revert -i <<EOF
+  > y
+  > n
+  > EOF
+  reverting a.bin
+  reverting b.bin
+  diff --git a/a.bin b/a.bin
+  this modifies a binary file (all or nothing)
+  examine changes to 'a.bin'? [Ynesfdaq?] y
+  
+  diff --git a/b.bin b/b.bin
+  this modifies a binary file (all or nothing)
+  examine changes to 'b.bin'? [Ynesfdaq?] n
+  
+# BUG: the selected a.bin stays modified and is not backed up, fixed in the next
+# diff
+  $ sl st
+  M a.bin
+  M b.bin
+  >>> print(open('a.bin', 'rb').read())
+  b'a\x00changed\n'
+  >>> print(open('a.bin.orig', 'rb').read())
+  [Errno 2] $ENOENT$: 'a.bin.orig'
+
+Applying a binary file's change from another revision restores it from that
+revision.
+
+  $ rm -f a.bin.orig
+  $ sl ci -qm 'change b.bin' b.bin
+  $ sl revert -i -r .^ b.bin <<EOF
+  > y
+  > EOF
+  diff --git a/b.bin b/b.bin
+  this modifies a binary file (all or nothing)
+  examine changes to 'b.bin'? [Ynesfdaq?] y
+  
+  $ sl st b.bin
+  M b.bin
+  $ sl st --rev .^ b.bin
