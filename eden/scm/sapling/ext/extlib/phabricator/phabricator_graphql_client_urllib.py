@@ -6,9 +6,41 @@
 
 import http.client as httplib
 
-from sapling import httpclient, json, util
+from sapling import encoding, httpclient, json, util
+
+try:
+    # Internal-only: cert paths and config for direct interngraph calls.
+    # Absent in open-source builds, where calls proceed without certs.
+    from .fb import interngraph as _interngraph
+except ImportError:
+    _interngraph = None
 
 urlreq = util.urlreq
+
+
+def _client_cert_opts():
+    """SSL options presenting the local client identity, if any."""
+    if _interngraph is None:
+        return {}
+    identity = _interngraph.resolve_client_identity()
+    if identity is None:
+        return {}
+    certfile, keyfile = identity
+    return {"certfile": certfile, "keyfile": keyfile}
+
+
+def _user_agent():
+    user_agent = "sapling"
+    service_id = encoding.environ.get("FB_SERVICE_ID", "").strip()
+    # Header values must encode as latin-1; keep to printable ASCII.
+    if (
+        service_id
+        and service_id.isascii()
+        and service_id.isprintable()
+        and not any(c.isspace() for c in service_id)
+    ):
+        user_agent += " FBSVCID/%s" % service_id
+    return user_agent
 
 
 def _authproxyerrors():
@@ -66,10 +98,14 @@ class PhabricatorGraphQLClientRequests:
                     urlparts.netloc, timeout=timeout
                 )
             elif urlparts.scheme == "https":
+                # Direct TLS: present the local client certs. The
+                # unix-socket proxy terminates TLS itself, so it gets
+                # none; neither does plain http.
                 self._connection = httpclient.HTTPConnection(
                     urlparts.netloc,
                     timeout=timeout,
                     use_ssl=True,
+                    **_client_cert_opts(),
                 )
             else:
                 raise PhabricatorClientError("Unknown host scheme: %s", urlparts.scheme)
@@ -107,6 +143,7 @@ class PhabricatorGraphQLClientRequests:
         headers = {
             "Connection": "Keep-Alive",
             "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": _user_agent(),
             **(headers or {}),
         }
         self._connection.request("POST", urlparts.path, query, headers)

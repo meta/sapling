@@ -113,5 +113,95 @@ class QueryHeadersTest(unittest.TestCase):
         self.assertNotIn("crypto_auth_tokens", headers)
 
 
+class SendPostTest(unittest.TestCase):
+    def _post(
+        self,
+        url,
+        unix_socket_proxy=None,
+        identity=None,
+        service_id=None,
+        use_interngraph=True,
+    ):
+        requests = phabricator_graphql_client_urllib.PhabricatorGraphQLClientRequests(
+            unix_socket_proxy=unix_socket_proxy
+        )
+        # None stands in for the open-source build, where the fb package
+        # is absent and the guarded import yields None.
+        stub = (
+            types.SimpleNamespace(resolve_client_identity=lambda: identity)
+            if use_interngraph
+            else None
+        )
+        httpclient = phabricator_graphql_client_urllib.httpclient
+        with (
+            patch.object(phabricator_graphql_client_urllib, "_interngraph", stub),
+            patch.object(httpclient, "HTTPConnection") as connect,
+            patch.dict(encoding.environ),
+        ):
+            encoding.environ.pop("FB_SERVICE_ID", None)
+            if service_id is not None:
+                encoding.environ["FB_SERVICE_ID"] = service_id
+            connect.return_value.getresponse.return_value.read.return_value = b"{}"
+            requests.sendpost(url, data={"doc": "query"}, timeout=30)
+        return connect
+
+    def test_sendpost_sets_the_sapling_user_agent(self):
+        connect = self._post("https://phabricator.test/graphql")
+        headers = connect.return_value.request.call_args.args[3]
+        self.assertEqual(headers["User-Agent"], "sapling")
+
+    def test_sendpost_appends_the_service_id_to_the_user_agent(self):
+        connect = self._post("https://phabricator.test/graphql", service_id="123")
+        headers = connect.return_value.request.call_args.args[3]
+        self.assertEqual(headers["User-Agent"], "sapling FBSVCID/123")
+
+    def test_sendpost_drops_a_service_id_that_is_not_ascii(self):
+        connect = self._post("https://phabricator.test/graphql", service_id="\u670d")
+        headers = connect.return_value.request.call_args.args[3]
+        self.assertEqual(headers["User-Agent"], "sapling")
+
+    def test_sendpost_passes_local_certs_for_direct_https(self):
+        connect = self._post(
+            "https://phabricator.test/graphql",
+            identity=("/tmp/cert.pem", "/tmp/key.pem"),
+        )
+        self.assertEqual(
+            connect.call_args.kwargs,
+            {
+                "timeout": 30,
+                "use_ssl": True,
+                "certfile": "/tmp/cert.pem",
+                "keyfile": "/tmp/key.pem",
+            },
+        )
+
+    def test_sendpost_passes_no_certs_without_a_local_identity(self):
+        connect = self._post("https://phabricator.test/graphql", identity=None)
+        self.assertNotIn("certfile", connect.call_args.kwargs)
+        self.assertNotIn("keyfile", connect.call_args.kwargs)
+
+    def test_sendpost_passes_no_certs_when_internal_module_absent(self):
+        connect = self._post("https://phabricator.test/graphql", use_interngraph=False)
+        self.assertNotIn("certfile", connect.call_args.kwargs)
+        self.assertNotIn("keyfile", connect.call_args.kwargs)
+
+    def test_sendpost_passes_no_certs_over_the_unix_socket_proxy(self):
+        connect = self._post(
+            "https://phabricator.test/graphql",
+            unix_socket_proxy="/nonexistent/socket",
+            identity=("/tmp/cert.pem", "/tmp/key.pem"),
+        )
+        self.assertNotIn("certfile", connect.call_args.kwargs)
+        self.assertNotIn("keyfile", connect.call_args.kwargs)
+
+    def test_sendpost_passes_no_certs_for_plain_http(self):
+        connect = self._post(
+            "http://phabricator.test/graphql",
+            identity=("/tmp/cert.pem", "/tmp/key.pem"),
+        )
+        self.assertNotIn("certfile", connect.call_args.kwargs)
+        self.assertNotIn("keyfile", connect.call_args.kwargs)
+
+
 if __name__ == "__main__":
     silenttestrunner.main(__name__)
