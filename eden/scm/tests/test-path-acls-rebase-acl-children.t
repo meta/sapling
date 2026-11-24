@@ -22,8 +22,8 @@
   $ sl debugscmstore -r $B dir --mode=tree --fetch-mode=LOCAL | grep acl_children_indices
                           acl_children_indices: Some(
 
-Rebasing B onto C rewrites "dir", but the new "dir" is stored without its ACL child.
+Rebasing B onto C rewrites "dir", and the new "dir" keeps its ACL child.
 
   $ sl rebase -q -r $B -d $C
   $ sl debugscmstore -r . dir --mode=tree --fetch-mode=LOCAL | grep acl_children_indices
-                          acl_children_indices: None,
+                          acl_children_indices: Some(

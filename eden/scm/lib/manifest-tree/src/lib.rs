@@ -24,6 +24,7 @@ use std::collections::btree_map::Entry;
 use std::fmt;
 use std::sync::Arc;
 
+use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
@@ -755,11 +756,8 @@ trait ParentTreeTracker {
         path: &RepoPath,
     ) -> Result<Self::ActiveParents>;
 
-    /// Get the cached TreeEntry for the p1 parent at the current position.
-    fn p1_tree_entry(
-        &self,
-        active: &Self::ActiveParents,
-    ) -> Option<&Arc<dyn storemodel::TreeEntry>>;
+    /// Get the p1 parent's directory at the current position.
+    fn p1_entry(&self, active: &Self::ActiveParents) -> Option<Arc<DurableEntry>>;
 }
 
 /// No parent tracking — used for content-addressed stores (Git) where a
@@ -783,7 +781,7 @@ impl ParentTreeTracker for NoParents {
     fn for_subdirectory(&mut self, _active: &(), _path: &RepoPath) -> Result<()> {
         Ok(())
     }
-    fn p1_tree_entry(&self, _active: &()) -> Option<&Arc<dyn storemodel::TreeEntry>> {
+    fn p1_entry(&self, _active: &()) -> Option<Arc<DurableEntry>> {
         None
     }
 }
@@ -872,16 +870,14 @@ impl<'a> ParentTreeTracker for HgParents<'a> {
         Ok(result)
     }
 
-    fn p1_tree_entry(&self, active: &Vec<usize>) -> Option<&Arc<dyn storemodel::TreeEntry>> {
+    fn p1_entry(&self, active: &Vec<usize>) -> Option<Arc<DurableEntry>> {
         let &first_idx = active.first()?;
         if first_idx != 0 {
             return None;
         }
-        let cursor = &self.cursors[0];
-        if let Durable(entry) = cursor.link().as_ref() {
-            entry.get_tree_entry()
-        } else {
-            None
+        match self.cursors[0].link().as_ref() {
+            Durable(entry) => Some(entry.clone()),
+            _ => None,
         }
     }
 }
@@ -902,7 +898,7 @@ fn finalize_trees<P: ParentTreeTracker>(
             return Ok((entry.hgid, store::Flag::Directory));
         }
     }
-    let p1_tree_entry = tracker.p1_tree_entry(&active).cloned();
+    let p1_entry = tracker.p1_entry(&active);
     tracker.advance(&active)?;
     if let Leaf(file_metadata) = link.as_ref() {
         return Ok((
@@ -925,6 +921,11 @@ fn finalize_trees<P: ParentTreeTracker>(
     }
     let entry = store::Entry::from_elements(elements, format);
 
+    // Read after `advance()`, which loads an unloaded p1 directory together with its tree entry.
+    let p1_tree_entry = p1_entry
+        .map(|p1| p1.get_or_load_tree_entry(store, path).cloned())
+        .transpose()
+        .with_context(|| format!("failed to load parent tree '{path}' to migrate ACL children"))?;
     let acl_children_indices = migrate_acl_children(p1_tree_entry.as_ref(), &entry);
 
     let cell = OnceLock::new();
@@ -2791,9 +2792,9 @@ mod tests {
         tree.insert(repo_path_buf("a/g"), make_meta("30")).unwrap();
         tree.persist(&[&parent]).unwrap();
 
-        // "a" now lists "f", "g" and "restricted", but its ACL child is lost: it should be [2].
+        // "a" now lists "f", "g" and "restricted".
         let a = get_hgid(&tree, repo_path("a"));
-        assert_eq!(store.get_acl_children_indices(a), None);
+        assert_eq!(store.get_acl_children_indices(a), Some(vec![2]));
     }
 
     #[test]
@@ -2814,9 +2815,35 @@ mod tests {
             .unwrap();
         second.persist(&[&first]).unwrap();
 
-        // "a" now lists "f", "g", "h" and "restricted", but its ACL child is lost: it should be [3].
+        // "a" now lists "f", "g", "h" and "restricted".
         let second_a = get_hgid(&second, repo_path("a"));
-        assert_eq!(store.get_acl_children_indices(second_a), None);
+        assert_eq!(store.get_acl_children_indices(second_a), Some(vec![3]));
+    }
+
+    #[test]
+    fn test_persist_fails_when_parent_tree_entry_cannot_be_loaded() {
+        // The parent tree comes from another store, so its tree entries can't be loaded from this
+        // one. Persisting must fail rather than write "a" without its ACL child.
+        let parent_store = Arc::new(TestStore::new());
+        let root = persist_tree_with_acl_child(&parent_store);
+        let parent = TreeManifest::durable(parent_store.clone(), root);
+        parent
+            .diff(
+                &TreeManifest::ephemeral(parent_store.clone()),
+                AlwaysMatcher::new(),
+            )
+            .unwrap()
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        let mut tree = TreeManifest::ephemeral(Arc::new(TestStore::new()));
+        tree.insert(repo_path_buf("a/g"), make_meta("30")).unwrap();
+
+        let err = tree.persist(&[&parent]).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("failed to load parent tree 'a' to migrate ACL children"),
+            "unexpected error: {err:#}"
+        );
     }
 
     #[derive(Debug)]

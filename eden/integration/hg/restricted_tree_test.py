@@ -864,8 +864,7 @@ class RestrictedTreeOmittedModeRebaseTest(_RestrictedTreeTestBase):
         entries = os.listdir(os.path.join(self.mount, "dir"))
         self.assertIn("new.txt", entries)
         self.assertIn("other.txt", entries)
-        # The rebased "dir" is stored without its ACL child, so "restricted" is listed.
-        self.assertIn("restricted", entries)
+        self.assertNotIn("restricted", entries)
 
 
 @hg_test
