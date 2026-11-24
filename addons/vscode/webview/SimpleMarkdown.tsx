@@ -46,8 +46,9 @@ function renderInlineMarkdown(text: string): React.ReactNode {
   // Combined regex for markdown patterns
   // Order matters: links first, then other patterns
   // Note: \s* allows whitespace (including newlines) between ] and ( for links
+  // Like CommonMark, _ only opens or closes emphasis outside a word, so snake_case stays intact
   const inlineRegex =
-    /(\[([^\]]+)\]\s*\(([^)]+)\))|(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(_[^_]+_)/g;
+    /(\[([^\]]+)\]\s*\(([^)]+)\))|(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|((?<!\w)_[^_]+_(?!\w))/g;
 
   const result: React.ReactNode[] = [];
   let lastIndex = 0;
