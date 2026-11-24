@@ -693,8 +693,6 @@ struct GlobStats : StatsGroup<GlobStats> {
 struct ThriftStats : StatsGroup<ThriftStats> {
   Duration streamChangesSince{
       "thrift.StreamingEdenService.streamChangesSince.streaming_time_us"};
-  Duration streamSelectedChangesSince{
-      "thrift.StreamingEdenService.streamSelectedChangesSince.streaming_time_us"};
 
   Counter cancelRequestSuccess{
       "thrift.EdenServiceHandler.cancel_request.success"};

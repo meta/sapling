@@ -101,7 +101,6 @@
 #include "eden/fs/store/ScmStatusDiffCallback.h"
 #include "eden/fs/store/StatsFetchContext.h"
 #include "eden/fs/store/TreeCache.h"
-#include "eden/fs/store/filter/GlobFilter.h"
 #include "eden/fs/store/sl/SaplingBackingStore.h"
 #include "eden/fs/telemetry/EdenErrorInfoBuilder.h"
 #include "eden/fs/telemetry/EdenFsEventsLogger.h"
@@ -2497,22 +2496,9 @@ void publishFile(
 void sumUncommittedChanges(
     const JournalDeltaRange& range,
     const folly::Synchronized<ThriftStreamPublisherOwner<ChangedFileResult>>&
-        publisher,
-    std::optional<std::reference_wrapper<GlobFilter>> filter) {
+        publisher) {
   for (auto& entry : range.changedFilesInOverlay) {
     const auto& changeInfo = entry.second;
-
-    // the path is filtered don't consider it
-    if (filter) {
-      // TODO(T167750650): This .get() will block Thrift threads and could lead
-      // to Queue Timeouts. Instead of calling .get(), we should chain futures
-      // together.
-      if (filter->get()
-              .getFilterCoverageForPath(entry.first, folly::StringPiece(""))
-              .get() == FilterCoverage::RECURSIVELY_FILTERED) {
-        continue;
-      }
-    }
 
     ScmFileStatus status;
     if (!changeInfo.existedBefore && changeInfo.existedAfter) {
@@ -2527,16 +2513,6 @@ void sumUncommittedChanges(
   }
 
   for (const auto& name : range.uncleanPaths) {
-    if (filter) {
-      // TODO(T167750650): This .get() will block Thrift threads and could lead
-      // to Queue Timeouts. Instead of calling .get(), we should chain futures
-      // together.
-      if (filter->get()
-              .getFilterCoverageForPath(name, folly::StringPiece(""))
-              .get() == FilterCoverage::RECURSIVELY_FILTERED) {
-        continue;
-      }
-    }
     publishFile(
         publisher, name.asString(), ScmFileStatus::MODIFIED, dtype_t::Unknown);
   }
@@ -2683,7 +2659,7 @@ EdenServiceHandler::streamChangesSince(
       rootIdCodec.renderRootId(summed->snapshotTransitions.back());
   result.toPosition() = toPosition;
 
-  sumUncommittedChanges(*summed, *sharedPublisherLock, std::nullopt);
+  sumUncommittedChanges(*summed, *sharedPublisherLock);
 
   if (summed->snapshotTransitions.size() > 1) {
     auto callback =
@@ -3416,162 +3392,6 @@ void EdenServiceHandler::sendNotification(
   (void)request;
   NOT_IMPLEMENTED();
 #endif
-}
-
-apache::thrift::ResponseAndServerStream<ChangesSinceResult, ChangedFileResult>
-EdenServiceHandler::streamSelectedChangesSince(
-    std::unique_ptr<StreamSelectedChangesSinceParams> params) {
-  auto requestContext = getRequestContext();
-  auto helper = INSTRUMENT_THRIFT_CALL_WITH_STAT_AND_CANCELLATION(
-      DBG3,
-      &ThriftStats::streamSelectedChangesSince,
-      true,
-      requestContext,
-      *params->changesParams()->mountPoint());
-  auto mountHandle = lookupMount(params->changesParams()->mountPoint().value());
-  const auto& fromPosition = *params->changesParams()->fromPosition();
-  auto& fetchContext = helper->getFetchContext();
-
-  checkMountGeneration(
-      fromPosition, mountHandle.getEdenMount(), "fromPosition"sv);
-
-  auto summed = mountHandle.getJournal().accumulateRange(
-      *fromPosition.sequenceNumber() + 1);
-
-  ChangesSinceResult result;
-  if (!summed) {
-    // No changes, just return the fromPosition and an empty stream.
-    result.toPosition() = fromPosition;
-
-    return {
-        std::move(result),
-        apache::thrift::ServerStream<ChangedFileResult>::createEmpty()};
-  }
-
-  if (summed->isTruncated) {
-    throw newEdenError(
-        EDOM,
-        EdenErrorType::JOURNAL_TRUNCATED,
-        "Journal entry range has been truncated.");
-  }
-
-  auto cancellationSource = std::make_shared<folly::CancellationSource>();
-  // Cancelling the request, which EdenFS does for a forced restart, stops the
-  // diffs the same way a client disconnect does.
-  std::shared_ptr<folly::CancellationCallback> onRequestCancel;
-  if (auto requestToken = getCancellationToken(helper->getRequestId())) {
-    onRequestCancel = std::make_shared<folly::CancellationCallback>(
-        std::move(*requestToken),
-        [cancellationSource] { cancellationSource->requestCancellation(); });
-  }
-  auto [serverStream, publisher] =
-      apache::thrift::ServerStream<ChangedFileResult>::createPublisher(
-          [cancellationSource] { cancellationSource->requestCancellation(); });
-  auto sharedPublisherLock = std::make_shared<
-      folly::Synchronized<ThriftStreamPublisherOwner<ChangedFileResult>>>(
-      ThriftStreamPublisherOwner{std::move(publisher)});
-
-  RootIdCodec& rootIdCodec = mountHandle.getObjectStore();
-
-  JournalPosition toPosition;
-  toPosition.mountGeneration() =
-      mountHandle.getEdenMount().getMountGeneration();
-  toPosition.sequenceNumber() = summed->toSequence;
-  toPosition.snapshotHash() =
-      rootIdCodec.renderRootId(summed->snapshotTransitions.back());
-  result.toPosition() = toPosition;
-
-  auto caseSensitivity =
-      mountHandle.getEdenMount().getCheckoutConfig()->getCaseSensitive();
-  auto filter =
-      std::make_unique<GlobFilter>(params->globs().value(), caseSensitivity);
-
-  sumUncommittedChanges(
-      *summed, *sharedPublisherLock, std::reference_wrapper(*filter));
-
-  if (summed->snapshotTransitions.size() > 1) {
-    // create filtered backing store
-    std::shared_ptr<FilteredBackingStore> backingStore =
-        std::make_shared<FilteredBackingStore>(
-            mountHandle.getEdenMountPtr()->getObjectStore()->getBackingStore(),
-            std::move(filter),
-            server_->getServerState()->getReloadableConfig());
-    // pass filtered backing store to object store
-    auto objectStore = ObjectStore::create(
-        backingStore,
-        server_->getTreeCache(),
-        server_->getServerState()->getStats().copy(),
-        server_->getServerState()->getProcessInfoCache(),
-        server_->getServerState()->getEdenFsEventsLogger(),
-        server_->getServerState()->getReloadableConfig(),
-        caseSensitivity,
-        folly::getKeepAliveToken(
-            server_->getServerState()->getThreadPool().get()));
-    auto callback =
-        std::make_shared<StreamingDiffCallback>(sharedPublisherLock);
-
-    std::vector<ImmediateFuture<folly::Unit>> futures;
-    // now iterate all commits
-    for (auto rootIt = summed->snapshotTransitions.begin();
-         std::next(rootIt) != summed->snapshotTransitions.end();
-         ++rootIt) {
-      const auto from =
-          backingStore->createFilteredRootId(rootIt->value(), rootIt->value());
-      const auto& toRootId = *(rootIt + 1);
-      const auto to = backingStore->createFilteredRootId(
-          toRootId.value(), toRootId.value());
-
-      futures.push_back(
-          makeNotReadyImmediateFuture().thenValue(
-              [from,
-               to,
-               mountHandle,
-               objectStore,
-               token = cancellationSource->getToken(),
-               fetchContext = fetchContext.copy(),
-               callback = callback.get()](auto&&) {
-                return diffBetweenRoots(
-                    RootId{from},
-                    RootId{to},
-                    *mountHandle.getEdenMount().getCheckoutConfig(),
-                    objectStore,
-                    token,
-                    fetchContext,
-                    callback);
-              }));
-    }
-
-    folly::futures::detachOn(
-        server_->getServerState()->getThreadPool().get(),
-        collectAllSafe(std::move(futures))
-            .thenTry(
-                [mountHandle,
-                 sharedPublisherLock,
-                 callback = std::move(callback),
-                 helper = std::move(helper),
-                 onRequestCancel = std::move(onRequestCancel),
-                 cancellationSource](
-                    folly::Try<std::vector<folly::Unit>>&& result) mutable {
-                  if (result.hasException()) {
-                    auto sharedPublisher =
-                        std::move(*sharedPublisherLock->wlock());
-                    std::move(sharedPublisher)
-                        .next(newEdenError(std::move(result).exception()));
-                  } else if (cancellationSource->getToken()
-                                 .isCancellationRequested()) {
-                    // A cancelled diff stops early. A client that is still
-                    // connected must not take the stream for complete.
-                    auto sharedPublisher =
-                        std::move(*sharedPublisherLock->wlock());
-                    std::move(sharedPublisher)
-                        .next(newEdenError(
-                            folly::make_exception_wrapper<
-                                folly::OperationCancelled>()));
-                  }
-                })
-            .semi());
-  }
-  return {std::move(result), std::move(serverStream)};
 }
 
 void EdenServiceHandler::getFilesChangedSince(

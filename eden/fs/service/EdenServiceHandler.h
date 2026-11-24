@@ -375,10 +375,6 @@ class EdenServiceHandler
       ChangesSinceV2Result& result,
       std::unique_ptr<ChangesSinceV2Params> params) override;
 
-  apache::thrift::ResponseAndServerStream<ChangesSinceResult, ChangedFileResult>
-  streamSelectedChangesSince(
-      std::unique_ptr<StreamSelectedChangesSinceParams> params) override;
-
   folly::SemiFuture<std::unique_ptr<ScmStatus>>
   semifuture_getScmStatusBetweenRevisions(
       std::unique_ptr<std::string> mountPoint,

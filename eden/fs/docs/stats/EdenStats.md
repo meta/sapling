@@ -90,30 +90,27 @@ The list of all the EdenStats Counter/Duration are as follows:
   1. `Duration streamChangesSince{ "thrift.StreamingEdenService.streamChangesSince.streaming_time_us"}`
      : Duration of thrift stream change calls.
 
-  2. `Duration streamSelectedChangesSince{"thrift.StreamingEdenService.streamSelectedChangesSince.streaming_time_us"}`
-     : Duration of thrift stream change calls for selected changes.
-
-  3. `Counter globFilesSaplingRemoteAPISuccess{"thrift.EdenServiceHandler.glob_files.sapling_remote_api_success"}`
+  2. `Counter globFilesSaplingRemoteAPISuccess{"thrift.EdenServiceHandler.glob_files.sapling_remote_api_success"}`
      : Count number of times globFiles succeed using remote pathway
 
-  4. `Counter globFilesSaplingRemoteAPIFallback{"thrift.EdenServiceHandler.glob_files.sapling_remote_api_fallback"}`
+  3. `Counter globFilesSaplingRemoteAPIFallback{"thrift.EdenServiceHandler.glob_files.sapling_remote_api_fallback"}`
      : Count number of times globFiles fails using the remote pathway and ends
      up using the fallback pathway
 
-  5. `Counter globFilesLocal{"thrift.EdenServiceHandler.glob_files.local_success"}`
+  4. `Counter globFilesLocal{"thrift.EdenServiceHandler.glob_files.local_success"}`
      : Count number of times globFiles succeed using the indicated local pathway
 
-  6. `Duration globFilesSaplingRemoteAPISuccessDuration{"thrift.EdenServiceHandler.glob_files.sapling_remote_api_success_duration_us"}`
+  5. `Duration globFilesSaplingRemoteAPISuccessDuration{"thrift.EdenServiceHandler.glob_files.sapling_remote_api_success_duration_us"}`
      : Duration for how long it takes globFiles to execute the remote pathway
 
-  7. `Duration globFilesSaplingRemoteAPIFallbackDuration{"thrift.EdenServiceHandler.glob_files.sapling_remote_api_fallback_duration_us"}`
+  6. `Duration globFilesSaplingRemoteAPIFallbackDuration{"thrift.EdenServiceHandler.glob_files.sapling_remote_api_fallback_duration_us"}`
      : Duration for how long it takes globFiles to execute the fallback pathway
 
-  8. `Duration globFilesLocalDuration{"thrift.EdenServiceHandler.glob_files.local_duration_us"}`
+  7. `Duration globFilesLocalDuration{"thrift.EdenServiceHandler.glob_files.local_duration_us"}`
      : Duration for how long it takes globFiles to execute in the indicated
      local pathway
 
-  9. `Duration globFilesLocalOffloadableDuration{"thrift.EdenServiceHandler.glob_files.local_offloadable_duration_us"}`
+  8. `Duration globFilesLocalOffloadableDuration{"thrift.EdenServiceHandler.glob_files.local_offloadable_duration_us"}`
      : Duration for how long it takes globFiles to execute a potentially
      offloadable request locally
 

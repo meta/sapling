@@ -543,11 +543,6 @@ mock! {
             params: &StreamChangesSinceParams,
         ) -> BoxFuture<'static, Result<(ChangesSinceResult, BoxStream<'static, Result<ChangedFileResult, StreamChangesSinceStreamError>>), StreamChangesSinceError>>;
 
-        fn streamSelectedChangesSince(
-            &self,
-            params: &StreamSelectedChangesSinceParams,
-        ) -> BoxFuture<'static, Result<(ChangesSinceResult, BoxStream<'static, Result<ChangedFileResult, StreamSelectedChangesSinceStreamError>>), StreamSelectedChangesSinceError>>;
-
         fn streamStartStatus(
             &self,
         ) -> BoxFuture<'static, Result<(DaemonInfo, BoxStream<'static, Result<EdenStartStatusUpdate, StreamStartStatusStreamError>>), StreamStartStatusError>>;

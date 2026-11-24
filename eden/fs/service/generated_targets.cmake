@@ -214,7 +214,6 @@ eden_add_library(eden_fs_service_server
     eden_fs_service_thrift_util
     eden_fs_store
     eden_fs_store_context
-    eden_fs_store_filter_glob_filter
     eden_fs_store_filtered_backing_store
     eden_fs_store_sl_sapling_backing_store
     eden_fs_telemetry_error_info
