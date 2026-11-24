@@ -85,7 +85,7 @@ cpp_unittest(
         "//eden/fs/model:model",
         "//eden/fs/model:testutil",
         "//eden/fs/model/git:gitignore",
-        "//eden/fs/service:thrift-cpp2-types",
+        "//eden/fs/service:thrift-cpp2-serialization",
         "//eden/fs/store:context",
         "//eden/fs/store:store",
         "//eden/fs/telemetry:stats",

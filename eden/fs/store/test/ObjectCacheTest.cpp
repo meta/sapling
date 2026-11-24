@@ -8,9 +8,35 @@
 #include "eden/fs/store/ObjectCache.h"
 #include <gtest/gtest.h>
 #include <chrono>
+#include <csignal>
+#include <cstdio>
+#include <cstdlib>
+#include <new>
+#include <utility>
+
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 using namespace folly::literals;
 using namespace facebook::eden;
+
+#ifndef _WIN32
+namespace facebook::eden {
+namespace {
+struct ThrowingEvictionStats : FakeStats {
+  Counter insertEviction{"do_not_export_throwing_eviction"};
+};
+} // namespace
+
+template <>
+ThrowingEvictionStats&
+EdenStats::getStatsForCurrentThread<ThrowingEvictionStats>() {
+  std::fputs("throwing during eviction\n", stderr);
+  throw std::bad_alloc{};
+}
+} // namespace facebook::eden
+#endif
 
 namespace {
 
@@ -28,7 +54,7 @@ class CacheObject {
     size_ = size;
   }
 
-  CacheObject(ObjectId id, size_t size) : id_{id}, size_{size} {}
+  CacheObject(ObjectId id, size_t size) : id_{std::move(id)}, size_{size} {}
 
  private:
   ObjectId id_;
@@ -734,6 +760,37 @@ TEST(ObjectCache, evictedObjectIsDestroyedAfterTheLockIsReleased) {
 
   EXPECT_EQ(1, objectCountSeenByDeleter);
 }
+
+#ifndef _WIN32
+TEST(
+    ObjectCacheDeathTest,
+    insertionExceptionReleasesInterestHandleAfterUnlock) {
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  using Cache = ObjectCache<
+      CacheObject,
+      ObjectCacheFlavor::InterestHandle,
+      ThrowingEvictionStats>;
+  // FIXME: Expect ExitedWithCode(0) once insertion releases the shard lock
+  // before destroying its interest handle during exception unwinding.
+  ASSERT_EXIT(
+      {
+        std::signal(SIGALRM, SIG_DFL);
+        alarm(10);
+        auto cache = Cache::create(10, 0, makeRefPtr<EdenStats>());
+        cache->insertInterestHandle(id3, object3);
+        EXPECT_THROW(
+            cache->insertInterestHandle(
+                id9, object9, Cache::Interest::WantHandle),
+            std::bad_alloc);
+        EXPECT_FALSE(cache->contains(id9));
+        EXPECT_EQ(0, cache->getObjectCount());
+        EXPECT_EQ(0, cache->getTotalSizeBytes());
+        std::_Exit(::testing::Test::HasFailure() ? 1 : 0);
+      },
+      ::testing::KilledBySignal(SIGALRM),
+      "throwing during eviction");
+}
+#endif
 
 TEST(ObjectCache, objectWithFutureExpiryIsServed) {
   auto cache =
