@@ -223,6 +223,13 @@ _git_prompt() {
   fi
   if [[ -f "$git/HEAD" ]]; then
     read br < "$git/HEAD"
+    if [[ "$br" = "ref: refs/heads/.invalid" ]]; then
+      # A reftable repo keeps this placeholder in HEAD and stores the real
+      # value in the reftable, which only git can read.
+      br="$(command git --git-dir="$git" symbolic-ref --quiet HEAD 2>/dev/null \
+        || command git --git-dir="$git" rev-parse HEAD 2>/dev/null)"
+      [[ "$br" = refs/* ]] && br="ref: $br"
+    fi
     case $br in
       ref:\ refs/heads/*) br=${br#ref: refs/heads/} ;;
       *) br="$(builtin echo "$br" | command cut -c 1-8)" ;;

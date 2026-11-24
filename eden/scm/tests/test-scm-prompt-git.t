@@ -97,3 +97,16 @@ Test more advanced workflows
   $ cmd git bisect reset
   Already on 'work'
   (work)
+
+A reftable repo keeps a placeholder in the HEAD file
+  $ cd ..
+  $ git init -q --ref-format=reftable reftable
+  $ cd reftable
+  $ cat .git/HEAD
+  ref: refs/heads/.invalid
+  $ _scm_prompt "(%s)\n"
+  (master)
+  $ cmd git commit -q --allow-empty -m "Initial empty commit"
+  (master)
+  $ quietcmd git checkout --detach
+  (1fed3389)
