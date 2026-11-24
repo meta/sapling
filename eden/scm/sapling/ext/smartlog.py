@@ -403,7 +403,10 @@ def simpledate(context, mapping, args):
             except zoneinfo._common.ZoneInfoNotFoundError:
                 msg = "Unknown time zone: %s\n" % tzname
                 repo.ui.warn(msg)
-    then = datetime.datetime.fromtimestamp(date[0], tz)
+    try:
+        then = datetime.datetime.fromtimestamp(date[0], tz)
+    except (OSError, OverflowError, ValueError) as e:
+        raise error.Abort(_("cannot show date %d in local time: %s") % (date[0], e))
     now = datetime.datetime.fromtimestamp(date_now[0], tz)
     td = now.date() - then.date()
     if then > now:
