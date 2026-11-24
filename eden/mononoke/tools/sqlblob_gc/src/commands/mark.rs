@@ -42,6 +42,20 @@ pub struct CommandArgs {
     /// Only set the generation, don't inline small values
     #[clap(long)]
     skip_inline_small_values: bool,
+    /// Refuse to start, before touching any shard, unless the configured mark generation is this one
+    #[clap(long)]
+    expected_mark_generation: Option<u64>,
+}
+
+/// A marker that runs with a stale mark generation stamps live chunks too low, and a later erase
+/// deletes them.
+fn check_mark_generation(configured: u64, expected: Option<u64>) -> Result<()> {
+    match expected {
+        Some(expected) if expected != configured => Err(anyhow!(
+            "Refusing to mark: the configured mark generation is {configured}, expected {expected}"
+        )),
+        _ => Ok(()),
+    }
 }
 
 async fn handle_one_key(
@@ -87,6 +101,8 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
 
     let (sqlblob, shard_range) = utils::get_sqlblob_and_shard_range(&app).await?;
 
+    check_mark_generation(sqlblob.get_mark_generation(), args.expected_mark_generation)?;
+
     if !args.skip_initial_generation {
         info!("Starting initial generation set");
         let set_initial_generation_futures: Vec<_> = shard_range
@@ -109,6 +125,7 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
 
     // Hold mark generation constant for run
     let mark_generation = sqlblob.get_mark_generation();
+    check_mark_generation(mark_generation, args.expected_mark_generation)?;
 
     info!("Starting marking generation {}", mark_generation);
     // Set up a task to process each key in parallel in its own task.
@@ -160,4 +177,29 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
     processor.await??;
     info!("Completed marking generation {}", mark_generation);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[mononoke::test]
+    fn marks_without_an_expected_generation() {
+        assert!(check_mark_generation(199, None).is_ok());
+    }
+
+    #[mononoke::test]
+    fn marks_at_the_expected_generation() {
+        assert!(check_mark_generation(201, Some(201)).is_ok());
+    }
+
+    #[mononoke::test]
+    fn refuses_another_generation() {
+        let err = check_mark_generation(199, Some(201))
+            .expect_err("a marker that still sees 199 must not mark when 201 is expected");
+        assert_eq!(
+            err.to_string(),
+            "Refusing to mark: the configured mark generation is 199, expected 201"
+        );
+    }
 }

@@ -36,7 +36,11 @@ Run sqlblob_gc generation size report
            2 | 2.3 KiB
   Total size: 2.3 KiB
 
-Run sqlblob_gc generation size report again, just to check mark has not broken it
+A marker that expects another mark generation refuses, and exits non-zero, before touching any shard
+  $ (set -o pipefail; mononoke_sqlblob_gc --storage-config-name=blobstore --shard-count=2 mark --expected-mark-generation 2)
+  Error: Refusing to mark: the configured mark generation is 1, expected 2
+  [1]
+
 Run sqlblob_gc mark
   $ mononoke_sqlblob_gc --storage-config-name=blobstore --shard-count=2 mark
   [INFO] Starting initial generation set
