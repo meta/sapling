@@ -471,6 +471,31 @@ class EdenConfig : private ConfigSettingManager {
       std::chrono::minutes(5),
       this};
 
+  /**
+   * If true, the daemon runs the EdenFS config manager at each
+   * `config:config-manager-interval`. This setting has an effect only on
+   * Linux.
+   */
+  ConfigSetting<bool> enableConfigManager{
+      "config:enable-config-manager",
+      false,
+      this};
+
+  /** How often the daemon runs the EdenFS config manager. */
+  ConfigSetting<std::chrono::nanoseconds> configManagerInterval{
+      "config:config-manager-interval",
+      std::chrono::minutes(15),
+      this};
+
+  /**
+   * If true, the config manager makes the dynamic config, but does not write
+   * it to the EdenFS state directory.
+   */
+  ConfigSetting<bool> configManagerDryRun{
+      "config:config-manager-dry-run",
+      true,
+      this};
+
   // [thrift]
 
   /**
