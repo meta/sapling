@@ -76,6 +76,9 @@ class CheckoutConfig;
 #ifdef __linux__
 class CgroupFileCacheReclaimState;
 #endif
+#ifdef EDEN_HAVE_CONFIG_MANAGER
+class ConfigManagerState;
+#endif
 class Dirstate;
 class EdenConfig;
 class EdenFsEventsLogger;
@@ -1077,6 +1080,9 @@ class EdenServer : private TakeoverHandler {
 
 #ifdef __linux__
   std::shared_ptr<CgroupFileCacheReclaimState> cgroupFileCacheReclaimState_;
+#endif
+#ifdef EDEN_HAVE_CONFIG_MANAGER
+  std::shared_ptr<ConfigManagerState> configManagerState_;
 #endif
 
   /**

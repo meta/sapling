@@ -831,6 +831,14 @@ class CgroupFileCacheReclaimState {
 };
 #endif
 
+#ifdef EDEN_HAVE_CONFIG_MANAGER
+class ConfigManagerState {
+ public:
+  std::atomic_bool enabled{false};
+  std::atomic_bool inFlight{false};
+};
+#endif
+
 class EdenServer::ThriftServerEventHandler
     : public apache::thrift::server::TServerEventHandler,
       public folly::AsyncSignalHandler {
@@ -1077,6 +1085,9 @@ EdenServer::EdenServer(
 #ifdef __linux__
       cgroupFileCacheReclaimState_{
           std::make_shared<CgroupFileCacheReclaimState>()},
+#endif
+#ifdef EDEN_HAVE_CONFIG_MANAGER
+      configManagerState_{std::make_shared<ConfigManagerState>()},
 #endif
       heartbeatManager_{std::make_shared<HeartbeatManager>(
           edenDir_,
