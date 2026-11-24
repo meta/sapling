@@ -216,6 +216,11 @@ void FilteredObjectId::validate() {
   ByteRange infoBytes = folly::Range{value_.data(), value_.size()};
   XLOG(DBG9, value_);
 
+  if (UNLIKELY(infoBytes.empty())) {
+    XLOG(ERR, "Invalid empty FilteredObjectId");
+    throw std::invalid_argument("Invalid empty FilteredObjectId");
+  }
+
   // Ensure the type byte is valid
   auto typeByte = infoBytes.front();
   if (typeByte != FilteredObjectIdType::OBJECT_TYPE_BLOB &&

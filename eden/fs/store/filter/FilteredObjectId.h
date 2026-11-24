@@ -137,7 +137,7 @@ class FilteredObjectId {
     return FilteredObjectId{id.getBytes()};
   }
 
-  explicit FilteredObjectId(std::string str) noexcept : value_{std::move(str)} {
+  explicit FilteredObjectId(std::string str) : value_{std::move(str)} {
     validate();
   }
 

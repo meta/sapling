@@ -176,3 +176,18 @@ TEST(FilteredObjectIdTest, test_tree_path_length_boundary) {
     EXPECT_THROW(FilteredObjectId::fromObjectId(id), std::out_of_range);
   }
 }
+
+TEST(FilteredObjectIdTest, test_string_ctor_rejects_malformed_tree) {
+  // Tree type byte, filter length 40, and no filter bytes after it.
+  std::string bytes{"\x11\x28", 2};
+  EXPECT_THROW(FilteredObjectId{bytes}, std::out_of_range);
+}
+
+TEST(FilteredObjectIdTest, test_from_empty_object_id) {
+  try {
+    FilteredObjectId::fromObjectId(ObjectId{});
+    FAIL() << "expected std::invalid_argument for empty id";
+  } catch (const std::invalid_argument& e) {
+    EXPECT_NE(std::string{e.what()}.find("empty"), std::string::npos);
+  }
+}
