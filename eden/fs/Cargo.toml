@@ -41,8 +41,6 @@ arrow-select = { version = "57", git = "https://github.com/apache/arrow-rs", rev
 arrow-string = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
 audio_streams = { git = "https://github.com/google/crosvm", rev = "7644716341320502d04d9b9e96d8bed591bb0c16" }
 backtrace = { git = "https://github.com/rust-lang/backtrace-rs", rev = "df979dcf80027eb047d7bb9e0874710c15009f31" }
-bindgen = { git = "https://github.com/jsgf/rust-bindgen", rev = "4d385d21c160e6ee1f443aeb7e00528a1dc7fd44" }
-bindgen-cli = { git = "https://github.com/jsgf/rust-bindgen", rev = "4d385d21c160e6ee1f443aeb7e00528a1dc7fd44" }
 boring = { git = "https://github.com/signalapp/boring", rev = "1405df0a23a0335618f88ed328c76f67646b088f" }
 boring-sys = { git = "https://github.com/signalapp/boring", rev = "1405df0a23a0335618f88ed328c76f67646b088f" }
 c2pa = { git = "https://github.com/peekmoar/c2pa-rs", rev = "bc2e763f3333eb7aaa1f169b045c9bbf60b146f7" }
