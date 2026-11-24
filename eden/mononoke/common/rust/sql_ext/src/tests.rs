@@ -94,6 +94,24 @@ mononoke_queries! {
     ) -> (i64, RepositoryId) {
         "SELECT x, repo_id FROM tuple_list_test WHERE (x, repo_id) IN {pairs}"
     }
+
+    // >union_list queries: one SELECT per element, joined with UNION ALL
+    write UnionListInsert(values: (repo_id: RepositoryId, name: String, id: i64)) {
+        none,
+        "INSERT INTO union_list_test (repo_id, name, id) VALUES {values}"
+    }
+
+    write UnionListDeleteAll() {
+        none,
+        "DELETE FROM union_list_test WHERE 1=1"
+    }
+
+    read UnionListMaxId(
+        repo_id: RepositoryId,
+        >union_list name: String
+    ) -> (String, Option<i64>) {
+        "SELECT {name}, MAX(id) FROM union_list_test WHERE repo_id = {repo_id} AND name = {name}"
+    }
 }
 
 #[cfg(fbcode_build)]
@@ -129,6 +147,7 @@ mod facebook {
     use crate::ConsistentReadError;
     use crate::ConsistentReadOptions;
     use crate::SqlConnections;
+    use crate::open_sqlite_in_memory;
     use crate::telemetry::TelemetryGranularity;
 
     struct TelemetryTestData {
@@ -978,6 +997,134 @@ mod facebook {
         assert_eq!(results.len(), 0, "Empty tuple_list should return no rows");
 
         Ok(())
+    }
+
+    /// Exercises a `>union_list` query against `union_list_test (repo_id, name, id)`.
+    async fn check_union_list_query(fb: FacebookInit, connection: Connection) -> Result<()> {
+        let sql_query_tel = SqlQueryTelemetry::new(fb, Metadata::default(), None);
+        UnionListDeleteAll::query(&connection, sql_query_tel.clone()).await?;
+
+        let repo = RepositoryId::new(1);
+        let other_repo = RepositoryId::new(2);
+        let a = "a".to_string();
+        let b = "b".to_string();
+        // Exercises escaping: a quote and a backslash inside a rendered literal.
+        let quoted = "it's a \\ name".to_string();
+        let missing = "missing".to_string();
+        UnionListInsert::query(
+            &connection,
+            sql_query_tel.clone(),
+            &[
+                (&repo, &a, &1i64),
+                (&repo, &a, &5i64),
+                (&repo, &quoted, &3i64),
+                (&other_repo, &b, &9i64),
+            ],
+        )
+        .await?;
+
+        let names = [a.clone(), quoted.clone(), b.clone(), missing.clone()];
+        let rows = UnionListMaxId::query(&connection, sql_query_tel.clone(), &repo, &names).await?;
+        assert_eq!(
+            rows.len(),
+            names.len(),
+            "UNION ALL returns one row per element"
+        );
+        assert_eq!(
+            rows.into_iter().collect::<HashMap<_, _>>(),
+            hashmap! {
+                a.clone() => Some(5),
+                quoted.clone() => Some(3),
+                // `b` only exists in the other repo, so the scalar parameter applies to every copy.
+                b.clone() => None,
+                missing.clone() => None,
+            },
+        );
+
+        let rows = UnionListMaxId::query(&connection, sql_query_tel.clone(), &repo, &[]).await?;
+        assert!(rows.is_empty(), "an empty list returns no rows");
+
+        // More copies than SQLite allows in one compound SELECT (500).
+        let many: Vec<_> = std::iter::once(a.clone())
+            .chain((0..600).map(|idx| format!("absent-{idx}")))
+            .collect();
+        let rows = UnionListMaxId::query(&connection, sql_query_tel.clone(), &repo, &many).await?;
+        assert_eq!(
+            rows.len(),
+            many.len(),
+            "one row per element across statements"
+        );
+        let rows: HashMap<_, _> = rows.into_iter().collect();
+        assert_eq!(rows.get(&a), Some(&Some(5)));
+        assert!(
+            many[1..].iter().all(|name| rows.get(name) == Some(&None)),
+            "every absent name has a NULL max"
+        );
+
+        let too_many: Vec<_> = (0..=crate::MAX_UNION_LIST_LEN)
+            .map(|idx| format!("absent-{idx}"))
+            .collect();
+        let err = UnionListMaxId::query(&connection, sql_query_tel.clone(), &repo, &too_many)
+            .await
+            .expect_err("more than MAX_UNION_LIST_LEN elements is rejected");
+        assert!(
+            format!("{err:#}").contains("at most 1000 are allowed"),
+            "{err:#}"
+        );
+
+        let txn = connection.start_transaction(sql_query_tel.clone()).await?;
+        let (txn, _) = UnionListInsert::query_with_transaction(txn, &[(&repo, &b, &7i64)]).await?;
+        // The transaction sees its own uncommitted write.
+        let (txn, rows) =
+            UnionListMaxId::query_with_transaction(txn, &repo, &[a.clone(), b.clone()]).await?;
+        assert_eq!(
+            rows.into_iter().collect::<HashMap<_, _>>(),
+            hashmap! { a => Some(5), b => Some(7) },
+        );
+        let (txn, rows) = UnionListMaxId::query_with_transaction(txn, &repo, &[]).await?;
+        assert!(
+            rows.is_empty(),
+            "an empty list returns no rows in a transaction"
+        );
+        txn.commit().await?;
+
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn test_union_list_query_sqlite(fb: FacebookInit) -> Result<()> {
+        let sqlite = open_sqlite_in_memory()?;
+        sqlite.execute_batch(
+            "CREATE TABLE union_list_test(
+                 repo_id INTEGER NOT NULL,
+                 name TEXT NOT NULL,
+                 id INTEGER NOT NULL,
+                 PRIMARY KEY (repo_id, name, id)
+             )",
+        )?;
+        check_union_list_query(fb, Connection::with_sqlite(sqlite)?).await
+    }
+
+    #[mononoke::fbinit_test]
+    async fn test_union_list_query_mysql(fb: FacebookInit) -> Result<()> {
+        let master_sql_connection: sql::Connection = setup_mysql_test_connection(
+            fb,
+            Some(
+                "CREATE TABLE IF NOT EXISTS union_list_test(
+                     repo_id INT UNSIGNED NOT NULL,
+                     name VARCHAR(255) NOT NULL,
+                     id BIGINT NOT NULL,
+                     PRIMARY KEY (repo_id, name, id)
+                 )",
+            ),
+            InstanceRequirement::Master,
+        )
+        .await?;
+        let connection = Connection {
+            inner: master_sql_connection,
+            shard_name: TEST_XDB_NAME.to_string(),
+        };
+        check_union_list_query(fb, connection).await
     }
 
     /// Runs a query that always fails with `make_err()` through the retry wrapper and returns

@@ -39,6 +39,9 @@ use thiserror::Error;
 use vec1::Vec1;
 
 pub use crate::mononoke_queries::should_retry_mysql_query as should_retry_query;
+
+/// Most elements a `>union_list` read query accepts in one call; split longer lists.
+pub const MAX_UNION_LIST_LEN: usize = 1000;
 use crate::telemetry::TelemetryGranularity;
 use crate::telemetry::TransactionTelemetry;
 use crate::telemetry::log_query_telemetry;
@@ -89,12 +92,13 @@ pub mod _macro_internal {
     pub use crate::telemetry::log_query_telemetry;
     pub use crate::telemetry::log_transaction_telemetry;
 
-    /// Re-exports for `>tuple_list` support in `mononoke_queries!`.
-    /// These types are needed to directly match on `sql::Connection`
-    /// variants without going through `sql::queries!`.
+    /// Re-exports for `>tuple_list` and `>union_list` support in `mononoke_queries!`.
+    /// These types are needed to directly match on `sql::Connection` and
+    /// `sql::Transaction` variants without going through `sql::queries!`.
     pub mod _tl {
         pub use anyhow;
         pub use sql::Connection as InnerSqlConnection;
+        pub use sql::Transaction as InnerSqlTransaction;
         pub use sql::ValueWrapper;
         pub use sql::mysql_async;
         pub use sql::rusqlite;

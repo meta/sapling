@@ -46,6 +46,15 @@ const RETRY_ATTEMPTS: usize = 2;
 ///   bincode::{Encode, Decode}.
 ///
 /// Queries that return no rows are not cached to allow later retries to succeed.
+///
+/// A read query can end its parameters with one `>union_list name: Type`. Its query is
+/// then a single `SELECT` in which `{name}` stands for one element of the list; the
+/// `SELECT` is rendered once per element and the copies are joined with `UNION ALL`, so
+/// each element gets its own lookup within one statement. Use it where `IN (...)` makes
+/// the database scan instead of looking each element up. An empty list returns no rows
+/// without running a query, and a list longer than `MAX_UNION_LIST_LEN` (1000) is rejected
+/// before running one. SQLite caps compound `SELECT`s, so there the copies run in
+/// statements of at most 100.
 #[macro_export]
 macro_rules! mononoke_queries {
     () => {};
@@ -355,6 +364,374 @@ macro_rules! mononoke_queries {
                 )?.collect::<std::result::Result<Vec<_>, _>>()?;
 
                 Ok(rows)
+            }
+        }
+
+        $crate::mononoke_queries! { $( $rest )* }
+    };
+
+    // >union_list read query with single expression. Redirect to full form.
+    (
+        $vi:vis read $name:ident (
+            $( $pname:ident: $ptype:ty ),* $(,)*
+            >union_list $uname:ident: $utype:ty
+        ) -> ($( $rtype:ty ),* $(,)*) { $q:expr }
+        $( $rest:tt )*
+    ) => {
+        $crate::mononoke_queries! {
+            $vi read $name (
+                $( $pname: $ptype, )*
+                >union_list $uname: $utype
+            ) -> ($( $rtype ),*) { mysql($q) sqlite($q) }
+            $( $rest )*
+        }
+    };
+
+    // >union_list full read query. Like >tuple_list, bypasses sql::queries!
+    // (which only expands lists into `IN (...)`) to render the query once per
+    // list element and join the copies with UNION ALL.
+    (
+        $vi:vis read $name:ident (
+            $( $pname:ident: $ptype:ty ),* $(,)*
+            >union_list $uname:ident: $utype:ty
+        ) -> ($( $rtype:ty ),* $(,)*) { mysql($mysql_q:expr) sqlite($sqlite_q:expr) }
+        $( $rest:tt )*
+    ) => {
+        #[allow(non_snake_case)]
+        $vi mod $name {
+            #[allow(unused_imports)]
+            use super::*;
+
+            #[allow(unused_imports)]
+            use $crate::_macro_internal::*;
+
+            #[allow(dead_code)]
+            pub async fn query(
+                connection: &Connection,
+                sql_query_tel: SqlQueryTelemetry,
+                $( $pname: &$ptype, )*
+                $uname: &[$utype],
+            ) -> Result<Vec<($( $rtype, )*)>> {
+                if $uname.is_empty() {
+                    return Ok(Vec::new());
+                }
+                if $uname.len() > $crate::MAX_UNION_LIST_LEN {
+                    return Err(_tl::anyhow::anyhow!(
+                        "{}: `>union_list {}` has {} elements; at most {} are allowed",
+                        stringify!($name),
+                        stringify!($uname),
+                        $uname.len(),
+                        $crate::MAX_UNION_LIST_LEN,
+                    ));
+                }
+
+                let query_name = stringify!($name);
+                let shard_name = connection.shard_name();
+                let repo_ids = $crate::extract_repo_ids_from_queries!($($pname: $ptype; )*);
+
+                let client_request_info = sql_query_tel.client_request_info()
+                    .map(|cri| serde_json::to_string(cri)).transpose()?;
+
+                let ((res, opt_tel, fut_stats), attempt) = query_with_retry_no_cache(
+                    |_attempt| {
+                        borrowed!(client_request_info);
+                        async move {
+                            let (fut_stats, (res, opt_tel)) = _execute_query(
+                                connection.sql_connection(),
+                                client_request_info.as_deref(),
+                                $( $pname, )*
+                                $uname,
+                            )
+                            .try_timed()
+                            .await?;
+                            Ok((res, opt_tel, fut_stats))
+                        }
+                    },
+                    shard_name,
+                    query_name,
+                    &sql_query_tel,
+                    TelemetryGranularity::Query,
+                    &repo_ids,
+                ).await?;
+
+                log_query_telemetry(
+                    opt_tel,
+                    &sql_query_tel,
+                    TelemetryGranularity::Query,
+                    &repo_ids,
+                    query_name,
+                    shard_name.as_ref(),
+                    fut_stats,
+                    Some(attempt),
+                )?;
+
+                Ok(res)
+            }
+
+            #[allow(dead_code)]
+            pub async fn query_with_transaction(
+                transaction: Transaction,
+                $( $pname: &$ptype, )*
+                $uname: &[$utype],
+            ) -> Result<(Transaction, Vec<($( $rtype, )*)>)> {
+                if $uname.is_empty() {
+                    return Ok((transaction, Vec::new()));
+                }
+                if $uname.len() > $crate::MAX_UNION_LIST_LEN {
+                    return Err(_tl::anyhow::anyhow!(
+                        "{}: `>union_list {}` has {} elements; at most {} are allowed",
+                        stringify!($name),
+                        stringify!($uname),
+                        $uname.len(),
+                        $crate::MAX_UNION_LIST_LEN,
+                    ));
+                }
+
+                let query_name = stringify!($name);
+                let query_repo_ids = $crate::extract_repo_ids_from_queries!($($pname: $ptype; )*);
+                let granularity = TelemetryGranularity::TransactionQuery;
+
+                let Transaction {
+                    inner: sql_txn,
+                    txn_telemetry,
+                    sql_query_tel,
+                    shard_name,
+                } = transaction;
+
+                let cri_str = sql_query_tel.client_request_info()
+                    .map(|cri| serde_json::to_string(cri)).transpose()?;
+
+                let (fut_stats, (sql_txn, (res, opt_tel))) = _execute_query_with_transaction(
+                    sql_txn,
+                    cri_str.as_deref(),
+                    $( $pname, )*
+                    $uname,
+                )
+                .try_timed()
+                .await
+                .inspect_err(|e| {
+                    log_query_error(
+                        &sql_query_tel,
+                        e,
+                        granularity,
+                        &query_repo_ids,
+                        query_name,
+                        shard_name.as_ref(),
+                        1, // attempt number
+                        false,
+                    )
+                })?;
+
+                let txn = Transaction::from_transaction_query_result(
+                    sql_txn,
+                    opt_tel,
+                    txn_telemetry,
+                    sql_query_tel,
+                    query_repo_ids,
+                    granularity,
+                    query_name,
+                    shard_name,
+                    fut_stats,
+                    1, // attempt number
+                )?;
+
+                Ok((txn, res))
+            }
+
+            async fn _execute_query(
+                __connection: &_tl::InnerSqlConnection,
+                __comment: Option<&str>,
+                $( $pname: &$ptype, )*
+                $uname: &[$utype],
+            ) -> Result<(Vec<($( $rtype, )*)>, Option<QueryTelemetry>)> {
+                match __connection {
+                    _tl::InnerSqlConnection::Mysql(__conn) => {
+                        let mut __query = _build_mysql_query($( $pname, )* $uname);
+                        if let Some(__comment) = __comment {
+                            __query.insert_str(0, &format!("/* {} */", __comment));
+                        }
+                        let (__rows, __tel) = __conn.read_query(__query).await
+                            .map_err(_tl::anyhow::Error::from)?;
+                        Ok((__rows, __tel.map(_tl::InnerQueryTelemetry::from)))
+                    }
+                    _tl::InnerSqlConnection::OssMysql(__conn) => {
+                        let __query = _build_mysql_query($( $pname, )* $uname);
+                        let mut __con = _tl::OssConnection::get_conn_counted(
+                            __conn.pool.clone(), &__conn.stats,
+                        ).await?;
+                        let (mut __res, _tel) = __conn.read_query(&mut __con, &__query).await
+                            .map_err(_tl::anyhow::Error::from)?;
+                        let __rows = __res
+                            .map(_row_to_tuple)
+                            .await?
+                            .into_iter()
+                            .collect::<std::result::Result<Vec<_>, _>>()?;
+                        Ok((__rows, None))
+                    }
+                    _tl::InnerSqlConnection::Sqlite(__multithread_con) => {
+                        let __con = __multithread_con
+                            .acquire_sqlite_connection(_tl::SqliteQueryType::Read)
+                            .await?;
+                        let __rows = _sqlite_rows(&__con, $( $pname, )* $uname)?;
+                        let __tel = __multithread_con
+                            .hlc_ts_lower_bound()
+                            .map(_tl::SqliteQueryTelemetry::new)
+                            .map(_tl::InnerQueryTelemetry::Sqlite);
+                        Ok((__rows, __tel))
+                    }
+                }
+            }
+
+            async fn _execute_query_with_transaction(
+                mut __transaction: _tl::InnerSqlTransaction,
+                __comment: Option<&str>,
+                $( $pname: &$ptype, )*
+                $uname: &[$utype],
+            ) -> Result<(_tl::InnerSqlTransaction, (Vec<($( $rtype, )*)>, Option<QueryTelemetry>))> {
+                use _tl::mysql_async::prelude::Queryable;
+
+                let __ended = || {
+                    _tl::anyhow::anyhow!("{} ran on a transaction that already ended", stringify!($name))
+                };
+                // `sql::Transaction` implements `Drop`, so take the inner
+                // transaction out instead of moving it out of the enum.
+                match __transaction {
+                    _tl::InnerSqlTransaction::Mysql(ref mut __tr) => {
+                        let mut __tr = __tr.take().ok_or_else(__ended)?;
+                        let mut __query = _build_mysql_query($( $pname, )* $uname);
+                        if let Some(__comment) = __comment {
+                            __query.insert_str(0, &format!("/* {} */", __comment));
+                        }
+                        let (__rows, __tel) = __tr.read_query(__query).await
+                            .map_err(_tl::anyhow::Error::from)?;
+                        Ok((
+                            _tl::InnerSqlTransaction::Mysql(Some(__tr)),
+                            (__rows, __tel.map(_tl::InnerQueryTelemetry::from)),
+                        ))
+                    }
+                    _tl::InnerSqlTransaction::OssMysql(ref mut __tr) => {
+                        let mut __tr = __tr.take().ok_or_else(__ended)?;
+                        let __query = _build_mysql_query($( $pname, )* $uname);
+                        let __rows = __tr
+                            .query_iter(__query)
+                            .await?
+                            .map(_row_to_tuple)
+                            .await?
+                            .into_iter()
+                            .collect::<std::result::Result<Vec<_>, _>>()?;
+                        Ok((_tl::InnerSqlTransaction::OssMysql(Some(__tr)), (__rows, None)))
+                    }
+                    _tl::InnerSqlTransaction::Sqlite(ref mut __con) => {
+                        let __con = __con.take().ok_or_else(__ended)?;
+                        let __rows = _sqlite_rows(&__con, $( $pname, )* $uname)?;
+                        Ok((_tl::InnerSqlTransaction::Sqlite(Some(__con)), (__rows, None)))
+                    }
+                }
+            }
+
+            fn _build_mysql_query(
+                $( $pname: &$ptype, )*
+                $uname: &[$utype],
+            ) -> String {
+                use _tl::mysql_async::prelude::ToValue;
+
+                $uname
+                    .iter()
+                    .map(|__element| {
+                        format!(
+                            $mysql_q,
+                            $( $pname = ToValue::to_value($pname).as_sql(false), )*
+                            $uname = ToValue::to_value(__element).as_sql(false),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" UNION ALL ")
+            }
+
+            fn _row_to_tuple(
+                __row: _tl::mysql_async::Row,
+            ) -> std::result::Result<($( $rtype, )*), _tl::anyhow::Error> {
+                use _tl::mysql_async::prelude::FromValue;
+
+                let mut __columns = 0usize..;
+                Ok(($({
+                    let __idx = __columns.next().expect("should yield an index for every column");
+                    let __value: _tl::mysql_async::Value = __row.get(__idx)
+                        .ok_or_else(|| _tl::anyhow::anyhow!("Failed to get column at index {}", __idx))?;
+                    <$rtype as FromValue>::from_value_opt(__value).map_err(|err| {
+                        _tl::anyhow::anyhow!(
+                            "Failed to parse column {} as `{}`: {}", __idx, stringify!($rtype), err
+                        )
+                    })?
+                },)*))
+            }
+
+            fn _sqlite_rows(
+                __con: &_tl::rusqlite::Connection,
+                $( $pname: &$ptype, )*
+                $uname: &[$utype],
+            ) -> std::result::Result<Vec<($( $rtype, )*)>, _tl::anyhow::Error> {
+                use _tl::mysql_async::prelude::FromValue;
+                use _tl::mysql_async::prelude::ToValue;
+
+                // SQLite rejects a compound SELECT of more than 500 terms and compiles each
+                // term recursively, so run at most this many copies per statement.
+                const MAX_TERMS_PER_STATEMENT: usize = 100;
+
+                let mut __all_rows = Vec::with_capacity($uname.len());
+                for $uname in $uname.chunks(MAX_TERMS_PER_STATEMENT) {
+                    // SQLite binds named parameters; each element gets its own
+                    // `:<list name>_<index>`, scalar parameters are shared by all copies.
+                    let __params: Vec<(String, _tl::ValueWrapper)> = [
+                        $( (
+                            format!(":{}", stringify!($pname)),
+                            _tl::ValueWrapper(ToValue::to_value($pname)),
+                        ), )*
+                    ]
+                    .into_iter()
+                    .chain($uname.iter().enumerate().map(|(__idx, __element)| {
+                        (
+                            format!(":{}_{}", stringify!($uname), __idx),
+                            _tl::ValueWrapper(ToValue::to_value(__element)),
+                        )
+                    }))
+                    .collect();
+                    let __ref_params: Vec<(&str, &dyn _tl::rusqlite::types::ToSql)> = __params
+                        .iter()
+                        .map(|(__key, __value)| (__key.as_str(), __value as &dyn _tl::rusqlite::types::ToSql))
+                        .collect();
+
+                    let __query = (0..$uname.len())
+                        .map(|__idx| {
+                            format!(
+                                $sqlite_q,
+                                $( $pname = format!(":{}", stringify!($pname)), )*
+                                $uname = format!(":{}_{}", stringify!($uname), __idx),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" UNION ALL ");
+
+                    let mut __stmt = __con.prepare(&__query)?;
+                    let __rows = __stmt
+                        .query_map(&__ref_params[..], |__row| {
+                            let mut __columns = 0usize..;
+                            Ok(($({
+                                let __idx = __columns.next().expect("should yield an index for every column");
+                                let __value: _tl::ValueWrapper = __row.get(__idx)?;
+                                <$rtype as FromValue>::from_value_opt(__value.0).map_err(|err| {
+                                    _tl::rusqlite::Error::FromSqlConversionFailure(
+                                        __idx,
+                                        _tl::rusqlite::types::Type::Blob,
+                                        Box::new(err),
+                                    )
+                                })?
+                            },)*))
+                        })?
+                        .collect::<std::result::Result<Vec<_>, _>>()?;
+                    __all_rows.extend(__rows);
+                }
+                Ok(__all_rows)
             }
         }
 
