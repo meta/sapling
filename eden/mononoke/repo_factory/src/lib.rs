@@ -117,6 +117,9 @@ use environment::MononokeEnvironment;
 use ephemeral_blobstore::ArcRepoEphemeralStore;
 use ephemeral_blobstore::RepoEphemeralStore;
 use ephemeral_blobstore::RepoEphemeralStoreBuilder;
+use ephemeral_commits::ArcRepoEphemeralCommits;
+use ephemeral_commits::EphemeralCommitsBuilder;
+use ephemeral_commits::RepoEphemeralCommits;
 use fbinit::FacebookInit;
 use filenodes::ArcFilenodes;
 use filestore::ArcFilestoreConfig;
@@ -1473,6 +1476,24 @@ impl RepoFactory {
         } else {
             Ok(Arc::new(RepoEphemeralStore::disabled(repo_identity.id())))
         }
+    }
+
+    pub fn repo_ephemeral_commits(
+        &self,
+        repo_identity: &ArcRepoIdentity,
+        repo_config: &ArcRepoConfig,
+    ) -> Result<ArcRepoEphemeralCommits> {
+        let Some(ephemeral_commits_config) = &repo_config.storage_config.ephemeral_commits else {
+            return Ok(Arc::new(RepoEphemeralCommits::disabled()));
+        };
+        let mapping = EphemeralCommitsBuilder::with_database_config(
+            self.env.fb,
+            &ephemeral_commits_config.metadata,
+            &self.env.mysql_options,
+            self.env.readonly_storage.0,
+        )?
+        .build_mapping(repo_identity.id());
+        Ok(Arc::new(RepoEphemeralCommits::new(mapping)))
     }
 
     pub async fn mutable_renames(&self, repo_config: &ArcRepoConfig) -> Result<ArcMutableRenames> {

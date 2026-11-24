@@ -79,6 +79,7 @@ rust_library(
         "//eden/mononoke/repo_attributes/commit_rate_limit:commit_rate_limit_config",
         "//eden/mononoke/repo_attributes/deletion_log:deletion_log",
         "//eden/mononoke/repo_attributes/enabled_derived_data_types:enabled_derived_data_types",
+        "//eden/mononoke/repo_attributes/ephemeral_commits:ephemeral_commits",
         "//eden/mononoke/repo_attributes/filenodes:filenodes",
         "//eden/mononoke/repo_attributes/filestore:filestore",
         "//eden/mononoke/repo_attributes/git_ref_content_mapping:git_ref_content_mapping",
