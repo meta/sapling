@@ -770,8 +770,6 @@ TEST(
       CacheObject,
       ObjectCacheFlavor::InterestHandle,
       ThrowingEvictionStats>;
-  // FIXME: Expect ExitedWithCode(0) once insertion releases the shard lock
-  // before destroying its interest handle during exception unwinding.
   ASSERT_EXIT(
       {
         std::signal(SIGALRM, SIG_DFL);
@@ -787,7 +785,7 @@ TEST(
         EXPECT_EQ(0, cache->getTotalSizeBytes());
         std::_Exit(::testing::Test::HasFailure() ? 1 : 0);
       },
-      ::testing::KilledBySignal(SIGALRM),
+      ::testing::ExitedWithCode(0),
       "throwing during eviction");
 }
 #endif

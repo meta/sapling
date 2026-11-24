@@ -272,7 +272,7 @@ ObjectCache<ObjectType, Flavor, ObjectCacheStats>::insertInterestHandle(
       interest,
       state,
       preProcessRes.cacheItemGeneration,
-      std::move(preProcessRes.interestHandle),
+      preProcessRes.interestHandle,
       evicted);
 }
 
@@ -321,7 +321,7 @@ ObjectCache<ObjectType, Flavor, ObjectCacheStats>::insertInterestHandleCore(
     Interest interest,
     LockedState& state,
     uint64_t cacheItemGeneration,
-    ObjectInterestHandle<ObjectType, ObjectCacheStats> interestHandle,
+    ObjectInterestHandle<ObjectType, ObjectCacheStats>& interestHandle,
     EvictedObjects& evicted) {
   auto [item, inserted] = insertImpl(
       std::move(id), std::move(object), size, kNeverExpires, *state, evicted);
@@ -344,9 +344,9 @@ ObjectCache<ObjectType, Flavor, ObjectCacheStats>::insertInterestHandleCore(
     interestHandle.cacheItemGeneration_ = item->generation;
     // note we can skip eviction here because we didn't insert anything new,
     // so the cache size has not changed as a result of this operation.
-    return interestHandle;
+    return std::move(interestHandle);
   }
-  return interestHandle;
+  return std::move(interestHandle);
 }
 
 template <

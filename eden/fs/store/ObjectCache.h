@@ -399,7 +399,7 @@ class ObjectCache : public std::enable_shared_from_this<
       Interest interest,
       LockedState& state,
       uint64_t cacheItemGeneration,
-      ObjectInterestHandle<ObjectType, ObjectCacheStats> interestHandle,
+      ObjectInterestHandle<ObjectType, ObjectCacheStats>& interestHandle,
       EvictedObjects& evicted);
 
   struct PreProcessInterestHandleResult {
