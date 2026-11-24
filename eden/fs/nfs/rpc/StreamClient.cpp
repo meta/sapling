@@ -64,7 +64,8 @@ StreamClient::serializeCallHeader(
 
 uint32_t StreamClient::fillFrameAndSend(
     std::unique_ptr<folly::IOBufQueue> buf) {
-  auto bytes = buf->move()->coalesce();
+  auto iobuf = buf->move();
+  auto bytes = iobuf->coalesce();
 
   // Populate the TCP transport fragment header that was previous reserved in
   // serializeCallHeader.  The MSB is set if this is the final fragment.  The
