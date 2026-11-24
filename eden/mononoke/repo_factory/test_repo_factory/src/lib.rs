@@ -61,6 +61,9 @@ use enabled_derived_data_types::SqlEnabledDerivedDataTypesBuilder;
 use ephemeral_blobstore::ArcRepoEphemeralStore;
 use ephemeral_blobstore::RepoEphemeralStore;
 use ephemeral_blobstore::RepoEphemeralStoreBuilder;
+use ephemeral_commits::ArcRepoEphemeralCommits;
+use ephemeral_commits::EphemeralCommitsBuilder;
+use ephemeral_commits::RepoEphemeralCommits;
 use fbinit::FacebookInit;
 use filenodes::ArcFilenodes;
 use filestore::ArcFilestoreConfig;
@@ -833,6 +836,21 @@ impl TestRepoFactory {
         Ok(Arc::new(store))
     }
 
+    /// Ephemeral commit storage in in-memory SQLite, disabled unless the repo
+    /// config has an ephemeral commits config
+    pub fn repo_ephemeral_commits(
+        &self,
+        repo_identity: &ArcRepoIdentity,
+        repo_config: &ArcRepoConfig,
+    ) -> Result<ArcRepoEphemeralCommits> {
+        if repo_config.storage_config.ephemeral_commits.is_none() {
+            return Ok(Arc::new(RepoEphemeralCommits::disabled()));
+        }
+        let mapping =
+            EphemeralCommitsBuilder::with_sqlite_in_memory()?.build_mapping(repo_identity.id());
+        Ok(Arc::new(RepoEphemeralCommits::new(mapping)))
+    }
+
     /// Mutable renames
     pub fn mutable_renames(&self, repo_identity: &ArcRepoIdentity) -> Result<ArcMutableRenames> {
         let sql_store = SqlMutableRenamesStore::from_sql_connections(self.metadata_db.clone());
@@ -1216,7 +1234,13 @@ impl TestRepoFactory {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use ephemeral_blobstore::RepoEphemeralStoreRef;
+    use ephemeral_commits::RepoEphemeralCommitsRef;
+    use metaconfig_types::DatabaseConfig;
+    use metaconfig_types::EphemeralCommitsConfig;
+    use metaconfig_types::LocalDatabaseConfig;
     use mononoke_macros::mononoke;
 
     use super::*;
@@ -1225,6 +1249,12 @@ mod tests {
     struct EphemeralTestRepo {
         #[facet]
         repo_ephemeral_store: RepoEphemeralStore,
+    }
+
+    #[facet::container]
+    struct EphemeralCommitsTestRepo {
+        #[facet]
+        repo_ephemeral_commits: RepoEphemeralCommits,
     }
 
     #[mononoke::fbinit_test]
@@ -1260,6 +1290,37 @@ mod tests {
             .await?;
 
         assert_eq!(reopened.bubble_id(), bubble.bubble_id());
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn default_ephemeral_commits_are_disabled(fb: FacebookInit) -> Result<()> {
+        let repo: EphemeralCommitsTestRepo = TestRepoFactory::new(fb)?.build().await?;
+
+        assert!(
+            !repo.repo_ephemeral_commits().is_enabled(),
+            "the default test repo has no ephemeral commit storage"
+        );
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn ephemeral_commits_config_enables_them(fb: FacebookInit) -> Result<()> {
+        let repo: EphemeralCommitsTestRepo = TestRepoFactory::new(fb)?
+            .with_config_override(|config| {
+                config.storage_config.ephemeral_commits = Some(EphemeralCommitsConfig {
+                    metadata: DatabaseConfig::Local(LocalDatabaseConfig {
+                        path: PathBuf::new(),
+                    }),
+                });
+            })
+            .build()
+            .await?;
+
+        assert!(
+            repo.repo_ephemeral_commits().is_enabled(),
+            "an ephemeral commits config gives the repo ephemeral commit storage"
+        );
         Ok(())
     }
 }

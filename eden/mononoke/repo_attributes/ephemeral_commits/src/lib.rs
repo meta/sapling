@@ -7,6 +7,10 @@
 
 mod builder;
 mod mapping;
+mod repo_ephemeral_commits;
 
 pub use crate::builder::EphemeralCommitsBuilder;
 pub use crate::mapping::SqlEphemeralCommitMapping;
+pub use crate::repo_ephemeral_commits::ArcRepoEphemeralCommits;
+pub use crate::repo_ephemeral_commits::RepoEphemeralCommits;
+pub use crate::repo_ephemeral_commits::RepoEphemeralCommitsRef;

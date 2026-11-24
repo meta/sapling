@@ -29,6 +29,7 @@ context = { version = "0.1.0", path = "../../servers/slapi/slapi_server/context"
 dbbookmarks = { version = "0.1.0", path = "../../repo_attributes/bookmarks/dbbookmarks" }
 enabled_derived_data_types = { version = "0.1.0", path = "../../repo_attributes/enabled_derived_data_types" }
 ephemeral_blobstore = { version = "0.1.0", path = "../../blobstore/ephemeral_blobstore" }
+ephemeral_commits = { version = "0.1.0", path = "../../repo_attributes/ephemeral_commits" }
 facet = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main", features = ["impl_never_type"] }
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 filenodes = { version = "0.1.0", path = "../../repo_attributes/filenodes" }
