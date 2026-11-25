@@ -46,6 +46,7 @@ def debugmutation(ui, repo, **opts) -> int:
         target = repo[revs.first()].node()
         remaining = [target]
         seen = set()
+        emitted_primary = set()
         entries = []
         while remaining:
             current = remaining.pop()
@@ -53,11 +54,15 @@ def debugmutation(ui, repo, **opts) -> int:
                 continue
             seen.add(current)
 
-            entry = mutation.lookup(unfi, current)
+            entry = mutation.lookupsplit(unfi, current)
             if entry is None:
                 continue
 
-            successor = nodemod.hex(entry.succ())
+            primary = entry.succ()
+            if primary in emitted_primary:
+                continue
+            emitted_primary.add(primary)
+            successor = nodemod.hex(primary)
             split_successors = {nodemod.hex(node) for node in entry.split()}
             if split_successors:
                 split_successors.add(successor)
