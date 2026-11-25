@@ -458,6 +458,16 @@ folly::CPUThreadPoolExecutor* getCgroupFileCacheReclaimThreadPool() {
 }
 #endif
 
+#ifdef EDEN_HAVE_CONFIG_MANAGER
+[[maybe_unused]] folly::CPUThreadPoolExecutor* getConfigManagerThreadPool() {
+  // A config manager run blocks on network I/O. The executor lives as long
+  // as the process, so EdenServer teardown does not wait for a run.
+  static folly::Indestructible<folly::CPUThreadPoolExecutor> executor(
+      1, std::make_shared<folly::NamedThreadFactory>("ConfigManager"));
+  return executor.get();
+}
+#endif
+
 /**
  * The JSON detail of a probe that ran too long: where it is, where its thread
  * waits, the checkout's load and the host's pressure.
