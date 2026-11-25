@@ -310,7 +310,7 @@ Without --graph, they go through the template with only {node} set:
 
 A template that needs the commit itself gets a line with the hash instead:
 
-  $ sl log --mutation --show-missing -r 'predecessors(.)' -T '{shortest(node, 6)}\n'
+  $ sl log --mutation --show-missing -r 'predecessors(.)' -T '{if(revset("."), shortest(node, 6))}\n'
   fd6fc9
   40f2b507616e217439da1755596a4daffc0fa3f0  (not available locally)
   6c81ed
