@@ -13,6 +13,7 @@ use std::fmt;
 use anyhow::Result;
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures::TryStreamExt;
 use futures::stream::BoxStream;
 use thiserror::Error;
 
@@ -454,6 +455,18 @@ pub trait ChangeSource: Send + Sync {
     /// in its chain (`anyhow::Error::downcast_ref` finds it). Only then: never for a
     /// transport error, a timeout, a revision not found, or a size or digest mismatch.
     async fn print(&self, file: &FileRevision) -> Result<BoxStream<'static, Result<Bytes>>>;
+
+    /// The contents of `files`, in order, each checked as `print` checks it and held whole:
+    /// for many small files, which a source may print in one round trip. Fails if any of them
+    /// fails; `print` that one alone to learn why.
+    async fn print_group(&self, files: &[&FileRevision]) -> Result<Vec<Bytes>> {
+        let mut contents = Vec::with_capacity(files.len());
+        for file in files {
+            let chunks: Vec<Bytes> = self.print(file).await?.try_collect().await?;
+            contents.push(Bytes::from(chunks.concat()));
+        }
+        Ok(contents)
+    }
 
     /// The integration records of each of these revisions, not of the files' other
     /// revisions, keyed by depot path: every file is in the result. One round trip per batch
