@@ -40,6 +40,8 @@ use p4_import::ContentReuse;
 use p4_import::ImportOptions;
 use p4_import::SkipUnreadable;
 use p4_import::UnreadableRevision;
+use p4_source::FilelogHistory;
+use p4_source::FilelogOptions;
 use p4_source::Keychain;
 use p4_source::P4Args;
 use p4_source::P4AuthArgs;
@@ -141,6 +143,29 @@ struct P4SyncArgs {
         help_heading = "PERFORCE OPTIONS"
     )]
     unreadable_retry_delay_ms: u64,
+
+    /// Files per `p4 filelog` when asking for a changelist's integration records
+    #[clap(
+        long,
+        default_value = "100",
+        value_parser = clap::value_parser!(u32).range(1..=2000),
+        help_heading = "PERFORCE OPTIONS"
+    )]
+    filelog_files: u32,
+
+    /// `p4 filelog` commands running at once per repo, over the changelists being fetched.
+    /// Without this, each changelist runs its own one after another
+    #[clap(
+        long,
+        value_parser = clap::value_parser!(u32).range(1..=64),
+        help_heading = "PERFORCE OPTIONS"
+    )]
+    filelog_concurrency: Option<u32>,
+
+    /// Ask `p4 filelog` for the one revision imported (`-m 1`), not the file's history up to
+    /// it: the integration records are the same
+    #[clap(long, help_heading = "PERFORCE OPTIONS")]
+    filelog_one_revision: bool,
 
     /// Changelists imported per batch (at least 1)
     #[clap(long, default_value = "100")]
@@ -303,6 +328,20 @@ fn by_alias(servers: Vec<P4Server>) -> Result<HashMap<String, P4Server>> {
     Ok(by_alias)
 }
 
+/// How the job asks for integration records: the `--filelog-*` flags.
+fn filelog_options(files: u32, concurrency: Option<u32>, one_revision: bool) -> FilelogOptions {
+    let non_zero = |n: u32| NonZeroUsize::new(n as usize);
+    FilelogOptions {
+        files_per_command: non_zero(files).unwrap_or(FilelogOptions::default().files_per_command),
+        commands_at_once: concurrency.and_then(non_zero),
+        history: if one_revision {
+            FilelogHistory::OnlyRevision
+        } else {
+            FilelogHistory::UpToRevision
+        },
+    }
+}
+
 /// One `--unreadable-revision`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct UnreadableRevisionFlag {
@@ -451,6 +490,11 @@ async fn async_main(app: MononokeApp) -> Result<()> {
             retries: args.unreadable_retries,
             first_retry_delay: Duration::from_millis(args.unreadable_retry_delay_ms),
         },
+        filelog: filelog_options(
+            args.filelog_files,
+            args.filelog_concurrency,
+            args.filelog_one_revision,
+        ),
         batch_size: args.batch_size,
         idle_interval: args.idle_interval_secs,
         import_options: args.import_args.import_options(),

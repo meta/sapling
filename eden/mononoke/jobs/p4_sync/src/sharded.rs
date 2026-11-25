@@ -37,6 +37,7 @@ use mononoke_app::args::RepoArgs;
 use p4_import::ImportOptions;
 use p4_import::SkipUnreadable;
 use p4_import::UnreadableRevision;
+use p4_source::FilelogOptions;
 use p4_source::Keychain;
 use p4_source::P4Cli;
 use p4_source::P4CliSource;
@@ -90,6 +91,8 @@ pub(crate) struct Settings {
     pub(crate) skip_unreadable_servers: HashSet<String>,
     /// How those servers' revisions are retried.
     pub(crate) skip_unreadable: SkipUnreadable,
+    /// How integration records are asked for.
+    pub(crate) filelog: FilelogOptions,
     pub(crate) batch_size: NonZeroUsize,
     pub(crate) idle_interval: Duration,
     pub(crate) import_options: ImportOptions,
@@ -575,7 +578,8 @@ impl P4SyncProcessExecutor {
             }
 
             let ctx = self.batch_context(alias);
-            let source = P4CliSource::new(p4.with_scuba(ctx.scuba().clone()));
+            let source = P4CliSource::new(p4.with_scuba(ctx.scuba().clone()))
+                .with_filelog_options(self.settings.filelog);
             let batch = p4_import::import_next(
                 &ctx,
                 &self.repo,
