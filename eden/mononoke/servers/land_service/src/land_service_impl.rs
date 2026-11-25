@@ -154,6 +154,32 @@ fn maybe_root_trace(fb: FacebookInit) -> Option<ArtilleryTraceGuard> {
     start_trace(fb, ROOT_OPERATION_NAME, LAND_ENDPOINT_LABEL)
 }
 
+/// Name the land on the block serving it, so the last hop of a diff land says
+/// what it landed instead of only which Thrift method ran. `ContextPropModule`
+/// continues an inbound trace before this handler, so for a propagated land
+/// this annotates the caller's block -- the same block `maybe_root_trace`
+/// declined to root over.
+///
+/// `admitted_as` and the batching decision are recorded because they pick the
+/// code path: two lands of the same stack onto the same bookmark can still
+/// take different routes through this server.
+fn annotate_land_block(
+    request: &LandChangesetRequest,
+    admitted_as: Option<&'static str>,
+    batched: bool,
+) {
+    tracing::event!(
+        target: artillery_http_ext::TRACING_TARGET,
+        tracing::Level::INFO,
+        artillery.action = artillery_http_ext::LOG_TO_REQUEST_BLOCK,
+        land.repo = request.repo_name.as_str(),
+        land.bookmark = request.bookmark.as_str(),
+        land.changesets_count = request.changesets.len(),
+        land.admitted_as = admitted_as.unwrap_or_default(),
+        land.batched = batched,
+    );
+}
+
 #[async_trait]
 impl LandService for LandServiceImpl {
     type RequestContext = RequestContext;
@@ -190,11 +216,15 @@ impl LandService for LandServiceImpl {
             scuba
         });
 
-        if justknobs::eval(
+        let batched = justknobs::eval(
             "scm/mononoke:land_service_batching_enabled",
             None,
             Some(&land_changesets.repo_name),
-        ) {
+        );
+
+        annotate_land_block(&land_changesets, admitted_as, batched);
+
+        if batched {
             let client = self
                 .get_or_create_batched_pushrebase_client(&land_changesets.repo_name)
                 .await;
