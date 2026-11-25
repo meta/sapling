@@ -290,6 +290,30 @@ Commits that are not available locally are shown with --show-missing:
   ?  40f2b507616e  (not available locally)
   │
   x  B
+
+Without --graph, they go through the template with only {node} set:
+
+  $ sl log --mutation --show-missing -r 'predecessors(.)' -T '{node} [{desc}]\n'
+  fd6fc9e371748b3281338a90df026946992c2719 [B4]
+  40f2b507616e217439da1755596a4daffc0fa3f0 []
+  6c81ed0049f86eccdfa07f4d71b328a6c970b13f [B]
+  $ sl log --mutation --show-missing -r . -T json -q
+  [
+   {
+    "rev": 281474976710660,
+    "node": "fd6fc9e371748b3281338a90df026946992c2719"
+   },
+   {
+    "node": "40f2b507616e217439da1755596a4daffc0fa3f0"
+   }
+  ]
+
+A template that needs the commit itself gets a line with the hash instead:
+
+  $ sl log --mutation --show-missing -r 'predecessors(.)' -T '{shortest(node, 6)}\n'
+  fd6fc9
+  40f2b507616e217439da1755596a4daffc0fa3f0  (not available locally)
+  6c81ed
   $ sl debugstrip -q --hidden 'desc(B) - desc(B2) - desc(B4)'
   $ sl log -G --mutation -T '{desc}\n'
   @  B4
@@ -328,11 +352,8 @@ locally:
   ╷
   ?  3bd0155f0241  (not available locally)
 
-  $ sl log --mutation --show-missing
-  abort: --show-missing requires --mutation and --graph
-  [255]
   $ sl log -G --show-missing
-  abort: --show-missing requires --mutation and --graph
+  abort: --show-missing requires --mutation
   [255]
 
 A split part that diverged is drawn as v, while the commit that was split,

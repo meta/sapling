@@ -2204,6 +2204,15 @@ class changeset_printer:
         else:
             self._show(ctx, revcache, matchfn, hunksfilterfn, prevfn, props)
 
+    def showmissing(self, node):
+        """show a commit that is not available locally"""
+        if self.ui.quiet:
+            self.ui.write("%s\n" % hex(node), label="log.node")
+            return
+        desc = _("%s  (not available locally)") % hex(node)
+        self.ui.write(self._columns["changeset"] % desc, label="log.changeset")
+        self.ui.write("\n")
+
     def _show(self, ctx, revcache, matchfn, hunksfilterfn, prevfn, props):
         """show a single changeset or file revision"""
         changenode = ctx.node()
@@ -2335,6 +2344,16 @@ class jsonchangeset(changeset_printer):
             self.ui.write("\n]\n")
         else:
             self.ui.write("[]\n")
+
+    def showmissing(self, node):
+        """show a commit that is not available locally: only its node"""
+        if self._first:
+            self.ui.write("[\n {")
+            self._first = False
+        else:
+            self.ui.write(",\n {")
+        self.ui.write(_x('\n  "node": "%s"') % hex(node))
+        self.ui.write("\n }")
 
     def _show(self, ctx, revcache, matchfn, hunksfilterfn, prevfn, props):
         """show a single changeset or file revision"""
@@ -2473,6 +2492,7 @@ class changeset_templater(changeset_printer):
         self.cache = {}
 
         self._tref = tmplspec.ref
+        self._mapfile = tmplspec.mapfile
         self._parts = {
             "header": "",
             "footer": "",
@@ -2509,6 +2529,37 @@ class changeset_templater(changeset_printer):
                 self.footer = ""
             self.footer += templater.stringify(self.t(self._parts["docfooter"]))
         return super(changeset_templater, self).close()
+
+    def showmissing(self, node):
+        """show a commit that is not available locally
+
+        A template is rendered with only ``{node}`` set, so other keywords
+        are empty; one that needs the commit itself gets a line with the
+        hash. A style shows it as the plain printer does.
+        """
+        if self._mapfile:
+            return super(changeset_templater, self).showmissing(node)
+        index = next(self._counter)
+        if self._parts["separator"] and index > 0:
+            self.ui.write(templater.stringify(self.t(self._parts["separator"])))
+        props = {
+            "templ": self.t,
+            "repo": self.repo,
+            "ui": self.repo.ui,
+            "index": index,
+            "revcache": {},
+            "cache": self.cache,
+            "node": hex(node),
+        }
+        try:
+            out = templater.byteify(self.t(self._parts[self._tref], **props))
+        except KeyError as e:
+            # Template functions such as revset() read the commit.
+            if e.args != ("ctx",):
+                raise
+            self.ui.write(_("%s  (not available locally)\n") % hex(node))
+            return
+        self.ui.writebytes(out)
 
     def _show(self, ctx, revcache, matchfn, hunksfilterfn, prevfn, props):
         """show a single changeset or file revision"""

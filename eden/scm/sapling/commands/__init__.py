@@ -46,6 +46,7 @@ from .. import (
     extensions,
     formatter,
     git,
+    graphmod,
     hbisect,
     help,
     hg,
@@ -3953,7 +3954,9 @@ def log(ui, repo, *pats, **opts):
     (``mutationhistory(.)``); use ``-r 'mutationhistory(REV)'`` for another
     commit's, or :prog:`sl -t REV`. Commits that are not shown are skipped,
     with a dashed line over them; ``--show-missing`` also shows the commits
-    not available locally.
+    not available locally. In a graph they have a ``?`` node and their short
+    hash; otherwise they go through the template with only ``{node}`` set,
+    so other keywords are empty, and ``-Tjson`` gives only ``node``.
 
     File history is shown without following the rename or copy
     history of files. To follow file history across renames and
@@ -4087,8 +4090,8 @@ def log(ui, repo, *pats, **opts):
         opts["rev"] = [revsetlang.formatspec("reverse(::%lr)", opts.get("rev"))]
         del opts["follow"]
 
-    if opts.get("show_missing") and not (opts.get("mutation") and opts.get("graph")):
-        raise error.Abort(_("--show-missing requires --mutation and --graph"))
+    if opts.get("show_missing") and not opts.get("mutation"):
+        raise error.Abort(_("--show-missing requires --mutation"))
 
     scmutil.maybe_show_path_typo_hint(ui, repo, pats, rev=opts.get("rev"))
 
@@ -4159,10 +4162,19 @@ def _dolog(ui, repo, pats, opts, count, xreponame):
         cl = repo.changelog
         subdag = cl.dag.subdag(cl.tonodes(revs))
         ui.debug("commands.log(): finished computing subdag\n")
-    ctxstream = revs.prefetchbysymbols(symbols).iterctx()
+    if opts.get("show_missing"):
+        dag = graphmod.mutationdagwalker(repo, revs, template, showmissing=True)
+        rows = ((kind, data) for _id, kind, data, _parents in dag)
+    else:
+        ctxstream = revs.prefetchbysymbols(symbols).iterctx()
+        rows = ((graphmod.CHANGESET, ctx) for ctx in ctxstream)
 
     lastctx = None
-    for ctx in ctxstream:
+    for kind, ctx in rows:
+        if kind == graphmod.MISSINGCHANGESET:
+            # "ctx" is the node of a commit that is not available locally.
+            displayer.showmissing(ctx)
+            continue
         lastctx = ctx
         rev = ctx.rev()
         copies = None
