@@ -51,6 +51,7 @@ use futures::channel::mpsc;
 use futures::future;
 use futures::future::Either;
 use futures::stream;
+use futures_stats::TimedFutureExt;
 use futures_stats::TimedTryFutureExt;
 pub use import_common::BackfillDerivation;
 use import_common::save_and_derive_batch;
@@ -233,6 +234,10 @@ pub struct ImportOptions {
     /// of every one of them, which is most of a build that follows many changes with a
     /// changelist of many copies.
     pub index_built_files: bool,
+    /// Whether a batch whose build fails at a changelist commits the changelists built
+    /// before it, as a batch cut by `max_build_time` does, and then fails. Otherwise the
+    /// batch commits nothing, and a retry fetches and builds them again.
+    pub commit_before_failure: bool,
 }
 
 impl Default for ImportOptions {
@@ -250,6 +255,7 @@ impl Default for ImportOptions {
             skip_unreadable: None,
             fetch_during_build: false,
             index_built_files: false,
+            commit_before_failure: false,
         }
     }
 }
@@ -690,9 +696,31 @@ pub async fn build_changesets(
     changes: &[u64],
     options: &ImportOptions,
 ) -> Result<Vec<BuiltChangeset>> {
+    match build_changesets_until_failure(ctx, repo, source, depot_root, base, changes, options)
+        .await
+    {
+        (built, None) => Ok(built),
+        (_, Some(error)) => Err(error),
+    }
+}
+
+/// Like `build_changesets`, but a failure keeps the changesets built before it: they come
+/// with the error, which names the changelist that failed, the one after them.
+async fn build_changesets_until_failure(
+    ctx: &CoreContext,
+    repo: &(impl RepoBlobstoreRef + RepoDerivedDataRef + FilestoreConfigRef),
+    source: &impl ChangeSource,
+    depot_root: &str,
+    base: Option<ChangesetId>,
+    changes: &[u64],
+    options: &ImportOptions,
+) -> (Vec<BuiltChangeset>, Option<anyhow::Error>) {
     // Tokio's clock, which tests can pause.
     let started = tokio::time::Instant::now();
-    let commit_server_id = commit_server_id(source).await?;
+    let commit_server_id = match commit_server_id(source).await {
+        Ok(id) => id,
+        Err(error) => return (Vec::new(), Some(error)),
+    };
     let commit_server_id = commit_server_id.as_str();
     let concurrency = options.file_concurrency.max(1);
     // Room for one fetched changelist waiting for the build, besides those in flight.
@@ -728,42 +756,50 @@ pub async fn build_changesets(
         while (built.is_empty() || started.elapsed() < options.max_build_time)
             && let Some(fetched) = receiver.next().await
         {
-            let mut fetched: FetchedChangelist = fetched?;
-            let change = fetched.changelist.number;
-            // Every earlier changelist has been fetched by now.
-            let reused = std::mem::take(&mut fetched.reused);
-            let reprinted = content_reuse::reprint_collided(ctx, repo, source, reused, concurrency)
+            let next = async {
+                let mut fetched: FetchedChangelist = fetched?;
+                let change = fetched.changelist.number;
+                // Every earlier changelist has been fetched by now.
+                let reused = std::mem::take(&mut fetched.reused);
+                let reprinted =
+                    content_reuse::reprint_collided(ctx, repo, source, reused, concurrency)
+                        .await
+                        .with_context(|| BuildingChangelist(change))?;
+                for (depot_path, metadata) in reprinted {
+                    let reuse = &mut fetched.timings.content_reuse;
+                    reuse.reused_files -= 1;
+                    reuse.reused_bytes -= metadata.total_size;
+                    fetched.timings.uploaded_files += 1;
+                    fetched.contents.insert(depot_path, metadata);
+                }
+                build_changeset(
+                    ctx,
+                    repo,
+                    depot_root,
+                    commit_server_id,
+                    base,
+                    Built {
+                        changesets: &built,
+                        files: built_files.as_ref(),
+                    },
+                    fetched,
+                    concurrency,
+                )
                 .await
-                .with_context(|| BuildingChangelist(change))?;
-            for (depot_path, metadata) in reprinted {
-                let reuse = &mut fetched.timings.content_reuse;
-                reuse.reused_files -= 1;
-                reuse.reused_bytes -= metadata.total_size;
-                fetched.timings.uploaded_files += 1;
-                fetched.contents.insert(depot_path, metadata);
+                .with_context(|| BuildingChangelist(change))
+            };
+            match next.await {
+                Ok(changeset) => {
+                    if let Some(built_files) = &mut built_files {
+                        built_files.add(&changeset.changeset);
+                    }
+                    built.push(changeset);
+                }
+                Err(error) => return (built, Some(error)),
             }
-            let changeset = build_changeset(
-                ctx,
-                repo,
-                depot_root,
-                commit_server_id,
-                base,
-                Built {
-                    changesets: &built,
-                    files: built_files.as_ref(),
-                },
-                fetched,
-                concurrency,
-            )
-            .await
-            .with_context(|| BuildingChangelist(change))?;
-            if let Some(built_files) = &mut built_files {
-                built_files.add(&changeset.changeset);
-            }
-            built.push(changeset);
             options.progress.fetch_add(1, Ordering::Relaxed);
         }
-        anyhow::Ok(built)
+        (built, None)
     };
     // The build ends first when it fails or `max_build_time` has passed: returning then
     // drops the fetches in flight, however long they still have to run.
@@ -1012,11 +1048,13 @@ pub async fn resume_point(
 
 /// Imports `changes`, in order, onto `bookmark` (created by the first import) as
 /// `options` say, and returns their changesets: of the first of them only, if
-/// `options.max_build_time` ends the batch early. The batch must start after the
-/// `resume_point`, so nothing is imported twice. `depot_root` must pass `check_depot_root`
-/// and the bookmark `check_resume_continuity`, as `import_next` makes sure. Logs a row
-/// per changelist to the context's Scuba table and, once the bookmark has moved, the
-/// changesets and the move to the repo's update logs (`log_repo_update`).
+/// `options.max_build_time` ends the batch early. If building a changelist fails, those
+/// before it are committed first, as `options.commit_before_failure` says, and the error
+/// is returned all the same. The batch must start after the `resume_point`, so nothing is
+/// imported twice. `depot_root` must pass `check_depot_root` and the bookmark
+/// `check_resume_continuity`, as `import_next` makes sure. Logs a row per changelist to the
+/// context's Scuba table and, once the bookmark has moved, the changesets and the move to
+/// the repo's update logs (`log_repo_update`).
 ///
 /// A changelist has no parent field, unlike a git commit: its parent is whatever the
 /// bookmark points at, so the bookmark is the only record of where the import is. That is
@@ -1084,16 +1122,41 @@ pub async fn import_changelists(
         ctx.metadata().session_id(),
     );
     let old = head.map(|(cs_id, _)| cs_id);
-    let (build, built) = build_changesets(ctx, repo, source, depot_root, old, changes, options)
-        .try_timed()
-        .await
-        .map_err(|error| batch.failed(ctx, Stage::Build, error))?;
-    // `max_build_time` can end the batch early: from here on it is the changelists built.
+    let (build, (built, build_error)) =
+        build_changesets_until_failure(ctx, repo, source, depot_root, old, changes, options)
+            .timed()
+            .await;
+    // Changelists built before a failure are committed first, and the failure is reported
+    // for the rest of the batch.
+    let build_failure = match build_error {
+        None => None,
+        Some(error) if built.is_empty() || !options.commit_before_failure => {
+            return Err(batch.failed(ctx, Stage::Build, error));
+        }
+        Some(error) => {
+            let failed = Batch {
+                changes: &changes[built.len()..],
+                ..batch
+            };
+            Some(failed.failed(ctx, Stage::Build, error))
+        }
+    };
+    // `max_build_time` or a failure can end the batch early: from here on it is the
+    // changelists built.
     let (last, new) = built
         .last()
         .map(|built| (built.change, built.changeset.get_changeset_id()))
         .context("built no changesets")?;
-    if built.len() < changes.len() {
+    if build_failure.is_some() {
+        tracing::info!(
+            "committing changelists {}..={last} ({} of {}), built before changelist {} failed; session {}",
+            changes[0],
+            built.len(),
+            changes.len(),
+            changes[built.len()],
+            ctx.metadata().session_id(),
+        );
+    } else if built.len() < changes.len() {
         tracing::info!(
             "batch cut after changelist {last} ({} of {}): build took {:?}, over max_build_time {:?}; session {}",
             built.len(),
@@ -1180,7 +1243,10 @@ pub async fn import_changelists(
     log_skipped(ctx, &skipped);
     trace_imported(ctx, depot_root, bookmark, old, new, &imported);
     log_repo_update(ctx, repo, bookmark, old, new, commit_infos).await;
-    Ok(imported)
+    match build_failure {
+        Some(failure) => Err(failure.context(CommittedBeforeFailure)),
+        None => Ok(imported),
+    }
 }
 
 /// Where a batch failed.
@@ -1212,6 +1278,16 @@ struct FailedIn(Stage);
 /// The stage an `import_next` error came from.
 pub fn failed_stage(error: &anyhow::Error) -> Option<Stage> {
     error.downcast_ref::<FailedIn>().map(|failed| failed.0)
+}
+
+#[derive(Debug, Error)]
+#[error("committed the changelists built before the failure")]
+struct CommittedBeforeFailure;
+
+/// Whether an `import_next` error came after committing the changelists built before the
+/// one that failed, so that the next batch starts with it.
+pub fn committed_before_failure(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<CommittedBeforeFailure>().is_some()
 }
 
 /// Keeps a row readable when the error quotes a long p4 command or output.

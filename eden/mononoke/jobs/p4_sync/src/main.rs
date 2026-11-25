@@ -232,6 +232,10 @@ struct ImportArgs {
     /// its MD5 and size, is printed: `verify` looks the content up but prints every file
     #[clap(long, value_enum, default_value_t = ContentReuseFlag::Off)]
     content_reuse: ContentReuseFlag,
+
+    /// Commit the changelists a batch built before one of them fails, then fail the batch
+    #[clap(long)]
+    commit_before_failure: bool,
 }
 
 /// `--content-reuse`'s values, one per `ContentReuse`, which p4_import keeps free of clap.
@@ -268,6 +272,7 @@ impl ImportArgs {
             fetch_during_build: self.fetch_during_build,
             index_built_files: self.index_built_files,
             content_reuse: self.content_reuse.into(),
+            commit_before_failure: self.commit_before_failure,
             ..defaults
         }
     }

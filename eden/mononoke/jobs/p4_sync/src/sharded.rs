@@ -610,6 +610,11 @@ impl P4SyncProcessExecutor {
                     last_progress.succeeded(Instant::now());
                     batch_size.succeeded()
                 }
+                // The changelists before the failing one are committed, so it is already
+                // first in the next batch: halving would only shrink the batches after it.
+                Err(error) if p4_import::committed_before_failure(error) => {
+                    last_progress.failed(Instant::now())
+                }
                 Err(error) if p4_import::failed_stage(error) != Some(p4_import::Stage::Prepare) => {
                     last_progress.failed(Instant::now());
                     batch_size.failed()

@@ -60,6 +60,7 @@ use unodes::RootUnodeManifestId;
 use super::*;
 
 mod built_files;
+mod commit_before_failure;
 mod content_reuse;
 mod copy_sources_with_uploads;
 mod fetch_during_build;
