@@ -92,10 +92,12 @@ define_stats! {
     unreadable_revisions_skipped_after_retries: timeseries(Rate, Sum),
 }
 
+mod built_files;
 mod content_reuse;
 mod fetch_ahead;
 mod unreadable;
 
+use built_files::BuiltFiles;
 pub use content_reuse::ContentReuse;
 pub use content_reuse::ContentReuseReport;
 pub use unreadable::SkipReason;
@@ -226,6 +228,11 @@ pub struct ImportOptions {
     /// a build that outlasts a p4 command's timeout fails each of their commands that still
     /// has output to read.
     pub fetch_during_build: bool,
+    /// Whether a changelist's copy sources are looked up by path among the batch's
+    /// changesets built before it. Without it, each lookup reads through every file change
+    /// of every one of them, which is most of a build that follows many changes with a
+    /// changelist of many copies.
+    pub index_built_files: bool,
 }
 
 impl Default for ImportOptions {
@@ -242,6 +249,7 @@ impl Default for ImportOptions {
             unreadable_revisions: Arc::default(),
             skip_unreadable: None,
             fetch_during_build: false,
+            index_built_files: false,
         }
     }
 }
@@ -393,6 +401,24 @@ pub struct ImportedBatch {
     pub commit: Duration,
 }
 
+/// A batch's changesets built so far, none of them saved, with their files by path when
+/// `ImportOptions::index_built_files` asks for that.
+#[derive(Clone, Copy, Default)]
+struct Built<'a> {
+    changesets: &'a [BuiltChangeset],
+    files: Option<&'a BuiltFiles>,
+}
+
+impl Built<'_> {
+    /// `file_after` of the changesets.
+    fn file_after(self, path: &NonRootMPath) -> Option<Option<(ContentId, FileType)>> {
+        match self.files {
+            Some(files) => files.file_after(path),
+            None => file_after(self.changesets.iter().map(|b| &b.changeset), path),
+        }
+    }
+}
+
 /// The root content manifest of `base`, if any of `paths` isn't answered by `built` and
 /// has to be looked up there. Derived once for all of a changelist's copy sources.
 /// Design: designs/file_revisions_and_copy_from.md.
@@ -400,13 +426,13 @@ async fn base_root_for<'a>(
     ctx: &CoreContext,
     repo: &impl RepoDerivedDataRef,
     base: Option<ChangesetId>,
-    built: &[BuiltChangeset],
+    built: Built<'_>,
     mut paths: impl Iterator<Item = &'a NonRootMPath>,
 ) -> Result<Option<ContentManifestId>> {
     let Some(base) = base else {
         return Ok(None);
     };
-    if paths.all(|path| file_after(built.iter().map(|b| &b.changeset), path).is_some()) {
+    if paths.all(|path| built.file_after(path).is_some()) {
         return Ok(None);
     }
     // Locally: `derive` would go to the derived data service where the repo has one.
@@ -426,10 +452,10 @@ async fn file_in_parent(
     ctx: &CoreContext,
     repo: &impl RepoBlobstoreRef,
     base_root: Option<ContentManifestId>,
-    built: &[BuiltChangeset],
+    built: Built<'_>,
     path: &NonRootMPath,
 ) -> Result<Option<(ContentId, FileType)>> {
-    if let Some(file) = file_after(built.iter().map(|b| &b.changeset), path) {
+    if let Some(file) = built.file_after(path) {
         return Ok(file);
     }
     let Some(base_root) = base_root else {
@@ -569,7 +595,7 @@ async fn build_changeset(
     depot_root: &str,
     commit_server_id: &str,
     base: Option<ChangesetId>,
-    built: &[BuiltChangeset],
+    built: Built<'_>,
     fetched: FetchedChangelist,
     concurrency: usize,
 ) -> Result<BuiltChangeset> {
@@ -611,6 +637,7 @@ async fn build_changeset(
         copy_sources.remove(target);
     }
     let parent = built
+        .changesets
         .last()
         .map(|b| b.changeset.get_changeset_id())
         .or(base);
@@ -696,6 +723,7 @@ pub async fn build_changesets(
     };
     let build = async move {
         let mut built = Vec::with_capacity(changes.len());
+        let mut built_files = options.index_built_files.then(BuiltFiles::default);
         // Always the first changelist, then more for as long as `max_build_time` allows.
         while (built.is_empty() || started.elapsed() < options.max_build_time)
             && let Some(fetched) = receiver.next().await
@@ -720,12 +748,18 @@ pub async fn build_changesets(
                 depot_root,
                 commit_server_id,
                 base,
-                &built,
+                Built {
+                    changesets: &built,
+                    files: built_files.as_ref(),
+                },
                 fetched,
                 concurrency,
             )
             .await
             .with_context(|| BuildingChangelist(change))?;
+            if let Some(built_files) = &mut built_files {
+                built_files.add(&changeset.changeset);
+            }
             built.push(changeset);
             options.progress.fetch_add(1, Ordering::Relaxed);
         }

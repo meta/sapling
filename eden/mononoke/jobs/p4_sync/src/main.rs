@@ -186,6 +186,11 @@ struct ImportArgs {
     #[clap(long)]
     fetch_during_build: bool,
 
+    /// Look a changelist's copy sources up by path among the batch's changesets built before
+    /// it, instead of reading through all their file changes for each copy source
+    #[clap(long)]
+    index_built_files: bool,
+
     /// Whether a branch, move/add or integrate whose content is already stored, found by
     /// its MD5 and size, is printed: `verify` looks the content up but prints every file
     #[clap(long, value_enum, default_value_t = ContentReuseFlag::Off)]
@@ -224,6 +229,7 @@ impl ImportArgs {
             listing_window: self.listing_window,
             copy_sources_with_uploads: self.copy_sources_with_uploads,
             fetch_during_build: self.fetch_during_build,
+            index_built_files: self.index_built_files,
             content_reuse: self.content_reuse.into(),
             ..defaults
         }

@@ -394,8 +394,15 @@ async fn file_at(
     cs_id: ChangesetId,
     path: &str,
 ) -> Result<Option<(ContentId, FileType)>> {
-    let root = base_root_for(ctx, repo, Some(cs_id), &[], [self::path(path)].iter()).await?;
-    file_in_parent(ctx, repo, root, &[], &self::path(path)).await
+    let root = base_root_for(
+        ctx,
+        repo,
+        Some(cs_id),
+        Built::default(),
+        [self::path(path)].iter(),
+    )
+    .await?;
+    file_in_parent(ctx, repo, root, Built::default(), &self::path(path)).await
 }
 
 /// Perforce lists the files of a directory a file replaces as deleted. With that file

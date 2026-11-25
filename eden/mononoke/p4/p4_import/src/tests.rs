@@ -59,6 +59,7 @@ use unodes::RootUnodeManifestId;
 
 use super::*;
 
+mod built_files;
 mod content_reuse;
 mod copy_sources_with_uploads;
 mod fetch_during_build;
@@ -825,13 +826,13 @@ async fn test_saved_parent_gives_the_file_content_and_type(fb: FacebookInit) -> 
         .flatten();
 
     let paths = [path("a.txt"), path("gone.txt")];
-    let base_root = base_root_for(&ctx, &repo, base, &[], paths.iter()).await?;
+    let base_root = base_root_for(&ctx, &repo, base, Built::default(), paths.iter()).await?;
     assert!(base_root.is_some());
-    let no_copies = base_root_for(&ctx, &repo, base, &[], std::iter::empty()).await?;
+    let no_copies = base_root_for(&ctx, &repo, base, Built::default(), std::iter::empty()).await?;
     assert_eq!(None, no_copies);
 
-    let file = file_in_parent(&ctx, &repo, base_root, &[], &paths[0]).await?;
-    let gone = file_in_parent(&ctx, &repo, base_root, &[], &paths[1]).await?;
+    let file = file_in_parent(&ctx, &repo, base_root, Built::default(), &paths[0]).await?;
+    let gone = file_in_parent(&ctx, &repo, base_root, Built::default(), &paths[1]).await?;
 
     assert_eq!(a.map(|id| (id, FileType::Regular)), file);
     assert_eq!(None, gone);
