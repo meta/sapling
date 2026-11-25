@@ -86,6 +86,19 @@ test auto-cleanup: all linked worktrees missing - group dissolved
   $ sl worktree list
   this worktree is not part of a group
 
+#if unix-permissions no-root
+test auto-cleanup: keeps a linked worktree whose path can't be checked
+
+  $ mkdir $TESTTMP/unreadable
+  $ sl worktree add $TESTTMP/unreadable/wt
+  created linked worktree at $TESTTMP/unreadable/wt
+  $ chmod 000 $TESTTMP/unreadable
+  $ sl worktree list
+  * main    $TESTTMP/e2e_repo
+    linked  $TESTTMP/unreadable/wt
+  $ chmod 755 $TESTTMP/unreadable
+#endif
+
 test corner case: eden rm removes worktree, then sl worktree remove cleans registry
 
   $ cd $TESTTMP

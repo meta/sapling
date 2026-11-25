@@ -502,16 +502,24 @@ fn list_and_prune_group(registry: &mut Registry, current: &Path) -> Result<Vec<L
         anyhow::bail!("worktree group '{group_id}' disappeared from the registry");
     };
 
-    if !group.main.exists() {
+    let missing: Vec<PathBuf> = group
+        .worktrees
+        .keys()
+        .filter(|path| is_missing(path))
+        .cloned()
+        .collect();
+    if missing.contains(&group.main) {
         dissolve_group(registry, &group_id);
         return Ok(Vec::new());
     }
 
-    if group.worktrees.keys().any(|path| !path.exists()) {
+    if !missing.is_empty() {
         let Some(group) = registry.groups.get_mut(&group_id) else {
             anyhow::bail!("worktree group '{group_id}' disappeared from the registry");
         };
-        group.worktrees.retain(|path, _| path.exists());
+        for path in &missing {
+            group.worktrees.remove(path);
+        }
         dissolve_group_if_empty(registry, &group_id);
     }
 
@@ -567,6 +575,18 @@ fn write_git_label(dot_dir: &Path, label: Option<&str>) -> Result<()> {
         },
     }
     Ok(())
+}
+
+/// Only `NotFound` counts as missing: a path that can't be checked, such as a
+/// broken EdenFS mount, is kept so its group survives until the mount recovers.
+fn is_missing(path: &Path) -> bool {
+    match path.try_exists() {
+        Ok(exists) => !exists,
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "cannot check worktree, keeping it");
+            false
+        }
+    }
 }
 
 fn canonicalize_or_original(path: &Path) -> PathBuf {
@@ -735,5 +755,107 @@ mod tests {
         let registry = load_registry(store_dir.path()).unwrap();
         let stored: Vec<&PathBuf> = registry.groups["test-group-id"].worktrees.keys().collect();
         assert_eq!(stored, vec![&linked_path, &main_path]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_list_keeps_unreadable_worktrees() {
+        use std::fs::Permissions;
+        use std::os::unix::fs::PermissionsExt;
+
+        struct RestoreMode(PathBuf);
+        impl Drop for RestoreMode {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(&self.0, Permissions::from_mode(0o755));
+            }
+        }
+
+        let store_dir = tempfile::tempdir().unwrap();
+        let checkouts_dir = tempfile::tempdir().unwrap();
+        let main_dir = checkouts_dir.path().join("main-parent");
+        let main_path = main_dir.join("main");
+        let linked_dir = checkouts_dir.path().join("linked-parent");
+        let unreadable_linked = linked_dir.join("linked");
+        let healthy_linked = checkouts_dir.path().join("healthy");
+        std::fs::create_dir_all(&main_path).unwrap();
+        std::fs::create_dir_all(&unreadable_linked).unwrap();
+        std::fs::create_dir(&healthy_linked).unwrap();
+        let main_path =
+            util::path::strip_unc_prefix(util::path::canonicalize_best_effort(&main_path).unwrap());
+        let unreadable_linked = util::path::strip_unc_prefix(
+            util::path::canonicalize_best_effort(&unreadable_linked).unwrap(),
+        );
+        let healthy_linked = util::path::strip_unc_prefix(
+            util::path::canonicalize_best_effort(&healthy_linked).unwrap(),
+        );
+        let missing_path = checkouts_dir.path().join("missing");
+
+        std::fs::set_permissions(&linked_dir, Permissions::from_mode(0o000)).unwrap();
+        let _restore_linked = RestoreMode(linked_dir.clone());
+        // Skip when directory permissions are not enforced (e.g., running as root).
+        if unreadable_linked.try_exists().is_ok() {
+            return;
+        }
+
+        let mut group = Group::new(main_path.clone());
+        for path in [&healthy_linked, &unreadable_linked, &missing_path] {
+            group.worktrees.insert(
+                path.clone(),
+                WorktreeEntry {
+                    added: "2025-01-01T00:00:00Z".to_string(),
+                    label: None,
+                },
+            );
+        }
+        let mut registry = Registry::new();
+        registry.groups.insert("test-group-id".to_string(), group);
+        save_registry(store_dir.path(), &registry).unwrap();
+
+        // Missing worktree is pruned while the unreadable linked worktree is kept.
+        let backend = EdenBackend {
+            repo_path: main_path.clone(),
+            shared_store_path: store_dir.path().to_path_buf(),
+            ident: identity::default(),
+        };
+        let mut expected = vec![
+            healthy_linked.clone(),
+            unreadable_linked.clone(),
+            main_path.clone(),
+        ];
+        expected.sort();
+        let listed: Vec<PathBuf> = backend
+            .list()
+            .unwrap()
+            .into_iter()
+            .map(|listed| listed.path)
+            .collect();
+        assert_eq!(listed, expected);
+
+        let registry = load_registry(store_dir.path()).unwrap();
+        let stored: Vec<PathBuf> = registry.groups["test-group-id"]
+            .worktrees
+            .keys()
+            .cloned()
+            .collect();
+        assert_eq!(stored, expected);
+
+        // An unreadable main worktree does not dissolve the group.
+        std::fs::set_permissions(&main_dir, Permissions::from_mode(0o000)).unwrap();
+        let _restore_main = RestoreMode(main_dir.clone());
+        let linked_backend = EdenBackend {
+            repo_path: healthy_linked,
+            shared_store_path: store_dir.path().to_path_buf(),
+            ident: identity::default(),
+        };
+        let listed: Vec<PathBuf> = linked_backend
+            .list()
+            .unwrap()
+            .into_iter()
+            .map(|listed| listed.path)
+            .collect();
+        assert_eq!(listed, expected);
+
+        let registry = load_registry(store_dir.path()).unwrap();
+        assert!(registry.groups.contains_key("test-group-id"));
     }
 }
