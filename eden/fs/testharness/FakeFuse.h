@@ -9,6 +9,7 @@
 
 #include <folly/File.h>
 #include <folly/Range.h>
+#include <atomic>
 #include <chrono>
 #include <vector>
 
@@ -104,6 +105,10 @@ class FakeFuse {
    * connection to send requests to the EdenMount on the other side.
    */
   folly::File conn_;
+
+  // Set by start() (on the mount thread) once conn_ is ready; isStarted()
+  // polls it from the test thread.
+  std::atomic<bool> started_{false};
 
   /**
    * The next request ID to use when sending requests.

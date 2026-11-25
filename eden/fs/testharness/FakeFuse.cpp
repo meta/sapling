@@ -36,15 +36,17 @@ folly::File FakeFuse::start() {
   // data ready when we expect to.
   setTimeout(1s);
 
+  started_.store(true, std::memory_order_release);
   return userConn;
 }
 
 void FakeFuse::close() {
   conn_.close();
+  started_.store(false, std::memory_order_release);
 }
 
 bool FakeFuse::isStarted() const {
-  return conn_.fd() != -1;
+  return started_.load(std::memory_order_acquire);
 }
 
 void FakeFuse::setTimeout(std::chrono::milliseconds timeout) {
