@@ -10,11 +10,13 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Error;
 use arc_swap::ArcSwap;
 pub use bookmarks::BookmarkCategory;
 pub use bookmarks::BookmarkKey;
+use context::PerfCounterType;
 use maplit::hashmap;
 use mononoke_repos::MononokeRepos;
 pub use mononoke_types::RepositoryId;
@@ -216,7 +218,15 @@ impl<R> Mononoke<R> {
     where
         R: Send + Sync + 'static,
     {
-        match self.repos.get(name.as_ref()).await? {
+        let built = self.repos.get_by_name(name.as_ref()).is_some();
+        let start = Instant::now();
+        let repo = self.repos.get(name.as_ref()).await;
+        if !built && !matches!(repo, Ok(None)) {
+            ctx.perf_counters()
+                .add_duration_us(PerfCounterType::RepoBuildWaitUs, start.elapsed());
+        }
+
+        match repo? {
             None => Ok(None),
             Some(repo) => Ok(Some(
                 RepoContextBuilder::new(ctx, repo, self.repos.clone()).await?,

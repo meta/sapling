@@ -112,6 +112,7 @@ define_perf_counters! {
         PhasesLookups,
         PhasesMarkPublicUs,
         PhasesSectionUs,
+        RepoBuildWaitUs,
         SqlReadsMaster,
         SqlReadsReplica,
         SqlWrites,
@@ -226,6 +227,7 @@ impl PerfCounterType {
             | PhasesLookups
             | PhasesMarkPublicUs
             | PhasesSectionUs
+            | RepoBuildWaitUs
             | SqlReadsMaster
             | SqlReadsReplica
             | SqlWrites

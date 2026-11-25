@@ -11,11 +11,13 @@ use std::sync::Arc;
 
 use anyhow::Error;
 use anyhow::Result;
+use arc_swap::ArcSwap;
 use blobstore::Loadable;
 use bookmarks::BookmarkKey;
 use bytes::Bytes;
 use chrono::FixedOffset;
 use chrono::TimeZone;
+use context::PerfCounterType;
 use cross_repo_sync::CommitSyncData;
 use cross_repo_sync::CommitSyncRepos;
 use cross_repo_sync::SubmoduleDeps;
@@ -26,12 +28,16 @@ use fixtures::BranchUneven;
 use fixtures::Linear;
 use fixtures::ManyFilesDirs;
 use fixtures::TestRepoFixture;
+use futures::FutureExt;
+use futures::future::BoxFuture;
 use live_commit_sync_config::TestLiveCommitSyncConfigSource;
 use maplit::hashmap;
 use metaconfig_types::CommitSyncConfigVersion;
 use metaconfig_types::CommitSyncDirection;
 use metaconfig_types::DefaultSmallToLargeCommitSyncPathAction;
 use mononoke_macros::mononoke;
+use mononoke_repos::MononokeRepos;
+use mononoke_repos::RepoLoader;
 use mononoke_types::BlobstoreKey;
 use mononoke_types::NonRootMPath;
 use mononoke_types::content_manifest::ContentManifestEntry;
@@ -1015,6 +1021,57 @@ async fn resolve_changeset_id_prefix(fb: FacebookInit) -> Result<(), Error> {
 
     // invalid hex string
     assert!(HgChangesetIdPrefix::from_str("607314euuuuu").is_err());
+
+    Ok(())
+}
+
+struct LinearLoader(FacebookInit);
+
+impl RepoLoader<Repo> for LinearLoader {
+    fn load(&self, _repo_name: String) -> BoxFuture<'static, Result<Repo>> {
+        let fb = self.0;
+        async move { Ok(Linear::get_repo(fb).await) }.boxed()
+    }
+}
+
+#[mononoke::fbinit_test]
+async fn repo_build_wait(fb: FacebookInit) -> Result<(), Error> {
+    let repos = Arc::new(MononokeRepos::new_lazy(Arc::new(LinearLoader(fb))));
+    repos.add_lazy_repo("test", 0);
+    let mononoke = Mononoke::new(repos, Arc::new(ArcSwap::from_pointee(HashMap::new())))?;
+    let wait_us = |ctx: &CoreContext| {
+        ctx.perf_counters()
+            .get_counter(PerfCounterType::RepoBuildWaitUs)
+    };
+
+    let building = CoreContext::test_mock(fb);
+    mononoke
+        .repo(building.clone(), "test")
+        .await?
+        .expect("repo exists");
+    assert!(
+        wait_us(&building) > 0,
+        "the request that built the repo counts its wait"
+    );
+
+    let after = CoreContext::test_mock(fb);
+    mononoke
+        .repo(after.clone(), "test")
+        .await?
+        .expect("repo exists");
+    assert_eq!(
+        wait_us(&after),
+        0,
+        "a request for a built repo waits on no build"
+    );
+
+    let unknown = CoreContext::test_mock(fb);
+    assert!(mononoke.repo(unknown.clone(), "unknown").await?.is_none());
+    assert_eq!(
+        wait_us(&unknown),
+        0,
+        "a repo not served here builds nothing"
+    );
 
     Ok(())
 }
