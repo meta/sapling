@@ -642,6 +642,11 @@ def getparser():
         "--outputdir", help="directory to write error logs to (default=test directory)"
     )
     reporting.add_argument(
+        "--temporary-error-output",
+        action="store_true",
+        help="use per-test scratch space for error output instead of persistent .err files",
+    )
+    reporting.add_argument(
         "-n", "--nodiff", action="store_true", help="skip showing test changes"
     )
     reporting.add_argument(
@@ -786,6 +791,16 @@ def parseargs(args, parser):
     if options.noprogress:
         global showprogress
         showprogress = False
+
+    if (
+        options.retest
+        or options.restart
+        or options.retry
+        or options.interactive
+        or options.view
+        or options.outputdir
+    ):
+        options.temporary_error_output = False
 
     return options
 
@@ -1139,6 +1154,7 @@ class Test(unittest.TestCase):
         self._useipv6 = useipv6
         self._watchman = watchman
         self._options = options
+        self._temporary_error_output = getattr(options, "temporary_error_output", False)
 
         self._aborted = False
         self._daemonpids = []
@@ -1195,6 +1211,8 @@ class Test(unittest.TestCase):
         if self._keeptmpdir:
             log("testtmp dir: %s" % self._testtmp)
         os.mkdir(self._testtmp)
+        if self._temporary_error_output:
+            self.errpath = os.path.join(self._threadtmp, os.path.basename(self.errpath))
 
         # Remove any previous output files.
         if os.path.exists(self.errpath):
@@ -1333,6 +1351,7 @@ class Test(unittest.TestCase):
             # Diff generation may rely on written .err file.
             if (
                 (ret != 0 or out != self._refout)
+                and not self._temporary_error_output
                 and not self._skipped
                 and not self._debug
             ):
@@ -1409,6 +1428,7 @@ class Test(unittest.TestCase):
 
         if (
             (self._ret != 0 or self._out != self._refout)
+            and not self._temporary_error_output
             and not self._skipped
             and not self._debug
             and self._out

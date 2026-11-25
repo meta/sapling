@@ -1,3 +1,8 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This software may be used and distributed according to the terms of the
+# GNU General Public License version 2.
+
 """test line matching with some failing examples and some which warn
 
 run-test.t only checks positive matches and can not see warnings
@@ -9,6 +14,12 @@ from __future__ import absolute_import, print_function
 import doctest
 import os
 import re
+import shutil
+import subprocess
+import tempfile
+import unittest
+
+import silenttestrunner
 
 
 # this is hack to make sure no escape characters are inserted into the output
@@ -115,5 +126,115 @@ def otherostests():
     pass
 
 
+class ErrorOutputTest(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.directory = directory.name
+        self.path = os.path.join(self.directory, "test-fail.t")
+        with open(self.path, "wb") as f:
+            f.write(b"  $ echo actual\n  expected\n")
+        self.hg = (
+            os.environ.get("HGEXECUTABLEPATH")
+            or os.environ.get("HGTEST_HG")
+            or shutil.which("sl")
+        )
+        if not self.hg:
+            self.skipTest("requires a Sapling executable")
+        self.env = os.environ.copy()
+        for name in ("HGTEST_USE_EDEN", "USE_MONONOKE", "HGTEST_REPORT_SKIPS"):
+            self.env.pop(name, None)
+
+    def command(self, *args):
+        return [
+            self.hg,
+            "debugpython",
+            "--",
+            os.path.abspath(run_tests.__file__),
+            "--with-hg",
+            self.hg,
+            "--nofeatures",
+            "--color=never",
+            "-j1",
+            *args,
+            self.path,
+        ]
+
+    def assertfailure(self, returncode, output):
+        self.assertEqual(returncode, 1, output)
+        self.assertIn(b"-  expected", output)
+        self.assertIn(b"+  actual", output)
+        self.assertNotIn(b"Traceback", output)
+
+    def runrunner(self, *args):
+        result = subprocess.run(
+            self.command(*args),
+            cwd=self.directory,
+            env=self.env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=90,
+        )
+        self.assertfailure(result.returncode, result.stdout)
+        return result.stdout
+
+    def test_temporary_error_output_preserves_failure_diffs(self):
+        errpath = self.path + ".err"
+        with open(errpath, "wb") as f:
+            f.write(b"previous failure")
+        processes = [
+            subprocess.Popen(
+                self.command(
+                    "--temporary-error-output",
+                    "--verbose",
+                    "--tmpdir",
+                    os.path.join(self.directory, name),
+                ),
+                cwd=self.directory,
+                env=self.env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            for name in ("one", "two")
+        ]
+        try:
+            outputs = [p.communicate(timeout=90)[0] for p in processes]
+        finally:
+            for p in processes:
+                if p.poll() is None:
+                    p.kill()
+                p.wait()
+        paths = []
+        for process, output in zip(processes, outputs):
+            self.assertfailure(process.returncode, output)
+            match = re.search(rb"Keeping threadtmp dir: ([^\r\n]+)", output)
+            self.assertIsNotNone(match, output)
+            private = os.path.join(
+                os.fsdecode(match.group(1).strip()), "test-fail.t.err"
+            )
+            paths.append(private)
+            with open(private, "rb") as f:
+                self.assertEqual(f.read(), b"  $ echo actual\n  actual\n")
+        self.assertNotEqual(paths[0], paths[1])
+        self.runrunner("--temporary-error-output")
+        with open(errpath, "rb") as f:
+            self.assertEqual(f.read(), b"previous failure")
+
+    def test_local_error_output_supports_retest_and_restart(self):
+        self.assertFalse(os.path.exists(self.path + ".err"))
+        self.runrunner("--temporary-error-output", "--retry=1")
+        self.runrunner()
+        for option in ("--retest", "--restart"):
+            self.runrunner("--temporary-error-output", option)
+            with open(self.path + ".err", "rb") as f:
+                self.assertEqual(f.read(), b"  $ echo actual\n  actual\n")
+        outputdir = os.path.join(self.directory, "output")
+        os.mkdir(outputdir)
+        self.runrunner("--temporary-error-output", "--outputdir", outputdir)
+        with open(os.path.join(outputdir, "test-fail.t.err"), "rb") as f:
+            self.assertEqual(f.read(), b"  $ echo actual\n  actual\n")
+
+
 if __name__ == "__main__":
     doctest.testmod()
+    silenttestrunner.main(__name__)

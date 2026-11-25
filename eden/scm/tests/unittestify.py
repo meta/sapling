@@ -108,6 +108,7 @@ def gettestmethod(name: str, port: int) -> Callable[["hgtests"], None]:
         reportskips = os.getenv("HGTEST_REPORT_SKIPS")
         with chdir(self._runtests_dir):
             args, env = prepareargsenv(self._runtests_dir, port)
+            args.append("--temporary-error-output")
             args += os.getenv("HGTEST_RUNTESTS_ARGS", "").split()
             # run run-tests.py for a single test
             p = subprocess.Popen(
