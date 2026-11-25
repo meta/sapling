@@ -24,6 +24,9 @@ pub struct GraphRowShapeStyle {
     /// Where link-related padding lines are placed around the node line.
     pub link_line_placement: LinkLinePlacement,
 
+    /// Which line stays continuous when two unrelated edges cross.
+    pub crossing_priority: CrossingPriority,
+
     /// Requested number of character columns between adjacent vertical lines.
     /// Box drawing uses this value directly, including zero for no gap.
     /// ASCII uses at least one; ASCII large uses at least two.
@@ -39,10 +42,25 @@ impl Default for GraphRowShapeStyle {
         Self {
             dash_style: DashStyle::Persistent,
             link_line_placement: LinkLinePlacement::Top,
+            crossing_priority: CrossingPriority::RendererDefault,
             column_spacing: 1,
             text_gap: 1,
         }
     }
+}
+
+/// Which line stays continuous when two unrelated edges cross in text output.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serialize", derive(Serialize))]
+pub enum CrossingPriority {
+    /// Use the renderer's usual style: horizontal in box drawing and ASCII,
+    /// vertical in large ASCII.
+    #[default]
+    RendererDefault,
+    /// Draw the horizontal line through the crossing.
+    Horizontal,
+    /// Draw the vertical line through the crossing.
+    Vertical,
 }
 
 /// How indirect-ancestor dash lines continue across rows.

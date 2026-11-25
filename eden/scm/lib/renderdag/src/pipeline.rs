@@ -48,6 +48,7 @@ pub use self::prefix_lines_to_text::PrefixLinesToText;
 pub use self::row_shape_to_prefix_lines::ascii::AsciiPrefixLineRenderer as Ascii;
 pub use self::row_shape_to_prefix_lines::ascii_large::AsciiLargePrefixLineRenderer as AsciiLarge;
 pub use self::row_shape_to_prefix_lines::box_drawing::BoxDrawingPrefixLineRenderer as BoxDrawing;
+pub use self::types::CrossingPriority;
 pub use self::types::DashStyle;
 pub use self::types::GraphRowShapeStyle;
 pub use self::types::LinkLinePlacement;
@@ -92,6 +93,206 @@ mod tests {
             };
             let _ = GraphTextRenderer::<&'static str>::with_prefix_lines(prefix_lines);
         }
+    }
+
+    #[test]
+    fn test_crossing_priority() {
+        use CrossingPriority::Horizontal;
+        use CrossingPriority::Vertical;
+        use row_shape_to_prefix_lines::box_drawing::Curved;
+
+        use crate::test_fixtures::OCTOPUS_BRANCH_AND_MERGE;
+        use crate::test_utils::fixture_rows;
+
+        let fixture = &OCTOPUS_BRANCH_AND_MERGE;
+        let render = |prefixes, priority| {
+            let mut renderer = GraphTextRenderer::with_prefix_lines(prefixes).configure(|o| {
+                o.min_row_height = 0;
+                o.graph_row_shape_style.crossing_priority = priority;
+            });
+            for node in fixture.reserve {
+                renderer.reserve(node.to_string());
+            }
+            let mut out = String::new();
+            for (node, parents, message) in fixture_rows(fixture, None) {
+                renderer.write_next_text(&mut out, node, parents, "o", &message);
+            }
+            indent(&out)
+        };
+
+        assert_eq!(
+            render(Box::<BoxDrawing<Curved>>::default(), Horizontal),
+            r#"
+            o      J
+            ├─┬─╮
+            │ │ o  I
+            │ o │      H
+            ╭─┼─┬─┬─╮
+            │ │ │ │ o  G
+            │ │ │ o │  E
+            │ │ │ ├─╯
+            │ │ o │  D
+            │ │ ├─╮
+            │ o │ │  C
+            │ ├───╯
+            o │ │  F
+            ├─╯ │
+            o   │  B
+            ├───╯
+            o  A"#,
+        );
+        assert_eq!(
+            render(Box::<BoxDrawing<Curved>>::default(), Vertical),
+            r#"
+            o      J
+            ├─┬─╮
+            │ │ o  I
+            │ o │      H
+            ╭─┼─┬─┬─╮
+            │ │ │ │ o  G
+            │ │ │ o │  E
+            │ │ │ ├─╯
+            │ │ o │  D
+            │ │ ├─╮
+            │ o │ │  C
+            │ ├─│─╯
+            o │ │  F
+            ├─╯ │
+            o   │  B
+            ├───╯
+            o  A"#,
+        );
+        assert_eq!(
+            render(Box::new(Ascii), Horizontal),
+            r#"
+            o      J
+            +-+-.
+            | | o  I
+            | o |      H
+            +-+-+-+-.
+            | | | | o  G
+            | | | o |  E
+            | | | |/
+            | | o |  D
+            | | |\|
+            | o | |  C
+            | +---'
+            o | |  F
+            |/  |
+            o   |  B
+            +---'
+            o  A"#,
+        );
+        assert_eq!(
+            render(Box::new(Ascii), Vertical),
+            r#"
+            o      J
+            +-+-.
+            | | o  I
+            | o |      H
+            +-+-+-+-.
+            | | | | o  G
+            | | | o |  E
+            | | | |/
+            | | o |  D
+            | | |\|
+            | o | |  C
+            | +-|-'
+            o | |  F
+            |/  |
+            o   |  B
+            +---'
+            o  A"#,
+        );
+        assert_eq!(
+            render(Box::new(AsciiLarge), Horizontal),
+            r#"
+            o        J
+            |\___
+            | \  \
+            |  |  o  I
+            |  o  |        H
+            | /|\_|____
+            |/ | \| \  \
+            |  |  |  |  o  G
+            |  |  |  o  |  E
+            |  |  |  | /
+            |  |  |  |/
+            |  |  o  |  D
+            |  |  |\ |
+            |  |  | \|
+            |  o  |  |  C
+            |  | ___/
+            |  |/ |
+            o  |  |  F
+            | /   |
+            |/    |
+            o     |  B
+            | ___/
+            |/
+            o  A"#,
+        );
+        assert_eq!(
+            render(Box::new(AsciiLarge), Vertical),
+            r#"
+            o        J
+            |\___
+            | \  \
+            |  |  o  I
+            |  o  |        H
+            | /|\_|____
+            |/ | \| \  \
+            |  |  |  |  o  G
+            |  |  |  o  |  E
+            |  |  |  | /
+            |  |  |  |/
+            |  |  o  |  D
+            |  |  |\ |
+            |  |  | \|
+            |  o  |  |  C
+            |  | _|_/
+            |  |/ |
+            o  |  |  F
+            | /   |
+            |/    |
+            o     |  B
+            | ___/
+            |/
+            o  A"#,
+        );
+    }
+
+    #[test]
+    fn test_dec_crossing_with_ancestor_glyph() {
+        use row_shape_to_prefix_lines::box_drawing::DecGraphics;
+        use types::PrefixLineKind;
+        use types::PrefixLinePart;
+
+        use crate::Ancestor;
+
+        let mut shaper = GraphRowShaper::new();
+        shaper.next_row_shape(
+            "H",
+            vec![
+                Ancestor::Parent("A"),
+                Ancestor::Ancestor("B"),
+                Ancestor::Parent("C"),
+            ],
+        );
+        let style = &mut shaper.options_mut().graph_row_shape_style;
+        style.crossing_priority = CrossingPriority::Vertical;
+        style.dash_style = DashStyle::Once;
+        style.column_spacing = 3;
+        let row = shaper.next_row_shape("A", vec![Ancestor::Parent("C"), Ancestor::Parent("D")]);
+
+        let prefixes = BoxDrawing::<DecGraphics>::new().next_prefix_lines(&row);
+        let link = prefixes
+            .iter()
+            .find(|line| line.kind == PrefixLineKind::Link)
+            .unwrap();
+        assert!(link.parts.iter().any(|(part, _)| {
+            matches!(part, PrefixLinePart::Text(text) if text.contains("\x1b(B:\x1b(0qqq\x1b(B"))
+        }));
     }
 
     #[test]

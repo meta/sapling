@@ -151,6 +151,15 @@ bitflags! {
     }
 }
 
+impl LinkLine {
+    /// Whether two lines pass through this cell without joining.
+    pub(crate) fn is_crossing(self) -> bool {
+        self.intersects(Self::HORIZONTAL)
+            && self.intersects(Self::VERTICAL)
+            && !self.intersects(Self::CHILD | Self::ANY_FORK_OR_MERGE)
+    }
+}
+
 /// An output graph row.
 ///
 /// This "Row" contains a "node" and its surrounding edges. It does not define

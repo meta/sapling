@@ -7,6 +7,7 @@
 
 use super::TextWriter;
 use super::ancestry_lines;
+use crate::pipeline::types::CrossingPriority;
 use crate::pipeline::types::DashStyle;
 use crate::pipeline::types::GraphRowShape;
 use crate::pipeline::types::LinkLine;
@@ -90,7 +91,11 @@ impl<N> PrefixLineRenderer<N> for AsciiPrefixLineRenderer {
             for (i, cur) in link_row.iter().copied().enumerate() {
                 let next = link_row.get(i + 1).copied().unwrap_or_default();
                 // Draw the parent/ancestor line.
-                let (column, column_segments) = if cur.intersects(LinkLine::HORIZONTAL) {
+                let prefer_vertical =
+                    line.style.crossing_priority == CrossingPriority::Vertical && cur.is_crossing();
+                let (column, column_segments) = if cur.intersects(LinkLine::HORIZONTAL)
+                    && !prefer_vertical
+                {
                     if cur.intersects(LinkLine::CHILD | LinkLine::ANY_FORK_OR_MERGE) {
                         (
                             '+',

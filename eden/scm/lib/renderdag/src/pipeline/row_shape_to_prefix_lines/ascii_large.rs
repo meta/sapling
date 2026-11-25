@@ -7,6 +7,7 @@
 
 use super::TextWriter;
 use super::ancestry_lines;
+use crate::pipeline::types::CrossingPriority;
 use crate::pipeline::types::DashStyle;
 use crate::pipeline::types::GraphRowShape;
 use crate::pipeline::types::LinkLine;
@@ -126,9 +127,12 @@ impl<N> PrefixLineRenderer<N> for AsciiLargePrefixLineRenderer {
                 }
 
                 // Top center
-                if cur.intersects(LinkLine::VERT_PARENT) {
+                let prefer_horizontal = line.style.crossing_priority
+                    == CrossingPriority::Horizontal
+                    && cur.is_crossing();
+                if cur.intersects(LinkLine::VERT_PARENT) && !prefer_horizontal {
                     writer.write_junction_char(i, LinkLine::VERTICAL, '|', &mut top_link_line);
-                } else if cur.intersects(LinkLine::VERT_ANCESTOR) {
+                } else if cur.intersects(LinkLine::VERT_ANCESTOR) && !prefer_horizontal {
                     writer.write_junction_char(i, LinkLine::VERTICAL, ancestor, &mut top_link_line);
                 } else if cur.intersects(LinkLine::ANY_MERGE) {
                     writer.write_junction_char(i, LinkLine::empty(), ' ', &mut top_link_line);

@@ -1356,6 +1356,8 @@ mod tests {
 
     #[test]
     fn test_link_ids_follow_drawn_segments() {
+        use crate::pipeline::CrossingPriority;
+
         let mut shaper = GraphRowShaper::new()
             .with_line_id_allocator(build_line_id_allocator_from_rules(COLOR_RULE_PRESETS[0], 6));
         shaper.next_row_shape(
@@ -1366,7 +1368,8 @@ mod tests {
                 Ancestor::Parent("C"),
             ],
         );
-        let row = shaper.next_row_shape("A", vec![Ancestor::Parent("C"), Ancestor::Parent("D")]);
+        let mut row =
+            shaper.next_row_shape("A", vec![Ancestor::Parent("C"), Ancestor::Parent("D")]);
         let cell = &row.line_ids.as_ref().unwrap().link_line.as_ref().unwrap()[1];
         assert_eq!(cell.vertical, ids([1]));
         assert_eq!(cell.horizontal, ids([2]));
@@ -1375,6 +1378,7 @@ mod tests {
             Box::new(crate::pipeline::Ascii::new()),
         ];
         for mut renderer in renderers {
+            row.style.crossing_priority = CrossingPriority::RendererDefault;
             let prefixes = renderer.next_prefix_lines(&row);
             let link = prefixes
                 .iter()
@@ -1386,6 +1390,25 @@ mod tests {
                     && *color == Some(2)
             }));
             assert!(link.parts.iter().all(|(_, color)| *color != Some(1)));
+
+            row.style.crossing_priority = CrossingPriority::Vertical;
+            let prefixes = renderer.next_prefix_lines(&row);
+            let link = prefixes
+                .iter()
+                .find(|line| line.kind == PrefixLineKind::Link)
+                .unwrap();
+            let crossing = link
+                .parts
+                .iter()
+                .position(|(part, color)| {
+                    matches!(part, PrefixLinePart::Text(text) if text == "│" || text == "|")
+                        && *color == Some(1)
+                })
+                .unwrap();
+            assert!(matches!(
+                &link.parts[crossing + 1],
+                (PrefixLinePart::Text(text), Some(2)) if text.starts_with(['─', '-'])
+            ));
         }
     }
 

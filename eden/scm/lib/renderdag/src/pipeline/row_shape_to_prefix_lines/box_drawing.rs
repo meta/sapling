@@ -10,6 +10,7 @@ use std::marker::PhantomData;
 use super::TextWriter;
 use super::ancestry_lines;
 use super::split_glyph;
+use crate::pipeline::types::CrossingPriority;
 use crate::pipeline::types::DashStyle;
 use crate::pipeline::types::GraphRowShape;
 use crate::pipeline::types::LinkLine;
@@ -202,7 +203,9 @@ impl<G: BoxDrawingGlyphSet, N> PrefixLineRenderer<N> for BoxDrawingPrefixLineRen
         if let Some(link_row) = line.link_line.as_ref() {
             let mut link_line = PrefixLine::new(PrefixLineKind::Link);
             for (i, cur) in link_row.iter().enumerate() {
-                let selected = if cur.intersects(LinkLine::HORIZONTAL) {
+                let prefer_vertical =
+                    line.style.crossing_priority == CrossingPriority::Vertical && cur.is_crossing();
+                let selected = if cur.intersects(LinkLine::HORIZONTAL) && !prefer_vertical {
                     if cur.intersects(LinkLine::CHILD) {
                         glyph::JOIN_BOTH
                     } else if cur.intersects(LinkLine::ANY_FORK)
@@ -274,7 +277,14 @@ impl<G: BoxDrawingGlyphSet, N> PrefixLineRenderer<N> for BoxDrawingPrefixLineRen
                 } else {
                     glyph::SPACE
                 };
-                write_link_glyph(&writer, i, selected, glyphs[selected], &mut link_line);
+                write_link_glyph(
+                    &writer,
+                    i,
+                    selected,
+                    glyphs,
+                    prefer_vertical,
+                    &mut link_line,
+                );
             }
             lines.push(link_line);
         }
@@ -317,10 +327,12 @@ fn write_link_glyph(
     writer: &TextWriter<'_>,
     index: usize,
     selected: usize,
-    text: &str,
+    glyphs: &[&str; glyph::COUNT],
+    horizontal_connector: bool,
     out: &mut PrefixLine,
 ) {
-    if writer.is_plain() {
+    let text = glyphs[selected];
+    if writer.is_plain() && !horizontal_connector {
         writer.write_plain(text, out);
         return;
     }
@@ -341,6 +353,18 @@ fn write_link_glyph(
     };
     writer.write_plain(prefix, out);
     writer.write_junction(index, segments, column, out);
+    if horizontal_connector {
+        // The column and connector can use different character sets.
+        let (horizontal_prefix, _, connector, horizontal_suffix) =
+            split_glyph(glyphs[glyph::HORIZONTAL]);
+        writer.write_plain(suffix, out);
+        if !connector.is_empty() {
+            writer.write_plain(horizontal_prefix, out);
+            writer.write_link(index, LinkLine::HORIZONTAL, connector, out);
+            writer.write_plain(horizontal_suffix, out);
+        }
+        return;
+    }
     if connector.trim_matches(' ').is_empty() {
         writer.write_plain(connector, out);
     } else {
