@@ -40,6 +40,7 @@ rust_binary(
         "//eden/mononoke/common/rust/justknobs_ext:justknobs",
         "//eden/mononoke/common/sql_construct:sql_construct",
         "//eden/mononoke/features/async_requests:async_requests_client",
+        "//eden/mononoke/features/repo_stats_logger:repo_stats_logger",
         "//eden/mononoke/megarepo_api:megarepo_api",
         "//eden/mononoke/metaconfig:metaconfig_types",
         "//eden/mononoke/mononoke_api:mononoke_api",

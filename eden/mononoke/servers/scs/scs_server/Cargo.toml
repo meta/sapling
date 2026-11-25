@@ -27,6 +27,7 @@ mononoke_api = { version = "0.1.0", path = "../../../mononoke_api" }
 mononoke_app = { version = "0.1.0", path = "../../../cmdlib/mononoke_app" }
 mononoke_thrift_server = { version = "0.1.0", path = "../../../cmdlib/thrift_server" }
 panichandler = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
+repo_stats_logger = { version = "0.1.0", path = "../../../features/repo_stats_logger" }
 sapling-clientinfo = { version = "0.1.0", path = "../../../../scm/lib/clientinfo" }
 scs_methods = { version = "0.1.0", path = "../scs_methods" }
 sharding_ext = { version = "0.1.0", path = "../../../cmdlib/sharding_ext" }

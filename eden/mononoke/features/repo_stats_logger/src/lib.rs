@@ -96,6 +96,21 @@ impl RepoStatsLogger {
     }
 }
 
+/// Publishes an objects count for a repo that is assigned to this process but
+/// not built, so it has no `RepoStatsLogger` yet: the repo's override if it
+/// has one, otherwise its default. The logger of the built repo replaces the
+/// value with the real count.
+pub fn publish_placeholder_objects_count(
+    fb: FacebookInit,
+    repo_name: &str,
+    repo_config: ArcRepoConfig,
+) {
+    let (default_objects_count, maybe_override_objects_count, _objects_count_multiplier) =
+        get_repo_objects_count_settings(repo_name, repo_config);
+    let count = maybe_override_objects_count.unwrap_or(default_objects_count);
+    STATS::repo_objects_count.set_value(fb, count, (encode_repo_name(repo_name),));
+}
+
 fn get_repo_bookmark_name(
     repo_config: Arc<metaconfig_types::RepoConfig>,
 ) -> Result<BookmarkKey, Error> {

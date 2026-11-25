@@ -39,6 +39,7 @@ use mononoke_thrift_server::DEFAULT_THRIFT_HOST;
 use mononoke_thrift_server::LoadMonitorConfig;
 use mononoke_thrift_server::ThriftServerBuilder;
 use panichandler::Fate;
+use repo_stats_logger::publish_placeholder_objects_count;
 use scs_methods::source_control_impl::SourceControlServiceImpl;
 use sharding_ext::RepoShard;
 use source_control_services::make_SourceControlService_server;
@@ -127,12 +128,13 @@ enum DeprecatedThriftServerMode {
 /// Struct representing the Source Control Service process when sharding by
 /// repo.
 pub struct ScsServerProcess {
+    fb: FacebookInit,
     repos_mgr: Arc<MononokeReposManager<Repo>>,
 }
 
 impl ScsServerProcess {
-    fn new(repos_mgr: Arc<MononokeReposManager<Repo>>) -> Self {
-        Self { repos_mgr }
+    fn new(fb: FacebookInit, repos_mgr: Arc<MononokeReposManager<Repo>>) -> Self {
+        Self { fb, repos_mgr }
     }
 }
 
@@ -155,6 +157,14 @@ impl RepoShardedProcess for ScsServerProcess {
             added.with_context(|| {
                 format!("Failure in setting up repo {repo_name} in SCS service")
             })?;
+            // A repo registered unbuilt has no `RepoStatsLogger` until its first
+            // request, and ShardManager needs an objects count for it before then.
+            if self.repos_mgr.repos().get_by_name(repo_name).is_none() {
+                let repo_config = self.repos_mgr.repo_config(repo_name).with_context(|| {
+                    format!("Failure in loading the config of repo {repo_name} in SCS service")
+                })?;
+                publish_placeholder_objects_count(self.fb, repo_name, Arc::new(repo_config));
+            }
             info!("Completed repo {} setup in SCS service", repo_name);
         } else {
             info!("Repo {} is already setup in SCS service", repo_name);
@@ -324,7 +334,7 @@ fn main(fb: FacebookInit) -> Result<(), Error> {
     if let Some(executor) = args.sharded_executor_args.build_executor(
         fb,
         runtime.clone(),
-        || Arc::new(ScsServerProcess::new(repos_mgr.clone())),
+        || Arc::new(ScsServerProcess::new(fb, repos_mgr.clone())),
         false, // disable shard (repo) level healing
         SM_CLEANUP_TIMEOUT_SECS,
     )? {
