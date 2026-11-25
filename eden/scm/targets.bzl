@@ -77,7 +77,7 @@ _RUST_PACKAGE_VERSIONS.update({
     ]
 })
 _RUST_PACKAGE_VERSIONS.update({
-    crate: "0.3.0"
+    crate: "0.4.0"
     for crate in [
         "sapling-renderdag",
     ]
