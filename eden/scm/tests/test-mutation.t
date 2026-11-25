@@ -680,6 +680,73 @@ JSON output includes the primary successor in a split's complete successor set.
   $ sl debugmutation -Tjson -r G
   {"mutations": [{"operation": "split", "predecessors": ["112478962961147124edd43549aedd1a335e44bf"], "split_successors": ["64a8289d249234b9886244d379f15e6b650b28e3", "7fb047a69f220c21711122dfd94305a9efb60cba", "dd319aacbb516094646b9ee5a24a942e62110121"], "successor": "dd319aacbb516094646b9ee5a24a942e62110121"}], "target": "dd319aacbb516094646b9ee5a24a942e62110121"}
 
+Secondary split pieces do not report their split yet.
+
+  $ sl debugmutation -Tjson -r E --hidden
+  {"mutations": [], "target": "7fb047a69f220c21711122dfd94305a9efb60cba"}
+  $ sl debugmutation -Tjson -r F --hidden
+  {"mutations": [], "target": "64a8289d249234b9886244d379f15e6b650b28e3"}
+
+An amended secondary piece loses its original split history.
+
+  $ newclientrepo
+  $ drawdag <<'EOS'
+  >   G
+  >   |
+  >   F
+  >   |
+  >   E B  # split: B -> E, F, G
+  >    \|
+  >     A
+  > EOS
+  $ sl goto -q 'desc(E)'
+  $ echo amended > extra
+  $ sl add extra
+  $ sl amend --rebase -qm 'E amended'
+  $ sl debugmutation -Tjson -r . | python -c 'import json, sys; x = json.load(sys.stdin); print(sorted((m["operation"], len(m["predecessors"]), len(m["split_successors"])) for m in x["mutations"]))'
+  [('amend', 1, 0)]
+
+Folding split pieces visits their one stored split fact only once.
+
+  $ newclientrepo
+  $ drawdag <<'EOS'
+  >     H
+  >     |
+  >   G |  # split: B -> E, F, G
+  >   | |  # fold: E, F, G -> H
+  >   F |
+  >   | |
+  >   E |
+  >   |/
+  > B |
+  > |/
+  > A
+  > EOS
+  $ sl debugmutation -Tjson -r 'desc(H)' --hidden | python -c 'import json, sys; x = json.load(sys.stdin); print(sorted((m["operation"], m["predecessors"], m["split_successors"]) for m in x["mutations"])); print(len(x["mutations"]) == len({m["successor"] for m in x["mutations"]}))'
+  [('fold', ['64a8289d249234b9886244d379f15e6b650b28e3', '7fb047a69f220c21711122dfd94305a9efb60cba', 'dd319aacbb516094646b9ee5a24a942e62110121'], []), ('split', ['112478962961147124edd43549aedd1a335e44bf'], ['64a8289d249234b9886244d379f15e6b650b28e3', '7fb047a69f220c21711122dfd94305a9efb60cba', 'dd319aacbb516094646b9ee5a24a942e62110121'])]
+  True
+
+Distinct amendment facts survive when amended pieces are folded together.
+
+  $ newclientrepo
+  $ drawdag <<'EOS'
+  >       H
+  >       |
+  >   G K |  # split: B -> E, F, G
+  >   | | |  # amend: E -> I
+  >   F J |  # amend: F -> J
+  >   | | |  # rebase: G -> K
+  >   E I |  # fold: I, J, K -> H
+  >   | |/
+  >   |/
+  > B |
+  > |/
+  > A
+  > EOS
+  $ sl debugmutation -Tjson -r 'desc(H)' --hidden | python -c 'import json, sys; x = json.load(sys.stdin); print(sorted((m["operation"], len(m["predecessors"]), len(m["split_successors"])) for m in x["mutations"])); print(len(x["mutations"]) == len({m["successor"] for m in x["mutations"]}))'
+  [('amend', 1, 0), ('amend', 1, 0), ('fold', 3, 0), ('rebase', 1, 0), ('split', 1, 3)]
+  True
+
 
 Revsets obey visibility rules
 
