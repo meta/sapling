@@ -1547,11 +1547,6 @@ impl Convert for RawMetadataCacheUpdateMode {
 impl Convert for RawMetadataCacheConfig {
     type Output = MetadataCacheConfig;
     fn convert(self) -> Result<Self::Output> {
-        ensure!(
-            self.wbc_event_router_batching_enabled != Some(true)
-                || self.wbc_process_bookmark_notifications == Some(true),
-            "wbc_event_router_batching_enabled requires wbc_process_bookmark_notifications=true"
-        );
         Ok(MetadataCacheConfig {
             wbc_update_mode: self
                 .wbc_update_mode
@@ -1561,12 +1556,6 @@ impl Convert for RawMetadataCacheConfig {
                 .wbc_event_router_update_mode
                 .map(|mode| mode.convert())
                 .transpose()?,
-            wbc_process_bookmark_notifications: self
-                .wbc_process_bookmark_notifications
-                .unwrap_or(false),
-            wbc_event_router_batching_enabled: self
-                .wbc_event_router_batching_enabled
-                .unwrap_or(false),
             tags_update_mode: self
                 .tags_update_mode
                 .map(|mode| mode.convert())

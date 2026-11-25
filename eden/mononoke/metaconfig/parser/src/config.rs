@@ -1894,8 +1894,6 @@ mod test {
                     wbc_event_router_update_mode: Some(MetadataCacheUpdateMode::Tailing {
                         category: "event_router_scribe_category".to_string(),
                     }),
-                    wbc_process_bookmark_notifications: true,
-                    wbc_event_router_batching_enabled: false,
                     tags_update_mode: Some(MetadataCacheUpdateMode::Polling),
                     content_refs_update_mode: None,
                 }),

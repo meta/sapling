@@ -2741,10 +2741,6 @@ pub struct MetadataCacheConfig {
     pub wbc_update_mode: Option<MetadataCacheUpdateMode>,
     /// Mode for updating the warm bookmark metadata cache from EventRouter notifications
     pub wbc_event_router_update_mode: Option<MetadataCacheUpdateMode>,
-    /// Whether WBC processes EventRouter bookmark notifications instead of legacy updates
-    pub wbc_process_bookmark_notifications: bool,
-    /// Whether to batch EventRouter bookmark notifications; requires notification processing.
-    pub wbc_event_router_batching_enabled: bool,
     /// Mode for updating the tags metadata cache
     pub tags_update_mode: Option<MetadataCacheUpdateMode>,
     /// Mode for updating the content refs metadata cache
