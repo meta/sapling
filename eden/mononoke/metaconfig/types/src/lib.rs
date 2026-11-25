@@ -183,6 +183,49 @@ pub struct CommonConfig {
     pub p4_servers: BTreeMap<String, P4ServerConfig>,
 }
 
+impl CommonConfig {
+    /// The manifest repo `multi_repo_land_manifest_repos` routes `repo_name`
+    /// to, if any.
+    ///
+    /// A marker ending in `/` matches every repo whose name contains it (`aosp/`
+    /// takes `aosp/platform/build` and `oculus/aosp/vendor/oculus`); any other
+    /// marker names one repo exactly, so `zephyrproject-rtos/zephyr` does not
+    /// take `zephyrproject-rtos/zephyr-lang-rust`. Longest matching marker wins;
+    /// a repo appearing as a value IS a manifest repo and routes to itself.
+    pub fn multi_repo_land_manifest_repo(&self, repo_name: &str) -> Option<&str> {
+        let repos = &self.multi_repo_land_manifest_repos;
+        if let Some(manifest) = repos.values().find(|manifest| *manifest == repo_name) {
+            return Some(manifest);
+        }
+        repos
+            .iter()
+            .filter(|(marker, _)| {
+                if marker.ends_with('/') {
+                    repo_name.contains(marker.as_str())
+                } else {
+                    repo_name == marker.as_str()
+                }
+            })
+            .max_by_key(|(marker, _)| marker.len())
+            .map(|(_, manifest)| manifest.as_str())
+    }
+
+    /// Whether the git server hands pushes to `repo_name` to Multi-Repo Land:
+    /// `multi_repo_land_manifest_repos` routes it to a manifest repo, or its
+    /// name contains the legacy `rl_land_service_repo_prefix`.
+    ///
+    /// Multi-Repo Land can only land a repo it serves, so everything that
+    /// decides which repos it serves must ask this rather than match names
+    /// itself.
+    pub fn diverts_to_multi_repo_land(&self, repo_name: &str) -> bool {
+        self.multi_repo_land_manifest_repo(repo_name).is_some()
+            || self
+                .rl_land_service_repo_prefix
+                .as_deref()
+                .is_some_and(|marker| !marker.is_empty() && repo_name.contains(marker))
+    }
+}
+
 /// The manifest format a Multi-Repo Land manifest repo holds.
 #[derive(Eq, Clone, Copy, Debug, Default, PartialEq, Hash)]
 pub enum ManifestFormatKind {
@@ -1330,6 +1373,9 @@ impl MergeResolutionOverride {
         }
     }
 }
+
+#[cfg(test)]
+mod multi_repo_land_tests;
 
 #[cfg(test)]
 mod merge_resolution_override_tests {

@@ -74,15 +74,11 @@ const MRL_THRIFT_OVERALL_TIMEOUT: Duration = Duration::from_secs(1800);
 pub fn should_divert_to_rl_land_service(
     request_context: &RepositoryRequestContext,
 ) -> anyhow::Result<bool> {
-    let common = &request_context.repo_configs.common;
     let repo_name = request_context.repo.repo_identity().name();
-    if manifest_repo_for(&common.multi_repo_land_manifest_repos, repo_name).is_some() {
-        return Ok(true);
-    }
-    Ok(match &common.rl_land_service_repo_prefix {
-        Some(marker) if !marker.is_empty() => repo_name.contains(marker.as_str()),
-        _ => false,
-    })
+    Ok(request_context
+        .repo_configs
+        .common
+        .diverts_to_multi_repo_land(repo_name))
 }
 
 fn branch_name(ref_update: &RefUpdate) -> String {
@@ -93,42 +89,16 @@ fn branch_name(ref_update: &RefUpdate) -> String {
         .to_string()
 }
 
-/// A marker ending in `/` matches every repo whose name contains it (`aosp/`
-/// takes `aosp/platform/build` and `oculus/aosp/vendor/oculus`); any other
-/// marker names one repo exactly, so `zephyrproject-rtos/zephyr` does not
-/// take `zephyrproject-rtos/zephyr-lang-rust`. Longest matching marker wins;
-/// a repo appearing as a value IS a manifest repo and routes to itself.
-fn marker_matches(marker: &str, repo_name: &str) -> bool {
-    if marker.ends_with('/') {
-        repo_name.contains(marker)
-    } else {
-        repo_name == marker
-    }
-}
-
-fn manifest_repo_for(repos: &BTreeMap<String, String>, repo_name: &str) -> Option<String> {
-    if repos.values().any(|manifest| manifest == repo_name) {
-        return Some(repo_name.to_string());
-    }
-    repos
-        .iter()
-        .filter(|(marker, _)| marker_matches(marker, repo_name))
-        .max_by_key(|(marker, _)| marker.len())
-        .map(|(_, manifest)| manifest.clone())
-}
-
 fn mrl_manifest_repo(request_context: &RepositoryRequestContext) -> anyhow::Result<String> {
     let repo_name = request_context.repo.repo_identity().name();
-    manifest_repo_for(
-        &request_context
-            .repo_configs
-            .common
-            .multi_repo_land_manifest_repos,
-        repo_name,
-    )
-    .ok_or_else(|| {
-        anyhow::anyhow!("no multi_repo_land_manifest_repos entry matches repo '{repo_name}'")
-    })
+    request_context
+        .repo_configs
+        .common
+        .multi_repo_land_manifest_repo(repo_name)
+        .map(str::to_string)
+        .ok_or_else(|| {
+            anyhow::anyhow!("no multi_repo_land_manifest_repos entry matches repo '{repo_name}'")
+        })
 }
 
 /// Whether an emergency push was requested and authorized.
@@ -595,59 +565,6 @@ mod tests {
 
     fn oid(byte: u8) -> ObjectId {
         ObjectId::from_hex(format!("{byte:02x}").repeat(20).as_bytes()).unwrap()
-    }
-
-    /// Longest marker wins; manifest repos route to themselves; no match is None.
-    #[mononoke::test]
-    fn manifest_repo_routing() {
-        let repos = BTreeMap::from([
-            ("aosp/".to_string(), "aosp/manifest".to_string()),
-            (
-                "aosp/vendor/".to_string(),
-                "aosp/vendor-manifest".to_string(),
-            ),
-        ]);
-        assert_eq!(
-            manifest_repo_for(&repos, "aosp/platform/build").as_deref(),
-            Some("aosp/manifest")
-        );
-        assert_eq!(
-            manifest_repo_for(&repos, "aosp/vendor/oculus").as_deref(),
-            Some("aosp/vendor-manifest"),
-            "the longer, more specific marker must win"
-        );
-        assert_eq!(
-            manifest_repo_for(&repos, "aosp/manifest").as_deref(),
-            Some("aosp/manifest"),
-            "a manifest repo routes to itself"
-        );
-        assert_eq!(manifest_repo_for(&repos, "zephyr/kernel"), None);
-
-        // An exact marker takes one repo, not its name-extended neighbours;
-        // a substring marker still takes the family.
-        let west = BTreeMap::from([
-            (
-                "vr/firmware/".to_string(),
-                "vr/firmware/megaman".to_string(),
-            ),
-            (
-                "zephyrproject-rtos/zephyr".to_string(),
-                "vr/firmware/megaman".to_string(),
-            ),
-        ]);
-        assert_eq!(
-            manifest_repo_for(&west, "vr/firmware/omega").as_deref(),
-            Some("vr/firmware/megaman")
-        );
-        assert_eq!(
-            manifest_repo_for(&west, "zephyrproject-rtos/zephyr").as_deref(),
-            Some("vr/firmware/megaman")
-        );
-        assert_eq!(
-            manifest_repo_for(&west, "zephyrproject-rtos/zephyr-lang-rust"),
-            None
-        );
-        assert_eq!(manifest_repo_for(&west, "zephyrproject-rtos/cmsis"), None);
     }
 
     /// Member move and create map to raw-byte git CommitIds with the CAS

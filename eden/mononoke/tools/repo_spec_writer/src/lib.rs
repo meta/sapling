@@ -93,11 +93,16 @@ pub fn default_git_repo_spec_file_path() -> String {
     format!("source/{DEFAULT_GIT_REPO_SPEC_PATH}.cconf")
 }
 
+/// The config tier multi_repo_land_service loads its repos from.
+const MULTI_REPO_LAND_TIER: &str = "aosp_multi_repo_land";
+
 /// Apply the one tier rule that stays in Rust on top of the template's base
-/// tier list: any repo whose name contains `aosp/` (including nested forms like
-/// `oculus/aosp/...`) is also served by `aosp_multi_repo_land`, so
-/// multi_repo_land_service can serve it. Purely additive; never removes or
-/// reorders a base entry; never adds a second `aosp_multi_repo_land`.
+/// tier list: a repo whose pushes the git server hands to Multi-Repo Land
+/// (`diverted`, which is `CommonConfig::diverts_to_multi_repo_land` for the
+/// repo's name) is also served by `aosp_multi_repo_land`, because
+/// multi_repo_land_service can only land a repo it serves. Purely additive;
+/// never removes or reorders a base entry; never adds a second
+/// `aosp_multi_repo_land`.
 ///
 /// The base list comes from the template and must include `backfill_worker`,
 /// or on-demand backfill loads silently break; nothing in Rust enforces its
@@ -110,10 +115,10 @@ pub fn default_git_repo_spec_file_path() -> String {
 /// surface the repo, the on-demand load fails, and the worker silently drops
 /// backfills for it (the legacy QRD path used to populate this transitively
 /// via the scs tier composer; the RepoSpec path requires explicit listing).
-pub fn tier_list_for_repo_spec(base: &[String], repo_name: &str) -> Vec<String> {
+pub fn tier_list_for_repo_spec(base: &[String], diverted: bool) -> Vec<String> {
     let mut tiers: Vec<String> = base.to_vec();
-    if repo_name.contains("aosp/") && !tiers.iter().any(|t| t == "aosp_multi_repo_land") {
-        tiers.push("aosp_multi_repo_land".to_string());
+    if diverted && !tiers.iter().any(|t| t == MULTI_REPO_LAND_TIER) {
+        tiers.push(MULTI_REPO_LAND_TIER.to_string());
     }
     tiers
 }

@@ -115,51 +115,35 @@ fn base() -> Vec<String> {
         .collect()
 }
 
-#[mononoke::test]
-fn tier_list_aosp_includes_multi_repo_land() {
-    let mut expected = base();
-    expected.push("aosp_multi_repo_land".to_string());
-    for name in [
-        "aosp/platform/external/lldb-utils",
-        "oculus/aosp/vendor/oculus",
-    ] {
-        assert_eq!(tier_list_for_repo_spec(&base(), name), expected, "{name}");
-    }
+fn with_multi_repo_land(mut tiers: Vec<String>) -> Vec<String> {
+    tiers.push("aosp_multi_repo_land".to_string());
+    tiers
 }
 
 #[mononoke::test]
-fn tier_list_non_aosp_excludes_multi_repo_land() {
-    for name in [
-        "manus/next-agent-webapp",
-        "aosp",
-        "aosp_extras/foo",
-        "simple-repo",
-    ] {
-        assert_eq!(tier_list_for_repo_spec(&base(), name), base(), "{name}");
-    }
+fn tier_list_diverted_repo_includes_multi_repo_land() {
+    assert_eq!(
+        tier_list_for_repo_spec(&base(), true),
+        with_multi_repo_land(base())
+    );
+}
+
+#[mononoke::test]
+fn tier_list_undiverted_repo_is_the_base_list() {
+    assert_eq!(tier_list_for_repo_spec(&base(), false), base());
 }
 
 #[mononoke::test]
 fn tier_list_never_drops_a_base_entry_and_never_duplicates() {
-    let mut with_aosp = base();
-    with_aosp.push("aosp_multi_repo_land".to_string());
-    for name in [
-        "manus/x",
-        "aosp/platform/x",
-        "oculus/aosp/x",
-        "fbsource/edenfs",
-    ] {
-        let out = tier_list_for_repo_spec(&with_aosp, name);
-        for b in &with_aosp {
-            assert!(out.contains(b), "{name} dropped {b}");
-        }
+    let with_tier = with_multi_repo_land(base());
+    for diverted in [true, false] {
+        // Already present: the output is the input exactly, no reorder, no
+        // append, no removal.
         assert_eq!(
-            out.iter().filter(|t| *t == "aosp_multi_repo_land").count(),
-            1,
-            "{name}"
+            tier_list_for_repo_spec(&with_tier, diverted),
+            with_tier,
+            "diverted: {diverted}"
         );
-        // Already present: the output is the input exactly, no reorder, no append.
-        assert_eq!(out, with_aosp, "{name}");
     }
 }
 
