@@ -268,7 +268,7 @@ class EdenDoctorChecker:
         elif (
             status.status == fb303_status.DEAD or status.status == fb303_status.STOPPED
         ):
-            self.run_edenfs_not_healthy_checks()
+            self.run_edenfs_not_healthy_checks(status)
         else:
             self.tracker.add_problem(EdenfsUnexpectedStatus(status))
 
@@ -277,7 +277,7 @@ class EdenDoctorChecker:
         if problem:
             self.tracker.add_problem(problem)
 
-    def run_edenfs_not_healthy_checks(self) -> None:
+    def run_edenfs_not_healthy_checks(self, status: config_mod.HealthStatus) -> None:
         # None means the list could not be read, so whether EdenFS is in use
         # is unknown: skip the checks that depend on it.
         configured_mounts = self._get_configured_mount_paths()
@@ -296,7 +296,10 @@ class EdenDoctorChecker:
                 except Exception as ex:
                     raise RuntimeError("Failed to check network for mount") from ex
 
-            self.tracker.add_problem(EdenfsNotHealthy(self.instance, self.out))
+            if status.status == fb303_status.STOPPED:
+                self.tracker.add_problem(EdenfsUnresponsive(status.pid))
+            else:
+                self.tracker.add_problem(EdenfsNotHealthy(self.instance, self.out))
         elif configured_mounts is not None:
             self.tracker.using_edenfs = False
             return
@@ -647,6 +650,19 @@ class EdenfsNotHealthy(FixableProblem):
             return True
         else:
             return False
+
+
+class EdenfsUnresponsive(Problem):
+    """A live edenfs process holds the lock but does not answer Thrift.
+
+    This problem has no automatic fix. A second daemon cannot get the lock.
+    """
+
+    def __init__(self, pid: Optional[int]) -> None:
+        super().__init__(
+            f"EdenFS pid {pid} holds the lock but does not answer Thrift.",
+            remediation="Run `eden restart --force` to restart EdenFS.",
+        )
 
 
 class EdenfsPrivHelperNotHealthy(Problem):

@@ -604,9 +604,20 @@ Running `eden start` to start EdenFS......<yellow>EdenFS still starting, use `ed
     ) -> None:
         self.run_doctor_with_unresponsive_lock_holder()
 
-        # FIXME: `start_edenfs_service` must not run. A second daemon cannot
-        # get the lock.
-        self.assertEqual(1, mock_start.call_count)
+        self.assertEqual(0, mock_start.call_count)
+
+    @patch("eden.fs.cli.daemon.start_edenfs_service")
+    @patch("eden.fs.cli.doctor.check_watchman._call_watchman")
+    def test_edenfs_unresponsive_lock_holder_needs_a_manual_restart(
+        self,
+        mock_watchman: MagicMock,
+        mock_start: MagicMock,
+    ) -> None:
+        exit_code, output = self.run_doctor_with_unresponsive_lock_holder()
+
+        self.assertIn("EdenFS pid 1234 holds the lock", output)
+        self.assertIn("Run `eden restart --force`", output)
+        self.assertEqual(1, exit_code)
 
     def run_doctor_with_unresponsive_lock_holder(self) -> Tuple[int, str]:
         """Run `eden doctor` on an instance with an unresponsive lock holder.
