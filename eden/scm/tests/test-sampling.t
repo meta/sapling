@@ -107,20 +107,38 @@ Test env-var logging:
   $ setconfig sampling.key.env_vars=env_vars
   $ export TEST_VAR1=abc
   $ export TEST_VAR2=def
+  >>> import json, pprint
+  >>> def env_vars_logged():
+  ...     sample_path = os.path.join(LOGDIR, "samplingpath.txt")
+  ...     with open(sample_path) as f:
+  ...         data = f.read().strip("\0").split("\0")
+  ...     for jsonstr in data:
+  ...         entry = json.loads(jsonstr)
+  ...         if entry["category"] == "env_vars":
+  ...             for k in sorted(entry["data"].keys()):
+  ...                 print("%s: %s" % (k, entry["data"][k]))
+
+A Python command logs them once:
+  $ rm $LOGDIR/samplingpath.txt
   $ sl files c > /dev/null
   atexit handler executed
-  >>> import json, pprint
-  >>> sample_path = os.path.join(LOGDIR, "samplingpath.txt")
-  >>> with open(sample_path) as f:
-  ...     data = f.read().strip("\0").split("\0")
-  >>> for jsonstr in data:
-  ...     entry = json.loads(jsonstr)
-  ...     if entry["category"] == "env_vars":
-  ...         for k in sorted(entry["data"].keys()):
-  ...             print("%s: %s" % (k, entry["data"][k]))
+  >>> env_vars_logged()
   env_test_var1: abc
   env_test_var2: def
-  metrics_type: env_vars
+
+So does a command implemented in Rust, which never reaches the Python hook:
+  $ rm $LOGDIR/samplingpath.txt
+  $ sl root > /dev/null
+  >>> env_vars_logged()
+  env_test_var1: abc
+  env_test_var2: def
+
+An unset variable is left out:
+  $ unset TEST_VAR2
+  $ rm $LOGDIR/samplingpath.txt
+  $ sl root > /dev/null
+  >>> env_vars_logged()
+  env_test_var1: abc
 
 Test rust traces make it to sampling file as well:
   $ rm $LOGDIR/samplingpath.txt

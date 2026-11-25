@@ -172,6 +172,7 @@ pub fn run_command(args: Vec<String>, io: &IO) -> i32 {
                 let _guard = span.enter();
 
                 sampling::init(dispatcher.config());
+                log_env_vars(dispatcher.config());
                 let trace = distributed_tracing::scope(
                     dispatcher
                         .config()
@@ -912,6 +913,26 @@ fn log_logged_configs(config: &dyn Config) {
         })
         .collect();
     sampling::append_sample_map("logginghelper", &logged);
+}
+
+/// Log the environment variables listed in `sampling.env_vars` to the
+/// "env_vars" sampling key, each as `env_<lowercased name>`. Logged here
+/// rather than from Python so that commands implemented in Rust, which never
+/// reach the Python sampling hook, carry them too.
+fn log_env_vars(config: &dyn Config) {
+    let names: Vec<String> = config
+        .get_or_default("sampling", "env_vars")
+        .unwrap_or_default();
+    let logged: HashMap<String, String> = names
+        .into_iter()
+        .filter_map(|name| {
+            let value = std::env::var(&name).ok()?;
+            Some((format!("env_{}", name.to_lowercase()), value))
+        })
+        .collect();
+    if !logged.is_empty() {
+        sampling::append_sample_map("env_vars", &logged);
+    }
 }
 
 fn log_repo_path_and_exe_version(repo: Option<&Repo>) {
