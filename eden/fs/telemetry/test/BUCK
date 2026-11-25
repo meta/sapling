@@ -120,6 +120,7 @@ cpp_unittest(
     deps = [
         "fbsource//third-party/googletest:gtest",
         "fbsource//xplat/folly:c_portability",
+        "fbsource//xplat/folly/futures:core",
         "//eden/fs/telemetry:throw_trace_capture",
     ],
 )

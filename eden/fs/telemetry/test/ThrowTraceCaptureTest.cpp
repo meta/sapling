@@ -10,6 +10,7 @@
 #include <stdexcept>
 
 #include <folly/CPortability.h>
+#include <folly/futures/Future.h>
 #include <gtest/gtest.h>
 
 using namespace facebook::eden;
@@ -90,4 +91,14 @@ TEST(ThrowTraceCaptureTest, CapturesNothingWhenDisabled) {
     EXPECT_FALSE(getThrowSiteStackTrace().has_value());
   }
   setThrowTraceCaptureEnabled(true);
+}
+
+TEST(ThrowTraceCaptureTest, SkipsFutureTimeout) {
+  try {
+    throw folly::FutureTimeout();
+  } catch (const folly::FutureTimeout&) {
+    // FIXME: timed waits throw FutureTimeout in normal operation, so it
+    // should not capture a throw-site trace.
+    EXPECT_TRUE(getThrowSiteStackTrace().has_value());
+  }
 }

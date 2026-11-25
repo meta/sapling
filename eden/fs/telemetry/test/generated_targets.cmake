@@ -34,6 +34,7 @@ eden_add_test(eden_fs_telemetry_test_throw_trace_capture_test
   DEPS
     ${LIBGMOCK_LIBRARIES}
     Folly::folly_c_portability
+    Folly::folly_futures_core
     eden_fs_telemetry_throw_trace_capture
 )
 
