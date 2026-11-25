@@ -407,6 +407,51 @@ def unidiff(
     return headerlines, hunks
 
 
+def unidiffstat(
+    a: Optional[bytes],
+    b: Optional[bytes],
+    opts: diffopts = defaultopts,
+    check_binary: bool = True,
+) -> "Optional[Tuple[int, int, bool]]":
+    """Return the (added lines, removed lines, is binary) counts of the diff
+    unidiff() would produce for the same arguments, or None if unidiff()
+    would produce no diff. Unlike unidiff(), it doesn't render the diff.
+    """
+    if not a and not b:
+        return None
+    # pyre-fixme[16]: `diffopts` has no attribute `text`.
+    if not opts.text and check_binary and (util.binary(a) or util.binary(b)):
+        if a and b and len(a) == len(b) and a == b:
+            return None
+        return 0, 0, True
+    if not a:
+        return _countlines(b), 0, False
+    if not b:
+        return 0, _countlines(a), False
+
+    alen = _countlines(a)
+    blen = _countlines(b)
+    added = removed = 0
+    changed = False
+    # pyre-fixme[6]: For 1st param expected `str` but got `bytes`.
+    # pyre-fixme[6]: For 2nd param expected `str` but got `bytes`.
+    for (a1, a2, b1, b2), stype in allblocks(a, b, opts):
+        # Only '!' blocks become hunk lines in _unidiff(). Clamp to the line
+        # counts like its slicing of the split lines does.
+        if stype == "!":
+            changed = True
+            removed += max(0, min(a2, alen) - a1)
+            added += max(0, min(b2, blen) - b1)
+    if not changed:
+        return None
+    return added, removed, False
+
+
+def _countlines(text: bytes) -> int:
+    """The number of lines splitnewlines() would split non-empty text into."""
+    return text.count(b"\n") + (not text.endswith(b"\n"))
+
+
 def _unidiff(
     t1: bytes, t2: bytes, opts: "diffopts" = defaultopts
 ) -> "Iterator[Tuple[Tuple[int, int, int, int], List[bytes]]]":

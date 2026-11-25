@@ -48,6 +48,7 @@ from .i18n import _
 from .node import hex, short
 
 gitre = re.compile(rb"diff --git a/(.*) b/(.*)")
+_diffstatdiffre = re.compile(rb"^diff .*-r [a-z0-9]+\s(.*)$")
 tabsplitter = re.compile(rb"(\t+|[^\t]+)")
 wordsplitter = re.compile(rb"(\t+| +|[a-zA-Z0-9_\x80-\xff]+|[^ \ta-zA-Z0-9_\x80-\xff])")
 
@@ -2725,10 +2726,16 @@ def diffhunks(
     prefix="",
     relroot="",
     copy=None,
+    statonly=False,
 ):
     """Yield diff of changes to files in the form of (`header`, `hunks`) tuples
     where `header` is a list of diff headers and `hunks` is an iterable of
     (`hunkrange`, `hunklines`) tuples.
+
+    If `statonly` is True, `hunks` is replaced with the (added lines, removed
+    lines, is binary) counts of the hunks, or None if there are no hunks.
+    `header` then has placeholders for git index lines and no "---"/"+++"
+    lines.
 
     See diff() for the meaning of parameters.
     """
@@ -2817,6 +2824,7 @@ def diffhunks(
             prefix,
             relroot,
             match,
+            statonly,
         )
 
     if opts.upgrade and not opts.git:
@@ -3065,6 +3073,7 @@ def trydiff(
     prefix,
     relroot,
     match,
+    statonly=False,
 ):
     """given input data, generate a diff and yield it in blocks
 
@@ -3250,12 +3259,27 @@ def trydiff(
                 content2 = fctx2.data()
 
         if binary and opts.git and not opts.nobinary and not opts.hashbinary:
+            if statonly:
+                # b85diff() is empty exactly when the contents are equal.
+                if (content1 or b"") == (content2 or b""):
+                    hunks = None
+                else:
+                    header.append(b"index")
+                    hunks = (0, 0, True)
+                yield fctx1, fctx2, header, hunks
+                continue
             text = mdiff.b85diff(content1, content2)
             if text:
                 header.append(
                     b"index %s..%s" % (gitindex(content1), gitindex(content2))
                 )
             hunks = ((None, [text]),)
+        elif statonly:
+            if opts.git and opts.index > 0:
+                header.append(b"index")
+            hunks = mdiff.unidiffstat(
+                content1, content2, opts=opts, check_binary=check_binary
+            )
         else:
             if opts.git and opts.index > 0:
                 flag = flag1
@@ -3297,8 +3321,6 @@ def diffstatsum(stats):
 
 
 def diffstatdata(lines):
-    diffre = re.compile(b"^diff .*-r [a-z0-9]+\\s(.*)$")
-
     results = []
     filename, adds, removes, isbinary = None, 0, 0, False
 
@@ -3322,7 +3344,7 @@ def diffstatdata(lines):
                 filename = gitre.search(line).group(2).decode()
             elif line.startswith(b"diff -r"):
                 # format: "diff -r ... -r ... filename"
-                filename = diffre.search(line).group(1).decode()
+                filename = _diffstatdiffre.search(line).group(1).decode()
         elif line.startswith(b"@@"):
             inheader = False
         elif line.startswith(b"+") and not inheader:
@@ -3335,12 +3357,69 @@ def diffstatdata(lines):
     return results
 
 
-def diffstat(lines, width=80, status=None):
+def diffstatdatafromctx(
+    repo,
+    ctx1,
+    ctx2,
+    match=None,
+    changes=None,
+    opts=None,
+    prefix="",
+    relroot="",
+):
+    """Return diffstatdata(diff(...)) for the same arguments, without rendering
+    the diff.
+
+    Return None if the diff has a file without a "diff" header line, whose
+    lines diffstatdata() would attribute to the previous file.
+    """
+    results = []
+    for _fctx1, _fctx2, header, stat in diffhunks(
+        repo,
+        ctx1,
+        ctx2,
+        match=match,
+        changes=changes,
+        opts=opts,
+        prefix=prefix,
+        relroot=relroot,
+        statonly=True,
+    ):
+        # diff() outputs nothing for these.
+        if not header and stat is None:
+            continue
+        if header and stat is None and len(header) <= 1:
+            continue
+        if not header or not header[0].startswith(b"diff"):
+            return None
+        filename = _diffstatfilename(header[0])
+        if filename is None:
+            return None
+        adds, removes, isbinary = stat or (0, 0, False)
+        results.append((filename, adds, removes, isbinary))
+    return results
+
+
+def _diffstatfilename(line):
+    """The file name diffstatdata() takes from a "diff" header line."""
+    if line.startswith(b"diff --git a/"):
+        m = gitre.search(line)
+        return m.group(2).decode() if m else None
+    elif line.startswith(b"diff -r"):
+        m = _diffstatdiffre.search(line)
+        return m.group(1).decode() if m else None
+    return None
+
+
+def diffstat(lines=None, width=80, status=None, stats=None):
     """If status is not None, it's a tuple (modified, added, removed) and
     "changed", "added", "removed" will be shown before file names.
+
+    `stats` is diffstatdata(lines), if already computed.
     """
     output = []
-    stats = diffstatdata(lines)
+    if stats is None:
+        stats = diffstatdata(lines)
     maxname, maxtotal, totaladds, totalremoves, hasbinary = diffstatsum(stats)
 
     countwidth = len(str(maxtotal))

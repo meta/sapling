@@ -2116,18 +2116,34 @@ def diffordiffstat(
         width = 80
         if not ui.plain():
             width = ui.termwidth()
-        chunks = patch.diff(
-            repo,
-            ctx1,
-            ctx2,
-            match,
-            changes,
-            opts=diffopts,
-            prefix=prefix,
-            relroot=relroot,
-            hunksfilterfn=hunksfilterfn,
-        )
-        for chunk, label in patch.diffstatui(util.iterlines(chunks), width=width):
+        stats = None
+        if hunksfilterfn is None and ui.configbool(
+            "experimental", "fast-diffstat", True
+        ):
+            stats = patch.diffstatdatafromctx(
+                repo,
+                ctx1,
+                ctx2,
+                match,
+                changes,
+                opts=diffopts,
+                prefix=prefix,
+                relroot=relroot,
+            )
+        if stats is None:
+            chunks = patch.diff(
+                repo,
+                ctx1,
+                ctx2,
+                match,
+                changes,
+                opts=diffopts,
+                prefix=prefix,
+                relroot=relroot,
+                hunksfilterfn=hunksfilterfn,
+            )
+            stats = patch.diffstatdata(util.iterlines(chunks))
+        for chunk, label in patch.diffstatui(stats=stats, width=width):
             write(chunk, label=label)
     else:
         for chunk, label in patch.diffui(
