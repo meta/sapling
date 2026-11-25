@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::num::NonZeroU64;
+use std::num::NonZeroUsize;
 use std::pin::pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -92,6 +93,7 @@ define_stats! {
 }
 
 mod content_reuse;
+mod fetch_ahead;
 mod unreadable;
 
 pub use content_reuse::ContentReuse;
@@ -219,6 +221,11 @@ pub struct ImportOptions {
     /// Whether any other revision the server cannot read is imported as a deletion too, once
     /// its retries have failed. `None` fails its changelist.
     pub skip_unreadable: Option<SkipUnreadable>,
+    /// Whether the changelists being fetched keep running while an earlier one is built.
+    /// Without it they are polled only while no fetched changelist waits for the build, so
+    /// a build that outlasts a p4 command's timeout fails each of their commands that still
+    /// has output to read.
+    pub fetch_during_build: bool,
 }
 
 impl Default for ImportOptions {
@@ -234,6 +241,7 @@ impl Default for ImportOptions {
             content_reuse: ContentReuse::Off,
             unreadable_revisions: Arc::default(),
             skip_unreadable: None,
+            fetch_during_build: false,
         }
     }
 }
@@ -663,14 +671,21 @@ pub async fn build_changesets(
     // Room for one fetched changelist waiting for the build, besides those in flight.
     let (mut sender, mut receiver) = mpsc::channel(0);
     let fetch = async move {
+        let fetch_one = |change: u64| async move {
+            fetch_changelist(ctx, repo, source, depot_root, change, options)
+                .await
+                .with_context(|| BuildingChangelist(change))
+        };
+        let lookahead =
+            NonZeroUsize::new(options.changelist_lookahead).unwrap_or(NonZeroUsize::MIN);
+        if options.fetch_during_build {
+            let fetches = changes.iter().copied().map(fetch_one);
+            return fetch_ahead::send_in_order(fetches, lookahead, sender).await;
+        }
         let mut fetched = pin!(
             stream::iter(changes.iter().copied())
-                .map(|change| async move {
-                    fetch_changelist(ctx, repo, source, depot_root, change, options)
-                        .await
-                        .with_context(|| BuildingChangelist(change))
-                })
-                .buffered(options.changelist_lookahead.max(1))
+                .map(fetch_one)
+                .buffered(lookahead.get())
         );
         while let Some(fetched) = fetched.next().await {
             // Fails only once the build has stopped on an error.

@@ -61,6 +61,7 @@ use super::*;
 
 mod content_reuse;
 mod copy_sources_with_uploads;
+mod fetch_during_build;
 mod listing_window;
 mod skip_unreadable;
 mod unreadable_revisions;

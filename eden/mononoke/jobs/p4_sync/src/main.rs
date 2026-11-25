@@ -181,6 +181,11 @@ struct ImportArgs {
     #[clap(long)]
     copy_sources_with_uploads: bool,
 
+    /// Keep fetching the changelists ahead, and reading the output of their p4 commands,
+    /// while an earlier one is built
+    #[clap(long)]
+    fetch_during_build: bool,
+
     /// Whether a branch, move/add or integrate whose content is already stored, found by
     /// its MD5 and size, is printed: `verify` looks the content up but prints every file
     #[clap(long, value_enum, default_value_t = ContentReuseFlag::Off)]
@@ -218,6 +223,7 @@ impl ImportArgs {
                 .map_or(defaults.max_build_time, Duration::from_secs),
             listing_window: self.listing_window,
             copy_sources_with_uploads: self.copy_sources_with_uploads,
+            fetch_during_build: self.fetch_during_build,
             content_reuse: self.content_reuse.into(),
             ..defaults
         }
