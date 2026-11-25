@@ -628,6 +628,16 @@ ImmediateFuture<folly::Unit> TreeInode::transitionToUnrestricted(
       .getTree(*treeId, fetchContext)
       .thenValue([self = inodePtrFromThis(),
                   savedTreeId = *treeId](std::shared_ptr<const Tree> tree) {
+        if (tree->isRestricted()) {
+          // A denied fetch yields the empty placeholder; adopting it would
+          // make this directory unrestricted and permanently empty.
+          XLOGF(
+              WARN,
+              "permission check passed for {} (inode {}) but the tree fetch was denied; staying restricted",
+              self->getLogPath(),
+              self->getNodeId());
+          return;
+        }
         auto newContentsResult = self->buildUnrestrictedDirContents(
             self->getNodeId(), *tree, [&] { return self->getLogPath(); });
 

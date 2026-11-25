@@ -30,6 +30,7 @@
 #include "eden/fs/nfs/NfsDirList.h"
 #include "eden/fs/store/ObjectFetchContext.h"
 #include "eden/fs/store/ObjectStore.h"
+#include "eden/fs/store/TreeCache.h"
 #include "eden/fs/testharness/FakeBackingStore.h"
 #include "eden/fs/testharness/FakeFuse.h"
 #include "eden/fs/testharness/FakeTreeBuilder.h"
@@ -1298,6 +1299,24 @@ CO_TEST(
   testMount->getEdenMount()->flushInvalidations().get(kTimeout);
   // The parent's cached listing must be dropped too.
   EXPECT_TRUE(sawInodeInvalidation(*fuse, parentInode->getNodeId()));
+}
+
+CO_TEST(RestrictedTreeInode, transitionStaysRestrictedWhenRefetchIsDenied) {
+  auto testMount = makeOmittedModeTestMount();
+  auto restrictedInode =
+      testMount->getTreeInode("parent/restricted_child"_relpath);
+  CO_ASSERT_TRUE(restrictedInode->isRestricted());
+  auto treeId = restrictedInode->getObjectId().value();
+  auto backingStore = testMount->getBackingStore();
+  backingStore->setCheckPermissionResult(treeId, true);
+  // The permission check passes, but the tree fetch it triggers is denied.
+  testMount->getTreeCache()->clear();
+  backingStore->replaceTreeWithRestricted(treeId)->setReady();
+
+  co_await restrictedInode->co_stat(ObjectFetchContext::getNullContext());
+
+  EXPECT_TRUE(restrictedInode->isRestricted());
+  expectEacces([&] { restrictedInode->lockContentsRead(); });
 }
 
 TEST(
