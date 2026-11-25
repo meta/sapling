@@ -9,7 +9,6 @@ eden_add_test(eden_fs_nfs_rpc_test
   SRCS
     RpcServerTest.cpp
     RpcTest.cpp
-    StreamClientTest.cpp
   DEPS
     ${LIBGMOCK_LIBRARIES}
     Folly::folly_executors_manual_executor

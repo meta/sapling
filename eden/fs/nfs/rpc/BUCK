@@ -4,24 +4,14 @@ oncall("scm_client_infra")
 
 cpp_library(
     name = "rpc",
-    srcs = [
-        "Rpc.cpp",
-        "StreamClient.cpp",
-    ],
-    headers = [
-        "Rpc.h",
-        "StreamClient.h",
-    ],
+    srcs = ["Rpc.cpp"],
+    headers = ["Rpc.h"],
     deps = [
-        "fbsource//xplat/folly:exception",
         "fbsource//xplat/folly:exception_string",
-        "fbsource//xplat/folly:string",
-    ],
-    exported_deps = [
-        "fbsource//xplat/folly:network_address",
         "fbsource//xplat/folly/io:iobuf",
         "fbsource//xplat/folly/logging:logging",
-        "fbsource//xplat/folly/net:network_socket",
+    ],
+    exported_deps = [
         "//eden/fs/nfs/xdr:xdr",
     ],
 )

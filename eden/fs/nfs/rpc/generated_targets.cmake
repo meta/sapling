@@ -8,16 +8,11 @@
 eden_add_library(eden_fs_nfs_rpc
   SRCS
     Rpc.cpp
-    StreamClient.cpp
   DEPS
-    Folly::folly_exception
     Folly::folly_exception_string
-    Folly::folly_string
-  EXPORTED_DEPS
     Folly::folly_io_iobuf
     Folly::folly_logging_logging
-    Folly::folly_net_network_socket
-    Folly::folly_network_address
+  EXPORTED_DEPS
     eden_fs_nfs_xdr
 )
 
