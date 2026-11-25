@@ -1079,7 +1079,10 @@ impl<R: RepoDerivedDataRef + RepoIdentityRef> RepoContext<R> {
     /// Derive the `HgAugmentedManifest` for `cs_id`, logging on failure.
     /// Skips bubble/ephemeral commits, whose bubble-scoped derived-data
     /// manager lacks the deps to derive an augmented manifest.
-    async fn derive_hg_augmented_manifest(&self, cs_id: ChangesetId) -> Result<(), MononokeError> {
+    pub async fn derive_hg_augmented_manifest(
+        &self,
+        cs_id: ChangesetId,
+    ) -> Result<(), MononokeError> {
         if self
             .repo()
             .repo_derived_data()

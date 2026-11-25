@@ -33,6 +33,7 @@ mercurial_mutation = { version = "0.1.0", path = "../mercurial/mutation" }
 mercurial_types = { version = "0.1.0", path = "../mercurial/types" }
 metaconfig_types = { version = "0.1.0", path = "../metaconfig/types" }
 mononoke_api = { version = "0.1.0", path = "../mononoke_api" }
+mononoke_macros = { version = "0.1.0", path = "../common/mononoke_macros" }
 mononoke_types = { version = "0.1.0", path = "../mononoke_types" }
 phases = { version = "0.1.0", path = "../repo_attributes/phases" }
 remotefilelog = { version = "0.1.0", path = "../repo_client/remotefilelog" }
@@ -58,7 +59,6 @@ fixtures = { version = "0.1.0", path = "../tests/fixtures" }
 maplit = "1.0"
 memblob = { version = "0.1.0", path = "../blobstore/memblob" }
 metadata = { version = "0.1.0", path = "../common/metadata" }
-mononoke_macros = { version = "0.1.0", path = "../common/mononoke_macros" }
 permission_checker = { version = "0.1.0", path = "../common/permission_checker" }
 pretty_assertions = { version = "1.4.1", features = ["alloc"], default-features = false }
 samplingblob = { version = "0.1.0", path = "../blobstore/samplingblob" }
@@ -69,6 +69,7 @@ sql_construct = { version = "0.1.0", path = "../common/sql_construct" }
 tempfile = "3.27.0"
 test_repo_factory = { version = "0.1.0", path = "../repo_factory/test_repo_factory" }
 tests_utils = { version = "0.1.0", path = "../tests/utils" }
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 
 [lints]
 workspace = true

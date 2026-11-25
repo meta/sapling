@@ -70,6 +70,7 @@ use metaconfig_types::RepoConfig;
 use mononoke_api::MononokeRepo;
 use mononoke_api::errors::MononokeError;
 use mononoke_api::repo::RepoContext;
+use mononoke_macros::mononoke;
 use mononoke_types::BonsaiChangeset;
 use mononoke_types::ChangesetId;
 use mononoke_types::ContentId;
@@ -87,6 +88,7 @@ use repo_update_logger::CommitInfo;
 use repo_update_logger::log_new_commits;
 use restricted_paths::RestrictedPathsArc;
 use tracing::debug;
+use tracing::warn;
 use unbundle::ShallowSubtreeCopyRejected;
 use unbundle::upload_changeset;
 
@@ -111,6 +113,40 @@ const MAP_UPLOADED_ROOT_HG_AUGMENTED_MANIFEST: &str =
 /// manifest.
 const REQUIRE_AUGMENTED_MANIFEST_FOR_TREE_LOOKUP: &str =
     "scm/mononoke:require_augmented_manifest_for_tree_lookup";
+
+/// Parents one upload checks, and derives in the background, at once.
+const PARENT_DERIVATION_CONCURRENCY: usize = 10;
+
+/// A parent's background derivation that covers more underived commits than
+/// this is logged as a warning, to show uploads that load the derivation queue.
+const MANY_UNDERIVED_COMMITS: u64 = 10_000;
+
+/// Log a warning when deriving `cs_id` covers more than `warn_above`
+/// underived commits. A failed count logs nothing: the derivation that
+/// follows logs its own failure.
+async fn warn_if_many_underived<R: MononokeRepo>(
+    repo_ctx: &RepoContext<R>,
+    cs_id: ChangesetId,
+    warn_above: u64,
+) {
+    let Ok(underived) = repo_ctx
+        .repo()
+        .repo_derived_data()
+        .count_underived::<RootHgAugmentedManifestId>(repo_ctx.ctx(), cs_id)
+        .await
+    else {
+        return;
+    };
+    if underived <= warn_above {
+        return;
+    }
+    let msg = format!("cs_id: {cs_id}, underived commits: {underived}");
+    warn!("Commit upload derives a parent's augmented manifest over many commits: {msg}");
+    repo_ctx.ctx().scuba().clone().log_with_msg(
+        "Commit upload derives a parent's augmented manifest over many commits",
+        Some(msg),
+    );
+}
 
 #[derive(Clone)]
 pub struct HgRepoContext<R> {
@@ -589,6 +625,8 @@ impl<R: MononokeRepo> HgRepoContext<R> {
         changesets: Vec<(HgChangesetId, RevlogChangeset, Option<BonsaiChangeset>)>,
         mutations: Vec<HgMutationEntry>,
     ) -> Result<Vec<Result<(HgBlobChangeset, BonsaiChangeset), MononokeError>>, MononokeError> {
+        self.derive_missing_parent_augmented_manifests(&changesets, MANY_UNDERIVED_COMMITS)
+            .await;
         let mut uploaded_changesets: HashMap<HgChangesetId, ChangesetHandle> = HashMap::new();
         let filelogs = HashMap::new();
         let manifests = HashMap::new();
@@ -635,6 +673,121 @@ impl<R: MononokeRepo> HgRepoContext<R> {
         }
 
         Ok(results)
+    }
+
+    /// Start deriving, in the background, the missing augmented manifests of
+    /// the parents of the uploaded commits that are not themselves in the
+    /// upload. A parent whose derivation covers more than `warn_above`
+    /// underived commits is logged as a warning.
+    ///
+    /// With the repo reading augmented manifests, commit upload reads each
+    /// parent's augmented manifest, so an upload on top of a draft without one
+    /// would fail every time: the client never resends a commit the server
+    /// has. With the parent derived, a later retry succeeds. This goes once no
+    /// draft lacks an augmented manifest.
+    async fn derive_missing_parent_augmented_manifests(
+        &self,
+        changesets: &[(HgChangesetId, RevlogChangeset, Option<BonsaiChangeset>)],
+        warn_above: u64,
+    ) {
+        if !self.reads_augmented_manifests() {
+            return;
+        }
+        let derived_data = self.repo().repo_derived_data();
+        // A bubble's derived data manager cannot derive augmented manifests.
+        if derived_data.manager().bubble_id().is_some()
+            || !derived_data
+                .config()
+                .is_enabled(RootHgAugmentedManifestId::VARIANT)
+        {
+            return;
+        }
+
+        let uploaded: HashSet<HgChangesetId> = changesets.iter().map(|(id, _, _)| *id).collect();
+        let parents: Vec<HgChangesetId> = changesets
+            .iter()
+            .flat_map(|(_, revlog_cs, _)| {
+                let (p1, p2) = revlog_cs.parents().get_nodes();
+                p1.into_iter().chain(p2)
+            })
+            .map(HgChangesetId::new)
+            .filter(|parent| !uploaded.contains(parent))
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        if parents.is_empty() {
+            return;
+        }
+
+        // A parent the server does not have fails the upload later on.
+        let parents = match self
+            .repo()
+            .bonsai_hg_mapping()
+            .convert_available_hg_to_bonsai(self.ctx(), parents)
+            .await
+        {
+            Ok(parents) => parents,
+            Err(err) => {
+                self.ctx().scuba().clone().log_with_msg(
+                    "Looking up the parents of uploaded commits failed",
+                    Some(format!("{err:?}")),
+                );
+                self.ctx()
+                    .perf_counters()
+                    .increment_counter(PerfCounterType::UploadParentAugmentedFailed);
+                return;
+            }
+        };
+        let eligible: Vec<ChangesetId> = stream::iter(parents)
+            .map(|cs_id| self.check_parent(cs_id))
+            .buffer_unordered(PARENT_DERIVATION_CONCURRENCY)
+            .filter_map(future::ready)
+            .collect()
+            .await;
+        if eligible.is_empty() {
+            return;
+        }
+
+        let repo_ctx = self.repo_ctx().clone();
+        // Spawned, so that the derivations outlive the request.
+        mononoke::spawn_task(async move {
+            stream::iter(eligible)
+                .for_each_concurrent(PARENT_DERIVATION_CONCURRENCY, |cs_id| {
+                    let repo_ctx = &repo_ctx;
+                    async move {
+                        warn_if_many_underived(repo_ctx, cs_id, warn_above).await;
+                        // The helper logs a failure.
+                        let _ = repo_ctx.derive_hg_augmented_manifest(cs_id).await;
+                    }
+                })
+                .await
+        });
+    }
+
+    /// Check whether a parent lacks an augmented manifest, and count the
+    /// outcome. Returns the parent if it should be derived.
+    async fn check_parent(&self, cs_id: ChangesetId) -> Option<ChangesetId> {
+        let counters = self.ctx().perf_counters();
+        match self
+            .repo()
+            .repo_derived_data()
+            .fetch_derived::<RootHgAugmentedManifestId>(self.ctx(), cs_id)
+            .await
+        {
+            Ok(Some(_)) => None,
+            Ok(None) => {
+                counters.increment_counter(PerfCounterType::UploadParentAugmentedStarted);
+                Some(cs_id)
+            }
+            Err(err) => {
+                self.ctx().scuba().clone().log_with_msg(
+                    "Checking an uploaded commit's parent for an augmented manifest failed",
+                    Some(format!("cs_id: {cs_id}, err: {err:?}")),
+                );
+                counters.increment_counter(PerfCounterType::UploadParentAugmentedFailed);
+                None
+            }
+        }
     }
 
     /// Best-effort derive the augmented manifest for each uploaded commit so the
@@ -1302,13 +1455,15 @@ mod tests {
     use mercurial_types::blobs::ChangesetMetadata;
     use mercurial_types::blobs::HgChangesetContent;
     use mercurial_types::calculate_hg_node_id;
+    use mercurial_types::fetch_manifest_envelope;
     use mononoke_api::ChangesetSpecifier;
     use mononoke_api::repo::Repo;
     use mononoke_api::repo::RepoContext;
     use mononoke_api::repo::RepoWithBubble;
-    use mononoke_macros::mononoke;
+    use mononoke_types::NonRootMPath;
     use samplingblob::SamplingBlobstore;
     use samplingblob::SamplingHandler;
+    use scuba_ext::MononokeScubaSampleBuilder;
     use test_repo_factory::TestRepoFactory;
     use tests_utils::CreateCommitContext;
 
@@ -1852,6 +2007,281 @@ mod tests {
             .await
             .context("the mapped root ACL manifest is stored")?;
         Ok(())
+    }
+
+    const READ_FROM_AUGMENTED: &str = "scm/mononoke:hgmanifest_read_from_augmented";
+
+    fn parent_derivation_knobs(read_from_augmented: bool) -> JustKnobsInMemory {
+        JustKnobsInMemory::new(hashmap! {
+            STORE_AUGMENTED_MANIFESTS_AT_TREE_UPLOAD.to_string() => KnobVal::Bool(true),
+            READ_FROM_AUGMENTED.to_string() => KnobVal::Bool(read_from_augmented),
+            // Otherwise deriving an Hg changeset would derive its augmented
+            // manifest too.
+            "scm/mononoke:derive_hg_augmented_manifest_with_hg_changeset".to_string() => KnobVal::Bool(false),
+        })
+    }
+
+    /// A draft stored the way commit upload stores one: with its Hg changeset
+    /// and Hg manifests but no augmented manifest.
+    async fn draft_without_augmented_manifest(
+        ctx: &CoreContext,
+        repo: &Repo,
+        parents: Vec<ChangesetId>,
+        file: &str,
+    ) -> anyhow::Result<ChangesetId> {
+        let cs_id = CreateCommitContext::new(ctx, repo, parents)
+            .add_file(file, file)
+            .add_file("dir/b", "b")
+            .commit()
+            .await?;
+        fixtures::store_hg_changesets_as_uploaded(ctx, repo, vec![cs_id]).await?;
+        Ok(cs_id)
+    }
+
+    /// A commit as a client uploads it: a child of `parent` that deletes `a`
+    /// and keeps `dir`. Its root tree is stored and its changeset is returned
+    /// ready for commit upload.
+    async fn child_deleting_a(
+        hg: &HgRepoContext<Repo>,
+        parent: ChangesetId,
+    ) -> anyhow::Result<(
+        HgManifestEnvelope,
+        (HgChangesetId, RevlogChangeset, Option<BonsaiChangeset>),
+    )> {
+        let parent_hg = hg
+            .repo()
+            .bonsai_hg_mapping()
+            .get_hg_from_bonsai(hg.ctx(), parent)
+            .await?
+            .expect("the parent has an Hg changeset");
+        let parent_root = parent_hg
+            .load(hg.ctx(), hg.repo().repo_blobstore())
+            .await?
+            .manifestid();
+        let parent_contents =
+            fetch_manifest_envelope(hg.ctx(), hg.repo().repo_blobstore(), parent_root)
+                .await?
+                .contents()
+                .clone();
+        let contents: Vec<u8> = parent_contents
+            .split_inclusive(|byte| *byte == b'\n')
+            .filter(|line| !line.starts_with(b"a\0"))
+            .flatten()
+            .copied()
+            .collect();
+        let contents = Bytes::from(contents);
+        let p1 = Some(parent_root.into_nodehash());
+        let node_id = calculate_hg_node_id(&contents, &HgParents::new(p1, None));
+        let tree = hg.verify_tree(node_id, p1, None, contents, None).await?;
+        hg.store_verified_tree(tree.clone()).await?;
+
+        let revlog_cs = RevlogChangeset::new_from_parts(
+            HgParents::new(Some(parent_hg.into_nodehash()), None),
+            HgManifestId::new(node_id),
+            Bytes::from("test"),
+            DateTime::from_timestamp(0, 0)?,
+            BTreeMap::new(),
+            vec![NonRootMPath::new("a")?],
+            Bytes::from("delete a"),
+        );
+        let hg_cs_id = HgChangesetContent::from_revlogcs(revlog_cs.clone()).compute_hash()?;
+        Ok((tree, (hg_cs_id, revlog_cs, None)))
+    }
+
+    fn all_uploaded(
+        stored: &Result<
+            Vec<Result<(HgBlobChangeset, BonsaiChangeset), MononokeError>>,
+            MononokeError,
+        >,
+    ) -> bool {
+        matches!(stored, Ok(results) if !results.is_empty() && results.iter().all(Result::is_ok))
+    }
+
+    /// Parent derivations that started and failed, in that order.
+    fn parent_derivations(hg: &HgRepoContext<Repo>) -> [i64; 2] {
+        [
+            PerfCounterType::UploadParentAugmentedStarted,
+            PerfCounterType::UploadParentAugmentedFailed,
+        ]
+        .map(|counter| hg.ctx().perf_counters().get_counter(counter))
+    }
+
+    /// Wait for a derivation that commit upload started in the background.
+    async fn wait_until_derived(
+        ctx: &CoreContext,
+        repo: &Repo,
+        cs_id: ChangesetId,
+    ) -> anyhow::Result<()> {
+        tokio::time::timeout(Duration::from_secs(60), async {
+            while mapped_root(ctx, repo, cs_id).await?.is_none() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            anyhow::Ok(())
+        })
+        .await
+        .context("the background derivation never finished")?
+    }
+
+    /// Upload a commit on top of a line of `underived_drafts` drafts, none of
+    /// which has an augmented manifest.
+    async fn assert_upload_derives_missing_parent(
+        fb: FacebookInit,
+        underived_drafts: usize,
+    ) -> anyhow::Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let repo: Repo = test_repo_factory::build_empty(fb).await?;
+        let mut parent = draft_without_augmented_manifest(&ctx, &repo, vec![], "a").await?;
+        let mut drafts = vec![parent];
+        for i in 1..underived_drafts {
+            parent = draft_without_augmented_manifest(&ctx, &repo, vec![parent], &format!("f{i}"))
+                .await?;
+            drafts.push(parent);
+        }
+        let hg = RepoContext::new_test(ctx.clone(), Arc::new(repo.clone()))
+            .await?
+            .hg();
+        let (tree, changeset) = child_deleting_a(&hg, parent).await?;
+
+        // Tree upload logs the failure and carries on.
+        hg.build_and_store_augmented_manifests_for_uploaded_trees(vec![tree.clone()])
+            .await
+            .expect_err("`dir` has no augmented manifest, so the new root gets none");
+
+        let first = hg
+            .store_hg_changesets(vec![changeset.clone()], vec![])
+            .await;
+        assert!(
+            !all_uploaded(&first),
+            "the first attempt fails, because the new root has no augmented manifest"
+        );
+        assert_eq!(
+            parent_derivations(&hg),
+            [1, 0],
+            "the first attempt starts deriving the parent and returns"
+        );
+        wait_until_derived(&ctx, &repo, parent).await?;
+        for draft in drafts {
+            assert!(
+                mapped_root(&ctx, &repo, draft).await?.is_some(),
+                "deriving the parent derives every underived ancestor"
+            );
+        }
+
+        // The client sees the root as missing and sends it again.
+        let root = HgManifestId::new(tree.node_id());
+        assert!(!hg.is_tree_uploaded(root).await?);
+        hg.build_and_store_augmented_manifests_for_uploaded_trees(vec![tree])
+            .await?;
+        assert!(hg.is_tree_uploaded(root).await?);
+        let second = hg.store_hg_changesets(vec![changeset], vec![]).await;
+        assert!(all_uploaded(&second), "the retry succeeds: {second:?}");
+        assert_eq!(
+            parent_derivations(&hg),
+            [1, 0],
+            "the retry finds the parent derived"
+        );
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn test_upload_derives_missing_parent(fb: FacebookInit) -> anyhow::Result<()> {
+        with_just_knobs_async(
+            parent_derivation_knobs(true),
+            assert_upload_derives_missing_parent(fb, 1).boxed(),
+        )
+        .await
+    }
+
+    #[mononoke::fbinit_test]
+    async fn test_upload_derives_parent_with_long_underived_chain(
+        fb: FacebookInit,
+    ) -> anyhow::Result<()> {
+        // However many underived ancestors the parent has, it is derived in
+        // the background.
+        with_just_knobs_async(
+            parent_derivation_knobs(true),
+            assert_upload_derives_missing_parent(fb, 5).boxed(),
+        )
+        .await
+    }
+
+    /// Start the background derivation of a parent with five underived
+    /// commits, warning above `warn_above`, and return whether Scuba got the
+    /// warning by the time the parent is derived.
+    async fn parent_derivation_warned(fb: FacebookInit, warn_above: u64) -> anyhow::Result<bool> {
+        let log_path = tempfile::NamedTempFile::new()?.into_temp_path();
+        let scuba = MononokeScubaSampleBuilder::with_discard().with_log_file(&log_path)?;
+        let ctx = CoreContext::test_mock(fb).with_mutated_scuba(|_| scuba);
+        let repo: Repo = test_repo_factory::build_empty(fb).await?;
+        let mut parent = draft_without_augmented_manifest(&ctx, &repo, vec![], "a").await?;
+        for i in 1..5 {
+            parent = draft_without_augmented_manifest(&ctx, &repo, vec![parent], &format!("f{i}"))
+                .await?;
+        }
+        let hg = RepoContext::new_test(ctx.clone(), Arc::new(repo.clone()))
+            .await?
+            .hg();
+        let (_tree, changeset) = child_deleting_a(&hg, parent).await?;
+
+        hg.derive_missing_parent_augmented_manifests(&[changeset], warn_above)
+            .await;
+        wait_until_derived(&ctx, &repo, parent).await?;
+        let log = std::fs::read_to_string(&log_path)?;
+        Ok(log.contains(&format!("cs_id: {parent}, underived commits: 5")))
+    }
+
+    #[mononoke::fbinit_test]
+    async fn test_parent_derivation_warns_about_many_underived_commits(
+        fb: FacebookInit,
+    ) -> anyhow::Result<()> {
+        with_just_knobs_async(
+            parent_derivation_knobs(true),
+            async move {
+                assert!(
+                    parent_derivation_warned(fb, 4).await?,
+                    "five underived commits are above a threshold of four: the parent is derived and the warning logged"
+                );
+                assert!(
+                    !parent_derivation_warned(fb, 5).await?,
+                    "five underived commits are not above a threshold of five: no warning"
+                );
+                Ok(())
+            }
+            .boxed(),
+        )
+        .await
+    }
+
+    async fn assert_upload_reading_hg_derives_no_parent(fb: FacebookInit) -> anyhow::Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let repo: Repo = test_repo_factory::build_empty(fb).await?;
+        let parent = draft_without_augmented_manifest(&ctx, &repo, vec![], "a").await?;
+        let hg = RepoContext::new_test(ctx.clone(), Arc::new(repo.clone()))
+            .await?
+            .hg();
+        let (_tree, changeset) = child_deleting_a(&hg, parent).await?;
+
+        let stored = hg.store_hg_changesets(vec![changeset], vec![]).await;
+        assert!(
+            all_uploaded(&stored),
+            "reading Hg manifests, the upload succeeds at once: {stored:?}"
+        );
+        assert_eq!(
+            mapped_root(&ctx, &repo, parent).await?,
+            None,
+            "with the reader switch off, commit upload derives no parent"
+        );
+        assert_eq!(parent_derivations(&hg), [0, 0]);
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn test_upload_reading_hg_derives_no_parent(fb: FacebookInit) -> anyhow::Result<()> {
+        with_just_knobs_async(
+            parent_derivation_knobs(false),
+            assert_upload_reading_hg_derives_no_parent(fb).boxed(),
+        )
+        .await
     }
 
     #[mononoke::fbinit_test]
