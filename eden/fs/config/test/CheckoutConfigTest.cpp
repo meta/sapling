@@ -163,7 +163,8 @@ INSTANTIATE_TEST_CASE_P(
     ::testing::Values(
         MountProtocol::FUSE,
         MountProtocol::PRJFS,
-        MountProtocol::NFS),
+        MountProtocol::NFS,
+        MountProtocol::FSKIT),
     [](const ::testing::TestParamInfo<MountProtocol>& info) {
       return FieldConverter<MountProtocol>{}.toDebugString(info.param);
     });
@@ -179,6 +180,21 @@ TEST_F(CheckoutConfigTest, testInvalidProtocol) {
   auto config =
       CheckoutConfig::loadFromClientDirectory(mountPoint_, clientDir_);
   EXPECT_EQ(config->getMountProtocol(), kMountProtocolDefault);
+}
+
+TEST_F(CheckoutConfigTest, testFSKitProtocolIsMacOSOnly) {
+  auto localData =
+      "[repository]\n"
+      "path = \"/data/users/carenthomas/fbsource\"\n"
+      "type = \"git\"\n"
+      "protocol = \"fskit\"\n";
+  writeFile(configDotToml_, folly::StringPiece{localData}).value();
+
+  auto config =
+      CheckoutConfig::loadFromClientDirectory(mountPoint_, clientDir_);
+  EXPECT_EQ(
+      config->getMountProtocol(),
+      folly::kIsApple ? MountProtocol::FSKIT : kMountProtocolDefault);
 }
 
 TEST_F(CheckoutConfigTest, testMountProtocolDefault) {

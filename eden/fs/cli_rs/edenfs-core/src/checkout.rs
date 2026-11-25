@@ -108,6 +108,8 @@ enum MountProtocol {
     Nfs,
     #[strum(serialize = "prjfs")]
     Prjfs,
+    #[strum(serialize = "fskit")]
+    Fskit,
 }
 
 #[derive(
@@ -388,8 +390,8 @@ impl CheckoutConfig {
         (&self.repository.repo_type).into()
     }
 
-    /// The filesystem protocol the checkout mounts with: `fuse`, `nfs` or
-    /// `prjfs`.
+    /// The filesystem protocol the checkout mounts with: `fuse`, `nfs`,
+    /// `prjfs` or `fskit`.
     pub fn mount_protocol(&self) -> &'static str {
         (&self.repository.protocol).into()
     }
@@ -1378,6 +1380,30 @@ mod tests {
             configs.is_empty(),
             "missing client state should not abort mount discovery"
         );
+    }
+
+    #[test]
+    fn test_parse_config_accepts_fskit_protocol() {
+        let temp_dir = tempdir().expect("couldn't create temp dir");
+        File::create(temp_dir.path().join(MOUNT_CONFIG))
+            .and_then(|mut file| {
+                file.write_all(
+                    br#"
+    [repository]
+    path = "/tmp/"
+    type = "hg"
+    protocol = "fskit"
+
+    [redirections]
+
+    [profiles]"#,
+                )
+            })
+            .expect("failed to write config");
+
+        let config = CheckoutConfig::parse_config(temp_dir.path())
+            .expect("an FSKit checkout config should parse");
+        assert_eq!(config.mount_protocol(), "fskit");
     }
 
     #[test]

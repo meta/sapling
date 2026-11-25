@@ -12,10 +12,11 @@ namespace facebook::eden {
 namespace {
 
 constexpr auto mountProtocolStr = [] {
-  std::array<folly::StringPiece, 3> mapping{};
+  std::array<folly::StringPiece, 4> mapping{};
   mapping[folly::to_underlying(MountProtocol::FUSE)] = "FUSE";
   mapping[folly::to_underlying(MountProtocol::PRJFS)] = "PrjFS";
   mapping[folly::to_underlying(MountProtocol::NFS)] = "NFS";
+  mapping[folly::to_underlying(MountProtocol::FSKIT)] = "FSKit";
   return mapping;
 }();
 

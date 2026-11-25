@@ -2749,6 +2749,34 @@ folly::Future<folly::Unit> EdenMount::fsChannelMount(bool readOnly) {
         // that mimics privhelper mount failing
         serverState_->getFaultInjector().check(
             "failMountInitialization", mountPath.view());
+#ifdef EDEN_HAVE_FSKIT
+        if (getCheckoutConfig()->getMountProtocol() == MountProtocol::FSKIT) {
+          if (!edenConfig->enableFsKit.getValue()) {
+            auto error = folly::make_exception_wrapper<std::system_error>(
+                EPERM,
+                std::generic_category(),
+                "checkout is configured for FSKit but fskit:enable is false");
+            mountPromise->setException(error);
+            return folly::makeFuture<folly::Unit>(std::move(error));
+          }
+          auto error = folly::make_exception_wrapper<std::system_error>(
+              ENOTSUP,
+              std::generic_category(),
+              "this EdenFS build has no FSKit channel");
+          mountPromise->setException(error);
+          return folly::makeFuture<folly::Unit>(std::move(error));
+        }
+#else
+        if (getCheckoutConfig()->getMountProtocol() == MountProtocol::FSKIT) {
+          auto error = folly::make_exception_wrapper<std::system_error>(
+              ENOTSUP,
+              std::generic_category(),
+              "checkout is configured for FSKit but this EdenFS build does "
+              "not support FSKit");
+          mountPromise->setException(error);
+          return folly::makeFuture<folly::Unit>(std::move(error));
+        }
+#endif
         return serverState_->getPrivHelper()
             ->fuseMount(
                 mountPath.view(), readOnly, edenConfig->fuseVfsType.getValue())

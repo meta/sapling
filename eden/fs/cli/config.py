@@ -62,6 +62,7 @@ if sys.platform == "win32":
     from .file_handler_tools import WinFileHandlerReleaser
 from .util import (
     CLONE_SUCCEEDED,
+    FSKIT_MOUNT_PROTOCOL_STRING,
     FUSE_MOUNT_PROTOCOL_STRING,
     HealthStatus,
     INTENTIONALLY_UNMOUNTED,
@@ -126,6 +127,7 @@ SUPPORTED_MOUNT_PROTOCOLS: Set[str] = {
     FUSE_MOUNT_PROTOCOL_STRING,
     NFS_MOUNT_PROTOCOL_STRING,
     PRJFS_MOUNT_PROTOCOL_STRING,
+    FSKIT_MOUNT_PROTOCOL_STRING,
 }
 
 SUPPORTED_INODE_CATALOG_TYPES: Set[str] = {
@@ -202,7 +204,7 @@ class CheckoutConfig(typing.NamedTuple):
     - backing_repo: The path where the true repo resides on disk.  For mercurial backing
         repositories this does not include the final ".hg" directory component.
     - scm_type: "hg", "filteredhg", or "git"
-    - mount_protocol: "fuse", "nfs" or "prjfs"
+    - mount_protocol: "fuse", "nfs", "prjfs" or "fskit"
     - case_sensitive: whether the mount point is case sensitive. Default to
       false on Windows and macOS.
     - require_utf8_path: whether the mount point will disallow non-utf8 paths

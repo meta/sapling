@@ -192,6 +192,14 @@ class TestMount {
   }
 
   /**
+   * Set `protocol` in the checkout's config.toml. Unlike setMountProtocol(),
+   * the mount reads it through CheckoutConfig::getMountProtocol(), as a mount
+   * that is not a takeover does. Must be called before the mount is created,
+   * i.e. on a default-constructed TestMount.
+   */
+  void setCheckoutProtocol(folly::StringPiece protocol);
+
+  /**
    * Like initialize, except EdenMount::initialize is not called.
    *
    * This should only be used if the TestMount was default-constructed.

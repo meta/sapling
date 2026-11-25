@@ -360,6 +360,18 @@ void TestMount::initTestDirectory(CaseSensitivity caseSensitivity) {
   stats_ = makeRefPtr<EdenStats>();
 }
 
+void TestMount::setCheckoutProtocol(folly::StringPiece protocol) {
+  XCHECK(config_) << "Call " << __func__ << "() before creating the mount";
+  auto mountPath = config_->getMountPath();
+  auto clientDirectory = config_->getClientDirectory();
+  auto configPath = clientDirectory + "config.toml"_pc;
+  // [repository] is the last table initTestDirectory() wrote.
+  auto configData = facebook::eden::readFile(configPath).value() +
+      "protocol = \"" + protocol.str() + "\"\n";
+  writeFile(configPath, folly::ByteRange{configData}).value();
+  config_ = CheckoutConfig::loadFromClientDirectory(mountPath, clientDirectory);
+}
+
 #ifndef _WIN32
 FuseDispatcher* TestMount::getDispatcher() const {
   return dispatcher_.get();

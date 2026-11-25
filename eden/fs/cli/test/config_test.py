@@ -507,6 +507,25 @@ type = "hg"
             )
             self.assertEqual("nfs", checkout.get_config().mount_protocol)
 
+    def test_checkout_with_fskit_protocol_is_readable(self) -> None:
+        client_dir = self._state_dir / "clients" / "fskit-client"
+        client_dir.mkdir(parents=True)
+        (client_dir / "config.toml").write_text(
+            """
+[repository]
+path = "/backing-repo"
+type = "hg"
+protocol = "fskit"
+"""
+        )
+
+        checkout = config_mod.EdenCheckout(
+            self.get_config(),
+            self.tmp_dir / "fskit-mount",
+            client_dir,
+        )
+        self.assertEqual("fskit", checkout.get_config().mount_protocol)
+
     def test_checkout_with_unknown_catalog_type_is_readable(self) -> None:
         client_dir = self._state_dir / "clients" / "sqlite-client"
         client_dir.mkdir(parents=True)

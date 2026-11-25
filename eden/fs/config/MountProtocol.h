@@ -15,6 +15,7 @@ enum class MountProtocol {
   FUSE,
   PRJFS,
   NFS,
+  FSKIT,
 };
 
 constexpr MountProtocol kMountProtocolDefault =

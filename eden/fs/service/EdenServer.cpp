@@ -5244,6 +5244,12 @@ bool EdenServer::startCheckoutRecovery(
       "Mount point {} is not currently mounted, attempting to remount.",
       mountPath);
 
+  auto mountProtocol = initialConfig->getMountProtocol();
+  if (mountProtocol == MountProtocol::NFS &&
+      !serverState_->getEdenConfig()->enableNfsServer.getValue()) {
+    mountProtocol = kMountProtocolDefault;
+  }
+
   AccidentalUnmountRecovery event{
       /*error=*/"",
       /*success=*/false,
@@ -5253,10 +5259,7 @@ bool EdenServer::startCheckoutRecovery(
       /*attempt=*/attempt->number,
       /*duration=*/0.0,
       /*mount_protocol=*/
-      FieldConverter<MountProtocol>{}.toDebugString(
-          serverState_->getEdenConfig()->enableNfsServer.getValue()
-              ? initialConfig->getMountProtocol()
-              : kMountProtocolDefault),
+      FieldConverter<MountProtocol>{}.toDebugString(mountProtocol),
       /*stop_reason=*/attempt->stopReason.empty()
           ? "not_mounted_since_daemon_start"
           : attempt->stopReason};

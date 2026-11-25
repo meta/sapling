@@ -70,6 +70,43 @@ TEST(InodeMap, forgetOnUnknownInodeFromUserspaceFsPeer) {
   EXPECT_NE(nullptr, root.get());
 }
 
+#ifdef EDEN_HAVE_FSKIT
+// This test is here because EdenMountTest.cpp is not built on macOS.
+TEST(EdenMount, fskitMountFailsWithEpermWhenFsKitIsDisabled) {
+  TestMount testMount;
+  testMount.setCheckoutProtocol("fskit");
+  FakeTreeBuilder builder;
+  testMount.initialize(builder);
+
+  EXPECT_THROW_ERRNO(
+      testMount.getEdenMount()->startFsChannel(/*readOnly=*/false).get(0ms),
+      EPERM);
+}
+
+TEST(EdenMount, fskitMountFailsWithEnotsupWhenFsKitIsEnabled) {
+  TestMount testMount;
+  testMount.setCheckoutProtocol("fskit");
+  FakeTreeBuilder builder;
+  testMount.initialize(builder);
+  testMount.updateEdenConfig({{"fskit:enable", "true"}});
+
+  EXPECT_THROW_ERRNO(
+      testMount.getEdenMount()->startFsChannel(/*readOnly=*/false).get(0ms),
+      ENOTSUP);
+}
+#elif defined(__APPLE__)
+TEST(EdenMount, fskitMountFailsWithEnotsupWithoutFsKitSupport) {
+  TestMount testMount;
+  testMount.setCheckoutProtocol("fskit");
+  FakeTreeBuilder builder;
+  testMount.initialize(builder);
+
+  EXPECT_THROW_ERRNO(
+      testMount.getEdenMount()->startFsChannel(/*readOnly=*/false).get(0ms),
+      ENOTSUP);
+}
+#endif
+
 TEST(InodeMap, loadFaultFailsAllPendingLookupsAndAllowsRetry) {
   FakeTreeBuilder builder;
   builder.setFile("file.txt", "contents");

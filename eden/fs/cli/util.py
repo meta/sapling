@@ -72,6 +72,7 @@ HEARTBEAT_FILE_PREFIX = "heartbeat_"
 NFS_MOUNT_PROTOCOL_STRING = "nfs"
 FUSE_MOUNT_PROTOCOL_STRING = "fuse"
 PRJFS_MOUNT_PROTOCOL_STRING = "prjfs"
+FSKIT_MOUNT_PROTOCOL_STRING = "fskit"
 
 CHEF_LOG_PATH_DARWIN = "/var/chef/outputs/chef.last.run_stats"
 CHEF_LOG_PATH_LINUX = "/var/chef/outputs/chef.last.run_stats"

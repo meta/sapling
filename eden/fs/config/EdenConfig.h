@@ -1540,6 +1540,17 @@ class EdenConfig : private ConfigSettingManager {
       false,
       this};
 
+  // [fskit]
+
+  /**
+   * ========== MACOS ONLY ==========
+   *
+   * Allow mounting checkouts whose config.toml has protocol = "fskit" in its
+   * [repository] section. While this is false, such a checkout fails to mount
+   * with EPERM instead of falling back to another protocol.
+   */
+  ConfigSetting<bool> enableFsKit{"fskit:enable", false, this};
+
   // [prjfs]
 
   /**

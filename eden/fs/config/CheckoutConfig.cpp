@@ -501,10 +501,16 @@ folly::dynamic CheckoutConfig::loadClientDirectoryMap(
 }
 
 MountProtocol CheckoutConfig::getMountProtocol() const {
-  // NFS is the only mount protocol that we allow to be switched from the
-  // default.
-  return mountProtocol_ == MountProtocol::NFS ? MountProtocol::NFS
-                                              : kMountProtocolDefault;
+  // NFS and FSKit (macOS only, additionally gated on fskit:enable at mount
+  // time) are the only mount protocols that we allow to be switched from
+  // the default.
+  if (mountProtocol_ == MountProtocol::NFS) {
+    return MountProtocol::NFS;
+  }
+  if (folly::kIsApple && mountProtocol_ == MountProtocol::FSKIT) {
+    return MountProtocol::FSKIT;
+  }
+  return kMountProtocolDefault;
 }
 
 } // namespace facebook::eden
