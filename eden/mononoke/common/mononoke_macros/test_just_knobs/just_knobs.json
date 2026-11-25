@@ -244,6 +244,7 @@
     "scm/mononoke:cgdm_reloading_interval_secs": 5,
     "scm/mononoke:repos_manager_concurrency": 30,
     "scm/mononoke:lazy_repo_build_concurrency": 100,
+    "scm/mononoke:lazy_repo_idle_unload_secs": 0,
     "scm/mononoke:config_reconcile_tick_interval_secs": 60,
     "scm/mononoke:common_config_reload_splay_secs": 0,
     "scm/mononoke:max_diff_file_size_mb": 64,

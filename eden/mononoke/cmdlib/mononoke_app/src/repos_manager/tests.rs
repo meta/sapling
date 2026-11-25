@@ -1152,13 +1152,16 @@ async fn test_reconcile_keeps_a_first_request_build_whose_spec_is_unchanged(
 // --- reconcile and idle repos ------------------------------------------------
 
 // A request builds a lazy repo, then nothing uses it for longer than its idle
-// window.
-#[mononoke::fbinit_test]
-async fn test_reconcile_keeps_idle_repos_built(fb: FacebookInit) -> Result<()> {
+// window, over two passes. Returns the repo the request built, held weakly as
+// a held repo is never unloaded, and the one serving after those passes.
+async fn idle_lazy_repo_after_passes(
+    fb: FacebookInit,
+    deep: bool,
+) -> Result<(Weak<ConfigOnlyRepo>, Option<Arc<ConfigOnlyRepo>>)> {
     let mut manifest: TierManifest =
         serde_json::from_str(&manifest_json(&[("lazy", git_path("lazy"))]))?;
     manifest.repos[0].repo_id = 1;
-    manifest.repos[0].is_deep_sharded = true;
+    manifest.repos[0].is_deep_sharded = deep;
     let source = Arc::new(TestSource::new());
     source.insert_config(
         &git_path("lazy"),
@@ -1215,7 +1218,7 @@ async fn test_reconcile_keeps_idle_repos_built(fb: FacebookInit) -> Result<()> {
     let built = || repos.iter_loaded_names().any(|name| name == "lazy");
 
     repos.add_lazy_repo("lazy", 1);
-    repos.get("lazy").await?.expect("built on request");
+    let requested = Arc::downgrade(&repos.get("lazy").await?.expect("built on request"));
     // The first pass compares the repo with its config, which is a read.
     pass(0).await?;
     tokio::time::sleep(Duration::from_millis(1100)).await;
@@ -1223,7 +1226,27 @@ async fn test_reconcile_keeps_idle_repos_built(fb: FacebookInit) -> Result<()> {
     assert!(built(), "a 0 idle window never unloads");
 
     pass(1).await?;
-    // FIXME: the idle repo should be unloaded.
-    assert!(built(), "the idle repo stays built");
+    pass(1).await?;
+    Ok((requested, repos.get_by_name("lazy")))
+}
+
+#[mononoke::fbinit_test]
+async fn test_reconcile_unloads_idle_deep_sharded_repos(fb: FacebookInit) -> Result<()> {
+    let (_, serving) = idle_lazy_repo_after_passes(fb, true).await?;
+    assert!(
+        serving.is_none(),
+        "the idle repo is unloaded, and the next pass does not build it again"
+    );
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_reconcile_keeps_idle_shallow_repos_built(fb: FacebookInit) -> Result<()> {
+    let (requested, serving) = idle_lazy_repo_after_passes(fb, false).await?;
+    let serving = serving.expect("the idle shallow repo stays built");
+    assert!(
+        Weak::ptr_eq(&requested, &Arc::downgrade(&serving)),
+        "the repo the request built still serves, so no pass rebuilt it"
+    );
     Ok(())
 }

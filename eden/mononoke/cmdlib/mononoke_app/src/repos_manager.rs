@@ -86,6 +86,9 @@ define_stats! {
     lazy_repo_build_failed: timeseries(Sum, Count),
     // Successful repo builds, aggregated over repos so idle repos add no series:
     // on first request via ConfigDefinedRepoLoader, and at assignment via add_repo.
+    // Built repos reconcile unloaded because nothing used them for their idle
+    // window (`LAZY_REPO_IDLE_UNLOAD_KNOB`).
+    lazy_repo_unloaded: timeseries(Sum, Count),
     lazy_repo_build_duration_ms: histogram(250, 0, 120_000, Average, Count; P 50; P 90; P 99),
     add_repo_build_duration_ms: histogram(250, 0, 120_000, Average, Count; P 50; P 90; P 99),
     // A tier member a request asked for after startup, built on that request
@@ -929,6 +932,7 @@ where
                 deferred: outcome.deferred,
             };
             self.reconcile_state.store(Arc::new(outcome.next_state));
+            self.unload_idle_repos();
 
             // Evict spec-hash cache entries for repos no longer in the manifest.
             // Done here (once per pass) because ConfigSource has no end-of-pass
@@ -947,7 +951,43 @@ where
         .await
         .unwrap_or(Ok(()))
     }
+
+    /// Unloads the built deep-sharded repos that nothing has used for their
+    /// idle window. The next request builds them again. Shallow members stay
+    /// built: reconcile builds them back as eager repos.
+    fn unload_idle_repos(&self) {
+        let Some(manifest) = self.configs.manifest() else {
+            return;
+        };
+        let now = Instant::now();
+        for name in self.repos.iter_loaded_names() {
+            if !manifest
+                .repo(&name)
+                .is_some_and(|entry| entry.is_deep_sharded)
+            {
+                continue;
+            }
+            let window = justknobs::get_as::<u64>(LAZY_REPO_IDLE_UNLOAD_KNOB, Some(name.as_str()));
+            if window == 0
+                || !self
+                    .repos
+                    .unload_if_idle(&name, Duration::from_secs(window), now)
+            {
+                continue;
+            }
+            STATS::lazy_repo_unloaded.add_value(1);
+            info!("Unloaded idle lazy repo: {}", name);
+            let mut scuba = self.repo_factory.env.scuba_sample_builder.clone();
+            scuba.add("repo", name.as_str());
+            scuba.log_with_msg("Lazy repo unloaded", None);
+        }
+    }
 }
+
+/// Seconds a built deep-sharded repo may go unused before reconcile unloads
+/// it, read per repo with the repo name as switch value; 0 keeps it built.
+/// Shallow and eager repos stay built whatever it says.
+const LAZY_REPO_IDLE_UNLOAD_KNOB: &str = "scm/mononoke:lazy_repo_idle_unload_secs";
 
 /// Spreads rebuilds after a shared-config change over this many seconds.
 const RELOAD_SPLAY_KNOB: &str = "scm/mononoke:common_config_reload_splay_secs";
