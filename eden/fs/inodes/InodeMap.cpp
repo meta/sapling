@@ -344,6 +344,14 @@ ImmediateFuture<InodePtr> InodeMap::lookupInode(
   if (UNLIKELY(unloadedIter == data->unloadedInodes_.end())) {
     stats_->increment(&InodeMapStats::lookupInodeError);
     if (mount_->throwEstaleIfInodeIsMissing()) {
+#ifdef EDEN_HAVE_FSKIT
+      if (mount_->shouldBeOrIsFSKitChannel()) {
+        XLOGF(DBG3, "FSKit inode {} stale", number);
+        edenFsEventsLogger_->logEvent(FSKitStaleError{});
+        return ImmediateFuture<InodePtr>{folly::Try<InodePtr>{std::system_error{
+            std::error_code{ESTALE, std::system_category()}}}};
+      }
+#endif
       XLOGF(DBG3, "NFS inode {} stale", number);
       // windows does not have ESTALE. We need some other error to turn into the
       // nfs stale error. For now let's just let it throw.

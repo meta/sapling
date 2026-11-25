@@ -35,6 +35,7 @@
 #include "eden/fs/config/CheckoutConfig.h"
 #include "eden/fs/config/EdenConfig.h"
 #include "eden/fs/config/InodeCatalogType.h"
+#include "eden/fs/eden-config.h"
 #include "eden/fs/inodes/CacheHint.h"
 #include "eden/fs/inodes/FsChannel.h"
 #include "eden/fs/inodes/InodeNumber.h"
@@ -500,6 +501,11 @@ class EdenMount : public std::enable_shared_from_this<EdenMount> {
       const;
 #endif
   Nfsd3* FOLLY_NULLABLE getNfsdChannel() const;
+
+#ifdef EDEN_HAVE_FSKIT
+  /** True when this mount's protocol is FSKit. */
+  bool shouldBeOrIsFSKitChannel() const;
+#endif
 
   /**
    * Return true if the mount is initialized and it's NFS. A few parts of EdenFS
@@ -1438,6 +1444,14 @@ class EdenMount : public std::enable_shared_from_this<EdenMount> {
    * underlying dynamic configuration.
    */
   std::optional<bool> shouldUseNFSMount_{std::nullopt};
+
+#ifdef EDEN_HAVE_FSKIT
+  /**
+   * Set in initialize() before INITIALIZING; true when this mount's protocol
+   * is FSKit.
+   */
+  std::atomic<bool> shouldUseFSKitMount_{false};
+#endif
 
   std::shared_ptr<InodeMap> inodeMap_;
   InodePathCache inodePathCache_;

@@ -94,6 +94,62 @@ TEST(EdenMount, fskitMountFailsWithEnotsupWhenFsKitIsEnabled) {
       testMount.getEdenMount()->startFsChannel(/*readOnly=*/false).get(0ms),
       ENOTSUP);
 }
+
+TEST(EdenMount, readOnlyFSKitMountFailsWithEnotsup) {
+  TestMount testMount;
+  testMount.setCheckoutProtocol("fskit");
+  FakeTreeBuilder builder;
+  testMount.initialize(builder);
+  testMount.updateEdenConfig({{"fskit:enable", "true"}});
+
+  try {
+    testMount.getEdenMount()->startFsChannel(/*readOnly=*/true).get(0ms);
+    FAIL() << "expected read-only FSKit mount to fail";
+  } catch (const std::system_error& ex) {
+    EXPECT_EQ(ex.code().value(), ENOTSUP);
+    EXPECT_TRUE(folly::StringPiece{ex.what()}.contains("read-only"))
+        << ex.what();
+  }
+}
+
+TEST(EdenMount, readOnlyFSKitMountFailsWithEpermWhenFsKitIsDisabled) {
+  TestMount testMount;
+  testMount.setCheckoutProtocol("fskit");
+  FakeTreeBuilder builder;
+  testMount.initialize(builder);
+
+  EXPECT_THROW_ERRNO(
+      testMount.getEdenMount()->startFsChannel(/*readOnly=*/true).get(0ms),
+      EPERM);
+}
+
+TEST(InodeMap, unknownInodeNumberIsStaleOnFSKitMount) {
+  TestMount testMount;
+  testMount.setCheckoutProtocol("fskit");
+  FakeTreeBuilder builder;
+  testMount.initialize(builder);
+
+  auto* inodeMap = testMount.getEdenMount()->getInodeMap();
+  EXPECT_THROW_ERRNO(
+      inodeMap
+          ->lookupInode(0x12345678_ino, ObjectFetchContext::getNullContext())
+          .get(0ms),
+      ESTALE);
+}
+
+TEST(InodeMap, unknownInodeNumberIsStaleOnFSKitTakeoverMount) {
+  TestMount testMount;
+  testMount.setMountProtocol(MountProtocol::FSKIT);
+  FakeTreeBuilder builder;
+  testMount.initialize(builder);
+
+  auto* inodeMap = testMount.getEdenMount()->getInodeMap();
+  EXPECT_THROW_ERRNO(
+      inodeMap
+          ->lookupInode(0x12345678_ino, ObjectFetchContext::getNullContext())
+          .get(0ms),
+      ESTALE);
+}
 #elif defined(__APPLE__)
 TEST(EdenMount, fskitMountFailsWithEnotsupWithoutFsKitSupport) {
   TestMount testMount;

@@ -340,6 +340,13 @@ InodeCatalogType EdenMount::getInodeCatalogType(
   // it is an invariant that shouldUseNfs_ is set before we transition to
   // INITIALIZING
   calculateIsNfsMount(takeoverMountProtocol);
+#ifdef EDEN_HAVE_FSKIT
+  shouldUseFSKitMount_.store(
+      takeoverMountProtocol
+          ? *takeoverMountProtocol == MountProtocol::FSKIT
+          : getCheckoutConfig()->getMountProtocol() == MountProtocol::FSKIT,
+      std::memory_order_release);
+#endif
 
   transitionState(State::UNINITIALIZED, State::INITIALIZING);
 
@@ -1346,8 +1353,22 @@ bool EdenMount::shouldBeOrIsNfsChannel() const {
   return shouldUseNFSMount_.value();
 }
 
+#ifdef EDEN_HAVE_FSKIT
+bool EdenMount::shouldBeOrIsFSKitChannel() const {
+  return shouldUseFSKitMount_.load(std::memory_order_acquire);
+}
+#endif
+
 bool EdenMount::throwEstaleIfInodeIsMissing() const {
-  return shouldBeOrIsNfsChannel();
+  if (shouldBeOrIsNfsChannel()) {
+    return true;
+  }
+#ifdef EDEN_HAVE_FSKIT
+  if (shouldBeOrIsFSKitChannel()) {
+    return true;
+  }
+#endif
+  return false;
 }
 
 EdenMount::ReadLocation EdenMount::getReadLocationForMaterializedFiles() const {
@@ -2750,12 +2771,20 @@ folly::Future<folly::Unit> EdenMount::fsChannelMount(bool readOnly) {
         serverState_->getFaultInjector().check(
             "failMountInitialization", mountPath.view());
 #ifdef EDEN_HAVE_FSKIT
-        if (getCheckoutConfig()->getMountProtocol() == MountProtocol::FSKIT) {
+        if (shouldBeOrIsFSKitChannel()) {
           if (!edenConfig->enableFsKit.getValue()) {
             auto error = folly::make_exception_wrapper<std::system_error>(
                 EPERM,
                 std::generic_category(),
                 "checkout is configured for FSKit but fskit:enable is false");
+            mountPromise->setException(error);
+            return folly::makeFuture<folly::Unit>(std::move(error));
+          }
+          if (readOnly) {
+            auto error = folly::make_exception_wrapper<std::system_error>(
+                ENOTSUP,
+                std::generic_category(),
+                "read-only FSKit mounts are not supported");
             mountPromise->setException(error);
             return folly::makeFuture<folly::Unit>(std::move(error));
           }

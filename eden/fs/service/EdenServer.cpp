@@ -5330,11 +5330,16 @@ bool EdenServer::startCheckoutRecovery(
               }
               event.success = success;
               if (success) {
+                auto protocol = result.value()->shouldBeOrIsNfsChannel()
+                    ? MountProtocol::NFS
+                    : kMountProtocolDefault;
+#ifdef EDEN_HAVE_FSKIT
+                if (result.value()->shouldBeOrIsFSKitChannel()) {
+                  protocol = MountProtocol::FSKIT;
+                }
+#endif
                 event.mount_protocol =
-                    FieldConverter<MountProtocol>{}.toDebugString(
-                        result.value()->shouldBeOrIsNfsChannel()
-                            ? MountProtocol::NFS
-                            : kMountProtocolDefault);
+                    FieldConverter<MountProtocol>{}.toDebugString(protocol);
               }
               event.error =
                   success ? "" : result.exception().what().toStdString();

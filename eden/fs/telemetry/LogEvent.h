@@ -463,6 +463,14 @@ struct NFSStaleError : public EdenFSEvent {
   }
 };
 
+struct FSKitStaleError : public EdenFSEvent {
+  void populate(DynamicEvent& /*event*/) const override {}
+
+  const char* getType() const override {
+    return "fskit_stale_error";
+  }
+};
+
 struct FinishedMount : public EdenFSEvent {
   std::string backing_store_type;
   std::string repo_type;
