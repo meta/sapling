@@ -1084,8 +1084,36 @@ pub async fn import_changelists(
     changes: &[u64],
     options: &ImportOptions,
 ) -> Result<ImportedBatch> {
+    let built =
+        build_changelists(ctx, repo, source, depot_root, bookmark, changes, options).await?;
+    commit_built(ctx, repo, depot_root, bookmark, built, options).await
+}
+
+/// A batch's changesets, built but not saved, and the failure that ended its build early.
+#[derive(Default)]
+struct BuiltBatch {
+    changes: Vec<u64>,
+    /// The bookmark's changeset the batch commits on top of.
+    old: Option<ChangesetId>,
+    built: Vec<BuiltChangeset>,
+    error: Option<anyhow::Error>,
+    build_time: Duration,
+}
+
+/// `import_changelists` up to its save: its prepare failures are logged.
+async fn build_changelists(
+    ctx: &CoreContext,
+    repo: &(
+         impl BookmarksRef + FilestoreConfigRef + RepoBlobstoreRef + RepoDerivedDataRef + RepoIdentityRef
+     ),
+    source: &impl ChangeSource,
+    depot_root: &str,
+    bookmark: &BookmarkKey,
+    changes: &[u64],
+    options: &ImportOptions,
+) -> Result<BuiltBatch> {
     let Some(&last) = changes.last() else {
-        return Ok(ImportedBatch::default());
+        return Ok(BuiltBatch::default());
     };
     let batch = Batch {
         repo: repo.repo_identity().name(),
@@ -1122,10 +1150,58 @@ pub async fn import_changelists(
         ctx.metadata().session_id(),
     );
     let old = head.map(|(cs_id, _)| cs_id);
-    let (build, (built, build_error)) =
+    let (build, (built, error)) =
         build_changesets_until_failure(ctx, repo, source, depot_root, old, changes, options)
             .timed()
             .await;
+    Ok(BuiltBatch {
+        changes: changes.to_vec(),
+        old,
+        built,
+        error,
+        build_time: build.completion_time,
+    })
+}
+
+/// `import_changelists` from its save on. The bookmark must still be at `built.old`.
+async fn commit_built(
+    ctx: &CoreContext,
+    repo: &(
+         impl BookmarksRef
+         + BonsaiGitMappingRef
+         + BonsaiGlobalrevMappingRef
+         + BonsaiP4MappingArc
+         + CommitGraphRef
+         + CommitGraphWriterRef
+         + RepoBlobstoreRef
+         + RepoConfigRef
+         + RepoDerivedDataRef
+         + RepoIdentityRef
+         + Send
+         + Sync
+     ),
+    depot_root: &str,
+    bookmark: &BookmarkKey,
+    built: BuiltBatch,
+    options: &ImportOptions,
+) -> Result<ImportedBatch> {
+    let BuiltBatch {
+        changes,
+        old,
+        built,
+        error: build_error,
+        build_time,
+    } = built;
+    if changes.is_empty() {
+        return Ok(ImportedBatch::default());
+    }
+    let changes = changes.as_slice();
+    let batch = Batch {
+        repo: repo.repo_identity().name(),
+        depot_root,
+        bookmark,
+        changes,
+    };
     // Changelists built before a failure are committed first, and the failure is reported
     // for the rest of the batch.
     let build_failure = match build_error {
@@ -1161,7 +1237,7 @@ pub async fn import_changelists(
             "batch cut after changelist {last} ({} of {}): build took {:?}, over max_build_time {:?}; session {}",
             built.len(),
             changes.len(),
-            build.completion_time,
+            build_time,
             options.max_build_time,
             ctx.metadata().session_id(),
         );
@@ -1234,7 +1310,7 @@ pub async fn import_changelists(
     .map_err(|error| batch.failed(ctx, Stage::Commit, error))?;
     let imported = ImportedBatch {
         changelists: imported,
-        build: build.completion_time,
+        build: build_time,
         save_and_derive: save_and_derive.completion_time,
         commit: commit.completion_time,
     };
@@ -1505,28 +1581,70 @@ pub async fn import_next(
     limit: usize,
     options: &ImportOptions,
 ) -> Result<ImportedBatch> {
+    let built = build_next(ctx, repo, source, depot_root, bookmark, limit, options).await?;
+    commit_built(ctx, repo, depot_root, bookmark, built, options).await
+}
+
+/// `import_next` up to its save: its prepare failures are logged.
+async fn build_next(
+    ctx: &CoreContext,
+    repo: &(
+         impl BookmarksRef
+         + BonsaiP4MappingRef
+         + FilestoreConfigRef
+         + RepoBlobstoreRef
+         + RepoDerivedDataRef
+         + RepoIdentityRef
+     ),
+    source: &impl ChangeSource,
+    depot_root: &str,
+    bookmark: &BookmarkKey,
+    limit: usize,
+    options: &ImportOptions,
+) -> Result<BuiltBatch> {
     let changes = async {
         check_depot_root(source, depot_root).await?;
         check_resume_continuity(ctx, repo, source, bookmark).await?;
         let after = resume_point(ctx, repo, bookmark).await?;
-        match options.listing_window {
-            None => next_changes(source, depot_root, after, limit).await,
-            Some(first_window) => {
-                next_changes_in_windows(source, depot_root, after, limit, first_window).await
-            }
-        }
+        list_next(source, depot_root, after, limit, options).await
     }
     .await
-    .map_err(|error| {
-        let batch = Batch {
-            repo: repo.repo_identity().name(),
-            depot_root,
-            bookmark,
-            changes: &[],
-        };
-        batch.failed(ctx, Stage::Prepare, error)
-    })?;
-    import_changelists(ctx, repo, source, depot_root, bookmark, &changes, options).await
+    .map_err(|error| prepare_failed(ctx, repo, depot_root, bookmark, error))?;
+    build_changelists(ctx, repo, source, depot_root, bookmark, &changes, options).await
+}
+
+/// Up to `limit` changelists of the depot after `after`, listed as `options.listing_window`
+/// says.
+async fn list_next(
+    source: &impl ChangeSource,
+    depot_root: &str,
+    after: Option<u64>,
+    limit: usize,
+    options: &ImportOptions,
+) -> Result<Vec<u64>> {
+    match options.listing_window {
+        None => next_changes(source, depot_root, after, limit).await,
+        Some(first_window) => {
+            next_changes_in_windows(source, depot_root, after, limit, first_window).await
+        }
+    }
+}
+
+/// Logs a failure before the batch's changelists are known, as `Batch::failed` does.
+fn prepare_failed(
+    ctx: &CoreContext,
+    repo: &impl RepoIdentityRef,
+    depot_root: &str,
+    bookmark: &BookmarkKey,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    let batch = Batch {
+        repo: repo.repo_identity().name(),
+        depot_root,
+        bookmark,
+        changes: &[],
+    };
+    batch.failed(ctx, Stage::Prepare, error)
 }
 
 /// Writes the batch's mapping in the bookmark move's transaction, so the bookmark never
