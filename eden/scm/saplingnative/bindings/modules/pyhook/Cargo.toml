@@ -8,7 +8,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.104"
 base64 = { version = "0.23.1", features = ["alloc"] }
-blake2 = "0.10"
+blake2 = "0.10.6"
 cpython = { version = "0.7.2", features = ["python3-sys"], default-features = false }
 erased-serde = "0.4.11"
 pyio = { version = "0.1.0", path = "../pyio" }

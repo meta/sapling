@@ -15,7 +15,7 @@ name = "edenapi_ext"
 
 [dependencies]
 anyhow = "1.0.104"
-blake2 = "0.10"
+blake2 = "0.10.6"
 cloned = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 crossbeam = "0.8.5"
 futures = { version = "0.3.34", features = ["async-await", "std"], default-features = false }

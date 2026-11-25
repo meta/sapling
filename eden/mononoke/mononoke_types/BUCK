@@ -24,7 +24,7 @@ rust_library(
         "fbsource//third-party/rust:async-trait",
         "fbsource//third-party/rust:bincode",
         "fbsource//third-party/rust:bit-set",
-        "fbsource//third-party/rust:blake2",
+        "fbsource//third-party/rust:blake2-0-10",
         "fbsource//third-party/rust:bytes",
         "fbsource//third-party/rust:chrono",
         "fbsource//third-party/rust:chrono-english",

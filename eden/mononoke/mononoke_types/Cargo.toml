@@ -14,7 +14,7 @@ async-recursion = "1.2.0"
 async-trait = "0.1.92"
 bincode = { version = "2", features = ["serde"] }
 bit-set = "0.11.1"
-blake2 = "0.10"
+blake2 = "0.10.6"
 blobstore = { version = "0.1.0", path = "../blobstore" }
 borrowed = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 bounded_traversal = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }

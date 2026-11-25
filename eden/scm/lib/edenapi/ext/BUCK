@@ -17,7 +17,7 @@ sl_rust_library(
     ],
     deps = [
         "fbsource//third-party/rust:anyhow",
-        "fbsource//third-party/rust:blake2",
+        "fbsource//third-party/rust:blake2-0-10",
         "fbsource//third-party/rust:crossbeam",
         "fbsource//third-party/rust:futures",
         "fbsource//third-party/rust:itertools",

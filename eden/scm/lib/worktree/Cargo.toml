@@ -15,7 +15,7 @@ name = "worktree"
 
 [dependencies]
 anyhow = "1.0.104"
-blake2 = "0.10"
+blake2 = "0.10.6"
 chrono = { version = "0.4.45", features = ["clock", "serde", "std"], default-features = false }
 fs-err = "3.3.2"
 sapling-atomicfile = { version = "0.2.0", path = "../atomicfile" }

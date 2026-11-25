@@ -19,7 +19,7 @@ sl_rust_library(
     ],
     deps = [
         "fbsource//third-party/rust:anyhow",
-        "fbsource//third-party/rust:blake2",
+        "fbsource//third-party/rust:blake2-0-10",
         "fbsource//third-party/rust:chrono",
         "fbsource//third-party/rust:fs-err",
         "fbsource//third-party/rust:serde",
