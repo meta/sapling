@@ -74,13 +74,42 @@ pub(crate) fn render_string_with_order(
     renderer: &mut dyn Renderer<String, Output = String>,
     order: Option<&[&str]>,
 ) -> String {
+    for node in fixture.reserve {
+        renderer.reserve(node.to_string());
+    }
+
+    let mut out = String::new();
+    for (node, parents, message) in fixture_rows(fixture, order) {
+        let width = renderer.width(Some(&node), Some(&parents));
+        let row = renderer.next_row(node.clone(), parents, String::from("o"), message);
+        let row_indent = row
+            .lines()
+            .filter_map(|line| line.find(node.as_str()).map(|offset| &line[..offset]))
+            .next()
+            .expect("name should be in the output");
+        assert_eq!(
+            row_indent.width() as u64,
+            width,
+            "indent '{row_indent}' for row for {node} is the wrong width"
+        );
+
+        out.push_str(&row);
+    }
+
+    indent(&out)
+}
+
+pub(crate) fn fixture_rows(
+    fixture: &TestFixture,
+    order: Option<&[&str]>,
+) -> impl Iterator<Item = (String, Vec<Ancestor<String>>, String)> {
     let TestFixture {
         dag: ascii,
         messages,
         heads,
-        reserve,
         ancestors,
         missing,
+        ..
     } = fixture;
 
     let mut dag = MiniDag::from_drawdag(ascii);
@@ -91,8 +120,6 @@ pub(crate) fn render_string_with_order(
     let ancestors: HashSet<(&str, &str)> = ancestors.iter().copied().collect();
     let missing: HashSet<&str> = missing.iter().copied().collect();
 
-    reserve.iter().for_each(|s| renderer.reserve(s.to_string()));
-
     let messages: HashMap<_, _> = messages.iter().cloned().collect();
 
     let iter: Vec<String> = match order {
@@ -100,10 +127,9 @@ pub(crate) fn render_string_with_order(
         Some(order) => order.iter().map(|name| name.to_string()).collect(),
     };
 
-    let mut out = String::new();
-    for node in iter {
+    iter.into_iter().filter_map(move |node| {
         if missing.contains(node.as_str()) {
-            continue;
+            return None;
         }
         let parents = dag
             .parent_names(&node)
@@ -118,28 +144,12 @@ pub(crate) fn render_string_with_order(
                 }
             })
             .collect();
-        let name = &node;
-        let message = match messages.get(name.as_str()) {
-            Some(message) => format!("{name}\n{message}"),
-            None => name.clone(),
+        let message = match messages.get(node.as_str()) {
+            Some(message) => format!("{node}\n{message}"),
+            None => node.clone(),
         };
-        let width = renderer.width(Some(&node), Some(&parents));
-        let row = renderer.next_row(node.to_string(), parents, String::from("o"), message);
-        let row_indent = row
-            .lines()
-            .filter_map(|line| line.find(name.as_str()).map(|offset| &line[..offset]))
-            .next()
-            .expect("name should be in the output");
-        assert_eq!(
-            row_indent.width() as u64,
-            width,
-            "indent '{row_indent}' for row for {name} is the wrong width"
-        );
-
-        out.push_str(&row);
-    }
-
-    indent(&out)
+        Some((node, parents, message))
+    })
 }
 
 pub(crate) fn indent(out: &str) -> String {

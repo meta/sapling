@@ -1170,12 +1170,8 @@ mod tests {
         allocator: Option<Arc<LineIdAllocator<String>>>,
     ) -> String {
         use crate::pipeline::GraphTextRenderer;
-        use crate::test_utils::MiniDag;
+        use crate::test_utils::fixture_rows;
 
-        let mut dag = MiniDag::from_drawdag(fixture.dag);
-        for head in fixture.heads {
-            dag.assign_rev(head);
-        }
         let mut renderer = GraphTextRenderer::<String>::new::<P>()
             .with_line_id_allocator(allocator)
             .configure(|options| options.min_row_height = 0);
@@ -1183,29 +1179,7 @@ mod tests {
             renderer.reserve(node.to_string());
         }
         let mut out = String::new();
-        for node in dag.all() {
-            if fixture.missing.contains(&node.as_str()) {
-                continue;
-            }
-            let parents = dag
-                .parent_names(&node)
-                .into_iter()
-                .map(|parent| {
-                    if fixture.missing.contains(&parent.as_str()) {
-                        Ancestor::Anonymous
-                    } else if fixture
-                        .ancestors
-                        .contains(&(node.as_str(), parent.as_str()))
-                    {
-                        Ancestor::Ancestor(parent)
-                    } else {
-                        Ancestor::Parent(parent)
-                    }
-                })
-                .collect();
-            let message = fixture.messages.iter().find(|(name, _)| *name == node);
-            let message =
-                message.map_or_else(|| node.clone(), |(_, text)| format!("{node}\n{text}"));
+        for (node, parents, message) in fixture_rows(fixture, None) {
             renderer.write_next_lines(
                 |text, color| {
                     if let Some(id) = *color {
