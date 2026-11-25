@@ -28,7 +28,15 @@ sl_rust_library(
         "fbsource//third-party/rust:futures",
         "fbsource//third-party/rust:mockito",
         "fbsource//third-party/rust:zstd",
-    ],
+    ] + select({
+        "DEFAULT": [],
+        "ovr_config//os:linux": [
+            "fbsource//third-party/rust:tempfile",
+        ],
+        "ovr_config//os:macos": [
+            "fbsource//third-party/rust:tempfile",
+        ],
+    }),
     deps = [
         "fbsource//third-party/rust:anyhow",
         "fbsource//third-party/rust:async-compression",

@@ -828,9 +828,12 @@ impl Request {
                 easy.ssl_cert_blob(&blob)?;
             }
             Some(cert) => {
-                easy.ssl_cert(cert)?;
+                // curl reuses a connection whenever the cert path string
+                // matches, so a re-pointed symlink must change the string or
+                // the connections made under the old identity keep serving.
+                easy.ssl_cert(resolve_symlinks(cert))?;
                 if let Some(key) = key {
-                    easy.ssl_key(key)?;
+                    easy.ssl_key(resolve_symlinks(key))?;
                 }
             }
             None => {}
@@ -939,6 +942,13 @@ fn read_file(path: impl AsRef<Path>) -> Result<Vec<u8>, anyhow::Error> {
     Ok(buf)
 }
 
+fn resolve_symlinks(path: &Path) -> Cow<'_, Path> {
+    match std::fs::canonicalize(path) {
+        Ok(resolved) => Cow::Owned(resolved),
+        Err(_) => Cow::Borrowed(path),
+    }
+}
+
 #[derive(Eq, Hash, PartialEq)]
 struct PemCacheKey {
     pub cert: PathBuf,
@@ -1024,6 +1034,29 @@ mod tests {
     use crate::Config;
     use crate::HttpClient;
     use crate::ResolvedAuth;
+
+    #[cfg(unix)]
+    #[test]
+    fn test_resolve_symlinks_follows_a_repointed_link() -> Result<()> {
+        let tempdir = tempfile::tempdir()?;
+        let dir = tempdir.path();
+        let old = dir.join("old.pem");
+        let new = dir.join("new.pem");
+        let link = dir.join("link.pem");
+        std::fs::write(&old, "old")?;
+        std::fs::write(&new, "new")?;
+
+        std::os::unix::fs::symlink(&old, &link)?;
+        assert_eq!(resolve_symlinks(&link), std::fs::canonicalize(&old)?);
+
+        std::fs::remove_file(&link)?;
+        std::os::unix::fs::symlink(&new, &link)?;
+        assert_eq!(resolve_symlinks(&link), std::fs::canonicalize(&new)?);
+
+        let missing = dir.join("missing.pem");
+        assert_eq!(resolve_symlinks(&missing), missing);
+        Ok(())
+    }
 
     #[test]
     fn test_get() -> Result<()> {
