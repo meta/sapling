@@ -51,7 +51,7 @@ You call `sl` command from the test by using this helper function
 
 **Run an Integration Test**
 
-See `.claude/CLAUDE.md` → "Verification" for the `buck2 test` command.
+See `AGENTS.md` → "Verification" for the `buck2 test` command.
 
 ### FUSE io_uring variants
 

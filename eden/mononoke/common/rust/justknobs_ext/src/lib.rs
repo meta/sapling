@@ -8,7 +8,7 @@
 //! Mononoke-local facade over `justknobs_stub` whose three top-level
 //! functions (`eval`, `get`, `get_as`) panic on failure instead of
 //! returning `Result`. The Mononoke style rule (see
-//! `eden/mononoke/.claude/CLAUDE.md`) is that a missing or misspelled
+//! `eden/mononoke/AGENTS.md`) is that a missing or misspelled
 //! JustKnob is a programming error; we want it to surface loudly at
 //! the call site instead of being silently masked by `unwrap_or`.
 //!

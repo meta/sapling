@@ -12,13 +12,13 @@ For a complete introduction, see [What is Mononoke?](1.1-what-is-mononoke.md).
 
 This documentation provides high-level architectural and conceptual information about Mononoke for developers, operators, and AI agents. It covers core architectural patterns, major components (servers, jobs, tools), key features, VCS integration, and operational aspects.
 
-**Not covered here:** Build/test workflows are in [CLAUDE.md](../CLAUDE.md). API documentation is in rustdoc comments. Detailed operational procedures are in component-specific directories.
+**Not covered here:** Build/test workflows are in [AGENTS.md](../AGENTS.md). API documentation is in rustdoc comments. Detailed operational procedures are in component-specific directories.
 
 ## Getting Started
 
 **New to Mononoke?** Start with Section 1 (Introduction).
 
-**Building or developing?** See [CLAUDE.md](../CLAUDE.md) for build instructions and testing procedures.
+**Building or developing?** See [AGENTS.md](../AGENTS.md) for build instructions and testing procedures.
 
 **Looking for specific topics?** Use the table of contents below.
 
@@ -122,7 +122,7 @@ A living document tracking long-term engineering improvements and technical debt
 ## Additional Resources
 
 **Development:**
-- [CLAUDE.md](../CLAUDE.md) - Build commands, tests, build modes, development patterns
+- [AGENTS.md](../AGENTS.md) - Build commands, tests, build modes, development patterns
 
 **Code:**
 - Mononoke codebase: `fbcode/eden/mononoke/`
@@ -131,7 +131,7 @@ A living document tracking long-term engineering improvements and technical debt
 **Related Projects:**
 - EdenFS: `fbcode/eden/fs/` - Virtual filesystem
 - Sapling CLI: `fbcode/eden/scm/` - Command-line interface
-- Eden project docs: `fbcode/eden/CLAUDE.md`
+- Eden project docs: `fbcode/eden/AGENTS.md`
 
 **External:**
 - Sapling website: https://sapling-scm.com/
@@ -139,7 +139,7 @@ A living document tracking long-term engineering improvements and technical debt
 
 ## Contributing
 
-Update these docs for architectural changes, new components, or component reorganization. Do not update for implementation details, bug fixes, or configuration changes—those belong in component directories, rustdoc, or CLAUDE.md.
+Update these docs for architectural changes, new components, or component reorganization. Do not update for implementation details, bug fixes, or configuration changes—those belong in component directories, rustdoc, or AGENTS.md.
 
 Maintain a professional, neutral, factual tone. Keep content high-level, cross-reference liberally, and verify accuracy against the code.
 
