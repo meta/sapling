@@ -236,10 +236,10 @@ test worktree add - an ambiguous Phabricator diff aborts for agents and picks th
   $ setconfig phrevset.mock-local-D1234=$local_diff
   $ CODING_AGENT_METADATA=id=test_agent sl worktree add $TESTTMP/ambiguous_agent --rev D1234
   D1234 resolves ambiguously to multiple local commits:
-    1: * 1970-01-01 00:33:20 +0000 newer successor (glob)
-    2: * 1970-01-01 00:16:40 +0000 older successor (glob)
+    1: [0-9a-f]{40} 1970-01-01 00:33:20 \+0000 newer successor \(not obsolete\) (re)
+    2: [0-9a-f]{40} 1970-01-01 00:16:40 \+0000 older successor \(not obsolete\) (re)
   abort: ambiguous commit for D1234
-  (specify one of the commit hashes directly, or set 'phrevset.prompt-ambiguous-successors=false' to select the newest revision automatically)
+  (inspect mutation history with 'sl log -G --mutation -r "mutationhistory(HASH)"', then specify the intended commit hash directly)
   [255]
   $ test -d $TESTTMP/ambiguous_agent
   [1]

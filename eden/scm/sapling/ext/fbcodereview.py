@@ -1612,21 +1612,28 @@ def _select_ambiguous_successor(repo, diffid, successors):
         repo.ui.metrics.inc("phrevset.ambiguous_successors.auto_selected", 1)
         return successors[0]
 
+    is_agent = agentdetect.is_agent()
     repo.ui.warn(_("D%s resolves ambiguously to multiple local commits:\n") % diffid)
     for index, successor in enumerate(successors, 1):
         ctx = repo[successor]
         title = next(iter(ctx.description().splitlines()), "")
         date = util.datestr(ctx.date(), "%Y-%m-%d %H:%M:%S %1%2")
-        repo.ui.warn("  %d: %s %s %s\n" % (index, short(successor), date, title))
+        if is_agent:
+            status = _("obsolete") if ctx.obsolete() else _("not obsolete")
+            repo.ui.warn(
+                "  %d: %s %s %s (%s)\n" % (index, hex(successor), date, title, status)
+            )
+        else:
+            repo.ui.warn("  %d: %s %s %s\n" % (index, short(successor), date, title))
 
-    if agentdetect.is_agent():
+    if is_agent:
         repo.ui.metrics.inc("phrevset.ambiguous_successors.agent_rejected", 1)
         raise error.Abort(
             _("ambiguous commit for D%s") % diffid,
             hint=_(
-                "specify one of the commit hashes directly, or set "
-                "'phrevset.prompt-ambiguous-successors=false' to select the "
-                "newest revision automatically"
+                "inspect mutation history with "
+                "'@prog@ log -G --mutation -r \"mutationhistory(HASH)\"', "
+                "then specify the intended commit hash directly"
             ),
         )
 

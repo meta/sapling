@@ -148,17 +148,43 @@
   $ sl log -r D1234 --config phrevset.prompt-ambiguous-successors=false -T '{desc|firstline}\n'
   newer successor
 
-# Agents should abort instead of guessing between ambiguous successors.
+# Agents should abort with full hashes and obsolete status instead of guessing.
 
   $ CODING_AGENT_METADATA=id=test_agent sl log -r D1234 -T '{desc|firstline}\n'
   D1234 resolves ambiguously to multiple local commits:
-    1: * 1970-01-01 00:33:20 +0000 newer successor (glob)
-    2: * 1970-01-01 00:16:40 +0000 older successor (glob)
+    1: [0-9a-f]{40} 1970-01-01 00:33:20 \+0000 newer successor \(not obsolete\) (re)
+    2: [0-9a-f]{40} 1970-01-01 00:16:40 \+0000 older successor \(not obsolete\) (re)
   abort: ambiguous commit for D1234
-  (specify one of the commit hashes directly, or set 'phrevset.prompt-ambiguous-successors=false' to select the newest revision automatically)
+  (inspect mutation history with 'sl log -G --mutation -r "mutationhistory(HASH)"', then specify the intended commit hash directly)
   [255]
 
-# The config override restores automatic selection for agents.
+# Plain mode and the config override retain automatic selection for agents.
 
+  $ HGPLAIN=1 CODING_AGENT_METADATA=id=test_agent sl log -r D1234 -T '{desc|firstline}\n'
+  newer successor
   $ CODING_AGENT_METADATA=id=test_agent sl log -r D1234 --config phrevset.prompt-ambiguous-successors=false -T '{desc|firstline}\n'
   newer successor
+
+# An obsolete matching successor can remain visible through its descendants.
+
+  $ newclientrepo
+  $ drawdag <<'EOS'
+  > A
+  > EOS
+  $ setconfig mutation.record=true mutation.enabled=true phrevset.callsign=CALLSIGN phrevset.mock-local-D1234=$A
+  $ sl goto -q $A
+  $ HGPLAIN=1 sl amend -q -d "1000 0" -m "$(printf 'stale successor\n\nDifferential Revision: https://phabricator.intern.facebook.com/D1234')"
+  $ STALE=$(sl log -r . -T '{node}')
+  $ echo child > child
+  $ sl commit -qAm child
+  $ sl goto -q $STALE
+  $ HGPLAIN=1 sl amend -q --no-rebase -d "2000 0" -m "$(printf 'latest successor\n\nDifferential Revision: https://phabricator.intern.facebook.com/D1234')" > /dev/null
+  $ CODING_AGENT_METADATA=id=test_agent sl log -r D1234 -T '{desc|firstline}\n'
+  D1234 resolves ambiguously to multiple local commits:
+    1: [0-9a-f]{40} 1970-01-01 00:33:20 \+0000 latest successor \(not obsolete\) (re)
+    2: [0-9a-f]{40} 1970-01-01 00:16:40 \+0000 stale successor \(obsolete\) (re)
+  abort: ambiguous commit for D1234
+  (inspect mutation history with 'sl log -G --mutation -r "mutationhistory(HASH)"', then specify the intended commit hash directly)
+  [255]
+  $ sl log -r . -T '{desc|firstline}\n'
+  latest successor
