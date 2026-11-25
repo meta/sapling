@@ -38,6 +38,7 @@ use crate::sharded::retry_delay;
 use crate::sharded::secs_since_success_key;
 use crate::sharded::servers;
 
+mod connect_retries_flag;
 mod content_reuse_flag;
 mod filelog_flags;
 mod skip_unreadable_flag;

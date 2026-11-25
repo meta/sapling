@@ -40,6 +40,7 @@ use p4_import::ContentReuse;
 use p4_import::ImportOptions;
 use p4_import::SkipUnreadable;
 use p4_import::UnreadableRevision;
+use p4_source::CONNECT_RETRIES;
 use p4_source::FilelogHistory;
 use p4_source::FilelogOptions;
 use p4_source::Keychain;
@@ -166,6 +167,17 @@ struct P4SyncArgs {
     /// it: the integration records are the same
     #[clap(long, help_heading = "PERFORCE OPTIONS")]
     filelog_one_revision: bool,
+
+    /// Times a read command is run again when p4 fails to connect to its server before
+    /// writing anything (`SSL connect to ... failed`), 250 ms after the first failure, then
+    /// twice as long each time; 0 never runs it again
+    #[clap(
+        long,
+        default_value_t = CONNECT_RETRIES,
+        value_parser = clap::value_parser!(u32).range(0..=5),
+        help_heading = "PERFORCE OPTIONS"
+    )]
+    p4_connect_retries: u32,
 
     /// Changelists imported per batch (at least 1)
     #[clap(long, default_value = "100")]
@@ -495,6 +507,7 @@ async fn async_main(app: MononokeApp) -> Result<()> {
             args.filelog_concurrency,
             args.filelog_one_revision,
         ),
+        p4_connect_retries: args.p4_connect_retries,
         batch_size: args.batch_size,
         idle_interval: args.idle_interval_secs,
         import_options: args.import_args.import_options(),

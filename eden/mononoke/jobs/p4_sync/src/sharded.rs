@@ -93,6 +93,7 @@ pub(crate) struct Settings {
     pub(crate) skip_unreadable: SkipUnreadable,
     /// How integration records are asked for.
     pub(crate) filelog: FilelogOptions,
+    pub(crate) p4_connect_retries: u32,
     pub(crate) batch_size: NonZeroUsize,
     pub(crate) idle_interval: Duration,
     pub(crate) import_options: ImportOptions,
@@ -437,7 +438,9 @@ impl RepoShardedProcess for P4SyncProcess {
                         .then_some(self.settings.skip_unreadable),
                     alias: alias.to_owned(),
                     depot,
-                    p4: p4.with_path_charsets(path_charsets),
+                    p4: p4
+                        .with_path_charsets(path_charsets)
+                        .with_connect_retries(self.settings.p4_connect_retries),
                 })
             }
             ConfiguredDepot::NotAMirror => Err("no p4_source in its repo config".to_owned()),
