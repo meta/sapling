@@ -114,17 +114,53 @@ class HealthStatus:
         pid: Optional[int],
         uptime: Optional[float],
         detail: str,
+        error: Optional[Exception] = None,
     ) -> None:
         self.status = status
         self.pid = pid  # The process ID, or None if not running
         self.uptime = uptime
         self.detail = detail  # a human-readable message
+        # The exception from the Thrift call, or None if the call succeeded.
+        self.error = error
 
     def is_healthy(self) -> bool:
         return self.status == fb303_status.ALIVE
 
     def is_starting(self) -> bool:
         return self.status == fb303_status.STARTING
+
+    def telemetry_fields(self) -> dict[str, int | str]:
+        """Return the fields of this status for an `edenfs_events` sample.
+
+        `reason` is the status name. `error_reason` is the type of the error.
+        For a `TransportError`, `error_reason` also has the transport error
+        type. It also has the errno if the errno is not 0. `error` is the error
+        message. For an `EdenNotRunningError`, the error fields describe its
+        cause.
+        """
+        fields: dict[str, int | str] = {
+            "reason": getattr(self.status, "name", str(self.status)),
+        }
+        if self.pid is not None:
+            fields["pid"] = self.pid
+        error = self.error
+        if isinstance(error, EdenNotRunningError) and isinstance(
+            error.__cause__, Exception
+        ):
+            error = error.__cause__
+        if error is None:
+            return fields
+        error_reason = type(error).__name__
+        if isinstance(error, TransportError):
+            error_reason += f":{error.type.name}"
+            if error.errno:
+                error_reason += f":errno={error.errno}"
+        message = getattr(error, "message", None)
+        if not isinstance(message, str):
+            message = str(error)
+        fields["error_reason"] = error_reason
+        fields["error"] = message
+        return fields
 
     def __str__(self) -> str:
         return "(%s, pid=%s, uptime=%s, detail=%r)" % (
@@ -292,16 +328,18 @@ def check_health(
     except (
         EdenNotRunningError,
         TransportError,
-    ):
+    ) as ex:
         # It is possible that the edenfs process is running, but the Thrift
         # server is not running. This could be during the startup, shutdown,
         # or takeover of the edenfs process. As a backup to requesting the
         # PID from the Thrift server, we read it from the lockfile and try
         # to deduce the current status of EdenFS.
-        return check_health_using_lockfile(config_dir)
+        health = check_health_using_lockfile(config_dir)
+        health.error = ex
+        return health
     except Error as ex:
         detail = "error talking to edenfs: " + str(ex)
-        return HealthStatus(status, pid, uptime, detail)
+        return HealthStatus(status, pid, uptime, detail, error=ex)
 
     status_name = status.name
     detail = "edenfs running (pid {}); status is {}".format(pid, status_name)

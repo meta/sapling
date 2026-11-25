@@ -2762,7 +2762,7 @@ class StartCmd(Subcmd):
         daemon_binary = daemon_util.find_daemon_binary(args.daemon_binary)
 
         # Check to see if edenfs is already running
-        health_info = instance.check_health()
+        health_info = self._check_health(instance, args)
         if not is_takeover:
             msg = None
             if health_info.is_healthy():
@@ -2799,6 +2799,25 @@ class StartCmd(Subcmd):
             if sys.platform == "win32" and should_notify_eden_ready_status:
                 self.send_edenfs_notification(instance, result)
         return result
+
+    def _check_health(
+        self, instance: EdenInstance, args: argparse.Namespace
+    ) -> util.HealthStatus:
+        """Check the health of the daemon and log the result to telemetry."""
+        if args.if_necessary:
+            mode = "if_necessary"
+        elif args.if_not_running:
+            mode = "if_not_running"
+        else:
+            mode = "default"
+        with instance.get_telemetry_logger().new_sample(
+            "start_health_check",
+            mode=mode,
+            is_takeover=bool(getattr(args, "takeover", False)),
+        ) as sample:
+            health_info = instance.check_health()
+            sample.add_fields(**health_info.telemetry_fields())
+        return health_info
 
     def send_edenfs_notification(self, instance: EdenInstance, result: int) -> None:
         """Send notification for EdenFS health status."""

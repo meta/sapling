@@ -32,6 +32,7 @@ from eden.fs.cli.config import (
 )
 from eden.fs.service.eden.thrift_types import MountInfo, MountState
 from eden.test_support.temporary_directory import TemporaryDirectoryMixin
+from thrift.python.exceptions import TransportError, TransportErrorType
 
 from .lib.output import TestOutput
 
@@ -1432,3 +1433,53 @@ class FsckThreadCountTest(unittest.TestCase):
             "fsck.num-error-discovery-threads", 4
         )
         self.assertIn("--num_error_discovery_threads=16", argv)
+
+
+class StartTest(unittest.TestCase):
+    def test_start_logs_a_failed_health_check(self) -> None:
+        start_cmd = main_mod.StartCmd(argparse.ArgumentParser())
+        args = argparse.Namespace(
+            daemon_binary=None,
+            daemon_log_level=None,
+            edenfs_args=[],
+            foreground=False,
+            gdb=False,
+            if_necessary=True,
+            if_not_running=False,
+            preserved_vars=[],
+            strace=None,
+            takeover=False,
+        )
+        telemetry_logger = telemetry.TestTelemetryLogger()
+        telemetry_logger.samples = []
+        instance = MagicMock()
+        instance.get_telemetry_logger.return_value = telemetry_logger
+        instance.get_mount_paths.return_value = ["/home/test/repo"]
+        instance.check_health.return_value = util.HealthStatus(
+            main_mod.fb303_status.STOPPED,
+            1234,
+            None,
+            "EdenFS's Thrift server does not appear to be running",
+            error=TransportError(TransportErrorType.TIMED_OUT, "Timed Out", 0, 0),
+        )
+
+        with (
+            patch.object(main_mod, "get_eden_instance", return_value=instance),
+            patch.object(main_mod, "remove_legacyephemeral_checkouts"),
+            patch.object(main_mod.daemon_util, "find_daemon_binary"),
+            patch.object(
+                main_mod.daemon, "start_edenfs_service", return_value=1
+            ) as start_service,
+        ):
+            self.assertEqual(1, start_cmd.run(args))
+
+        start_service.assert_called_once()
+        self.assertEqual(1, len(telemetry_logger.samples))
+        sample = telemetry_logger.samples[0]
+        self.assertEqual("start_health_check", sample.strings["type"])
+        self.assertEqual("STOPPED", sample.strings["reason"])
+        self.assertEqual("TransportError:TIMED_OUT", sample.strings["error_reason"])
+        self.assertEqual(1234, sample.ints["pid"])
+        self.assertEqual("if_necessary", sample.strings["mode"])
+        self.assertEqual(0, sample.ints["is_takeover"])
+        self.assertIn("duration", sample.doubles)

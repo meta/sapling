@@ -6,15 +6,26 @@
 
 # pyre-strict
 
+import errno
 import os
 import stat
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock
 
 from eden.fs.service.eden.thrift_types import (
+    DaemonInfo,
     TreeInodeDebugInfo,
     TreeInodeEntryDebugInfo,
+)
+from eden.thrift.client import EdenNotRunningError
+from fb303_core.thrift_types import fb303_status
+from thrift.python.exceptions import (
+    ApplicationError,
+    ApplicationErrorType,
+    TransportError,
+    TransportErrorType,
 )
 
 from .. import util
@@ -234,3 +245,78 @@ class UtilTest(unittest.TestCase):
         )
         self.assertListEqual(read_files, [])
         self.assertListEqual(written_files, [])
+
+
+class CheckHealthTest(unittest.TestCase):
+    def check_health(self, get_client: MagicMock) -> util.HealthStatus:
+        with tempfile.TemporaryDirectory() as config_dir:
+            return util.check_health(get_client, Path(config_dir))
+
+    def test_alive_daemon_has_no_error_fields(self) -> None:
+        get_client = MagicMock()
+        get_client.return_value.__enter__.return_value.getDaemonInfo.return_value = (
+            DaemonInfo(pid=1234, commandLine=[], status=fb303_status.ALIVE, uptime=5.0)
+        )
+
+        self.assertEqual(
+            self.check_health(get_client).telemetry_fields(),
+            {"reason": "ALIVE", "pid": 1234},
+        )
+
+    def test_rpc_timeout_records_the_transport_error(self) -> None:
+        timeout = TransportError(TransportErrorType.TIMED_OUT, "Timed Out", 0, 0)
+        get_client = MagicMock()
+        get_client.return_value.__enter__.return_value.getDaemonInfo.side_effect = (
+            timeout
+        )
+
+        health = self.check_health(get_client)
+
+        self.assertIs(health.error, timeout)
+        self.assertEqual(
+            health.telemetry_fields(),
+            {
+                "reason": "DEAD",
+                "error_reason": "TransportError:TIMED_OUT",
+                "error": "Timed Out",
+            },
+        )
+
+    def test_connect_failure_records_the_cause(self) -> None:
+        refused = TransportError(
+            TransportErrorType.NOT_OPEN,
+            "connect failed",
+            errno.ECONNREFUSED,
+            0,
+        )
+        get_client = MagicMock(
+            side_effect=EdenNotRunningError("/home/test/.eden/socket", refused)
+        )
+
+        fields = self.check_health(get_client).telemetry_fields()
+
+        self.assertEqual(
+            fields["error_reason"],
+            f"TransportError:NOT_OPEN:errno={errno.ECONNREFUSED}",
+        )
+        self.assertEqual(fields["error"], "connect failed")
+
+    def test_application_error_records_its_message(self) -> None:
+        get_client = MagicMock()
+        get_client.return_value.__enter__.return_value.getDaemonInfo.side_effect = (
+            ApplicationError(ApplicationErrorType.UNKNOWN, "boom")
+        )
+
+        fields = self.check_health(get_client).telemetry_fields()
+
+        self.assertEqual(fields["error_reason"], "ApplicationError")
+        self.assertEqual(fields["error"], "boom")
+
+    def test_not_running_error_without_cause_describes_itself(self) -> None:
+        get_client = MagicMock(
+            side_effect=EdenNotRunningError("/home/test/.eden/socket")
+        )
+
+        fields = self.check_health(get_client).telemetry_fields()
+
+        self.assertEqual(fields["error_reason"], "EdenNotRunningError")

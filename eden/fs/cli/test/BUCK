@@ -27,8 +27,10 @@ python_unittest(
         "//eden/fs/cli/doctor/test/lib:lib",
         "//eden/fs/cli/test/lib:lib",
         "//eden/fs/inodes/overlay:serialization-python-types",
+        "//eden/fs/py/eden/thrift:client",
         "//eden/fs/service:thrift-python-types",
         "//eden/test_support:py",
+        "//fb303/thrift:fb303_core-python-types",
         "//thrift/lib/python:types",
     ],
 )
