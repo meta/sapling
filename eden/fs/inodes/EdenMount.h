@@ -502,10 +502,18 @@ class EdenMount : public std::enable_shared_from_this<EdenMount> {
 #endif
   Nfsd3* FOLLY_NULLABLE getNfsdChannel() const;
 
-#ifdef EDEN_HAVE_FSKIT
+  static MountProtocol resolveMountProtocol(
+      const CheckoutConfig& checkoutConfig,
+      const EdenConfig& edenConfig);
+
+  /**
+   * Return this mount's protocol. Must only be called once initialize() has
+   * begun.
+   */
+  MountProtocol getMountProtocol() const;
+
   /** True when this mount's protocol is FSKit. */
   bool shouldBeOrIsFSKitChannel() const;
-#endif
 
   /**
    * Return true if the mount is initialized and it's NFS. A few parts of EdenFS
@@ -518,11 +526,6 @@ class EdenMount : public std::enable_shared_from_this<EdenMount> {
 
   /**
    * This allows earlier detection if this is an NFS mount than isNfsdChannel.
-   *
-   * This should only be called after the mount is "Initializing". (It is the
-   * caller's responsibility to perform proper synchronization here with the
-   * mount start operation.  This method provides no internal synchronization of
-   * its own.)
    */
   bool shouldBeOrIsNfsChannel() const;
 
@@ -1242,18 +1245,6 @@ class EdenMount : public std::enable_shared_from_this<EdenMount> {
       const ObjectFetchContextPtr& context);
 
   /**
-   * Should only be called before the EdenMount transitions to the INITIALIZING
-   * state.
-   * We decide whether this mount should use nfs before initialization time and
-   * do not change the decision. This is so that we can consistently determine
-   * if we are determining if we are using an nfs mount without checking if the
-   * channel is an NFS mount. Needed because we need to know the type of mount
-   * earlier than channel object creation. This is for responding to stale
-   * inodes specially for NFS and reading inodes specially off nfs on windows.
-   */
-  void calculateIsNfsMount(
-      const std::optional<MountProtocol>& takeoverMountProtocol);
-  /**
    * Clear the fs reference count for all stale inodes. Stale inodes are those
    * that have been unlinked and not recently referenced.
    *
@@ -1439,19 +1430,10 @@ class EdenMount : public std::enable_shared_from_this<EdenMount> {
 #endif
 
   /**
-   * Should the created mount use NFS (only currently supported on Linux and
-   * Windows). We calculate this when the mount is created based on the
-   * underlying dynamic configuration.
+   * Set once in initialize() from the takeover protocol or the checkout
+   * config.
    */
-  std::optional<bool> shouldUseNFSMount_{std::nullopt};
-
-#ifdef EDEN_HAVE_FSKIT
-  /**
-   * Set in initialize() before INITIALIZING; true when this mount's protocol
-   * is FSKit.
-   */
-  std::atomic<bool> shouldUseFSKitMount_{false};
-#endif
+  std::atomic<MountProtocol> mountProtocol_{kMountProtocolDefault};
 
   std::shared_ptr<InodeMap> inodeMap_;
   InodePathCache inodePathCache_;

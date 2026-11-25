@@ -5244,11 +5244,8 @@ bool EdenServer::startCheckoutRecovery(
       "Mount point {} is not currently mounted, attempting to remount.",
       mountPath);
 
-  auto mountProtocol = initialConfig->getMountProtocol();
-  if (mountProtocol == MountProtocol::NFS &&
-      !serverState_->getEdenConfig()->enableNfsServer.getValue()) {
-    mountProtocol = kMountProtocolDefault;
-  }
+  auto mountProtocol = EdenMount::resolveMountProtocol(
+      *initialConfig, *serverState_->getEdenConfig());
 
   AccidentalUnmountRecovery event{
       /*error=*/"",
@@ -5330,16 +5327,9 @@ bool EdenServer::startCheckoutRecovery(
               }
               event.success = success;
               if (success) {
-                auto protocol = result.value()->shouldBeOrIsNfsChannel()
-                    ? MountProtocol::NFS
-                    : kMountProtocolDefault;
-#ifdef EDEN_HAVE_FSKIT
-                if (result.value()->shouldBeOrIsFSKitChannel()) {
-                  protocol = MountProtocol::FSKIT;
-                }
-#endif
                 event.mount_protocol =
-                    FieldConverter<MountProtocol>{}.toDebugString(protocol);
+                    FieldConverter<MountProtocol>{}.toDebugString(
+                        result.value()->getMountProtocol());
               }
               event.error =
                   success ? "" : result.exception().what().toStdString();

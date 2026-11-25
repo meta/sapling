@@ -337,16 +337,11 @@ InodeCatalogType EdenMount::getInodeCatalogType(
     OverlayChecker::ProgressCallback&& progressCallback,
     const std::optional<SerializedInodeMap>& takeover,
     const std::optional<MountProtocol>& takeoverMountProtocol) {
-  // it is an invariant that shouldUseNfs_ is set before we transition to
-  // INITIALIZING
-  calculateIsNfsMount(takeoverMountProtocol);
-#ifdef EDEN_HAVE_FSKIT
-  shouldUseFSKitMount_.store(
+  mountProtocol_.store(
       takeoverMountProtocol
-          ? *takeoverMountProtocol == MountProtocol::FSKIT
-          : getCheckoutConfig()->getMountProtocol() == MountProtocol::FSKIT,
+          ? *takeoverMountProtocol
+          : resolveMountProtocol(*getCheckoutConfig(), *getEdenConfig()),
       std::memory_order_release);
-#endif
 
   transitionState(State::UNINITIALIZED, State::INITIALIZING);
 
@@ -1321,54 +1316,37 @@ bool EdenMount::isNfsdChannel() const {
   return getNfsdChannel() != nullptr;
 }
 
-void EdenMount::calculateIsNfsMount(
-    const std::optional<MountProtocol>& takeover) {
-  if (takeover) {
-    shouldUseNFSMount_ = takeover.value() == MountProtocol::NFS;
-  } else {
-    shouldUseNFSMount_ = getEdenConfig()->enableNfsServer.getValue() &&
-        getCheckoutConfig()->getMountProtocol() == MountProtocol::NFS;
+MountProtocol EdenMount::resolveMountProtocol(
+    const CheckoutConfig& checkoutConfig,
+    const EdenConfig& edenConfig) {
+  auto protocol = checkoutConfig.getMountProtocol();
+  if (protocol == MountProtocol::NFS &&
+      !edenConfig.enableNfsServer.getValue()) {
+    return kMountProtocolDefault;
   }
-  // So this whole method should run before the mount is initialized.
-  XCHECK_LT(
-      folly::to_underlying(state_.load(std::memory_order_acquire)),
-      folly::to_underlying(State::INITIALIZING))
-      << "The invariant that shouldUseNFSMount_ should not be modified after "
-         "the mount has started initializing has been violated. This could "
-         "make calls to shouldBeOrIsNfsChannel unsafe.";
+  return protocol;
 }
 
-bool EdenMount::shouldBeOrIsNfsChannel() const {
+MountProtocol EdenMount::getMountProtocol() const {
   XCHECK_GE(
       folly::to_underlying(state_.load(std::memory_order_acquire)),
       folly::to_underlying(State::INITIALIZING))
-      << "Though we guarantee that we won't modify shouldUseNFSMount_ "
-         "after initialization begins. shouldUseNFSMount_ might be set any time "
-         "before initialization starts and we provide no explicit synchronization "
-         "on it, so it is not safe to access right now.";
-  XCHECK(shouldUseNFSMount_.has_value())
-      << "shouldUseNFSMount_ should have been set by this point. It is intended"
-         " that this is set before the mount begins initializing, and we only "
-         "access it after the mount has started initializing. ";
-  return shouldUseNFSMount_.value();
+      << "mountProtocol_ is set in initialize() before transitioning to "
+         "INITIALIZING, so getMountProtocol() must not be called before "
+         "initialization starts.";
+  return mountProtocol_.load(std::memory_order_acquire);
 }
 
-#ifdef EDEN_HAVE_FSKIT
-bool EdenMount::shouldBeOrIsFSKitChannel() const {
-  return shouldUseFSKitMount_.load(std::memory_order_acquire);
+bool EdenMount::shouldBeOrIsNfsChannel() const {
+  return getMountProtocol() == MountProtocol::NFS;
 }
-#endif
+
+bool EdenMount::shouldBeOrIsFSKitChannel() const {
+  return getMountProtocol() == MountProtocol::FSKIT;
+}
 
 bool EdenMount::throwEstaleIfInodeIsMissing() const {
-  if (shouldBeOrIsNfsChannel()) {
-    return true;
-  }
-#ifdef EDEN_HAVE_FSKIT
-  if (shouldBeOrIsFSKitChannel()) {
-    return true;
-  }
-#endif
-  return false;
+  return shouldBeOrIsNfsChannel() || shouldBeOrIsFSKitChannel();
 }
 
 EdenMount::ReadLocation EdenMount::getReadLocationForMaterializedFiles() const {
@@ -2770,8 +2748,8 @@ folly::Future<folly::Unit> EdenMount::fsChannelMount(bool readOnly) {
         // that mimics privhelper mount failing
         serverState_->getFaultInjector().check(
             "failMountInitialization", mountPath.view());
-#ifdef EDEN_HAVE_FSKIT
         if (shouldBeOrIsFSKitChannel()) {
+#ifdef EDEN_HAVE_FSKIT
           if (!edenConfig->enableFsKit.getValue()) {
             auto error = folly::make_exception_wrapper<std::system_error>(
                 EPERM,
@@ -2794,9 +2772,7 @@ folly::Future<folly::Unit> EdenMount::fsChannelMount(bool readOnly) {
               "this EdenFS build has no FSKit channel");
           mountPromise->setException(error);
           return folly::makeFuture<folly::Unit>(std::move(error));
-        }
 #else
-        if (getCheckoutConfig()->getMountProtocol() == MountProtocol::FSKIT) {
           auto error = folly::make_exception_wrapper<std::system_error>(
               ENOTSUP,
               std::generic_category(),
@@ -2804,8 +2780,8 @@ folly::Future<folly::Unit> EdenMount::fsChannelMount(bool readOnly) {
               "not support FSKit");
           mountPromise->setException(error);
           return folly::makeFuture<folly::Unit>(std::move(error));
-        }
 #endif
+        }
         return serverState_->getPrivHelper()
             ->fuseMount(
                 mountPath.view(), readOnly, edenConfig->fuseVfsType.getValue())
