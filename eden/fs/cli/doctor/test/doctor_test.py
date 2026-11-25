@@ -595,6 +595,46 @@ Running `eden start` to start EdenFS......<yellow>EdenFS still starting, use `ed
         )
         self.assertEqual(1, exit_code)
 
+    @patch("eden.fs.cli.daemon.start_edenfs_service")
+    @patch("eden.fs.cli.doctor.check_watchman._call_watchman")
+    def test_edenfs_unresponsive_lock_holder_is_not_started_again(
+        self,
+        mock_watchman: MagicMock,
+        mock_start: MagicMock,
+    ) -> None:
+        self.run_doctor_with_unresponsive_lock_holder()
+
+        # FIXME: `start_edenfs_service` must not run. A second daemon cannot
+        # get the lock.
+        self.assertEqual(1, mock_start.call_count)
+
+    def run_doctor_with_unresponsive_lock_holder(self) -> Tuple[int, str]:
+        """Run `eden doctor` on an instance with an unresponsive lock holder.
+
+        Returns the exit code and the output of `eden doctor`.
+        """
+        # STOPPED with a pid means that a live edenfs process holds the lock.
+        # That process does not answer Thrift.
+        instance = FakeEdenInstance(
+            self.make_temporary_directory(), status=fb303_status.STOPPED, pid=1234
+        )
+        instance.create_test_mount("eden-mount")
+        out = TestOutput()
+        exit_code = doctor.cure_what_ails_you(
+            # pyre-fixme[6]: For 1st param expected `EdenInstance` but got
+            #  `FakeEdenInstance`.
+            instance,
+            dry_run=False,
+            min_severity_to_report=ProblemSeverity.ALL,
+            mount_table=FakeMountTable(),
+            fs_util=FakeFsUtil(),
+            proc_utils=self.make_proc_utils(),
+            vscode_extensions_checker=getFakeVSCodeExtensionsChecker(),
+            network_checker=FakeNetworkChecker(),
+            out=out,
+        )
+        return exit_code, out.getvalue()
+
     @patch("eden.fs.cli.doctor.check_watchman._call_watchman")
     # pyre-fixme[2]: Parameter must be annotated.
     def test_edenfs_starting(self, mock_watchman) -> None:

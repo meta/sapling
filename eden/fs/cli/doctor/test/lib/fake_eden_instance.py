@@ -72,9 +72,11 @@ class FakeEdenInstance(AbstractEdenInstance):
         status: fb303_status = fb303_status.ALIVE,
         build_info: Optional[Dict[str, str]] = None,
         config: Optional[Dict[str, str]] = None,
+        pid: Optional[int] = None,
     ) -> None:
         self._tmp_dir = tmp_dir
         self._status = status
+        self._pid = pid
         self._build_info = build_info if build_info else {}
         # pyre-fixme[4]: Attribute must be annotated.
         self._config = config if config else {}
@@ -324,7 +326,7 @@ class FakeEdenInstance(AbstractEdenInstance):
         assert path in self._checkouts_by_path
 
     def check_health(self) -> HealthStatus:
-        return HealthStatus(self._status, pid=None, uptime=None, detail="")
+        return HealthStatus(self._status, pid=self._pid, uptime=None, detail="")
 
     def check_privhelper_connection(self) -> bool:
         return True
