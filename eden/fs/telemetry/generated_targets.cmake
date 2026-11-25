@@ -90,6 +90,7 @@ eden_add_library(eden_fs_telemetry_throw_trace_capture
   SRCS
     ThrowTraceCapture.cpp
   DEPS
+    Folly::folly_futures_core
     Folly::folly_logging_logging
     backtrace_ffi
   EXPORTED_DEPS

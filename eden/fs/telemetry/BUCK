@@ -144,6 +144,7 @@ cpp_library(
         ],
     }),
     deps = [
+        "fbsource//xplat/folly/futures:core",
         "fbsource//xplat/folly/logging:logging",
         "//eden/fs/rust/backtrace_ffi:backtrace-ffi",
         "//eden/fs/rust/backtrace_ffi:backtrace-ffi@header",

@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <mutex>
 
+#include <folly/futures/Future.h>
 #include <folly/logging/xlog.h>
 
 #ifdef __APPLE__
@@ -97,6 +98,16 @@ void setThrowTraceCaptureEnabled(bool enabled) {
   captureEnabled.store(enabled, std::memory_order_relaxed);
 }
 } // namespace facebook::eden
+
+namespace {
+// Timed waits, such as Scribe's config fetcher, throw FutureTimeout in normal
+// operation, and nothing reports its throw-site trace.
+const bool kFutureTimeoutTracesSkipped = [] {
+  facebook::eden::skipThrowTraceFor(
+      typeid(folly::FutureTimeout), [](const void*) { return true; });
+  return true;
+}();
+} // namespace
 
 #if defined(__linux__)
 // Linux throw hook using the GNU linker's --wrap mechanism.

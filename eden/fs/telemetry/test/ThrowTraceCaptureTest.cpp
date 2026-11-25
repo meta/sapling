@@ -95,10 +95,16 @@ TEST(ThrowTraceCaptureTest, CapturesNothingWhenDisabled) {
 
 TEST(ThrowTraceCaptureTest, SkipsFutureTimeout) {
   try {
+    outerThrowingFunc();
+  } catch (const std::exception&) {
+    // An earlier trace must not survive the FutureTimeout throw.
+  }
+  try {
     throw folly::FutureTimeout();
   } catch (const folly::FutureTimeout&) {
-    // FIXME: timed waits throw FutureTimeout in normal operation, so it
-    // should not capture a throw-site trace.
-    EXPECT_TRUE(getThrowSiteStackTrace().has_value());
+#ifndef _WIN32
+    // The Windows hook sees no exception type, so nothing is skipped there.
+    EXPECT_FALSE(getThrowSiteStackTrace().has_value());
+#endif
   }
 }
