@@ -6,10 +6,14 @@
  */
 
 #include "eden/fs/store/StatsFetchContext.h"
+#include <fb303/ServiceData.h>
 #include <gtest/gtest.h>
 #include <string>
 #include <type_traits>
+#include <utility>
+#include <vector>
 #include "eden/fs/model/ObjectId.h"
+#include "eden/fs/telemetry/EdenStats.h"
 #include "eden/fs/utils/SourceLocation.h"
 
 namespace facebook::eden {
@@ -365,6 +369,59 @@ TEST(StatsFetchContextTest, ComputeStatisticsForAllTypes) {
 
   EXPECT_EQ(0, stats.blob.totalBytes);
   EXPECT_EQ(0, stats.blob.accessCount);
+}
+
+TEST(StatsFetchContextTest, SetFetchedSourceCountsLocalFetchesPerType) {
+  using LocalCounter = StatsGroupBase::Counter SaplingBackingStoreStats::*;
+  const std::vector<std::pair<ObjectFetchContext::ObjectType, LocalCounter>>
+      localCounters{
+          {ObjectFetchContext::Blob, &SaplingBackingStoreStats::fetchBlobLocal},
+          {ObjectFetchContext::BlobAuxData,
+           &SaplingBackingStoreStats::fetchBlobAuxDataLocal},
+          {ObjectFetchContext::Tree, &SaplingBackingStoreStats::fetchTreeLocal},
+          {ObjectFetchContext::TreeAuxData,
+           &SaplingBackingStoreStats::fetchTreeAuxDataLocal},
+          {ObjectFetchContext::RootTree,
+           &SaplingBackingStoreStats::getRootTreeLocal},
+          {ObjectFetchContext::ManifestForRoot,
+           &SaplingBackingStoreStats::importManifestForRootLocal},
+          {ObjectFetchContext::PrefetchBlob,
+           &SaplingBackingStoreStats::prefetchBlobLocal},
+      };
+  auto stats = makeRefPtr<EdenStats>();
+  auto readCounters = [&] {
+    stats->flush();
+    std::vector<int64_t> values;
+    values.reserve(localCounters.size());
+    for (const auto& [type, counter] : localCounters) {
+      values.push_back(
+          fb303::ServiceData::get()
+              ->getCounterIfExists(
+                  std::string{stats->getName(counter)} + ".sum")
+              .value_or(0));
+    }
+    return values;
+  };
+  StatsFetchContext ctx;
+
+  const auto before = readCounters();
+  for (const auto& [type, counter] : localCounters) {
+    ctx.setFetchedSource(
+        ObjectFetchContext::FetchedSource::Remote, type, stats.copy());
+    ctx.setFetchedSource(
+        ObjectFetchContext::FetchedSource::Unknown, type, stats.copy());
+  }
+  EXPECT_EQ(before, readCounters());
+
+  for (size_t i = 0; i < localCounters.size(); ++i) {
+    auto expected = readCounters();
+    ++expected[i];
+    ctx.setFetchedSource(
+        ObjectFetchContext::FetchedSource::Local,
+        localCounters[i].first,
+        stats.copy());
+    EXPECT_EQ(expected, readCounters());
+  }
 }
 
 } // namespace facebook::eden

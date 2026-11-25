@@ -294,10 +294,10 @@ class ObjectFetchContext : public RefCounted {
       FetchedSource fetchedSource,
       ObjectType type,
       EdenStatsPtr stats) {
-    // There is no stat increment for FetchedSource::Unknown
-    const auto counterIt = saplingStatsMap_.find({fetchedSource, type});
-    if (counterIt != saplingStatsMap_.end()) {
-      stats->increment(counterIt->second);
+    if (fetchedSource == FetchedSource::Local) {
+      if (const auto counter = localFetchCounter(type)) {
+        stats->increment(counter);
+      }
     }
     fetchedSource_.store(fetchedSource, std::memory_order_relaxed);
   }
@@ -441,25 +441,28 @@ class ObjectFetchContext : public RefCounted {
   // Cancellation token for this fetch context
   folly::CancellationToken cancellationToken_;
 
-  std::unordered_map<
-      std::tuple<FetchedSource, ObjectType>,
-      StatsGroupBase::Counter SaplingBackingStoreStats::*>
-      saplingStatsMap_ = {
-          {{FetchedSource::Local, ObjectType::Tree},
-           &SaplingBackingStoreStats::fetchTreeLocal},
-          {{FetchedSource::Local, ObjectType::TreeAuxData},
-           &SaplingBackingStoreStats::fetchTreeAuxDataLocal},
-          {{FetchedSource::Local, ObjectType::RootTree},
-           &SaplingBackingStoreStats::getRootTreeLocal},
-          {{FetchedSource::Local, ObjectType::ManifestForRoot},
-           &SaplingBackingStoreStats::importManifestForRootLocal},
-          {{FetchedSource::Local, ObjectType::Blob},
-           &SaplingBackingStoreStats::fetchBlobLocal},
-          {{FetchedSource::Local, ObjectType::BlobAuxData},
-           &SaplingBackingStoreStats::fetchBlobAuxDataLocal},
-          {{FetchedSource::Local, ObjectType::PrefetchBlob},
-           &SaplingBackingStoreStats::prefetchBlobLocal},
-      };
+  static constexpr StatsGroupBase::Counter SaplingBackingStoreStats::*
+  localFetchCounter(ObjectType type) {
+    switch (type) {
+      case Blob:
+        return &SaplingBackingStoreStats::fetchBlobLocal;
+      case BlobAuxData:
+        return &SaplingBackingStoreStats::fetchBlobAuxDataLocal;
+      case Tree:
+        return &SaplingBackingStoreStats::fetchTreeLocal;
+      case TreeAuxData:
+        return &SaplingBackingStoreStats::fetchTreeAuxDataLocal;
+      case RootTree:
+        return &SaplingBackingStoreStats::getRootTreeLocal;
+      case ManifestForRoot:
+        return &SaplingBackingStoreStats::importManifestForRootLocal;
+      case PrefetchBlob:
+        return &SaplingBackingStoreStats::prefetchBlobLocal;
+      case kObjectTypeEnumMax:
+        break;
+    }
+    return nullptr;
+  }
 };
 
 // For fbcode/eden/scm/lib/backingstore/src/ffi.rs
