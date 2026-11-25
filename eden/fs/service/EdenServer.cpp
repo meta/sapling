@@ -1133,7 +1133,7 @@ EdenServer::EdenServer(
   // only while it is on. Updated again on every reload.
   setThrowTraceCaptureEnabled(errorLogger_->isEnabled());
 
-  auto counters = fb303::ServiceData::get()->getDynamicCounters();
+  auto counters = fb303::ServiceData::getRef().getDynamicCounters();
 
   registerInodePopulationReportsCallback();
 
@@ -1294,7 +1294,7 @@ EdenServer::~EdenServer() {
   cgroupFileCacheReclaimState_->enabled.store(false, std::memory_order_release);
 #endif
 
-  auto counters = fb303::ServiceData::get()->getDynamicCounters();
+  auto counters = fb303::ServiceData::getRef().getDynamicCounters();
 
   unregisterInodePopulationReportsCallback();
 
@@ -2469,7 +2469,7 @@ std::vector<ImmediateFuture<Unit>> EdenServer::prepareMounts(
 void EdenServer::incrementStartupMountFailures() {
   // Increment a counter to track if there were any errors remounting checkouts
   // during startup.
-  fb303::fbData->incrementCounter("startup_mount_failures");
+  fb303::fbData.ref().incrementCounter("startup_mount_failures");
 }
 
 void EdenServer::closeStorage() {
@@ -2520,7 +2520,7 @@ bool EdenServer::performCleanup() {
 #ifdef EDEN_HAVE_SERVER_OBSERVER
   // Stop the server observer publish thread. If this is a takeover and the
   // takeover fails, the recovery code will restart the thread again
-  fb303::ThreadCachedServiceData::get()->stopPublishThread();
+  fb303::ThreadCachedServiceData::getRef().stopPublishThread();
 #endif
 
   if (!takeover) {
@@ -2621,7 +2621,7 @@ void EdenServer::addToMountPoints(std::shared_ptr<EdenMount> edenMount) {
 }
 
 void EdenServer::registerStats(std::shared_ptr<EdenMount> edenMount) {
-  auto counters = fb303::ServiceData::get()->getDynamicCounters();
+  auto counters = fb303::ServiceData::getRef().getDynamicCounters();
   counters->registerCallback(
       edenMount->getCounterName(CounterName::INODEMAP_LOADED), [edenMount] {
         auto counts = edenMount->getInodeMap()->getInodeCounts();
@@ -2697,7 +2697,7 @@ void EdenServer::registerStats(std::shared_ptr<EdenMount> edenMount) {
 }
 
 void EdenServer::unregisterStats(EdenMount* edenMount) {
-  auto counters = fb303::ServiceData::get()->getDynamicCounters();
+  auto counters = fb303::ServiceData::getRef().getDynamicCounters();
   counters->unregisterCallback(
       edenMount->getCounterName(CounterName::INODEMAP_LOADED));
   counters->unregisterCallback(
@@ -3430,7 +3430,7 @@ folly::SemiFuture<Unit> EdenServer::createThriftServer() {
   // object for efficiency's sake. However, it does require periodically calling
   // publishStats() in order to flush the stats data cached in each thread to
   // the underlying ServiceData object.
-  fb303::ThreadCachedServiceData::get()->startPublishThread(
+  fb303::ThreadCachedServiceData::getRef().startPublishThread(
       std::chrono::duration_cast<std::chrono::milliseconds>(
           edenConfig->thriftServerObserverPublishInterval.getValue()));
 #endif
