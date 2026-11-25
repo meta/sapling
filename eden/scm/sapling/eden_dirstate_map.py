@@ -87,14 +87,17 @@ class eden_dirstate_map(treestate.treestatemap):
     def write(self, st: "BinaryIO", now: int) -> None:  # override
         parents = self.parents()
 
+        # `copymap` walks the treestate on every access.
+        copymap = self.copymap
+
         # Filter out all "clean" entries when writing. (It's possible we should
         # never allow these to be inserted into self._map in the first place.)
         m = {
             k: (v[0], v[1], v[2])
             for k, v in self._items()
-            if v[0] != "n" or v[2] != MERGE_STATE_NOT_APPLICABLE or k in self.copymap
+            if v[0] != "n" or v[2] != MERGE_STATE_NOT_APPLICABLE or k in copymap
         }
-        eden_dirstate_serializer.write(st, parents, m, self.copymap)
+        eden_dirstate_serializer.write(st, parents, m, copymap)
         st.close()
 
         # Inform the edenfs daemon about the parent change.

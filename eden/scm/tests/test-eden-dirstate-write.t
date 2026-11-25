@@ -7,7 +7,6 @@
   $ sl cp a copied
 
 Writing the dirstate filters out clean entries and serializes the copy map.
-FIXME: it computes the copy map once per clean entry, plus once to serialize it.
 
   $ cat > $TESTTMP/write.py <<'PYEOF'
   > from sapling import treestate
@@ -23,7 +22,7 @@ FIXME: it computes the copy map once per clean entry, plus once to serialize it.
   > print("copy map computed %d times" % len(computed))
   > PYEOF
   $ sl debugshell $TESTTMP/write.py
-  copy map computed 4 times
+  copy map computed 1 times
 
   $ sl status -C
   A copied
