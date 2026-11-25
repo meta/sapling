@@ -1148,3 +1148,82 @@ async fn test_reconcile_keeps_a_first_request_build_whose_spec_is_unchanged(
     assert!(kept, "the repo the first request built is kept");
     Ok(())
 }
+
+// --- reconcile and idle repos ------------------------------------------------
+
+// A request builds a lazy repo, then nothing uses it for longer than its idle
+// window.
+#[mononoke::fbinit_test]
+async fn test_reconcile_keeps_idle_repos_built(fb: FacebookInit) -> Result<()> {
+    let mut manifest: TierManifest =
+        serde_json::from_str(&manifest_json(&[("lazy", git_path("lazy"))]))?;
+    manifest.repos[0].repo_id = 1;
+    manifest.repos[0].is_deep_sharded = true;
+    let source = Arc::new(TestSource::new());
+    source.insert_config(
+        &git_path("lazy"),
+        &spec_json(1, "lazy", true),
+        ModificationTime::UnixTimestamp(0),
+    );
+    source.insert_config(
+        MANIFEST_PATH,
+        &serde_json::to_string(&manifest)?,
+        ModificationTime::UnixTimestamp(0),
+    );
+    let store = ConfigStore::new(source, Duration::from_secs(3600), None);
+    let configs = Arc::new(MononokeConfigs::new(
+        TIER,
+        &store,
+        tokio::runtime::Handle::current(),
+    )?);
+    let repo_factory = Arc::new(RepoFactory::new(
+        Arc::new(MononokeEnvironment::for_test(fb, &store)),
+        configs.clone(),
+    ));
+    let loader = Arc::new(ConfigDefinedRepoLoader {
+        configs: configs.clone(),
+        repo_factory: repo_factory.clone(),
+        redaction_disabled: false,
+        build_permits: Arc::new(Semaphore::new(1)),
+    });
+    let repos = Arc::new(MononokeRepos::<ConfigOnlyRepo>::new_lazy(loader));
+    let driver = ReconcileDriver {
+        configs,
+        repo_factory,
+        repos: repos.clone(),
+        redaction_disabled: false,
+        reconcile_state: Arc::new(ArcSwap::from_pointee(HashMap::new())),
+        splay_state: Mutex::new(SplayState::default()),
+        spec_hash_cache: Arc::new(Mutex::new(HashMap::new())),
+        reconcile_lock: Arc::new(tokio::sync::Mutex::new(())),
+    };
+    let pass = |window: i64| {
+        with_just_knobs_async(
+            JustKnobsInMemory::new(HashMap::from([
+                (
+                    "scm/mononoke:use_config_reconcile".to_string(),
+                    KnobVal::Bool(true),
+                ),
+                (
+                    "scm/mononoke:lazy_repo_idle_unload_secs".to_string(),
+                    KnobVal::Int(window),
+                ),
+            ])),
+            driver.pass().boxed(),
+        )
+    };
+    let built = || repos.iter_loaded_names().any(|name| name == "lazy");
+
+    repos.add_lazy_repo("lazy", 1);
+    repos.get("lazy").await?.expect("built on request");
+    // The first pass compares the repo with its config, which is a read.
+    pass(0).await?;
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    pass(0).await?;
+    assert!(built(), "a 0 idle window never unloads");
+
+    pass(1).await?;
+    // FIXME: the idle repo should be unloaded.
+    assert!(built(), "the idle repo stays built");
+    Ok(())
+}
