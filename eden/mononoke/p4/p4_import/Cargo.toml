@@ -23,7 +23,7 @@ futures = { version = "0.3.34", features = ["async-await", "compat"] }
 futures_stats = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 import_common = { version = "0.1.0", path = "../../features/import_common" }
 manifest = { version = "0.1.0", path = "../../manifest" }
-md-5 = "0.10"
+md-5 = "0.10.6"
 metaconfig_types = { version = "0.1.0", path = "../../metaconfig/types" }
 mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
 p4_transform = { version = "0.1.0", path = "../p4_transform" }
