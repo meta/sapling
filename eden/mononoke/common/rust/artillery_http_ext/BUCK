@@ -10,11 +10,14 @@ rust_library(
         "trace_context": "//artillery/artillery2/api/rust:trace_context",
         "trace_objects": "//artillery/artillery2/api/rust:trace_objects",
         "tracer": "//artillery/artillery2/api/rust:tracer",
+        "tracing_artillery": "//artillery/artillery2/api/rust:tracing_artillery",
     },
     test_deps = [
         "//eden/mononoke/common/mononoke_macros:mononoke_macros",
     ],
     deps = [
+        "fbsource//third-party/rust:tracing",
+        "fbsource//third-party/rust:tracing-subscriber",
         "//common/rust/shed/fbinit:fbinit",
     ],
 )

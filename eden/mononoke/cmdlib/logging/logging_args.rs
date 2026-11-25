@@ -140,6 +140,9 @@ impl LoggingArgs {
             "runtime=WARN".parse()?,
             "tokio=WARN".parse()?,
             "edenapi::client=WARN".parse()?,
+            // Artillery annotations are trace data, not log lines. The target
+            // filter below is the Artillery layer's own; this is the log one.
+            format!("{}=OFF", artillery_http_ext::TRACING_TARGET).parse()?,
         ];
 
         if self.tracing_test_format {
@@ -193,6 +196,8 @@ impl LoggingArgs {
             }),
         }?;
 
+        // Called per branch rather than hoisted: the branches build different
+        // subscriber types, and the layer is generic over that type.
         if self.tracing_test_format {
             let event_format = TestFormatter {};
 
@@ -202,7 +207,9 @@ impl LoggingArgs {
                 .with_ansi(false)
                 .with_filter(filter);
 
-            let subscriber = tracing_subscriber::registry().with(log_layer);
+            let subscriber = tracing_subscriber::registry()
+                .with(log_layer)
+                .with(artillery_http_ext::tracing_layer(fb));
             tracing::subscriber::set_global_default(subscriber)?;
         } else {
             let event_format = Glog::default()
@@ -217,7 +224,9 @@ impl LoggingArgs {
                 .with_ansi(std::io::stderr().is_terminal())
                 .with_filter(filter);
 
-            let subscriber = tracing_subscriber::registry().with(log_layer);
+            let subscriber = tracing_subscriber::registry()
+                .with(log_layer)
+                .with(artillery_http_ext::tracing_layer(fb));
             tracing::subscriber::set_global_default(subscriber)?;
         }
 

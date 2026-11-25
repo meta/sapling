@@ -10,22 +10,38 @@ mod facebook;
 #[cfg(not(fbcode_build))]
 mod oss;
 
+/// The `tracing` target the Artillery layer listens on.
+///
+/// An event reaches Artillery only when addressed here, so annotating a block
+/// is deliberate rather than a side effect of ordinary logging. Mononoke
+/// instruments spans throughout; a layer listening to all of them would put
+/// the whole process on the trace.
+pub const TRACING_TARGET: &str = "mononoke_artillery";
+
 #[cfg(fbcode_build)]
 pub use facebook::ArtilleryTraceGuard;
+#[cfg(fbcode_build)]
+pub use facebook::LOG_TO_REQUEST_BLOCK;
 #[cfg(fbcode_build)]
 pub use facebook::continue_trace_from_context;
 #[cfg(fbcode_build)]
 pub use facebook::current_trace_id;
 #[cfg(fbcode_build)]
 pub use facebook::start_trace;
+#[cfg(fbcode_build)]
+pub use facebook::tracing_layer;
 #[cfg(not(fbcode_build))]
 pub use oss::ArtilleryTraceGuard;
+#[cfg(not(fbcode_build))]
+pub use oss::LOG_TO_REQUEST_BLOCK;
 #[cfg(not(fbcode_build))]
 pub use oss::continue_trace_from_context;
 #[cfg(not(fbcode_build))]
 pub use oss::current_trace_id;
 #[cfg(not(fbcode_build))]
 pub use oss::start_trace;
+#[cfg(not(fbcode_build))]
+pub use oss::tracing_layer;
 
 #[cfg(test)]
 mod tests {

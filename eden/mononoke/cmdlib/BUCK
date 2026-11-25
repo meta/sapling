@@ -54,6 +54,7 @@ rust_library(
         "//common/rust/shed/panichandler:panichandler",
         "//eden/mononoke/cmdlib:arg_extensions",
         "//eden/mononoke/common/observability:observability",
+        "//eden/mononoke/common/rust/artillery_http_ext:artillery_http_ext",
         "//eden/mononoke/common/rust/justknobs_ext:justknobs",
         "//eden/mononoke/common/scribe_ext:scribe_ext",
         "//eden/mononoke/common/scuba_ext:scuba_ext",

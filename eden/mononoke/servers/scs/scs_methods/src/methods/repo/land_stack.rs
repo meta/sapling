@@ -135,6 +135,40 @@ impl LoggableError for LandStackError {
     }
 }
 
+/// Name the land on Mononoke's own service block, so a trace rooted here says
+/// which land produced it instead of only that some stack was landed. Without
+/// this a Mononoke-rooted trace walks back to nothing, which is the state every
+/// land that reaches Mononoke without a continued trace is in.
+///
+/// Pushvar names are recorded without their values: the values are opaque
+/// binary chosen by the caller, so only the names are safe to put on a trace.
+///
+/// Routed to Artillery by the `artillery.action` directive, which the layer
+/// Mononoke installs turns into an annotation on the request block rather than
+/// a point. A no-op when no trace is running, which is the ordinary case.
+fn annotate_land_block(repo: &thrift::RepoSpecifier, params: &thrift::RepoLandStackParams) {
+    let pushvar_names = params
+        .pushvars
+        .as_ref()
+        .map(|pushvars| pushvars.keys().cloned().collect::<Vec<_>>().join(","))
+        .unwrap_or_default();
+
+    tracing::event!(
+        target: artillery_http_ext::TRACING_TARGET,
+        tracing::Level::INFO,
+        artillery.action = artillery_http_ext::LOG_TO_REQUEST_BLOCK,
+        land.repo = repo.name.as_str(),
+        land.bookmark = params.bookmark.as_str(),
+        land.authored_by = if params.service_identity.is_some() {
+            "service"
+        } else {
+            "user"
+        },
+        land.service_identity = params.service_identity.as_deref().unwrap_or_default(),
+        land.pushvar_names = pushvar_names.as_str(),
+    );
+}
+
 impl SourceControlServiceImpl {
     pub(crate) async fn repo_land_stack(
         &self,
@@ -142,6 +176,8 @@ impl SourceControlServiceImpl {
         repo: thrift::RepoSpecifier,
         params: thrift::RepoLandStackParams,
     ) -> Result<thrift::RepoLandStackResponse, LandStackError> {
+        annotate_land_block(&repo, &params);
+
         let push_authored_by = if params.service_identity.is_some() {
             PushAuthoredBy::Service
         } else {
@@ -193,6 +229,18 @@ impl SourceControlServiceImpl {
             ))
             .watched()
             .await?;
+
+        // Recorded after the land rather than with the request attributes: how
+        // far the stack moved and how often it had to retry are the shape of a
+        // slow land, and neither is known until the pushrebase returns.
+        tracing::event!(
+            target: artillery_http_ext::TRACING_TARGET,
+            tracing::Level::INFO,
+            artillery.action = artillery_http_ext::LOG_TO_REQUEST_BLOCK,
+            land.rebased_commits = pushrebase_outcome.rebased_commits.len(),
+            land.pushrebase_distance = pushrebase_outcome.pushrebase_distance,
+            land.retry_num = pushrebase_outcome.retry_num,
+        );
 
         Ok(thrift::RepoLandStackResponse {
             pushrebase_outcome,

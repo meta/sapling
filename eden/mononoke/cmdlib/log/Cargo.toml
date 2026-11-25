@@ -13,6 +13,7 @@ path = "../logging/lib.rs"
 [dependencies]
 anyhow = "1.0.104"
 arg_extensions = { version = "0.1.0", path = "../extensions" }
+artillery_http_ext = { version = "0.1.0", path = "../../common/rust/artillery_http_ext" }
 cached_config = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 clap = { version = "4.6.2", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }

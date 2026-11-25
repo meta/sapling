@@ -1054,6 +1054,30 @@ fn tw_job_name() -> Option<&'static str> {
 /// that already has one is left alone: re-rooting would sever it from its
 /// caller. Whether a root is actually sampled is the `mononoke_scm` policy's
 /// decision, so `None` here is the normal case rather than a failure.
+/// Name the request on Mononoke's own service block.
+///
+/// `rooted_here` is the field worth having: a trace Mononoke started for itself
+/// walks back to nothing, while a continued one reaches the caller that asked
+/// for the work. The two are indistinguishable in a trace otherwise, and
+/// telling them apart is the first question asked of any land that cannot be
+/// attributed.
+fn annotate_method_block(
+    ctx: &CoreContext,
+    method: &'static str,
+    repo: Option<&str>,
+    rooted_here: bool,
+) {
+    tracing::event!(
+        target: artillery_http_ext::TRACING_TARGET,
+        tracing::Level::INFO,
+        artillery.action = artillery_http_ext::LOG_TO_REQUEST_BLOCK,
+        scs.method = method,
+        scs.repo = repo.unwrap_or_default(),
+        scs.trace_rooted_here = rooted_here,
+        scs.client_correlator = ctx.client_correlator().unwrap_or_default(),
+    );
+}
+
 fn maybe_root_trace(fb: FacebookInit, method: &str) -> Option<ArtilleryTraceGuard> {
     if !justknobs::eval("scm/artillery:root_scs_traces", None, tw_job_name()) {
         return None;
@@ -1113,7 +1137,13 @@ macro_rules! impl_thrift_methods {
                     let svc = self.0.clone();
                     let watchdog_max_poll = self.0.watchdog_max_poll;
                     let (ctx, session_uuid, repo_name) = create_ctx!(svc, $method_name, req_ctxt, $( $param_name ),*).await?;
-                    let _artillery_trace = maybe_root_trace(ctx.fb, stringify!($method_name));
+                    let artillery_trace = maybe_root_trace(ctx.fb, stringify!($method_name));
+                    annotate_method_block(
+                        &ctx,
+                        stringify!($method_name),
+                        repo_name.as_deref(),
+                        artillery_trace.is_some(),
+                    );
                     let handler = {
                         cloned!(ctx, repo_name);
                         let span = tracing::info_span!("scs method", repo = tracing::field::Empty, client_correlator = tracing::field::Empty);
@@ -1182,7 +1212,13 @@ macro_rules! impl_thrift_stream_methods {
                 let fut = async move {
                     let svc = self.0.clone();
                     let (ctx, session_uuid, repo_name) = create_ctx!(svc, $method_name, req_ctxt, $( $param_name ),*).await?;
-                    let _artillery_trace = maybe_root_trace(ctx.fb, stringify!($method_name));
+                    let artillery_trace = maybe_root_trace(ctx.fb, stringify!($method_name));
+                    annotate_method_block(
+                        &ctx,
+                        stringify!($method_name),
+                        repo_name.as_deref(),
+                        artillery_trace.is_some(),
+                    );
                     let handler = {
                         cloned!(ctx, repo_name);
                         let span = tracing::info_span!("scs method", repo = tracing::field::Empty, client_correlator = tracing::field::Empty);
