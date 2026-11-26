@@ -190,13 +190,18 @@ impl<'a> Verifier<'a> {
         }
     }
 
-    fn no_store_manager(&self) -> DerivedDataManager {
-        let mem_repo_blobstore = RepoBlobstore::new_with_wrapped_inner_blobstore(
+    /// The repo blobstore with every write kept in memory and read back in
+    /// place of what storage holds under the same key.
+    fn in_memory_repo_blobstore(&self) -> RepoBlobstore {
+        RepoBlobstore::new_with_wrapped_inner_blobstore(
             self.repo.repo_blobstore().clone(),
-            |inner| Arc::new(MemWritesBlobstore::new(inner)),
-        );
+            |inner| Arc::new(OverwritingOverlay(Arc::new(MemWritesBlobstore::new(inner)))),
+        )
+    }
+
+    fn no_store_manager(&self) -> DerivedDataManager {
         self.manager
-            .with_replaced_blobstore(mem_repo_blobstore)
+            .with_replaced_blobstore(self.in_memory_repo_blobstore())
             .with_replaced_restricted_paths(self.restricted_paths.clone())
     }
 
@@ -306,13 +311,9 @@ impl<'a> Verifier<'a> {
         config.stages_by_type.retain(|ty, _| types.contains(ty));
         config.validate()?;
 
-        let computed = RepoBlobstore::new_with_wrapped_inner_blobstore(
-            self.repo.repo_blobstore().clone(),
-            |inner| Arc::new(OverwritingOverlay(Arc::new(MemWritesBlobstore::new(inner)))),
-        );
         let manager = self
             .manager
-            .with_replaced_blobstore(computed)
+            .with_replaced_blobstore(self.in_memory_repo_blobstore())
             .with_replaced_restricted_paths(self.restricted_paths.clone())
             .with_pipeline_mode(PipelineMode::Shadow);
         let generations = self
@@ -471,7 +472,34 @@ impl<'a> Verifier<'a> {
             return Ok(Some(mismatch));
         }
 
-        compare_acl_pointers(
+        // Equal digests prove nothing about stored entries that were changed
+        // without updating the stored digest.
+        let (stored_digest, stored_size) = env_stored
+            .augmented_manifest
+            .clone()
+            .compute_content_addressed_digest(self.ctx, self.repo.repo_blobstore())
+            .await
+            .with_context(|| {
+                format!("computing the digest of the stored root's entries for {cs_id}")
+            })?;
+        if (stored_digest, stored_size)
+            != (
+                env_stored.augmented_manifest_id,
+                env_stored.augmented_manifest_size,
+            )
+        {
+            return Ok(Some(VerifyMismatch::new(
+                cs_id,
+                "augmented_manifest_id (Blake3) of the stored entries",
+                format!("{stored_digest:?} ({stored_size} bytes)"),
+                format!(
+                    "{:?} ({} bytes)",
+                    env_stored.augmented_manifest_id, env_stored.augmented_manifest_size
+                ),
+            )));
+        }
+
+        if let Some(mismatch) = compare_acl_pointers(
             self.ctx,
             computed_blobstore,
             self.repo.repo_blobstore(),
@@ -480,7 +508,27 @@ impl<'a> Verifier<'a> {
             env_stored,
             all_acl_paths.clone(),
         )
-        .await
+        .await?
+        {
+            return Ok(Some(mismatch));
+        }
+
+        // The checks above leave out the ACL pointers of root entries outside
+        // the ACL tree. Equal bytes cover the entries held in the root record.
+        // A root of over 2,000 entries keeps some in separately stored shards,
+        // which the record names only by id, so an ACL pointer on an entry in
+        // a stored shard, outside the ACL tree, is not checked.
+        let computed_bytes = env_computed.into_blob();
+        let stored_bytes = env_stored.clone().into_blob();
+        if computed_bytes != stored_bytes {
+            return Ok(Some(VerifyMismatch::new(
+                cs_id,
+                "root record",
+                format!("{} bytes", computed_bytes.len()),
+                format!("{} other bytes", stored_bytes.len()),
+            )));
+        }
+        Ok(None)
     }
 
     async fn fetch_required<Derivable>(&self, cs_id: ChangesetId) -> Result<Derivable>
@@ -1351,7 +1399,7 @@ mod tests {
     #[derive(Parser)]
     struct VerifyAugDirectArgsParser {
         #[clap(flatten)]
-        _args: VerifyAugDirectArgs,
+        args: VerifyAugDirectArgs,
     }
 
     #[mononoke::test]
@@ -1867,6 +1915,309 @@ mod tests {
         assert_eq!(mismatch.cs_id, second);
         assert_eq!(mismatch.field, "augmented_manifest_id (Blake3)");
         assert_ne!(mismatch.computed, mismatch.expected);
+        Ok(())
+    }
+
+    /// Ways a stored root record can differ from the one derivation builds.
+    #[derive(Clone, Copy, Debug)]
+    enum Tamper {
+        RootAclPointer,
+        DirectoryAclPointer,
+        /// An ACL pointer on a root directory entry outside the ACL tree.
+        OutsideAclPointer,
+        FileEntry,
+        ComputedNodeId,
+    }
+
+    /// Returns `manifest` changed as `tamper` says.
+    async fn tampered(
+        ctx: &CoreContext,
+        repo: &Repo,
+        manifest: ShardedHgAugmentedManifest,
+        tamper: Tamper,
+    ) -> Result<ShardedHgAugmentedManifest> {
+        let blobstore = repo.repo_blobstore();
+        let change_entries = |change: fn(HgAugmentedManifestEntry) -> HgAugmentedManifestEntry| {
+            let manifest = manifest.clone();
+            async move {
+                let entries = manifest
+                    .subentries
+                    .clone()
+                    .into_entries(ctx, blobstore)
+                    .map_ok(|(name, entry)| (name, change(entry)))
+                    .try_collect::<Vec<_>>()
+                    .await?;
+                anyhow::Ok(ShardedHgAugmentedManifest {
+                    subentries: ShardedMapV2Node::from_entries(ctx, blobstore, entries).await?,
+                    ..manifest
+                })
+            }
+        };
+        match tamper {
+            Tamper::RootAclPointer => Ok(ShardedHgAugmentedManifest {
+                acl_manifest_directory_id: Some(test_acl_id(7)),
+                ..manifest
+            }),
+            Tamper::DirectoryAclPointer => {
+                change_entries(|entry| match entry {
+                    HgAugmentedManifestEntry::DirectoryNode(mut dir) => {
+                        dir.acl_manifest_directory_id = Some(test_acl_id(7));
+                        HgAugmentedManifestEntry::DirectoryNode(dir)
+                    }
+                    entry => entry,
+                })
+                .await
+            }
+            Tamper::OutsideAclPointer => {
+                change_entries(|entry| match entry {
+                    HgAugmentedManifestEntry::DirectoryNode(mut dir)
+                        if dir.acl_manifest_directory_id.is_none() =>
+                    {
+                        dir.acl_manifest_directory_id = Some(test_acl_id(7));
+                        HgAugmentedManifestEntry::DirectoryNode(dir)
+                    }
+                    entry => entry,
+                })
+                .await
+            }
+            Tamper::FileEntry => {
+                change_entries(|entry| match entry {
+                    HgAugmentedManifestEntry::FileNode(mut file) => {
+                        file.content_blake3 = Blake3::from_byte_array([0xEE; 32]);
+                        HgAugmentedManifestEntry::FileNode(file)
+                    }
+                    entry => entry,
+                })
+                .await
+            }
+            Tamper::ComputedNodeId => Ok(ShardedHgAugmentedManifest {
+                computed_node_id: HgNodeHash::new(NodeSha1::from_byte_array([0xCD; 20])),
+                ..manifest
+            }),
+        }
+    }
+
+    /// Replaces the record stored under `root` with a changed one. With
+    /// `recompute_digest`, it carries the digest of its new content, as a tree
+    /// upload of a wrong record stores it; without, it keeps the old digest, as
+    /// a record damaged after it was stored does.
+    async fn tamper_stored_root(
+        ctx: &CoreContext,
+        repo: &Repo,
+        root: HgAugmentedManifestId,
+        tamper: Tamper,
+        recompute_digest: bool,
+    ) -> Result<()> {
+        let blobstore = repo.repo_blobstore();
+        let stored = root.load(ctx, blobstore).await?;
+        let manifest = tampered(ctx, repo, stored.augmented_manifest.clone(), tamper).await?;
+        let (augmented_manifest_id, augmented_manifest_size) = if recompute_digest {
+            manifest
+                .clone()
+                .compute_content_addressed_digest(ctx, blobstore)
+                .await?
+        } else {
+            (stored.augmented_manifest_id, stored.augmented_manifest_size)
+        };
+        let envelope = HgAugmentedManifestEnvelope {
+            augmented_manifest_id,
+            augmented_manifest_size,
+            augmented_manifest: manifest,
+        };
+        assert_ne!(
+            envelope, stored,
+            "{tamper:?} should change the stored record"
+        );
+        let key = root.blobstore_key();
+        blobstore.unlink(ctx, &key).await?;
+        blobstore
+            .put(
+                ctx,
+                key,
+                BlobstoreBytes::from_bytes(envelope.clone().into_blob()),
+            )
+            .await?;
+        assert_eq!(
+            root.load(ctx, blobstore).await?,
+            envelope,
+            "the changed record should replace the stored one under the same key"
+        );
+        Ok(())
+    }
+
+    /// A root commit with a restricted directory, a plain directory and a file
+    /// at the top, so its root record has a file entry, a directory entry with
+    /// an ACL pointer and one without.
+    async fn create_acl_root_fixture(ctx: &CoreContext) -> Result<(TestRepo, ChangesetId)> {
+        let repo: TestRepo = test_repo_factory::build_empty(ctx.fb).await?;
+        let root = CreateCommitContext::new_root(ctx, &repo)
+            .add_file("top.txt", b"top")
+            .add_file("dir/file.txt", b"content")
+            .add_file("dir/.slacl", SLACL_PROJECT1)
+            .add_file("plain/file.txt", b"plain")
+            .commit()
+            .await?;
+        derive_stored_aug(ctx, &repo.repo, &[root]).await?;
+        Ok((repo, root))
+    }
+
+    async fn stored_root(
+        ctx: &CoreContext,
+        repo: &Repo,
+        cs_id: ChangesetId,
+    ) -> Result<HgAugmentedManifestId> {
+        Ok(repo
+            .repo_derived_data()
+            .manager()
+            .fetch_derived::<RootHgAugmentedManifestId>(ctx, cs_id, None)
+            .await?
+            .ok_or_else(|| anyhow!("missing RootHgAugmentedManifestId for {cs_id}"))?
+            .hg_augmented_manifest_id())
+    }
+
+    async fn verify(
+        ctx: &CoreContext,
+        repo: &Repo,
+        cs_id: ChangesetId,
+    ) -> Result<VerifyOneOutcome> {
+        let manager = repo.repo_derived_data().manager();
+        Verifier::new(ctx, repo, manager).verify_one(cs_id).await
+    }
+
+    #[mononoke::fbinit_test]
+    async fn verify_one_reports_a_changed_record_stored_under_the_derived_root_key(
+        fb: FacebookInit,
+    ) -> Result<()> {
+        override_just_knobs(knob_overrides([]));
+        let ctx = CoreContext::test_mock(fb);
+        for (tamper, recompute_digest, expected_field) in [
+            (Tamper::RootAclPointer, true, "acl_manifest_directory_id"),
+            (
+                Tamper::DirectoryAclPointer,
+                true,
+                "entry acl_manifest_directory_id at dir",
+            ),
+            (Tamper::OutsideAclPointer, true, "root record"),
+            (Tamper::FileEntry, true, "augmented_manifest_id (Blake3)"),
+            (
+                Tamper::FileEntry,
+                false,
+                "augmented_manifest_id (Blake3) of the stored entries",
+            ),
+            // A changed id in the root's header is reported.
+            (
+                Tamper::ComputedNodeId,
+                true,
+                "augmented_manifest_id (Blake3)",
+            ),
+        ] {
+            // Given a commit whose stored root record matches the one
+            // derivation builds from its Bonsai changeset.
+            let (repo, cs_id) = create_acl_root_fixture(&ctx).await?;
+            assert_eq!(
+                verify(&ctx, &repo.repo, cs_id).await?,
+                VerifyOneOutcome::Direct,
+                "the record derivation stored should match"
+            );
+
+            // When the record under the same key is replaced by a changed one.
+            let root = stored_root(&ctx, &repo.repo, cs_id).await?;
+            tamper_stored_root(&ctx, &repo.repo, root, tamper, recompute_digest).await?;
+
+            // Then the verifier compares the record it builds, not the stored
+            // one with itself, and reports the difference.
+            let mismatch = match verify(&ctx, &repo.repo, cs_id).await? {
+                VerifyOneOutcome::Mismatch(mismatch) => mismatch,
+                outcome => {
+                    return Err(anyhow!("{tamper:?}: expected a mismatch, got {outcome:?}"));
+                }
+            };
+            assert_eq!(mismatch.cs_id, cs_id);
+            assert_ne!(mismatch.computed, mismatch.expected, "{tamper:?}");
+            assert_eq!(mismatch.field, expected_field, "{tamper:?}");
+        }
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn verify_one_reports_a_changed_record_against_the_one_built_from_hg(
+        fb: FacebookInit,
+    ) -> Result<()> {
+        override_just_knobs(knob_overrides([]));
+        let ctx = CoreContext::test_mock(fb);
+        for (tamper, expected_field) in [
+            (Tamper::RootAclPointer, "acl_manifest_directory_id"),
+            (Tamper::FileEntry, "augmented_manifest_id (Blake3)"),
+        ] {
+            // Given a commit whose root tree id was chosen by the client, so
+            // the verifier builds the record from the commit's Hg manifest,
+            // and whose stored record matches that build.
+            let fixture = create_supplied_root_fixture(&ctx).await?;
+            let repo = &fixture.repo.repo;
+            assert_eq!(
+                verify(&ctx, repo, fixture.root).await?,
+                VerifyOneOutcome::FullV2Fallback,
+                "the record derivation stored should match"
+            );
+
+            // When the record under the same key is replaced by a changed one.
+            tamper_stored_root(
+                &ctx,
+                repo,
+                fixture.stored_aug.hg_augmented_manifest_id(),
+                tamper,
+                true,
+            )
+            .await?;
+
+            // Then the verifier reports the difference from the record it
+            // built from Hg.
+            match verify(&ctx, repo, fixture.root).await? {
+                VerifyOneOutcome::Mismatch(mismatch) => {
+                    assert_eq!(mismatch.field, expected_field, "{tamper:?}");
+                }
+                outcome => {
+                    return Err(anyhow!("{tamper:?}: expected a mismatch, got {outcome:?}"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn verify_aug_direct_fails_only_when_a_stored_record_differs(
+        fb: FacebookInit,
+    ) -> Result<()> {
+        // Given a commit whose stored root record is correct.
+        override_just_knobs(knob_overrides([]));
+        let ctx = CoreContext::test_mock(fb);
+        let (repo, cs_id) = create_acl_root_fixture(&ctx).await?;
+        let manager = repo.repo.repo_derived_data().manager();
+        let args = || -> Result<VerifyAugDirectArgs> {
+            Ok(VerifyAugDirectArgsParser::try_parse_from([
+                "verify-aug-direct",
+                "--end-id",
+                &cs_id.to_string(),
+                "--last",
+                "1",
+            ])?
+            .args)
+        };
+
+        // When the command checks it, it succeeds.
+        verify_aug_direct(&ctx, &repo.repo, manager, args()?).await?;
+
+        // And once the record is replaced by one with a wrong ACL pointer, the
+        // command fails, so the process exits non-zero.
+        let root = stored_root(&ctx, &repo.repo, cs_id).await?;
+        tamper_stored_root(&ctx, &repo.repo, root, Tamper::DirectoryAclPointer, true).await?;
+        let error = verify_aug_direct(&ctx, &repo.repo, manager, args()?)
+            .await
+            .expect_err("a changed stored record should fail the command");
+        assert!(
+            format!("{error:#}").contains(&format!("MISMATCH at {cs_id}")),
+            "unexpected error: {error:#}"
+        );
         Ok(())
     }
 }
