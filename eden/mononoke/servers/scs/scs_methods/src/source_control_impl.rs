@@ -1048,19 +1048,10 @@ fn tw_job_name() -> Option<&'static str> {
         .as_deref()
 }
 
-/// Root an Artillery trace for a request that arrived without one.
-///
-/// Inbound traces are continued further up by `ContextPropModule`, so a request
-/// that already has one is left alone: re-rooting would sever it from its
-/// caller. Whether a root is actually sampled is the `mononoke_scm` policy's
-/// decision, so `None` here is the normal case rather than a failure.
 /// Name the request on Mononoke's own service block.
 ///
-/// `rooted_here` is the field worth having: a trace Mononoke started for itself
-/// walks back to nothing, while a continued one reaches the caller that asked
-/// for the work. The two are indistinguishable in a trace otherwise, and
-/// telling them apart is the first question asked of any land that cannot be
-/// attributed.
+/// `rooted_here` is true when this process rooted the trace, false when it
+/// continued its caller's.
 fn annotate_method_block(
     ctx: &CoreContext,
     method: &'static str,
@@ -1078,6 +1069,12 @@ fn annotate_method_block(
     );
 }
 
+/// Root an Artillery trace for a request that arrived without one.
+///
+/// Inbound traces are continued further up by `ContextPropModule`, so a request
+/// that already has one is left alone: re-rooting would sever it from its
+/// caller. Whether a root is actually sampled is the `mononoke_scm` policy's
+/// decision, so `None` here is the normal case rather than a failure.
 fn maybe_root_trace(fb: FacebookInit, method: &str) -> Option<ArtilleryTraceGuard> {
     if !justknobs::eval("scm/artillery:root_scs_traces", None, tw_job_name()) {
         return None;

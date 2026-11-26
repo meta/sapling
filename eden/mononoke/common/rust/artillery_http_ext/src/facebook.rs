@@ -128,23 +128,8 @@ pub fn start_trace(
         .map(|trace| ArtilleryTraceGuard::new(fb, trace))
 }
 
-/// The Artillery layer for Mononoke's subscriber stack.
-///
-/// `Option` so the OSS build can return `None`; under `fbcode_build` the layer
-/// is always installed, and carries no killswitch because the target scope
-/// below is a stronger guarantee than a knob: a callsite that is not addressed
-/// to Artillery is rejected at registration and never reaches this layer again.
-///
-/// Scoped to [`TRACING_TARGET`] on purpose. The layer turns `tracing` events
-/// into trace data, and Mononoke instruments spans everywhere, so an
-/// unscoped layer would put every span in the process onto the trace and the
-/// `mononoke_scm` byte budget is already the binding constraint on how many
-/// land traces survive. Only events deliberately addressed to Artillery
-/// should reach it.
-///
-/// `ObsFlagsFilter` is applied beneath that, as the SDK requires of a layer
-/// built with `build()`: it drops everything unless the running trace's policy
-/// carries `CUSTOM_INSTRUMENTATION`, which `mononoke_scm` does.
+/// Scoped to [`TRACING_TARGET`]: an unscoped layer would put every span in the
+/// process onto the trace, against the `mononoke_scm` byte budget.
 pub fn tracing_layer<S>(fb: FacebookInit) -> Option<Box<dyn Layer<S> + Send + Sync + 'static>>
 where
     S: Subscriber + for<'a> LookupSpan<'a> + Send + Sync,

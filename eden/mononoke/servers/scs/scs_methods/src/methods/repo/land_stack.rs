@@ -136,16 +136,10 @@ impl LoggableError for LandStackError {
 }
 
 /// Name the land on Mononoke's own service block, so a trace rooted here says
-/// which land produced it instead of only that some stack was landed. Without
-/// this a Mononoke-rooted trace walks back to nothing, which is the state every
-/// land that reaches Mononoke without a continued trace is in.
+/// which land produced it.
 ///
 /// Pushvar names are recorded without their values: the values are opaque
 /// binary chosen by the caller, so only the names are safe to put on a trace.
-///
-/// Routed to Artillery by the `artillery.action` directive, which the layer
-/// Mononoke installs turns into an annotation on the request block rather than
-/// a point. A no-op when no trace is running, which is the ordinary case.
 fn annotate_land_block(repo: &thrift::RepoSpecifier, params: &thrift::RepoLandStackParams) {
     let pushvar_names = params
         .pushvars

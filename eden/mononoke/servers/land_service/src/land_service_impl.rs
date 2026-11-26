@@ -155,14 +155,10 @@ fn maybe_root_trace(fb: FacebookInit) -> Option<ArtilleryTraceGuard> {
 }
 
 /// Name the land on the block serving it, so the last hop of a diff land says
-/// what it landed instead of only which Thrift method ran. `ContextPropModule`
-/// continues an inbound trace before this handler, so for a propagated land
-/// this annotates the caller's block -- the same block `maybe_root_trace`
-/// declined to root over.
+/// what it landed.
 ///
-/// `admitted_as` and the batching decision are recorded because they pick the
-/// code path: two lands of the same stack onto the same bookmark can still
-/// take different routes through this server.
+/// `admitted_as` and `batched` are recorded because they select the code path
+/// through this server.
 fn annotate_land_block(
     request: &LandChangesetRequest,
     admitted_as: Option<&'static str>,

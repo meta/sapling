@@ -140,8 +140,7 @@ impl LoggingArgs {
             "runtime=WARN".parse()?,
             "tokio=WARN".parse()?,
             "edenapi::client=WARN".parse()?,
-            // Artillery annotations are trace data, not log lines. The target
-            // filter below is the Artillery layer's own; this is the log one.
+            // Artillery annotations are trace data, not log lines.
             format!("{}=OFF", artillery_http_ext::TRACING_TARGET).parse()?,
         ];
 
