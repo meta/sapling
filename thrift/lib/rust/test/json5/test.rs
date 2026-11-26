@@ -31,12 +31,7 @@ use json5_test::Example;
 use json5_test::consts::testCases;
 
 /// Cases of `testCases` that Rust does not pass yet.
-const KNOWN_FAILURES: &[&str] = &[
-    // Reads an integer `-0` as `0.0`.
-    "NegativeZero",
-    "NegativeZeroKey",
-    "SignsOfZeroAndNaNInDoubleList",
-];
+const KNOWN_FAILURES: &[&str] = &[];
 
 /// Negative cases that Rust does not reject yet.
 const KNOWN_ACCEPTED: &[&str] = &[

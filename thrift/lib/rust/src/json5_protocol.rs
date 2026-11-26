@@ -919,6 +919,8 @@ impl Json5ProtocolDeserializer {
     fn take_integer(&mut self) -> Result<i64> {
         match self.take_value()? {
             Value::Integer(value) => Ok(value),
+            // An integer `-0`, parsed as a float to keep its sign.
+            Value::ParsedFloat { token, .. } if token == "-0" => Ok(0),
             Value::String(value) => parse_integer(&value).context("invalid JSON5 integer"),
             _ => bail!("expected a JSON5 integer"),
         }
@@ -935,6 +937,10 @@ impl Json5ProtocolDeserializer {
             Value::ParsedFloat { value, token } => Ok(Number::Float {
                 value,
                 token: Some(token),
+            }),
+            Value::String(value) if is_negative_zero(&value) => Ok(Number::Float {
+                value: -0.0,
+                token: None,
             }),
             Value::String(value) if is_float_token(&value) => Ok(Number::Float {
                 value: parse_f64(&value)?,
@@ -1170,6 +1176,7 @@ impl ProtocolReader for Json5ProtocolDeserializer {
                         .context("JSON5 enum value is outside the i32 range")?,
                 ),
             ),
+            Value::ParsedFloat { token, .. } if token == "-0" => (None, Some(0)),
             Value::String(value) => {
                 parse_identifier(&value).map(|(name, value)| (name.map(str::to_owned), value))?
             }
@@ -1405,6 +1412,8 @@ fn normalize_json5_numbers(
                 if !is_object_key {
                     if is_float_token(token) {
                         tokens.push_back(token.to_owned());
+                    } else if is_negative_zero(token) {
+                        tokens.push_back("-0".to_owned());
                     }
                     let replacement = normalize_number_token(token)?;
                     if replacement != token {
@@ -1498,6 +1507,10 @@ fn is_float_token(token: &str) -> bool {
 }
 
 fn normalize_number_token(token: &str) -> std::result::Result<String, Json5ParseError> {
+    if is_negative_zero(token) {
+        // Parsed as a float, so that a floating-point value keeps the sign.
+        return Ok("-0.0".to_owned());
+    }
     if token == "+Infinity" || token == "+NaN" {
         return Ok(token[1..].to_owned());
     }
@@ -1683,6 +1696,10 @@ fn parse_identifier(identifier: &str) -> Result<(Option<&str>, Option<i32>)> {
         (!name.is_empty()).then_some(name),
         Some(parse_identifier_number(value).ok_or_else(|| anyhow!("invalid identifier value"))?),
     ))
+}
+
+fn is_negative_zero(token: &str) -> bool {
+    token.starts_with('-') && matches!(parse_integer(token), Ok(0))
 }
 
 fn parse_identifier_number(value: &str) -> Option<i32> {
