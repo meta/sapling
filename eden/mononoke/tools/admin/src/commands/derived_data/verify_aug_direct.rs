@@ -71,7 +71,7 @@ use super::Repo;
 /// would drop the recomputed envelope and read the stored one back. Every
 /// write here goes to the in-memory overlay instead.
 #[derive(Clone, Debug)]
-struct OverwritingOverlay(Arc<MemWritesBlobstore<Arc<dyn Blobstore>>>);
+pub(super) struct OverwritingOverlay(pub(super) Arc<MemWritesBlobstore<Arc<dyn Blobstore>>>);
 
 impl std::fmt::Display for OverwritingOverlay {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {

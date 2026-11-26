@@ -11,12 +11,13 @@
 //! With `scm/mononoke:hgmanifest_read_from_augmented` on for a repo, only Hg
 //! changeset derivation and its pipeline, the backfill of augmented manifests
 //! from Hg, augmented manifest derivation from a commit's mapped Hg manifest,
-//! and the comparison of stored Hg trees with ones rebuilt from augmented
-//! manifests may read Hg manifests, and they read through a context carrying an
-//! access label (`CoreContext::with_access_label`). Any other read comes from
-//! a reader that was missed, and it would break once Hg manifests stop being
-//! written. This check counts labelled reads by label, and counts and logs
-//! unlabelled ones, so those readers can be found. It also counts every write
+//! the comparison of stored Hg trees with ones rebuilt from augmented
+//! manifests, and the check of Hg changesets derived from augmented manifests
+//! against stored ones may read Hg manifests, and they read through a context
+//! carrying an access label (`CoreContext::with_access_label`). Any other read
+//! comes from a reader that was missed, and it would break once Hg manifests
+//! stop being written. This check counts labelled reads by label, and counts
+//! and logs unlabelled ones, so those readers can be found. It also counts every write
 //! of an Hg manifest by label and operation, labelled or not, and logs a
 //! sample of them, so that it can show when Hg manifest writes have stopped
 //! and name any writer left.

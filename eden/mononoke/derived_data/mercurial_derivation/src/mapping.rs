@@ -348,6 +348,36 @@ impl BonsaiDerivable for MappedHgChangesetId {
     }
 }
 
+/// Derive the Hg changeset of `bonsai` from the augmented manifest `root`, as
+/// `scm/mononoke:hgmanifest_retirement_stage` 1 derives it, storing its Hg
+/// trees and Hg changeset but not its mapping. The parents' Hg changesets
+/// must be derived. This lets a check compare the result with the stored Hg
+/// changeset, through a blobstore that keeps writes in memory.
+pub async fn derive_hg_changeset_from_augmented_root(
+    ctx: &CoreContext,
+    derivation_ctx: &DerivationContext,
+    bonsai: BonsaiChangeset,
+    root: HgAugmentedManifestId,
+) -> Result<HgChangesetId> {
+    let parents = derivation_ctx
+        .fetch_parents::<MappedHgChangesetId>(ctx, &bonsai)
+        .await?;
+    let subtree_change_sources =
+        get_subtree_change_sources(ctx, derivation_ctx, &bonsai, &HashMap::new()).await?;
+    let derivation_opts = get_hg_changeset_derivation_options(derivation_ctx);
+    Ok(derive_hg_from_augmented::derive_from_augmented_root(
+        ctx,
+        derivation_ctx,
+        bonsai,
+        root,
+        parents,
+        subtree_change_sources,
+        &derivation_opts,
+    )
+    .await?
+    .hg_changeset_id())
+}
+
 fn get_hg_changeset_derivation_options(
     derivation_ctx: &DerivationContext,
 ) -> HgChangesetDeriveOptions {

@@ -20,6 +20,7 @@ mod list_manifest;
 mod rebuild_hg_manifests;
 mod slice;
 mod verify_aug_direct;
+mod verify_hg_from_augmented;
 mod verify_manifests;
 
 use std::collections::HashMap;
@@ -81,6 +82,8 @@ use self::slice::SliceArgs;
 use self::slice::slice;
 use self::verify_aug_direct::VerifyAugDirectArgs;
 use self::verify_aug_direct::verify_aug_direct;
+use self::verify_hg_from_augmented::VerifyHgFromAugmentedArgs;
+use self::verify_hg_from_augmented::verify_hg_from_augmented;
 use self::verify_manifests::VerifyManifestsArgs;
 use self::verify_manifests::verify_manifests;
 
@@ -196,6 +199,10 @@ enum DerivedDataSubcommand {
     Slice(SliceArgs),
     /// Validate direct augmented-manifest derivation against stored data
     VerifyAugDirect(VerifyAugDirectArgs),
+    /// Derive Hg changesets from augmented manifests in memory, as
+    /// `scm/mononoke:hgmanifest_retirement_stage` 1 does, and compare them with
+    /// the stored ones
+    VerifyHgFromAugmented(VerifyHgFromAugmentedArgs),
     /// Compare different manifest types to ensure they are equivalent
     VerifyManifests(VerifyManifestsArgs),
 }
@@ -332,6 +339,7 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
         | DerivedDataSubcommand::CountUnderived(_)
         | DerivedDataSubcommand::FindDerivationGaps(_)
         | DerivedDataSubcommand::VerifyAugDirect(_)
+        | DerivedDataSubcommand::VerifyHgFromAugmented(_)
         | DerivedDataSubcommand::VerifyManifests(_)
         | DerivedDataSubcommand::ListManifest(_)
         | DerivedDataSubcommand::Slice(_) => {
@@ -362,6 +370,7 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
             | DerivedDataSubcommand::ListManifest(_)
             | DerivedDataSubcommand::Slice(_)
             | DerivedDataSubcommand::VerifyAugDirect(_)
+            | DerivedDataSubcommand::VerifyHgFromAugmented(_)
     );
 
     let manager = if is_read_only {
@@ -391,6 +400,9 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
         }
         DerivedDataSubcommand::VerifyAugDirect(args) => {
             verify_aug_direct(&ctx, &repo, &manager, args).await?
+        }
+        DerivedDataSubcommand::VerifyHgFromAugmented(args) => {
+            verify_hg_from_augmented(&ctx, &repo, &manager, args).await?
         }
         DerivedDataSubcommand::VerifyManifests(args) => verify_manifests(&ctx, &repo, args).await?,
         DerivedDataSubcommand::ListManifest(args) => {

@@ -37,6 +37,9 @@ pub mod access_labels {
     /// The comparison of stored Hg trees with ones rebuilt from augmented
     /// manifests.
     pub const HG_MANIFEST_REBUILD: &str = "hg_manifest_rebuild";
+    /// The admin check that compares Hg changesets and Hg trees derived from
+    /// augmented manifests with the stored ones.
+    pub const HG_FROM_AUGMENTED_CHECK: &str = "hg_from_augmented_check";
 }
 
 pub use derive_hg_changeset::DeriveHgChangeset;
@@ -46,3 +49,4 @@ pub use derive_hg_changeset::get_manifest_entry_from_bonsai;
 pub use derive_hg_changeset::get_manifest_from_bonsai;
 pub use mapping::MappedHgChangesetId;
 pub use mapping::RootHgAugmentedManifestId;
+pub use mapping::derive_hg_changeset_from_augmented_root;

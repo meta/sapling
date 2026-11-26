@@ -142,6 +142,7 @@ repos = { version = "0.1.0", path = "../../../../configerator/structs/scm/monono
 requests_table = { version = "0.1.0", path = "../../features/async_requests/requests_table" }
 restricted_paths = { version = "0.1.0", path = "../../repo_attributes/restricted_paths" }
 restricted_paths_common = { version = "0.1.0", path = "../../repo_attributes/restricted_paths_common" }
+samplingblob = { version = "0.1.0", path = "../../blobstore/samplingblob" }
 sapling-dag = { version = "0.2.0", path = "../../../scm/lib/dag" }
 sapling-dag-types = { version = "0.2.0", path = "../../../scm/lib/dag/dag-types", features = ["for-tests"] }
 sapling-renderdag = { version = "0.4.0", path = "../../../scm/lib/renderdag" }
