@@ -430,7 +430,6 @@ members = [
   "tools/aliasverify/tools/aliasverify",
   "tools/backfill_mapping",
   "tools/blob_type_annihilator",
-  "tools/bonsai_verify",
   "tools/check_git_wc/tools/check_git_wc",
   "tools/example",
   "tools/executor",

@@ -96,14 +96,7 @@
   hg-git-rename-source=git
   stepparents=2cc8d8df26cc8965cda5ff2aef95fc67d4a6aae2
 
-# Now, check that various Mononoke verification binaries work properly on this commit
-  $ hghash="$(hg log -r . -T '{node}')"
-  $ RUST_BACKTRACE=1 bonsai_verify hg-manifest "$hghash" 1
-  * 20572a577cfeaf2580444148d6abd34121a0899b total:1 bad:0 * (glob)
-
-  $ bonsai_verify round-trip "$hghash" 2>&1 | grep '% valid'
-  [INFO] 100.00% valid ignored=0 errors=0 valid=5 total=5
-
+# Check the filenodes
   $ sqlite3 "$TESTTMP/monsql/sqlite_dbs" "SELECT HEX(filenode), HEX(linknode) FROM filenodes ORDER BY filenode DESC;"
   DDAE7A95B6B0FB27DFACC4051C41AA9CFF30C1E2|3E11F5E9E3E90C064F0AF238475FC6BEDD9527B9
   DB9F6E90B4D31605949C7E5273E72FEADE04E6C4|2CC8D8DF26CC8965CDA5FF2AEF95FC67D4A6AAE2

@@ -73,13 +73,6 @@ pub trait BlobRepoHg: Send + Sync {
     where
         Self: CommitGraphRef + RepoDerivedDataRef + BonsaiHgMappingRef;
 
-    fn get_hg_heads_maybe_stale(
-        &self,
-        ctx: CoreContext,
-    ) -> BoxStream<'_, Result<HgChangesetId, Error>>
-    where
-        Self: BookmarksRef + RepoDerivedDataRef + Send + Sync;
-
     async fn hg_changeset_exists(
         &self,
         ctx: CoreContext,
@@ -93,14 +86,6 @@ pub trait BlobRepoHg: Send + Sync {
         ctx: CoreContext,
         csid: ChangesetId,
     ) -> Result<(HgChangesetId, Vec<HgChangesetId>), Error>
-    where
-        Self: BonsaiHgMappingRef + CommitGraphRef + RepoDerivedDataRef;
-
-    async fn get_hg_changeset_parents(
-        &self,
-        ctx: CoreContext,
-        changesetid: HgChangesetId,
-    ) -> Result<Vec<HgChangesetId>, Error>
     where
         Self: BonsaiHgMappingRef + CommitGraphRef + RepoDerivedDataRef;
 
@@ -159,8 +144,6 @@ define_stats! {
     get_all_filenodes: timeseries(Rate, Sum),
     get_bookmark_hg: timeseries(Rate, Sum),
     get_hg_changeset_and_parents_from_bonsai: timeseries(Rate, Sum),
-    get_hg_changeset_parents: timeseries(Rate, Sum),
-    get_hg_heads_maybe_stale: timeseries(Rate, Sum),
     get_hg_bonsai_mapping: timeseries(Rate, Sum),
     get_publishing_bookmarks_maybe_stale_hg: timeseries(Rate, Sum),
 }
@@ -242,34 +225,6 @@ impl<T: CommitGraphRef + BonsaiHgMappingRef + Send + Sync> BlobRepoHg for T {
         // TODO(stash, luk): T37303879 also need to check that entries exist in changeset table
     }
 
-    /// Get Mercurial heads, which we approximate as publishing Bonsai Bookmarks.
-    fn get_hg_heads_maybe_stale(
-        &self,
-        ctx: CoreContext,
-    ) -> BoxStream<'_, Result<HgChangesetId, Error>>
-    where
-        Self: BookmarksRef + RepoDerivedDataRef + Send + Sync,
-    {
-        STATS::get_hg_heads_maybe_stale.add_value(1);
-
-        self.bookmarks()
-            .list(
-                ctx.clone(),
-                Freshness::MaybeStale,
-                &BookmarkPrefix::empty(),
-                BookmarkCategory::ALL,
-                BookmarkKind::ALL_PUBLISHING,
-                &BookmarkPagination::FromStart,
-                u64::MAX,
-            )
-            .map_ok(move |(_, cs)| {
-                cloned!(ctx);
-                async move { self.derive_hg_changeset(&ctx, cs).await }
-            })
-            .try_buffer_unordered(100)
-            .boxed()
-    }
-
     async fn hg_changeset_exists(
         &self,
         ctx: CoreContext,
@@ -315,32 +270,6 @@ impl<T: CommitGraphRef + BonsaiHgMappingRef + Send + Sync> BlobRepoHg for T {
         .await?;
 
         Ok((changesetid, parents))
-    }
-
-    async fn get_hg_changeset_parents(
-        &self,
-        ctx: CoreContext,
-        changesetid: HgChangesetId,
-    ) -> Result<Vec<HgChangesetId>, Error>
-    where
-        Self: BonsaiHgMappingRef + CommitGraphRef + RepoDerivedDataRef,
-    {
-        STATS::get_hg_changeset_parents.add_value(1);
-
-        let csid = self
-            .bonsai_hg_mapping()
-            .get_bonsai_from_hg(&ctx, changesetid)
-            .await?
-            .ok_or_else(|| anyhow!("Bonsai changeset not found for hg changeset {changesetid}"))?;
-
-        let parents = self
-            .commit_graph()
-            .changeset_parents(&ctx, csid)
-            .await?
-            .into_iter()
-            .map(|parent| self.derive_hg_changeset(&ctx, parent));
-
-        Ok(future::try_join_all(parents).await?)
     }
 
     async fn get_bookmark_hg(

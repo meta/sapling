@@ -116,18 +116,6 @@ dott_test(
 )
 
 dott_test(
-    name = "bonsai-verify",
-    dott_files = ["test-bonsai-verify.t"],
-    # PoC: run this no-server test on RE under `buck test --prefer-remote`.
-    enable_remote_execution = True,
-    deps = [
-        "//eden/mononoke/tools/admin:admin",
-        "//eden/mononoke/tools/bonsai_verify:bonsai_verify",
-        "//eden/mononoke/tools/testtool:testtool",
-    ],
-)
-
-dott_test(
     name = "check-git-wc",
     dott_files = ["test-check-git-wc.t"],
     enable_remote_execution = True,

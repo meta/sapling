@@ -316,20 +316,6 @@ impl HgBlobChangeset {
         // XXX Change this to return p1 and p2 directly.
         HgParents::new(self.content.p1(), self.content.p2())
     }
-
-    pub fn step_parents(&self) -> Result<Vec<HgNodeHash>> {
-        let mut ret = vec![];
-
-        if let Some(step_parents) = self.extra().get(STEP_PARENTS_METADATA_KEY) {
-            let step_parents = std::str::from_utf8(step_parents)?;
-            for csid in step_parents.split(',') {
-                let csid = csid.parse()?;
-                ret.push(csid);
-            }
-        }
-
-        Ok(ret)
-    }
 }
 
 #[async_trait]

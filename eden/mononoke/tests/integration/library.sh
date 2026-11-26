@@ -632,17 +632,6 @@ function blob_type_annihilator {
     "$@"
 }
 
-function bonsai_verify {
-  render_mononoke_config
-  GLOG_minloglevel=5 "$MONONOKE_BONSAI_VERIFY" \
-    "${CACHE_ARGS[@]}" \
-    "${COMMON_ARGS[@]}" \
-    --repo-id "$REPOID" \
-    --config-tier "$MONONOKE_CONFIG_TIER" \
-    --tracing-test-format \
-    "$@"
-}
-
 function s_client {
     /usr/local/fbcode/platform010/bin/openssl s_client \
         -connect "$(mononoke_address)" \

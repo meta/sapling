@@ -1,5 +1,4 @@
 load("@fbsource//tools/build_defs:rust_library.bzl", "rust_library")
-load("@fbsource//tools/build_defs:rust_unittest.bzl", "rust_unittest")
 
 oncall("scm_server_infra")
 
@@ -8,54 +7,11 @@ rust_library(
     srcs = glob(["src/**/*.rs"]),
     deps = [
         "fbsource//third-party/rust:anyhow",
-        "fbsource//third-party/rust:async-recursion",
-        "fbsource//third-party/rust:dashmap",
-        "fbsource//third-party/rust:futures",
-        "fbsource//third-party/rust:tokio",
-        "fbsource//third-party/rust:tokio-stream",
-        "fbsource//third-party/rust:tracing",
-        "//common/rust/shed/cloned:cloned",
-        "//eden/mononoke/blobrepo:blobrepo_hg",
-        "//eden/mononoke/blobrepo:blobrepo_override",
         "//eden/mononoke/blobstore:blobstore",
-        "//eden/mononoke/blobstore:cacheblob",
-        "//eden/mononoke/common/mononoke_macros:mononoke_macros",
-        "//eden/mononoke/derived_data/mercurial_derivation:mercurial_derivation",
         "//eden/mononoke/manifest:manifest",
         "//eden/mononoke/mercurial:mercurial_types",
         "//eden/mononoke/mononoke_types:mononoke_types",
-        "//eden/mononoke/repo_attributes/bonsai_hg_mapping:bonsai_hg_mapping",
-        "//eden/mononoke/repo_attributes/commit_graph/commit_graph:commit_graph",
         "//eden/mononoke/repo_attributes/repo_blobstore:repo_blobstore",
-        "//eden/mononoke/repo_attributes/repo_derived_data:repo_derived_data",
-        "//eden/mononoke/repo_attributes/restricted_paths:restricted_paths",
         "//eden/mononoke/servers/slapi/slapi_server/context:context",
-    ],
-)
-
-rust_unittest(
-    name = "blobrepo_utils_test",
-    srcs = glob(["test/**/*.rs"]),
-    deps = [
-        "fbsource//third-party/rust:anyhow",
-        "fbsource//third-party/rust:futures",
-        ":blobrepo_utils",
-        "//common/rust/shed/facet:facet",
-        "//common/rust/shed/fbinit:fbinit",
-        "//common/rust/shed/fbinit:fbinit-tokio",
-        "//eden/mononoke/blobrepo:blobrepo_hg",
-        "//eden/mononoke/blobrepo:blobrepo_override",
-        "//eden/mononoke/blobstore:blobstore",
-        "//eden/mononoke/common/mononoke_macros:mononoke_macros",
-        "//eden/mononoke/repo_attributes/bonsai_hg_mapping:bonsai_hg_mapping",
-        "//eden/mononoke/repo_attributes/bookmarks:bookmarks",
-        "//eden/mononoke/repo_attributes/commit_graph/commit_graph:commit_graph",
-        "//eden/mononoke/repo_attributes/filestore:filestore",
-        "//eden/mononoke/repo_attributes/repo_blobstore:repo_blobstore",
-        "//eden/mononoke/repo_attributes/repo_derived_data:repo_derived_data",
-        "//eden/mononoke/repo_attributes/repo_identity:repo_identity",
-        "//eden/mononoke/repo_attributes/restricted_paths:restricted_paths",
-        "//eden/mononoke/servers/slapi/slapi_server/context:context",
-        "//eden/mononoke/tests/fixtures:fixtures",
     ],
 )

@@ -7,45 +7,15 @@
 
 //! Code for operations on blobrepos that are useful but not essential.
 
-#![feature(trait_alias)]
-
-mod bonsai;
-mod changeset;
-
-use std::sync::Arc;
-
 use anyhow::Result;
-use blobrepo_override::DangerousOverride;
-use blobstore::Blobstore;
 use blobstore::Loadable;
-use bonsai_hg_mapping::BonsaiHgMappingRef;
-use commit_graph::CommitGraphRef;
 use context::CoreContext;
 use manifest::BonsaiDiffFileChange;
 use mercurial_types::HgFileNodeId;
 use mononoke_types::FileChange;
 use mononoke_types::FileType;
 use mononoke_types::NonRootMPath;
-use repo_blobstore::RepoBlobstoreArc;
 use repo_blobstore::RepoBlobstoreRef;
-use repo_derived_data::RepoDerivedDataRef;
-use restricted_paths::RestrictedPathsArc;
-
-pub use crate::bonsai::BonsaiMFVerify;
-pub use crate::bonsai::BonsaiMFVerifyDifference;
-pub use crate::bonsai::BonsaiMFVerifyResult;
-pub use crate::changeset::visit_changesets;
-
-pub trait Repo = BonsaiHgMappingRef
-    + CommitGraphRef
-    + RepoDerivedDataRef
-    + RepoBlobstoreArc
-    + RestrictedPathsArc
-    + DangerousOverride<Arc<dyn Blobstore>>
-    + Send
-    + Sync
-    + Clone
-    + 'static;
 
 /// This is a function that's used to generate additional file changes for rebased diamond merges.
 /// It's used in a very specific use case - rebasing of a diamond merge and it should be used with

@@ -16,8 +16,15 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
+use async_trait::async_trait;
+use blobstore::Blobstore;
+use blobstore::BlobstoreBytes;
+use blobstore::BlobstoreGetData;
+use blobstore::BlobstoreIsPresent;
 use blobstore::KeyedBlobstore;
 use blobstore::Loadable;
+use blobstore::OverwriteStatus;
+use blobstore::PutBehaviour;
 use bookmarks::BookmarkKey;
 use bookmarks::BookmarksRef;
 use bookmarks::Freshness;
@@ -57,7 +64,66 @@ use restricted_paths_common::RestrictedPathsConfigBased;
 use tracing::info;
 
 use super::Repo;
-use super::verify_aug_upload::OverwritingOverlay;
+
+/// Envelopes are keyed by hg node id, so a recomputed envelope lands on the
+/// key the stored one already occupies. `MemWritesBlobstore` writes reached
+/// through `RepoBlobstore` are if-absent against the real blobstore, which
+/// would drop the recomputed envelope and read the stored one back. Every
+/// write here goes to the in-memory overlay instead.
+#[derive(Clone, Debug)]
+struct OverwritingOverlay(Arc<MemWritesBlobstore<Arc<dyn Blobstore>>>);
+
+impl std::fmt::Display for OverwritingOverlay {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "OverwritingOverlay<{}>", self.0)
+    }
+}
+
+#[async_trait]
+impl Blobstore for OverwritingOverlay {
+    async fn get<'a>(
+        &'a self,
+        ctx: &'a CoreContext,
+        key: &'a str,
+    ) -> Result<Option<BlobstoreGetData>> {
+        self.0.get(ctx, key).await
+    }
+
+    async fn is_present<'a>(
+        &'a self,
+        ctx: &'a CoreContext,
+        key: &'a str,
+    ) -> Result<BlobstoreIsPresent> {
+        self.0.is_present(ctx, key).await
+    }
+
+    async fn unlink<'a>(&'a self, ctx: &'a CoreContext, key: &'a str) -> Result<()> {
+        self.0.unlink(ctx, key).await
+    }
+
+    async fn put_explicit<'a>(
+        &'a self,
+        ctx: &'a CoreContext,
+        key: String,
+        value: BlobstoreBytes,
+        _put_behaviour: PutBehaviour,
+    ) -> Result<OverwriteStatus> {
+        self.0
+            .put_explicit(ctx, key, value, PutBehaviour::Overwrite)
+            .await
+    }
+
+    async fn put_with_status<'a>(
+        &'a self,
+        ctx: &'a CoreContext,
+        key: String,
+        value: BlobstoreBytes,
+    ) -> Result<OverwriteStatus> {
+        self.0
+            .put_explicit(ctx, key, value, PutBehaviour::Overwrite)
+            .await
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct VerifyMismatch {
@@ -455,7 +521,7 @@ impl<'a> Verifier<'a> {
     }
 }
 
-pub(crate) fn compare_envelopes(
+fn compare_envelopes(
     cs_id: ChangesetId,
     computed: &HgAugmentedManifestEnvelope,
     expected: &HgAugmentedManifestEnvelope,

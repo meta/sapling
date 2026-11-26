@@ -35,6 +35,5 @@ pub use derive_hg_changeset::derive_hg_augmented_manifest_at_creation;
 pub use derive_hg_changeset::derive_hg_changeset;
 pub use derive_hg_changeset::get_manifest_entry_from_bonsai;
 pub use derive_hg_changeset::get_manifest_from_bonsai;
-pub use derive_hg_manifest::derive_hg_manifest;
 pub use mapping::MappedHgChangesetId;
 pub use mapping::RootHgAugmentedManifestId;

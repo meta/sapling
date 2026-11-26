@@ -21,7 +21,6 @@ use context::CoreContext;
 use derived_data_manager::ManifestDerivationInput;
 use derived_data_manager::ManifestStageOutput;
 use derived_data_manager::StageId;
-use derived_data_manager::manifest_partitions::create_sorted_subentries;
 use futures::future;
 use futures::future::TryFutureExt;
 use futures::future::try_join_all;
@@ -46,7 +45,6 @@ use mononoke_types::NonRootMPath;
 use mononoke_types::RepoPath;
 use mononoke_types::SortedVectorTrieMap;
 use mononoke_types::TrackedFileChange;
-use mononoke_types::path::MPath;
 use restricted_paths_common::ArcRestrictedPathsConfigBased;
 use restricted_paths_common::ManifestIdStoreWriteCallsite;
 use restricted_paths_common::ManifestType;
@@ -189,65 +187,6 @@ pub(crate) fn prepare_manifest_input(
         })
         .collect();
     ManifestDerivationInput::from_stage_outputs(stage, parents, dependencies)
-}
-
-/// Derive the root Mercurial manifest from parent roots and prepared file changes.
-pub async fn derive_hg_manifest(
-    ctx: CoreContext,
-    blobstore: Arc<dyn KeyedBlobstore>,
-    restricted_paths: ArcRestrictedPathsConfigBased,
-    parents: impl IntoIterator<Item = HgManifestId>,
-    changes: impl IntoIterator<Item = (NonRootMPath, Option<(FileType, HgFileNodeId)>)> + 'static,
-) -> Result<HgManifestId, Error> {
-    let parents = parents
-        .into_iter()
-        .map(|id| ManifestStageOutput::Entry(Some(Entry::Tree(Traced::generate(id)))))
-        .collect();
-    let input = prepare_manifest_input(&StageId::Manifest(MPath::ROOT), parents, HashMap::new())?;
-    derive_hg_manifest_entry(
-        ctx,
-        blobstore,
-        restricted_paths,
-        input,
-        changes.into_iter().collect(),
-    )
-    .await?
-    .into_entry()?
-    .and_then(Entry::into_tree)
-    .map(Traced::into_untraced)
-    .ok_or_else(|| format_err!("root manifest derivation produced no tree entry"))
-}
-
-pub(crate) async fn derive_hg_manifest_entry(
-    ctx: CoreContext,
-    blobstore: Arc<dyn KeyedBlobstore>,
-    restricted_paths: ArcRestrictedPathsConfigBased,
-    input: HgManifestInput,
-    changes: Vec<(NonRootMPath, Option<(FileType, HgFileNodeId)>)>,
-) -> Result<HgManifestOutput, Error> {
-    input
-        .derive(
-            ctx.clone(),
-            blobstore.clone(),
-            changes,
-            {
-                cloned!(ctx, blobstore, restricted_paths);
-                move |tree_info| {
-                    create_hg_manifest(
-                        ctx.clone(),
-                        blobstore.clone(),
-                        tree_info,
-                        restricted_paths.clone(),
-                    )
-                }
-            },
-            {
-                cloned!(ctx, blobstore);
-                move |leaf_info| create_hg_file(ctx.clone(), blobstore.clone(), leaf_info)
-            },
-            |subentries| create_sorted_subentries(&ctx, subentries),
-        )
-        .await
 }
 
 /// This function is used as callback from `derive_manifest` to generate and store manifest
