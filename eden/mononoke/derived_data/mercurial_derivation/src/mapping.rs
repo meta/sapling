@@ -19,6 +19,7 @@ use blobstore::BlobstoreBytes;
 use blobstore::BlobstoreGetData;
 use bonsai_hg_mapping::BonsaiHgMappingEntry;
 use bytes::Bytes;
+use cloned::cloned;
 use context::CoreContext;
 use derived_data::batch::DEFAULT_STACK_FILE_CHANGES_LIMIT;
 use derived_data::batch::FileConflicts;
@@ -28,9 +29,13 @@ use derived_data_manager::BonsaiDerivable;
 use derived_data_manager::DerivableType;
 use derived_data_manager::DerivationContext;
 use derived_data_manager::dependencies;
+use futures::StreamExt;
+use futures::TryStreamExt;
 use futures::future;
+use futures::stream;
 use mercurial_types::HgAugmentedManifestId;
 use mercurial_types::HgChangesetId;
+use mononoke_macros::mononoke;
 use mononoke_types::BonsaiChangeset;
 use mononoke_types::ChangesetId;
 use stats::prelude::*;
@@ -38,6 +43,10 @@ use tracing::debug;
 
 use crate::access_labels;
 use crate::derive_hg_from_augmented;
+
+/// How many commits of a stack store their Hg trees at once, from augmented
+/// manifests.
+const STACK_CONCURRENCY: usize = 10;
 
 define_stats! {
     prefix = "mononoke.derived_data.hgchangesets";
@@ -124,9 +133,7 @@ impl BonsaiDerivable for MappedHgChangesetId {
         if bonsais.iter().any(|bonsai| bonsai.is_snapshot()) {
             bail!("Can't derive Hg changeset for snapshot");
         }
-        // Fails on an invalid stage, also for batches whose linear stacks keep
-        // today's derivation at every stage.
-        derive_hg_from_augmented::derives_from_augmented(derivation_ctx)?;
+        let from_augmented = derive_hg_from_augmented::derives_from_augmented(derivation_ctx)?;
 
         STATS::new_parallel.add_value(1);
         let linear_stacks = split_bonsais_in_linear_stacks(
@@ -164,9 +171,60 @@ impl BonsaiDerivable for MappedHgChangesetId {
             // going to derive now, and `left_bonsais` will contain all the bonsais that
             // we are going to derive in the next step
             let left_bonsais = bonsais.split_off(stack.stack_items.len());
-            if derived_parents.len() > 1 || bonsais.len() == 1 {
-                // we can't derive stack for a merge commit or for a commit that contains renames,
-                // or subtree changes so let's derive it without batching
+            if from_augmented {
+                // Only hashing a changeset needs its parents' Hg changesets,
+                // so the rest runs for many commits of the stack at once.
+                let mut prepared = stream::iter(bonsais)
+                    .map(|bonsai| {
+                        cloned!(ctx, derivation_ctx);
+                        // Spawned, so that it goes on while the loop below
+                        // generates earlier changesets.
+                        let prepare = mononoke::spawn_task(async move {
+                            let root = derivation_ctx
+                                .fetch_dependency::<RootHgAugmentedManifestId>(
+                                    &ctx,
+                                    bonsai.get_changeset_id(),
+                                )
+                                .await?
+                                .hg_augmented_manifest_id();
+                            let (parent_roots, files) =
+                                derive_hg_from_augmented::store_trees_and_list_files(
+                                    &ctx,
+                                    &derivation_ctx,
+                                    &bonsai,
+                                    root,
+                                )
+                                .await?;
+                            anyhow::Ok((bonsai, root, parent_roots, files))
+                        });
+                        async move { prepare.await? }
+                    })
+                    .buffered(STACK_CONCURRENCY);
+                while let Some((bonsai, root, parent_roots, files)) = prepared.try_next().await? {
+                    let parents = derivation_ctx
+                        .fetch_unknown_parents(ctx, Some(&res), &bonsai)
+                        .await?;
+                    let subtree_change_sources =
+                        get_subtree_change_sources(ctx, derivation_ctx, &bonsai, &res).await?;
+                    let cs_id = bonsai.get_changeset_id();
+                    let derived = derive_hg_from_augmented::generate_from_augmented(
+                        ctx,
+                        derivation_ctx,
+                        bonsai,
+                        root,
+                        parents,
+                        parent_roots,
+                        files,
+                        subtree_change_sources,
+                        &derivation_opts,
+                    )
+                    .await?;
+                    res.insert(cs_id, derived);
+                }
+            } else if derived_parents.len() > 1 || bonsais.len() == 1 {
+                // From Hg manifests, we can't derive stack for a merge commit
+                // or for a commit that contains renames, or subtree changes so
+                // let's derive it without batching
                 for bonsai in bonsais {
                     let parents = derivation_ctx
                         .fetch_unknown_parents(ctx, Some(&res), &bonsai)

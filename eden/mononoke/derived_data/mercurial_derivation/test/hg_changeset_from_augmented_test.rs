@@ -17,6 +17,7 @@ use ::manifest::ManifestOps;
 use anyhow::Result;
 use blobstore::KeyedBlobstore;
 use blobstore::Loadable;
+use bonsai_hg_mapping::BonsaiHgMappingRef;
 use bytes::Bytes;
 use commit_graph::CommitGraphRef;
 use context::CoreContext;
@@ -29,6 +30,7 @@ use justknobs::test_helpers::JustKnobsInMemory;
 use justknobs::test_helpers::KnobVal;
 use justknobs::test_helpers::override_just_knobs;
 use mercurial_derivation::DeriveHgChangeset;
+use mercurial_derivation::MappedHgChangesetId;
 use mercurial_derivation::RootHgAugmentedManifestId;
 use mercurial_types::HgChangesetId;
 use mercurial_types::HgManifestId;
@@ -264,6 +266,97 @@ async fn test_stage_1_matches_stage_0_on_fixtures(fb: FacebookInit) -> Result<()
 }
 
 #[mononoke::fbinit_test]
+async fn test_stage_1_batch_matches_one_at_a_time_and_stage_0(fb: FacebookInit) -> Result<()> {
+    // Given: every commit's Hg changeset derived one at a time at stage 0 and
+    // at stage 1.
+    let from_hg = derive_fixture::<ChangeKinds>(fb, 0).await?;
+    let one_at_a_time = derive_fixture::<ChangeKinds>(fb, 1).await?;
+
+    // When: deriving the same commits at stage 1 as one batch, after their
+    // augmented manifests.
+    set_stage(1);
+    let ctx = CoreContext::test_mock(fb);
+    let (repo, reads) = repo_recording_labels(fb).await?;
+    let (commits, _dag) = extend_from_dag_with_actions(&ctx, &repo, CHANGE_KINDS_DAG).await?;
+    let manager = repo.repo_derived_data().manager();
+    let csids: Vec<ChangesetId> = ["A", "B", "R", "M", "C", "D", "E", "F", "G", "H", "I", "J"]
+        .into_iter()
+        .map(|name| commits[name])
+        .collect();
+    repo.repo_derived_data()
+        .derive::<RootHgAugmentedManifestId>(
+            &ctx,
+            commits["J"],
+            derivation_queue_thrift::DerivationPriority::LOW,
+        )
+        .await?;
+    reads.take();
+    let derived = manager
+        .derive_exactly_batch::<MappedHgChangesetId>(&ctx, csids, None)
+        .await;
+    let batch_reads = reads.take().len();
+    derived?;
+
+    // Then: the batch read no Hg manifest and gave the same Hg changesets and
+    // Hg trees.
+    assert_eq!(batch_reads, 0, "stage 1 should read no Hg manifest");
+    let mut changesets = BTreeMap::new();
+    for (name, cs_id) in commits {
+        changesets.insert(name, repo.derive_hg_changeset(&ctx, cs_id).await?);
+    }
+    let trees = read_hg_trees(&ctx, &repo, &changesets).await?;
+    let batch = HgDerivation { changesets, trees };
+    assert_eq!(
+        batch, one_at_a_time,
+        "a batch should derive what one at a time does"
+    );
+    assert_eq!(batch, from_hg, "stage 1 should derive what stage 0 does");
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_stage_1_linear_stack_reads_no_hg_manifest(fb: FacebookInit) -> Result<()> {
+    // Given: every commit's Hg changeset derived at stage 0, and a stage 1
+    // repo where the commits up to G have their Hg changesets.
+    let from_hg = derive_fixture::<ChangeKinds>(fb, 0).await?;
+    set_stage(1);
+    let ctx = CoreContext::test_mock(fb);
+    let (repo, reads) = repo_recording_labels(fb).await?;
+    let (commits, _dag) = extend_from_dag_with_actions(&ctx, &repo, CHANGE_KINDS_DAG).await?;
+    repo.derive_hg_changeset(&ctx, commits["G"]).await?;
+    repo.repo_derived_data()
+        .derive::<RootHgAugmentedManifestId>(
+            &ctx,
+            commits["J"],
+            derivation_queue_thrift::DerivationPriority::LOW,
+        )
+        .await?;
+    reads.take();
+
+    // When: deriving H, I and J as one batch, where I and J form a linear
+    // stack on H, which today's derivation builds from H's Hg manifest.
+    let csids = ["H", "I", "J"].map(|name| commits[name]).to_vec();
+    let derived = repo
+        .repo_derived_data()
+        .manager()
+        .derive_exactly_batch::<MappedHgChangesetId>(&ctx, csids, None)
+        .await;
+    let batch_reads = reads.take().len();
+    derived?;
+
+    // Then: the batch read no Hg manifest and gave the stage 0 Hg changesets.
+    assert_eq!(batch_reads, 0, "stage 1 should read no Hg manifest");
+    for name in ["H", "I", "J"] {
+        assert_eq!(
+            repo.derive_hg_changeset(&ctx, commits[name]).await?,
+            from_hg.changesets[name],
+            "{name}"
+        );
+    }
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
 async fn test_stage_1_reads_no_hg_manifest(fb: FacebookInit) -> Result<()> {
     // Given: a repo at stage 1 where every commit but the tip has its Hg
     // changeset.
@@ -342,10 +435,17 @@ async fn test_stage_1_fails_when_a_parent_maps_to_another_augmented_root(
         .await
         .expect_err("a parent mapped to another augmented root should fail derivation");
 
-    // Then: the error names the parent.
+    // Then: the error names the parent, and the child has no Hg changeset.
     assert!(
         format!("{err:#}").contains(&format!("parent {parent} maps to augmented root")),
         "error should name the parent: {err:#}",
+    );
+    assert_eq!(
+        repo.bonsai_hg_mapping()
+            .get_hg_from_bonsai(&ctx, child)
+            .await?,
+        None,
+        "a failed guard should map nothing"
     );
     Ok(())
 }

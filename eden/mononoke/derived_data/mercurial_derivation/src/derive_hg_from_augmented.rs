@@ -45,6 +45,7 @@ use mercurial_types::subtree::HgSubtreeChanges;
 use mononoke_macros::mononoke;
 use mononoke_types::BonsaiChangeset;
 use mononoke_types::ChangesetId;
+use mononoke_types::NonRootMPath;
 use mononoke_types::RepoPath;
 use mononoke_types::path::MPath;
 use restricted_paths_common::ArcRestrictedPathsConfigBased;
@@ -248,21 +249,16 @@ pub(crate) async fn store_hg_tree(
     Ok(())
 }
 
-/// Fail unless the augmented root stored for `parent` is `hg_root`, the root
-/// tree of its Hg changeset. Derivation from augmented manifests reads a
-/// parent's tree as the augmented record stored under its Hg root tree id, so
-/// a parent mapped to another root would give the commit Hg trees built
-/// against the wrong parent.
-pub(crate) async fn check_parent_root(
-    ctx: &CoreContext,
-    derivation_ctx: &DerivationContext,
+/// Fail unless `augmented_root`, the augmented root stored for `parent`, is
+/// `hg_root`, the root tree of its Hg changeset. Derivation from augmented
+/// manifests builds a commit's Hg trees and changed files against its parents'
+/// augmented roots but records its parents' Hg changesets, so the two must
+/// name the same tree.
+pub(crate) fn check_parent_root(
     parent: ChangesetId,
+    augmented_root: HgAugmentedManifestId,
     hg_root: HgManifestId,
 ) -> Result<()> {
-    let augmented_root = derivation_ctx
-        .fetch_dependency::<RootHgAugmentedManifestId>(ctx, parent)
-        .await?
-        .hg_augmented_manifest_id();
     ensure!(
         augmented_root.into_nodehash() == hg_root.into_nodehash(),
         "parent {parent} maps to augmented root {augmented_root}, but its Hg changeset's root tree is {hg_root}"
@@ -307,24 +303,39 @@ pub(crate) async fn derive_from_augmented_root(
     subtree_change_sources: HashMap<ChangesetId, HgChangesetId>,
     options: &HgChangesetDeriveOptions,
 ) -> Result<MappedHgChangesetId> {
-    let blobstore = derivation_ctx.blobstore();
-    let parents = try_join_all(bonsai.parents().zip(parents.iter()).map(
-        |(parent_cs_id, parent)| async move {
-            let parent = parent.hg_changeset_id().load(ctx, blobstore).await?;
-            check_parent_root(ctx, derivation_ctx, parent_cs_id, parent.manifestid()).await?;
-            anyhow::Ok(parent)
-        },
-    ))
-    .await?;
-    let parent_roots: Vec<_> = parents
-        .iter()
-        .map(|parent| HgAugmentedManifestId::from(parent.manifestid()))
-        .collect();
-    let subtree_changes = HgSubtreeChanges::from_bonsai_subtree_changes(
-        bonsai.subtree_changes(),
+    let (parent_roots, files) =
+        store_trees_and_list_files(ctx, derivation_ctx, &bonsai, root).await?;
+    generate_from_augmented(
+        ctx,
+        derivation_ctx,
+        bonsai,
+        root,
+        parents,
+        parent_roots,
+        files,
         subtree_change_sources,
-    )?;
+        options,
+    )
+    .await
+}
 
+/// Store the new Hg trees of `bonsai`, whose augmented root is `root`, and
+/// list its changed files, against its parents' augmented roots, which are
+/// returned too. This needs no parent's Hg changeset, so a batch does it for
+/// many commits at once.
+pub(crate) async fn store_trees_and_list_files(
+    ctx: &CoreContext,
+    derivation_ctx: &DerivationContext,
+    bonsai: &BonsaiChangeset,
+    root: HgAugmentedManifestId,
+) -> Result<(Vec<HgAugmentedManifestId>, Vec<NonRootMPath>)> {
+    let blobstore = derivation_ctx.blobstore();
+    let parent_roots: Vec<_> = derivation_ctx
+        .fetch_parents::<RootHgAugmentedManifestId>(ctx, bonsai)
+        .await?
+        .into_iter()
+        .map(|parent| parent.hg_augmented_manifest_id())
+        .collect();
     let ((), files) = future::try_join(
         store_hg_trees(
             ctx,
@@ -348,6 +359,39 @@ pub(crate) async fn derive_from_augmented_root(
         },
     )
     .await?;
+    Ok((parent_roots, files))
+}
+
+/// Hash and store the Hg changeset of `bonsai`, whose root tree is `root` and
+/// whose `files` were listed against `parent_roots`.
+pub(crate) async fn generate_from_augmented(
+    ctx: &CoreContext,
+    derivation_ctx: &DerivationContext,
+    bonsai: BonsaiChangeset,
+    root: HgAugmentedManifestId,
+    parents: Vec<MappedHgChangesetId>,
+    parent_roots: Vec<HgAugmentedManifestId>,
+    files: Vec<NonRootMPath>,
+    subtree_change_sources: HashMap<ChangesetId, HgChangesetId>,
+    options: &HgChangesetDeriveOptions,
+) -> Result<MappedHgChangesetId> {
+    let blobstore = derivation_ctx.blobstore();
+    // Checked here, after the Hg trees built from the parents' augmented roots
+    // are stored, because within a batch a parent's Hg changeset exists only
+    // once it is generated. A failure still fails derivation before this
+    // commit's Hg changeset or mapping is written; the trees stored are valid
+    // for their own ids.
+    try_join_all(bonsai.parents().zip(parents.iter().zip(parent_roots)).map(
+        |(parent_cs_id, (parent, parent_root))| async move {
+            let parent = parent.hg_changeset_id().load(ctx, blobstore).await?;
+            check_parent_root(parent_cs_id, parent_root, parent.manifestid())
+        },
+    ))
+    .await?;
+    let subtree_changes = HgSubtreeChanges::from_bonsai_subtree_changes(
+        bonsai.subtree_changes(),
+        subtree_change_sources,
+    )?;
     let (hg_cs_id, _) = generate_hg_changeset(
         ctx,
         blobstore,
@@ -355,7 +399,7 @@ pub(crate) async fn derive_from_augmented_root(
         HgManifestId::new(root.into_nodehash()),
         parents
             .iter()
-            .map(|parent| parent.get_changeset_id())
+            .map(|parent| parent.hg_changeset_id())
             .collect(),
         files,
         subtree_changes,
