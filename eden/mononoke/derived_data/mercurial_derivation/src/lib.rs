@@ -18,6 +18,7 @@ pub mod derive_hg_manifest;
 mod indexed_augmented_manifest;
 mod mapping;
 pub mod pipeline;
+mod pipeline_from_augmented;
 pub mod rebuild_hg_manifests;
 pub mod upload_augmented_manifest;
 

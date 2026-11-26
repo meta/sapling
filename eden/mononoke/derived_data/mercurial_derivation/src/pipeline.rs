@@ -12,6 +12,7 @@ use anyhow::Result;
 use anyhow::anyhow;
 use async_trait::async_trait;
 use blobrepo_common::changed_files::compute_changed_files;
+use blobrepo_common::changed_files::compute_changed_files_from_augmented;
 use blobstore::Loadable;
 use bonsai_hg_mapping::BonsaiHgMappingEntry;
 use context::CoreContext;
@@ -37,6 +38,7 @@ use futures::stream;
 use manifest::Entry;
 use manifest::ManifestOps;
 use manifest::Traced;
+use mercurial_types::HgAugmentedManifestId;
 use mercurial_types::HgChangesetId;
 use mercurial_types::HgFileNodeId;
 use mercurial_types::HgManifestId;
@@ -54,12 +56,15 @@ use mononoke_types::path::MPath;
 use crate::access_labels;
 use crate::derive_hg_changeset::generate_hg_changeset;
 use crate::derive_hg_changeset::get_manifest_entry_from_bonsai;
+use crate::derive_hg_from_augmented;
 use crate::derive_hg_manifest::HgManifestOutput;
 use crate::derive_hg_manifest::ParentIndex;
 use crate::derive_hg_manifest::prepare_manifest_input;
 use crate::mapping::HgChangesetDeriveOptions;
 use crate::mapping::MappedHgChangesetId;
+use crate::mapping::RootHgAugmentedManifestId;
 use crate::mapping::get_subtree_change_sources;
+use crate::pipeline_from_augmented;
 
 #[derive(Clone, Debug)]
 pub enum HgStageOutput {
@@ -98,7 +103,7 @@ impl HgStageOutput {
         }
     }
 
-    fn root_manifest(&self) -> Option<HgManifestId> {
+    pub(crate) fn root_manifest(&self) -> Option<HgManifestId> {
         match self {
             Self::Manifest(ManifestStageOutput::Entry(Some(Entry::Tree(tree)))) => {
                 Some(*tree.untraced())
@@ -170,6 +175,12 @@ impl PipelineDerivable for MappedHgChangesetId {
             return finalize_stage_batch(ctx, derivation, bonsais, parents, dependency_outputs)
                 .await;
         }
+        if derive_hg_from_augmented::derives_from_augmented(derivation)? {
+            return pipeline_from_augmented::derive_stage(
+                ctx, derivation, bonsais, payload, parents,
+            )
+            .await;
+        }
         let stage = payload.stage_id();
         derive_manifest_batch(
             bonsais,
@@ -224,6 +235,10 @@ impl PipelineDerivable for MappedHgChangesetId {
                 });
             }
         };
+        if derive_hg_from_augmented::derives_from_augmented(derivation)? {
+            return pipeline_from_augmented::extract_stage(ctx, derivation, manifest_id, stage)
+                .await;
+        }
         let entry = manifest_id
             .find_entry(ctx.clone(), derivation.blobstore().clone(), path.clone())
             .await?
@@ -385,11 +400,41 @@ async fn finalize_stage_batch(
         })
         .collect::<Result<_>>()?;
 
+    let from_augmented = derive_hg_from_augmented::derives_from_augmented(derivation)?;
+    if from_augmented {
+        // The stages read a parent from outside the batch as the augmented
+        // record stored under its Hg root tree id.
+        let parent_roots: Vec<(ChangesetId, HgManifestId)> = parents
+            .iter()
+            .filter_map(|(cs_id, output)| Some((*cs_id, output.root_manifest()?)))
+            .collect();
+        stream::iter(parent_roots)
+            .map(|(cs_id, root)| async move {
+                let augmented_root = derivation
+                    .fetch_dependency::<RootHgAugmentedManifestId>(ctx, cs_id)
+                    .await?
+                    .hg_augmented_manifest_id();
+                derive_hg_from_augmented::check_parent_root(cs_id, augmented_root, root)
+            })
+            .buffer_unordered(100)
+            .try_collect::<()>()
+            .await?;
+    }
     let mut files_by_cs: HashMap<ChangesetId, Vec<NonRootMPath>> = stream::iter(file_inputs)
         .map(|(cs_id, manifest_id, mf_p1, mf_p2)| async move {
-            let files =
+            let files = if from_augmented {
+                compute_changed_files_from_augmented(
+                    ctx.clone(),
+                    blobstore.clone(),
+                    HgAugmentedManifestId::from(manifest_id),
+                    mf_p1.map(HgAugmentedManifestId::from),
+                    mf_p2.map(HgAugmentedManifestId::from),
+                )
+                .await?
+            } else {
                 compute_changed_files(ctx.clone(), blobstore.clone(), manifest_id, mf_p1, mf_p2)
-                    .await?;
+                    .await?
+            };
             anyhow::Ok((cs_id, files))
         })
         .buffer_unordered(100)

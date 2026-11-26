@@ -10,7 +10,9 @@
 //! changeset ids and Hg tree bytes that 0 gives, without reading Hg manifests.
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
+use std::num::NonZeroU64;
 
 use ::manifest::Entry;
 use ::manifest::ManifestOps;
@@ -18,11 +20,24 @@ use anyhow::Result;
 use blobstore::KeyedBlobstore;
 use blobstore::Loadable;
 use bonsai_hg_mapping::BonsaiHgMappingRef;
+use bookmarks::BookmarkKey;
 use bytes::Bytes;
 use commit_graph::CommitGraphRef;
 use context::CoreContext;
+use derivation_pipeline_driver::PipelineOrder;
+use derivation_pipeline_driver::plan_batches;
+use derivation_pipeline_driver::plan_stages_and_types;
+use derivation_pipeline_driver::run_pipeline_batches;
 use derivation_queue_thrift::DerivationPriority;
 use derived_data_manager::BonsaiDerivable;
+use derived_data_manager::ChildNameRange;
+use derived_data_manager::DerivationStagePayload;
+use derived_data_manager::ManifestStageDependencies;
+use derived_data_manager::ManifestStagePayload;
+use derived_data_manager::PipelineDerivable;
+use derived_data_manager::PipelineMode;
+use derived_data_manager::StageId;
+use derived_data_manager::stage_outputs::StageOutput;
 use fbinit::FacebookInit;
 use fixtures::TestRepoFixture;
 use futures::TryStreamExt;
@@ -34,8 +49,13 @@ use mercurial_derivation::MappedHgChangesetId;
 use mercurial_derivation::RootHgAugmentedManifestId;
 use mercurial_types::HgChangesetId;
 use mercurial_types::HgManifestId;
+use metaconfig_types::DerivationPipelineConfig;
+use metaconfig_types::DerivationPipelineStageConfig;
 use mononoke_macros::mononoke;
 use mononoke_types::ChangesetId;
+use mononoke_types::DerivableType;
+use mononoke_types::MPath;
+use mononoke_types::MPathElement;
 use mononoke_types::NonRootMPath;
 use mononoke_types::RepoPath;
 use repo_blobstore::RepoBlobstoreRef;
@@ -482,6 +502,373 @@ async fn test_invalid_stage_fails_derivation(fb: FacebookInit) -> Result<()> {
         format!("{err:#}").contains(STAGE_KNOB),
         "error should name {STAGE_KNOB}: {err:#}",
     );
+    Ok(())
+}
+
+/// A pipeline stage layout: each stage's path, its child stages, and the
+/// cut points that partition its children.
+type StageLayout = Vec<(&'static str, Vec<&'static str>, Vec<u8>)>;
+
+/// Layouts covering each kind of stage for `CHANGE_KINDS_DAG`: stages for
+/// child directories, a partitioned root, and a partitioned child stage.
+fn change_kinds_layouts() -> Vec<StageLayout> {
+    vec![
+        vec![
+            ("", vec!["dir", "left"], vec![]),
+            ("dir", vec![], vec![]),
+            ("left", vec![], vec![]),
+        ],
+        vec![("", vec![], b"dmr".to_vec())],
+        vec![("", vec!["dir"], vec![]), ("dir", vec![], b"c".to_vec())],
+    ]
+}
+
+fn stage_path(path: &str) -> Result<MPath> {
+    if path.is_empty() {
+        Ok(MPath::ROOT)
+    } else {
+        MPath::new(path)
+    }
+}
+
+fn pipeline_config(layout: &StageLayout) -> Result<DerivationPipelineConfig> {
+    let stages = layout
+        .iter()
+        .map(|(path, children, cut_points)| {
+            let path = stage_path(path)?;
+            let dependencies = children
+                .iter()
+                .map(|child| {
+                    Ok(path.join_element(Some(&MPathElement::new(child.as_bytes().to_vec())?)))
+                })
+                .collect::<Result<_>>()?;
+            Ok((
+                path,
+                DerivationPipelineStageConfig {
+                    partition_cut_points: cut_points.clone(),
+                    dependencies,
+                },
+            ))
+        })
+        .collect::<Result<_>>()?;
+    let config = DerivationPipelineConfig {
+        stages_by_type: Default::default(),
+        types: BTreeSet::from(PIPELINE_TYPES),
+        bookmarks: vec![BookmarkKey::new("master")?],
+        stages,
+        batch_size: NonZeroU64::new(3).expect("3 is not zero"),
+    };
+    config.validate()?;
+    Ok(config)
+}
+
+const PIPELINE_TYPES: [DerivableType; 3] = [
+    DerivableType::AclManifests,
+    DerivableType::HgAugmentedManifests,
+    DerivableType::HgChangesets,
+];
+
+/// Derive the Hg changesets of `head` and its ancestors with the derivation
+/// pipeline, publishing them as the pipeline does in production.
+async fn derive_with_pipeline(
+    ctx: &CoreContext,
+    repo: &Repo,
+    layout: &StageLayout,
+    head: ChangesetId,
+) -> Result<()> {
+    let mut commits = repo
+        .commit_graph()
+        .ancestors_difference(ctx, vec![head], vec![])
+        .await?;
+    commits.reverse();
+    run_pipeline(ctx, repo, layout, commits).await
+}
+
+/// Derive `commits`, parents first, with the derivation pipeline, publishing
+/// them as the pipeline does in production.
+async fn run_pipeline(
+    ctx: &CoreContext,
+    repo: &Repo,
+    layout: &StageLayout,
+    commits: Vec<ChangesetId>,
+) -> Result<()> {
+    let config = pipeline_config(layout)?;
+    let manager = repo
+        .repo_derived_data()
+        .manager()
+        .with_pipeline_mode(PipelineMode::Production);
+    let PipelineOrder {
+        sorted_stages,
+        sorted_types,
+    } = plan_stages_and_types(&manager, &config, &PIPELINE_TYPES)?;
+    let batches = plan_batches(ctx, repo.repo_blobstore(), &config, commits).await?;
+    run_pipeline_batches(
+        &manager,
+        ctx,
+        &config,
+        &sorted_stages,
+        &sorted_types,
+        &batches,
+        |_| {},
+    )
+    .await?;
+    Ok(())
+}
+
+/// The Hg changesets the pipeline published for `commits`.
+async fn published_hg_changesets(
+    ctx: &CoreContext,
+    repo: &Repo,
+    commits: &BTreeMap<String, ChangesetId>,
+) -> Result<BTreeMap<String, HgChangesetId>> {
+    let mut changesets = BTreeMap::new();
+    for (name, cs_id) in commits {
+        let hg_cs_id = repo
+            .bonsai_hg_mapping()
+            .get_hg_from_bonsai(ctx, *cs_id)
+            .await?
+            .unwrap_or_else(|| panic!("the pipeline should publish the Hg changeset of {name}"));
+        changesets.insert(name.clone(), hg_cs_id);
+    }
+    Ok(changesets)
+}
+
+/// Builds `CHANGE_KINDS_DAG` at `stage` in a new repo and derives every
+/// commit's Hg changeset with the pipeline in `layout`. Also returns how many
+/// Hg manifests the pipeline read.
+async fn derive_change_kinds_with_pipeline(
+    fb: FacebookInit,
+    stage: i64,
+    layout: &StageLayout,
+) -> Result<(HgDerivation, usize)> {
+    set_stage(stage);
+    let ctx = CoreContext::test_mock(fb);
+    let (repo, reads) = repo_recording_labels(fb).await?;
+    let (commits, _dag) = extend_from_dag_with_actions(&ctx, &repo, CHANGE_KINDS_DAG).await?;
+    let commits: BTreeMap<_, _> = commits.into_iter().collect();
+    reads.take();
+    derive_with_pipeline(&ctx, &repo, layout, commits["J"]).await?;
+    let pipeline_reads = reads.take().len();
+    let changesets = published_hg_changesets(&ctx, &repo, &commits).await?;
+    let trees = read_hg_trees(&ctx, &repo, &changesets).await?;
+    Ok((HgDerivation { changesets, trees }, pipeline_reads))
+}
+
+#[mononoke::fbinit_test]
+async fn test_stage_1_pipeline_matches_stage_0(fb: FacebookInit) -> Result<()> {
+    for layout in change_kinds_layouts() {
+        // Given: every commit's Hg changeset derived by the pipeline at stage 0.
+        let (from_hg, _) = derive_change_kinds_with_pipeline(fb, 0, &layout).await?;
+
+        // When: the pipeline derives them at stage 1 in a new repo.
+        let (from_augmented, reads) = derive_change_kinds_with_pipeline(fb, 1, &layout).await?;
+
+        // Then: it read no Hg manifest and gave the same Hg changesets and Hg
+        // tree bytes.
+        assert_eq!(reads, 0, "{layout:?}: stage 1 should read no Hg manifest");
+        assert_eq!(
+            from_augmented.changesets.len(),
+            12,
+            "{layout:?}: every commit should have an Hg changeset"
+        );
+        assert_eq!(
+            from_augmented, from_hg,
+            "{layout:?}: stage 1 should give the Hg changesets and Hg tree bytes of stage 0"
+        );
+    }
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_stage_1_pipeline_extraction_matches_stage_0(fb: FacebookInit) -> Result<()> {
+    // Given: every commit's Hg changeset and augmented manifest derived
+    // without the pipeline.
+    set_stage(0);
+    let ctx = CoreContext::test_mock(fb);
+    let (repo, reads) = repo_recording_labels(fb).await?;
+    let (commits, _dag) = extend_from_dag_with_actions(&ctx, &repo, CHANGE_KINDS_DAG).await?;
+    repo.derive_hg_changeset(&ctx, commits["J"]).await?;
+    let manager = repo.repo_derived_data().manager();
+    let derivation_ctx = manager.derivation_context(None);
+    let stages = [
+        StageId::Manifest(MPath::ROOT),
+        StageId::Manifest(MPath::new("dir")?),
+        StageId::Manifest(MPath::new("dir/sub")?),
+        StageId::Manifest(MPath::new("a.txt")?),
+        StageId::Manifest(MPath::new("missing")?),
+        StageId::Subentries(MPath::ROOT, ChildNameRange::new(b'd', b'l')?),
+        StageId::Subentries(MPath::new("dir")?, ChildNameRange::new(0, b'b')?),
+        StageId::Subentries(MPath::new("dir")?, ChildNameRange::new(b'c', u8::MAX)?),
+        StageId::Finalize,
+    ];
+
+    for name in ["A", "M", "E", "F", "I"] {
+        let mapped = manager
+            .fetch_derived::<MappedHgChangesetId>(&ctx, commits[name], None)
+            .await?
+            .expect("the Hg changeset was just derived");
+        for stage in &stages {
+            // When: the pipeline takes the commit's output for the stage from
+            // its derived Hg changeset at stage 0 and at stage 1.
+            set_stage(0);
+            let from_hg = MappedHgChangesetId::extract_stage_output_from_derived(
+                &ctx,
+                &derivation_ctx,
+                &mapped,
+                stage,
+            )
+            .await?;
+            set_stage(1);
+            reads.take();
+            let from_augmented = MappedHgChangesetId::extract_stage_output_from_derived(
+                &ctx,
+                &derivation_ctx,
+                &mapped,
+                stage,
+            )
+            .await?;
+
+            // Then: stage 1 read no Hg manifest and gave the same output.
+            assert_eq!(
+                reads.take().len(),
+                0,
+                "{name} {stage:?}: stage 1 should read no Hg manifest"
+            );
+            assert!(
+                from_augmented.equivalent(&from_hg).await?,
+                "{name} {stage:?}: stage 1 gave {from_augmented:?}, stage 0 gave {from_hg:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_stage_1_pipeline_needs_augmented_stage_outputs(fb: FacebookInit) -> Result<()> {
+    // Given: a stage 1 repo whose augmented manifests are derived without the
+    // pipeline, so no augmented stage output is supplied.
+    set_stage(1);
+    let ctx = CoreContext::test_mock(fb);
+    let (repo, reads) = repo_recording_labels(fb).await?;
+    let (commits, _dag) = extend_from_dag_with_actions(&ctx, &repo, CHANGE_KINDS_DAG).await?;
+    repo.derive_hg_changeset(&ctx, commits["I"]).await?;
+    repo.repo_derived_data()
+        .derive::<RootHgAugmentedManifestId>(
+            &ctx,
+            commits["J"],
+            derivation_queue_thrift::DerivationPriority::LOW,
+        )
+        .await?;
+    reads.take();
+
+    // When: the pipeline derives the tip's `dir` stage. (The root stage can
+    // use the published augmented manifest.)
+    let err = repo
+        .repo_derived_data()
+        .manager()
+        .derive_stage_batch::<MappedHgChangesetId>(
+            &ctx,
+            vec![commits["J"]],
+            &DerivationStagePayload::Manifest(ManifestStagePayload {
+                path: MPath::new("dir")?,
+                deps: ManifestStageDependencies::Children(vec![]),
+            }),
+        )
+        .await
+        .expect_err("a missing augmented stage output should fail the stage");
+
+    // Then: the error says the stage layouts must match, and no Hg manifest
+    // was read.
+    assert!(
+        format!("{err:#}").contains("same pipeline stage layout"),
+        "unexpected error: {err:#}"
+    );
+    assert_eq!(reads.take().len(), 0, "stage 1 should read no Hg manifest");
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_stage_1_pipeline_fails_when_a_parent_maps_to_another_augmented_root(
+    fb: FacebookInit,
+) -> Result<()> {
+    // Given: a parent derived without the pipeline that maps to another
+    // augmented root.
+    let ctx = CoreContext::test_mock(fb);
+    let repo: Repo = test_repo_factory::build_empty(fb).await?;
+    let (parent, child) = repo_with_parent_mapped_to_another_root(&ctx, &repo).await?;
+
+    // When: the pipeline derives the child at stage 1.
+    set_stage(1);
+    let err = run_pipeline(&ctx, &repo, &vec![("", vec![], vec![])], vec![child])
+        .await
+        .expect_err("a parent mapped to another augmented root should fail the pipeline");
+
+    // Then: the error names the parent.
+    assert!(
+        format!("{err:#}").contains(&format!("parent {parent} maps to augmented root")),
+        "error should name the parent: {err:#}",
+    );
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_stage_1_pipeline_records_restricted_paths_like_stage_0(
+    fb: FacebookInit,
+) -> Result<()> {
+    // A partitioned root puts `public` and `restricted` in different
+    // partitions; a child stage for `restricted` puts the restriction roots
+    // in a manifest stage.
+    let layouts: Vec<StageLayout> = vec![
+        vec![("", vec![], b"q".to_vec())],
+        vec![
+            ("", vec!["restricted"], vec![]),
+            ("restricted", vec![], vec![]),
+        ],
+    ];
+    for layout in layouts {
+        // Given: two equivalent repos with two restriction roots and an
+        // unrestricted directory, with restricted-path recording on.
+        override_just_knobs(restricted_paths_access_logging_knobs(true));
+        let ctx = CoreContext::test_mock(fb);
+        let restricted_paths = vec![
+            NonRootMPath::new("restricted")?,
+            NonRootMPath::new("restricted/nested")?,
+        ];
+        let stage_0_repo =
+            build_repo_with_restricted_path_config(fb, restricted_paths.clone()).await?;
+        let stage_1_repo = build_repo_with_restricted_path_config(fb, restricted_paths).await?;
+        let (_, stage_0_child) = create_restricted_path_test_stack(&ctx, &stage_0_repo).await?;
+        let (_, stage_1_child) = create_restricted_path_test_stack(&ctx, &stage_1_repo).await?;
+
+        // When: the pipeline derives the stack at stage 0 in one repo and at
+        // stage 1 in the other.
+        set_stage(0);
+        derive_with_pipeline(&ctx, &stage_0_repo, &layout, stage_0_child).await?;
+        set_stage(1);
+        derive_with_pipeline(&ctx, &stage_1_repo, &layout, stage_1_child).await?;
+
+        // Then: both give the same Hg changeset and record the same Hg
+        // restricted-path entries.
+        let stage_0_cs = stage_0_repo
+            .bonsai_hg_mapping()
+            .get_hg_from_bonsai(&ctx, stage_0_child)
+            .await?;
+        let stage_1_cs = stage_1_repo
+            .bonsai_hg_mapping()
+            .get_hg_from_bonsai(&ctx, stage_1_child)
+            .await?;
+        assert!(stage_0_cs.is_some(), "{layout:?}: stage 0 should publish");
+        assert_eq!(stage_1_cs, stage_0_cs, "{layout:?}");
+        let stage_0_entries =
+            restricted_path_entries(&ctx, &stage_0_repo, ManifestType::Hg).await?;
+        let stage_1_entries =
+            restricted_path_entries(&ctx, &stage_1_repo, ManifestType::Hg).await?;
+        assert!(
+            !stage_0_entries.is_empty(),
+            "{layout:?}: stage 0 should record restriction roots"
+        );
+        assert_eq!(stage_1_entries, stage_0_entries, "{layout:?}");
+    }
     Ok(())
 }
 

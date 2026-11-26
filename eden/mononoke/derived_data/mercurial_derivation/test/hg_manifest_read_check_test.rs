@@ -121,6 +121,25 @@ fn set_read_from_augmented() {
     ])));
 }
 
+/// Like `set_read_from_augmented`, with the repo at retirement stage 1, where
+/// Hg changesets are derived from augmented manifests.
+fn set_read_from_augmented_at_stage_1() {
+    override_just_knobs(JustKnobsInMemory::new(HashMap::from([
+        (
+            "scm/mononoke:hgmanifest_read_from_augmented".to_string(),
+            KnobVal::Bool(true),
+        ),
+        (
+            "scm/mononoke:derive_hg_augmented_manifest_with_hg_changeset".to_string(),
+            KnobVal::Bool(false),
+        ),
+        (
+            "scm/mononoke:hgmanifest_retirement_stage".to_string(),
+            KnobVal::Int(1),
+        ),
+    ])));
+}
+
 pub(crate) async fn repo_recording_labels(
     fb: FacebookInit,
 ) -> Result<(Repo, Arc<HgManifestLabels>)> {
@@ -453,6 +472,42 @@ async fn test_hg_pipeline_terminal_fetch_does_not_read_manifests(fb: FacebookIni
 
     assert!(outputs.contains_key(&root));
     assert!(labels.take().is_empty());
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_hg_pipeline_stage_writes_from_augmented_are_labelled(fb: FacebookInit) -> Result<()> {
+    // Given: a repo at retirement stage 1, a commit whose Hg changeset is
+    // derived, and a new child.
+    set_read_from_augmented_at_stage_1();
+    let ctx = CoreContext::test_mock(fb);
+    let (repo, labels) = repo_recording_labels(fb).await?;
+    let (root, child) = root_and_child(&ctx, &repo).await?;
+    repo.derive_hg_changeset(&ctx, root).await?;
+    let manager = repo.repo_derived_data().manager();
+    // The root stage reads the child's published augmented manifest.
+    repo.repo_derived_data()
+        .derive::<RootHgAugmentedManifestId>(
+            &ctx,
+            child,
+            derivation_queue_thrift::DerivationPriority::LOW,
+        )
+        .await?;
+    labels.take_writes();
+
+    // When: the pipeline derives the child's root manifest stage from an
+    // unlabelled context, from the child's augmented manifest.
+    let root_stage = DerivationStagePayload::Manifest(ManifestStagePayload {
+        path: MPath::ROOT,
+        deps: vec![].into(),
+    });
+    manager
+        .derive_stage_batch::<MappedHgChangesetId>(&ctx, vec![child], &root_stage)
+        .await?;
+
+    // Then: every Hg manifest write reaches storage labelled as the Hg
+    // pipeline.
+    assert_all_labelled(&labels.take_writes(), access_labels::HG_CHANGESET_PIPELINE);
     Ok(())
 }
 
