@@ -652,6 +652,60 @@ async fn test_changelist_contents_are_stored_by_depot_path(fb: FacebookInit) -> 
     Ok(())
 }
 
+/// A text revision in p4main prints 38088 bytes with describe's MD5, where describe says
+/// 38156: Perforce's stored size is stale.
+static PRINTED_38088: [u8; 38088] = [b'x'; 38088];
+
+#[mononoke::fbinit_test]
+async fn test_content_of_another_size_than_describes_is_stored_at_its_printed_size(
+    fb: FacebookInit,
+) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+    let expected = upload_content(&ctx, &repo, 38088, chunks(&[&PRINTED_38088])).await?;
+    // Shorter than described: read whole, stored again. Longer: cut off, measured first.
+    for (described, prints) in [(38156, 2), (38000, 3)] {
+        let source = FakeSource {
+            contents: HashMap::from([("//test1/stale.txt#1".to_owned(), &PRINTED_38088[..])]),
+            ..Default::default()
+        };
+        let changelist = Changelist {
+            number: 42,
+            user: "alice".to_owned(),
+            time: 0,
+            description: "stale".to_owned(),
+            description_bytes: None,
+            files: vec![revision(
+                "//test1/stale.txt",
+                Action::Add,
+                "text",
+                Some(described),
+            )],
+        };
+
+        let contents = upload_changelist_contents(
+            &ctx,
+            &repo,
+            &source,
+            "//test1/",
+            &changelist,
+            1,
+            &AtomicU64::new(0),
+        )
+        .await?;
+
+        let stored = &contents["//test1/stale.txt"];
+        assert_eq!(stored.total_size, 38088, "described {described}");
+        assert_eq!(
+            stored.content_id, expected.content_id,
+            "described {described}"
+        );
+        let calls = source.calls.lock().unwrap().clone();
+        assert_eq!(calls, vec!["print"; prints], "described {described}");
+    }
+    Ok(())
+}
+
 /// An add, an edit, a branch copy and a delete over two changelists.
 fn two_changelists() -> FakeSource {
     FakeSource::default()

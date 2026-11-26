@@ -650,6 +650,38 @@ async fn test_a_revision_without_its_own_digest_is_not_recorded(fb: FacebookInit
     Ok(())
 }
 
+#[mononoke::fbinit_test]
+async fn test_content_of_another_size_than_describes_is_recorded_by_its_md5(
+    fb: FacebookInit,
+) -> Result<()> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: TestRepo = test_repo_factory::build_empty(fb).await?;
+    let mut source = with_revisions(
+        FakeSource::default(),
+        7,
+        &[("//test1/a.txt", 1, Action::Add, "text", &PRINTED_38088)],
+    );
+    source.changelists.get_mut(&7).unwrap().files[0].size = Some(38156);
+
+    build_changesets(
+        &ctx,
+        &repo,
+        &source,
+        DEPOT,
+        None,
+        &[7],
+        &options(ContentReuse::Verify),
+    )
+    .await?;
+
+    // Printed twice, so only an MD5 started again for each print matches describe's.
+    assert_eq!(prints(&source), 2);
+    let key = format!("p4.content_by_md5.v1.{}.38156", digest(&PRINTED_38088));
+    let stored = store(&ctx, &repo, &PRINTED_38088).await?;
+    assert_eq!(Some(stored.to_string()), read(&ctx, &repo, &key).await?);
+    Ok(())
+}
+
 /// Two contents with one MD5 and size: the first published MD5 collision (Wang and Yu,
 /// 2005).
 const COLLIDING_A: [u8; 128] = [

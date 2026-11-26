@@ -51,13 +51,13 @@ use tokio::sync::Mutex;
 
 use crate::STATS;
 use crate::in_depot;
+use crate::store_printed;
 use crate::unreadable;
 use crate::unreadable::SkipReason;
 use crate::unreadable::SkipUnreadable;
 use crate::unreadable::SkippedRevision;
 use crate::unreadable::Unapproved;
 use crate::unreadable::UnreadableRevision;
-use crate::upload_file_content;
 
 /// Whether the import skips `p4 print` for content it has already stored.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -442,18 +442,28 @@ async fn store_revision(
         });
     }
 
-    let content = source.print(revision).await?;
-    let mut md5 = identity.map(|_| Md5::new());
-    let content = content.inspect_ok(|chunk| {
-        if let Some(md5) = &mut md5 {
-            md5.update(chunk);
+    // Started again by each print: `store_printed` may print more than once.
+    let md5 = identity.map(|_| std::sync::Mutex::new(Md5::new()));
+    let md5_of_print = md5.as_ref();
+    let print = move || async move {
+        let content = source.print(revision).await?;
+        if let Some(md5) = md5_of_print {
+            *md5.lock().expect("md5 lock poisoned") = Md5::new();
         }
-    });
+        anyhow::Ok(content.inspect_ok(move |chunk| {
+            if let Some(md5) = md5_of_print {
+                md5.lock().expect("md5 lock poisoned").update(chunk);
+            }
+        }))
+    };
     let file_type = p4_transform::file_type(&revision.file_type);
-    let metadata = upload_file_content(ctx, repo, file_type, size, content)
+    let metadata = store_printed(ctx, repo, file_type, size, print)
         .await
         .with_context(|| format!("storing {}", name()))?;
-    let printed = md5.map(|md5| Md5Digest::new(md5.finalize().into()));
+    let printed = md5.map(|md5| {
+        let md5 = md5.into_inner().expect("md5 lock poisoned");
+        Md5Digest::new(md5.finalize().into())
+    });
 
     if let Some(identity) = identity
         && let Some(printed) = printed

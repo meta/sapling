@@ -9,12 +9,15 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::future::Future;
 use std::num::NonZeroU64;
 use std::num::NonZeroUsize;
 use std::pin::pin;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::task::Poll;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -154,6 +157,84 @@ pub async fn upload_file_content(
         stream::once(async { Ok(target) }),
     )
     .await
+}
+
+/// Stores the content `print` gives of a revision that describe says is `size` bytes.
+/// Perforce's stored size can be stale while the content matches describe's MD5, which the
+/// source checks, and the filestore must be told the size before the content: content that
+/// turns out to be another size is stored again at that size, printed once more first to
+/// measure it if the first try stopped part way.
+pub(crate) async fn store_printed<F, Fut, S>(
+    ctx: &CoreContext,
+    repo: &(impl RepoBlobstoreRef + FilestoreConfigRef),
+    file_type: FileType,
+    size: u64,
+    print: F,
+) -> Result<ContentMetadataV2>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<S>>,
+    S: Stream<Item = Result<Bytes>> + Send,
+{
+    let observed = Observed::default();
+    let content = observed.watch(print().await?);
+    let stored = upload_file_content(ctx, repo, file_type, size, content).await;
+    let Some(printed) = observed.other_size(size).filter(|_| stored.is_err()) else {
+        return stored;
+    };
+    let printed = match printed {
+        Some(printed) => printed,
+        None => {
+            print()
+                .await?
+                .try_fold(
+                    0,
+                    |bytes, chunk| async move { Ok(bytes + chunk.len() as u64) },
+                )
+                .await?
+        }
+    };
+    upload_file_content(ctx, repo, file_type, printed, print().await?).await
+}
+
+/// How much of a printed content `store_printed` passed on, and how it ended.
+#[derive(Default)]
+struct Observed {
+    bytes: AtomicU64,
+    ended: AtomicBool,
+    failed: AtomicBool,
+}
+
+impl Observed {
+    fn watch<'a>(
+        &'a self,
+        content: impl Stream<Item = Result<Bytes>> + Send + 'a,
+    ) -> impl Stream<Item = Result<Bytes>> + Send + 'a {
+        content
+            .inspect(move |item| match item {
+                Ok(chunk) => {
+                    self.bytes.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+                }
+                Err(_) => self.failed.store(true, Ordering::Relaxed),
+            })
+            .chain(stream::poll_fn(move |_| {
+                self.ended.store(true, Ordering::Relaxed);
+                Poll::Ready(None)
+            }))
+    }
+
+    /// `Some` if the content was not `size` bytes and did not fail: `Some(Some(bytes))` once
+    /// it was all read, `Some(None)` if it was cut off past `size`.
+    fn other_size(&self, size: u64) -> Option<Option<u64>> {
+        let bytes = self.bytes.load(Ordering::Relaxed);
+        if self.failed.load(Ordering::Relaxed) {
+            None
+        } else if self.ended.load(Ordering::Relaxed) {
+            (bytes != size).then_some(Some(bytes))
+        } else {
+            (bytes > size).then_some(None)
+        }
+    }
 }
 
 async fn read_symlink(size: u64, content: impl Stream<Item = Result<Bytes>>) -> Result<Vec<u8>> {
@@ -298,9 +379,8 @@ pub async fn upload_changelist_contents(
             let size = revision
                 .size
                 .with_context(|| format!("describe gave no size for {}", name()))?;
-            let content = source.print(&revision).await?;
             let file_type = p4_transform::file_type(&revision.file_type);
-            let metadata = upload_file_content(ctx, repo, file_type, size, content)
+            let metadata = store_printed(ctx, repo, file_type, size, || source.print(&revision))
                 .await
                 .with_context(|| format!("storing {}", name()))?;
             anyhow::Ok((revision.depot_path.clone(), metadata))
