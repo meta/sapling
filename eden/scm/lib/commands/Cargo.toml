@@ -67,6 +67,7 @@ sapling-atexit = { version = "0.1.0", path = "../util/atexit" }
 sapling-backtrace-python = { version = "0.1.0", path = "../backtrace-python" }
 sapling-blackbox = { version = "0.1.0", path = "../blackbox" }
 sapling-clidispatch = { version = "0.1.0", path = "../clidispatch" }
+sapling-clientinfo = { version = "0.1.0", path = "../clientinfo" }
 sapling-configmodel = { version = "0.2.0", path = "../config/model" }
 sapling-constructors = { version = "0.1.0", path = "../constructors", features = ["git"] }
 sapling-distributed-tracing = { version = "0.1.0", path = "../distributed-tracing" }

@@ -236,6 +236,7 @@ fn dispatch_command(
     exiting_via_signal: Arc<AtomicBool>,
 ) -> i32 {
     log_repo_path_and_exe_version(dispatcher.repo());
+    annotate_trace(dispatcher.repo());
     let scoped_profiler = global_profiler::setup_profiling(dispatcher.config()).unwrap_or(None);
 
     if let Some(repo) = dispatcher.repo() {
@@ -345,6 +346,7 @@ fn dispatch_command(
                 );
                 let category = errors::error_category(&err);
                 if let Some(category) = category {
+                    distributed_tracing::annotate("sl.error_category", category);
                     if let Err(err) =
                         sampling::log!(target: "command_info", error_category = category)
                     {
@@ -932,6 +934,27 @@ fn log_env_vars(config: &dyn Config) {
         .collect();
     if !logged.is_empty() {
         sampling::append_sample_map("env_vars", &logged);
+    }
+}
+
+/// Describe this invocation on its distributed-tracing span.
+///
+/// The span otherwise carries only what the tracing backend can read off the
+/// process itself, so the repository a command ran against is recoverable only
+/// by parsing its command line, and nothing ties the span to the request ids
+/// the servers log under.
+fn annotate_trace(repo: Option<&Repo>) {
+    let request_info = clientinfo::get_client_request_info();
+    distributed_tracing::annotate("sl.correlator", &request_info.correlator);
+    distributed_tracing::annotate("sl.entry_point", &request_info.entry_point.to_string());
+
+    let repo_name = repo.and_then(|repo| {
+        let config = repo.config();
+        let path_default: Option<String> = config.get_or_default("paths", "default").ok()?;
+        repourl::repo_name_from_url(config, &path_default?)
+    });
+    if let Some(repo_name) = repo_name {
+        distributed_tracing::annotate("sl.repo", &repo_name);
     }
 }
 

@@ -79,6 +79,7 @@ sl_rust_library(
         "//eden/scm/lib/backtrace-python:backtrace-python",
         "//eden/scm/lib/blackbox:blackbox",
         "//eden/scm/lib/clidispatch:clidispatch",
+        "//eden/scm/lib/clientinfo:clientinfo",
         "//eden/scm/lib/commands/cmdpy:cmdpy",
         "//eden/scm/lib/config/model:configmodel",
         "//eden/scm/lib/constructors:constructors",
