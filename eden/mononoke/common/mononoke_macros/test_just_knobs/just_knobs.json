@@ -275,6 +275,7 @@
     "scm/mononoke:pushrebase_max_merge_conflicts": 10,
     "scm/mononoke:pushrebase_max_merge_file_size": 10485760,
     "scm/mononoke:pushrebase_replay_from_fork_point": 0,
+    "scm/mononoke:hgmanifest_retirement_stage": 0,
     "scm/mononoke:derived_data_backfill_write_qps": 0,
     "scm/mononoke:derived_data_backfill_write_bytes_s": 0,
     "scm/mononoke:derived_data_backfill_read_qps": 0,

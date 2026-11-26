@@ -10,6 +10,7 @@
 mod augmented_manifest_tests;
 mod commit_upload_augmented_tests;
 mod file_history_test;
+mod hg_changeset_from_augmented_test;
 mod hg_manifest_read_check_test;
 mod rebuild_hg_manifests_test;
 mod slacl_files_test;

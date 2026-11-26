@@ -1375,14 +1375,14 @@ async fn assert_dual_derive_agree(
     Ok(via_direct_path)
 }
 
-fn restricted_paths_access_logging_knobs(enabled: bool) -> JustKnobsInMemory {
+pub(crate) fn restricted_paths_access_logging_knobs(enabled: bool) -> JustKnobsInMemory {
     JustKnobsInMemory::new(HashMap::from([(
         "scm/mononoke:enabled_restricted_paths_access_logging".to_string(),
         KnobVal::Bool(enabled),
     )]))
 }
 
-async fn build_repo_with_restricted_path_config(
+pub(crate) async fn build_repo_with_restricted_path_config(
     fb: FacebookInit,
     restricted_paths: Vec<NonRootMPath>,
 ) -> Result<Repo> {
@@ -1416,7 +1416,7 @@ async fn build_repo_with_restricted_path_config(
     Ok(repo)
 }
 
-async fn create_restricted_path_test_stack(
+pub(crate) async fn create_restricted_path_test_stack(
     ctx: &CoreContext,
     repo: &Repo,
 ) -> Result<(ChangesetId, ChangesetId)> {
@@ -1497,6 +1497,15 @@ async fn hg_augmented_restricted_path_entries(
     ctx: &CoreContext,
     repo: &Repo,
 ) -> Result<Vec<RestrictedPathManifestIdEntry>> {
+    restricted_path_entries(ctx, repo, ManifestType::HgAugmented).await
+}
+
+/// The repo's recorded restricted-path entries of `manifest_type`, sorted.
+pub(crate) async fn restricted_path_entries(
+    ctx: &CoreContext,
+    repo: &Repo,
+    manifest_type: ManifestType,
+) -> Result<Vec<RestrictedPathManifestIdEntry>> {
     let mut entries: Vec<_> = repo
         .restricted_paths()
         .config_based()
@@ -1504,7 +1513,7 @@ async fn hg_augmented_restricted_path_entries(
         .get_all_entries(ctx)
         .await?
         .into_iter()
-        .filter(|entry| entry.manifest_type == ManifestType::HgAugmented)
+        .filter(|entry| entry.manifest_type == manifest_type)
         .collect();
     entries.sort();
     Ok(entries)

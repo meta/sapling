@@ -11,6 +11,7 @@ mod augmented_derivation;
 mod augmented_pipeline;
 pub mod derive_hg_augmented_manifest;
 pub mod derive_hg_changeset;
+mod derive_hg_from_augmented;
 pub mod derive_hg_manifest;
 // Rich, sharded-backed adapter types for the no-Hg Bonsai-direct augmented
 // path (aug-manifest-v2 Option 1).

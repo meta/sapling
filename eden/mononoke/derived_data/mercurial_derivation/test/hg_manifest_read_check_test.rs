@@ -57,14 +57,14 @@ use crate::Repo;
 /// Records the access label of every read and every write of an Hg manifest
 /// blob.
 #[derive(Debug, Default)]
-struct HgManifestLabels {
+pub(crate) struct HgManifestLabels {
     reads: Mutex<Vec<Option<&'static str>>>,
     writes: Mutex<Vec<Option<&'static str>>>,
 }
 
 impl HgManifestLabels {
     /// The labels of the Hg manifest reads since the last call.
-    fn take(&self) -> Vec<Option<&'static str>> {
+    pub(crate) fn take(&self) -> Vec<Option<&'static str>> {
         std::mem::take(&mut *self.reads.lock().expect("poisoned lock"))
     }
 
@@ -121,7 +121,9 @@ fn set_read_from_augmented() {
     ])));
 }
 
-async fn repo_recording_labels(fb: FacebookInit) -> Result<(Repo, Arc<HgManifestLabels>)> {
+pub(crate) async fn repo_recording_labels(
+    fb: FacebookInit,
+) -> Result<(Repo, Arc<HgManifestLabels>)> {
     let labels = Arc::new(HgManifestLabels::default());
     let repo = TestRepoFactory::new(fb)?
         .with_blobstore(Arc::new(SamplingBlobstore::new(

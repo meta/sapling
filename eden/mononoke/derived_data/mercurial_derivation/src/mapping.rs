@@ -37,6 +37,7 @@ use stats::prelude::*;
 use tracing::debug;
 
 use crate::access_labels;
+use crate::derive_hg_from_augmented;
 
 define_stats! {
     prefix = "mononoke.derived_data.hgchangesets";
@@ -74,14 +75,30 @@ impl BonsaiDerivable for MappedHgChangesetId {
         derivation_ctx: &DerivationContext,
         bonsai: BonsaiChangeset,
         parents: Vec<Self>,
-        _known: Option<&HashMap<ChangesetId, Self>>,
+        known: Option<&HashMap<ChangesetId, Self>>,
     ) -> Result<Self> {
         if bonsai.is_snapshot() {
             bail!("Can't derive Hg changeset for snapshot")
         }
-        let subtree_change_sources =
-            get_subtree_change_sources(ctx, derivation_ctx, &bonsai, &HashMap::new()).await?;
+        let subtree_change_sources = get_subtree_change_sources(
+            ctx,
+            derivation_ctx,
+            &bonsai,
+            known.unwrap_or(&HashMap::new()),
+        )
+        .await?;
         let derivation_opts = get_hg_changeset_derivation_options(derivation_ctx);
+        if derive_hg_from_augmented::derives_from_augmented(derivation_ctx)? {
+            return derive_hg_from_augmented::derive_from_augmented(
+                ctx,
+                derivation_ctx,
+                bonsai,
+                parents,
+                subtree_change_sources,
+                &derivation_opts,
+            )
+            .await;
+        }
         let (derived, _) = crate::derive_hg_changeset::derive_from_parents(
             ctx,
             derivation_ctx.blobstore(),
@@ -107,6 +124,9 @@ impl BonsaiDerivable for MappedHgChangesetId {
         if bonsais.iter().any(|bonsai| bonsai.is_snapshot()) {
             bail!("Can't derive Hg changeset for snapshot");
         }
+        // Fails on an invalid stage, also for batches whose linear stacks keep
+        // today's derivation at every stage.
+        derive_hg_from_augmented::derives_from_augmented(derivation_ctx)?;
 
         STATS::new_parallel.add_value(1);
         let linear_stacks = split_bonsais_in_linear_stacks(
@@ -152,19 +172,9 @@ impl BonsaiDerivable for MappedHgChangesetId {
                         .fetch_unknown_parents(ctx, Some(&res), &bonsai)
                         .await?;
                     let cs_id = bonsai.get_changeset_id();
-                    let subtree_change_sources =
-                        get_subtree_change_sources(ctx, derivation_ctx, &bonsai, &res).await?;
-                    let derivation_opts = get_hg_changeset_derivation_options(derivation_ctx);
-                    let (derived, _) = crate::derive_hg_changeset::derive_from_parents(
-                        ctx,
-                        derivation_ctx.blobstore(),
-                        bonsai,
-                        parents,
-                        subtree_change_sources,
-                        &derivation_opts,
-                        derivation_ctx.restricted_paths(),
-                    )
-                    .await?;
+                    let derived =
+                        Self::derive_single(ctx, derivation_ctx, bonsai, parents, Some(&res))
+                            .await?;
                     res.insert(cs_id, derived);
                 }
             } else {
