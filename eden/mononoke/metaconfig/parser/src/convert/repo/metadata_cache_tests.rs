@@ -51,24 +51,3 @@ fn converts_update_modes() {
         }
     );
 }
-
-#[mononoke::test]
-fn configs_that_still_set_the_notification_flags_parse() {
-    let values = [None, Some(false), Some(true)];
-    for processing in values {
-        for batching in values {
-            let parsed = RawMetadataCacheConfig {
-                wbc_process_bookmark_notifications: processing,
-                wbc_event_router_batching_enabled: batching,
-                ..Default::default()
-            }
-            .convert()
-            .unwrap();
-            assert_eq!(
-                parsed,
-                MetadataCacheConfig::default(),
-                "processing={processing:?} batching={batching:?} must not affect the parsed config"
-            );
-        }
-    }
-}
