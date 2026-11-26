@@ -235,8 +235,10 @@ fn dispatch_command(
     start_time: StartTime,
     exiting_via_signal: Arc<AtomicBool>,
 ) -> i32 {
-    log_repo_path_and_exe_version(dispatcher.repo());
-    annotate_trace(dispatcher.repo());
+    let repo = dispatcher.repo();
+    let repo_name = command_repo_name(repo);
+    log_repo_path_and_exe_version(repo, repo_name.as_deref());
+    annotate_trace(repo_name.as_deref());
     let scoped_profiler = global_profiler::setup_profiling(dispatcher.config()).unwrap_or(None);
 
     if let Some(repo) = dispatcher.repo() {
@@ -937,28 +939,28 @@ fn log_env_vars(config: &dyn Config) {
     }
 }
 
+fn command_repo_name(repo: Option<&Repo>) -> Option<String> {
+    let config = repo?.config();
+    let path_default: Option<String> = config.get_or_default("paths", "default").ok()?;
+    repourl::repo_name_from_url(config, &path_default?)
+}
+
 /// Describe this invocation on its distributed-tracing span.
 ///
 /// The span otherwise carries only what the tracing backend can read off the
 /// process itself, so the repository a command ran against is recoverable only
 /// by parsing its command line, and nothing ties the span to the request ids
 /// the servers log under.
-fn annotate_trace(repo: Option<&Repo>) {
+fn annotate_trace(repo_name: Option<&str>) {
     let request_info = clientinfo::get_client_request_info();
     distributed_tracing::annotate("sl.correlator", &request_info.correlator);
     distributed_tracing::annotate("sl.entry_point", &request_info.entry_point.to_string());
-
-    let repo_name = repo.and_then(|repo| {
-        let config = repo.config();
-        let path_default: Option<String> = config.get_or_default("paths", "default").ok()?;
-        repourl::repo_name_from_url(config, &path_default?)
-    });
     if let Some(repo_name) = repo_name {
-        distributed_tracing::annotate("sl.repo", &repo_name);
+        distributed_tracing::annotate("sl.repo", repo_name);
     }
 }
 
-fn log_repo_path_and_exe_version(repo: Option<&Repo>) {
+fn log_repo_path_and_exe_version(repo: Option<&Repo>, repo_name: Option<&str>) {
     // The "version" and "repo" fields are consumed by telemetry.
     let worktree_info = repo.and_then(|repo| {
         worktree::worktree_info(repo.store_path(), repo.path()).unwrap_or_else(|err| {
@@ -974,23 +976,16 @@ fn log_repo_path_and_exe_version(repo: Option<&Repo>) {
             worktree_count = info.worktree_count,
         );
     }
-    if let Some(repo) = repo {
-        let config = repo.config();
-        let opt_path_default: std::result::Result<Option<String>, _> =
-            config.get_or_default("paths", "default");
-        if let Ok(Some(path_default)) = opt_path_default {
-            if let Some(repo_name) = repourl::repo_name_from_url(config, &path_default) {
-                tracing::info!(
-                    target: "command_info",
-                    version = version::VERSION,
-                    repo = repo_name.as_str(),
-                    is_linked_worktree,
-                );
-                return;
-            }
-        }
+    if let Some(repo_name) = repo_name {
+        tracing::info!(
+            target: "command_info",
+            version = version::VERSION,
+            repo = repo_name,
+            is_linked_worktree,
+        );
+    } else {
+        tracing::info!(target: "command_info", version = version::VERSION, is_linked_worktree);
     }
-    tracing::info!(target: "command_info", version = version::VERSION, is_linked_worktree);
 }
 
 fn log_perftrace(io: &IO, config: &dyn Config, start_time: StartTime) -> Result<()> {
