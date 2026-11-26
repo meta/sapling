@@ -26,7 +26,7 @@ use coarsetime as _; // silence "unused dependency" warning
 #[cfg(not(test))]
 use coarsetime::Instant;
 #[cfg(test)]
-use mock_instant::global::Instant;
+use mock_instant::thread_local::Instant;
 use parking_lot::RecursiveRwLock;
 use tracing::Level;
 use types::RepoPath;
