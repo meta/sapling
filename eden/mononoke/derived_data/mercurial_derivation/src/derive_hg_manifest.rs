@@ -49,6 +49,7 @@ use restricted_paths_common::ArcRestrictedPathsConfigBased;
 use restricted_paths_common::ManifestIdStoreWriteCallsite;
 use restricted_paths_common::ManifestType;
 use restricted_paths_common::RestrictedPathManifestIdEntry;
+use restricted_paths_common::RestrictedPathsConfigBased;
 use restricted_paths_common::maybe_propagate_manifest_id_store_write_error;
 use sorted_vector_map::SortedVectorMap;
 use tracing::error;
@@ -305,41 +306,64 @@ pub(crate) async fn create_hg_manifest(
         Err(e) => return Err(e),
     };
 
+    track_restricted_hg_tree(&ctx, &restricted_paths, mfid, &path).await?;
+
+    upload_fut.await?;
+    Ok(((), Traced::generate(mfid)))
+}
+
+/// Record the Hg tree `mfid` stored for `path` when `path` is a restricted
+/// directory. A failed write is logged, and fails the caller only when the
+/// manifest-id store's JustKnob for this callsite says so.
+pub(crate) async fn track_restricted_hg_tree(
+    ctx: &CoreContext,
+    restricted_paths: &ArcRestrictedPathsConfigBased,
+    mfid: HgManifestId,
+    path: &RepoPath,
+) -> Result<(), Error> {
+    let Some(entry) = restricted_hg_tree_entry(restricted_paths, mfid, path)? else {
+        return Ok(());
+    };
+    if let Err(e) = restricted_paths
+        .manifest_id_store()
+        .add_entry(ctx, entry)
+        .await
+        .with_context(|| format!("Failed to track restricted path at {path}"))
+    {
+        error!(path = %path, error = %e, "Failed to track restricted path");
+        maybe_propagate_manifest_id_store_write_error(
+            e,
+            ManifestIdStoreWriteCallsite::CreateHgManifest,
+        )?;
+    }
+    Ok(())
+}
+
+/// The restricted-path entry to record for the Hg tree `mfid` stored for
+/// `path`, when `path` is a restricted directory and recording is on.
+pub(crate) fn restricted_hg_tree_entry(
+    restricted_paths: &RestrictedPathsConfigBased,
+    mfid: HgManifestId,
+    path: &RepoPath,
+) -> Result<Option<RestrictedPathManifestIdEntry>, Error> {
     let restricted_paths_enabled = justknobs::eval(
         "scm/mononoke:enabled_restricted_paths_access_logging",
         None, // hashing
         // Adding a switch value to be able to disable writes only
         Some("hg_manifest_write"),
     );
-    // Track restricted paths by storing manifest IDs for directories that match restricted path prefixes
-    if restricted_paths_enabled {
-        if let path @ RepoPath::DirectoryPath(non_root_path) = &path {
-            let should_record = restricted_paths.should_record_manifest_id_entry(non_root_path);
-            if should_record {
-                let entry = RestrictedPathManifestIdEntry::new(
-                    ManifestType::Hg,
-                    mfid.to_string().into(),
-                    path.clone(),
-                )?;
-
-                if let Err(e) = restricted_paths
-                    .manifest_id_store()
-                    .add_entry(&ctx, entry)
-                    .await
-                    .with_context(|| format!("Failed to track restricted path at {path}"))
-                {
-                    error!(path = %path, error = %e, "Failed to track restricted path");
-                    maybe_propagate_manifest_id_store_write_error(
-                        e,
-                        ManifestIdStoreWriteCallsite::CreateHgManifest,
-                    )?;
-                }
-            }
-        }
+    let RepoPath::DirectoryPath(non_root_path) = path else {
+        return Ok(None);
+    };
+    if !restricted_paths_enabled || !restricted_paths.should_record_manifest_id_entry(non_root_path)
+    {
+        return Ok(None);
     }
-
-    upload_fut.await?;
-    Ok(((), Traced::generate(mfid)))
+    Ok(Some(RestrictedPathManifestIdEntry::new(
+        ManifestType::Hg,
+        mfid.to_string().into(),
+        path.clone(),
+    )?))
 }
 
 /// This function is used as callback from `derive_manifest` to generate and store file entry

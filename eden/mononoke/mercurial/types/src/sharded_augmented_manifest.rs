@@ -61,15 +61,21 @@ use smallvec::SmallVec;
 use crate::FileType;
 use crate::HgAugmentedManifestId;
 use crate::HgFileNodeId;
+use crate::HgManifestEnvelope;
+use crate::HgManifestEnvelopeMut;
 use crate::HgManifestId;
 use crate::HgNodeHash;
 use crate::HgParents;
 use crate::MPathElement;
 use crate::MononokeHgError;
 use crate::NULL_HASH;
+use crate::RepoPath;
 use crate::Type;
 use crate::blobs::MononokeHgBlobError;
+use crate::blobs::UploadHgNodeHash;
+use crate::blobs::UploadHgTreeEntry;
 use crate::blobs::hg_manifests_read_from_augmented;
+use crate::preloaded_augmented_manifest::serialize_manifest;
 use crate::thrift;
 
 const MAX_BUFFERED_ENTRIES: usize = 500;
@@ -213,6 +219,31 @@ impl ShardedHgAugmentedManifest {
     #[inline]
     pub fn computed_node_id(&self) -> HgNodeHash {
         self.computed_node_id
+    }
+
+    /// The Hg manifest envelope this directory describes, with its contents
+    /// rebuilt from its entries. The node id, parents and computed node id are
+    /// the stored ones, so a directory stored under an id that is not the hash
+    /// of its contents, as some clients upload, keeps that id.
+    pub async fn into_hg_manifest_envelope(
+        self,
+        ctx: &CoreContext,
+        blobstore: &impl KeyedBlobstore,
+    ) -> Result<HgManifestEnvelope> {
+        let (node_id, p1, p2, computed_node_id) =
+            (self.hg_node_id, self.p1, self.p2, self.computed_node_id);
+        let entries = self
+            .into_subentries(ctx, blobstore)
+            .try_collect::<Vec<_>>()
+            .await?;
+        Ok(HgManifestEnvelopeMut {
+            node_id,
+            p1,
+            p2,
+            computed_node_id,
+            contents: serialize_manifest(&entries)?,
+        }
+        .freeze())
     }
 
     // The format of the content addressed manifest blob is as follows:
@@ -671,6 +702,42 @@ impl HgAugmentedManifestEnvelope {
         self.augmented_manifest
             .into_content_addressed_manifest_blob(ctx, blobstore)
     }
+}
+
+/// The Hg manifest envelope of the tree `id`, rebuilt from the augmented
+/// manifest stored under the same id. Its contents are checked against the
+/// computed node id the augmented manifest records, as tree upload checks a
+/// client's tree, and a mismatch fails with
+/// `MononokeHgBlobError::InconsistentComputedEntryHash`.
+pub async fn rebuild_hg_manifest_envelope(
+    ctx: &CoreContext,
+    blobstore: &impl KeyedBlobstore,
+    id: HgManifestId,
+) -> Result<HgManifestEnvelope> {
+    let HgManifestEnvelopeMut {
+        node_id,
+        p1,
+        p2,
+        computed_node_id,
+        contents,
+    } = HgAugmentedManifestId::from(id)
+        .load(ctx, blobstore)
+        .await?
+        .augmented_manifest
+        .into_hg_manifest_envelope(ctx, blobstore)
+        .await?
+        .into_mut();
+    let (envelope, _path) = UploadHgTreeEntry {
+        upload_node_id: UploadHgNodeHash::Checked(node_id),
+        contents,
+        p1,
+        p2,
+        // Only named in errors when no computed node id is given.
+        path: RepoPath::RootPath,
+        computed_node_id: Some(computed_node_id),
+    }
+    .into_verified_envelope()?;
+    Ok(envelope)
 }
 
 pub async fn fetch_augmented_manifest_envelope_opt<B: KeyedBlobstore>(

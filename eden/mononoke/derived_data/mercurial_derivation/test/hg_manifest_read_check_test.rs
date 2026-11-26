@@ -17,6 +17,7 @@ use anyhow::Result;
 use blobstore::BlobstoreGetData;
 use blobstore::BlobstoreIsPresent;
 use blobstore::Loadable;
+use bonsai_hg_mapping::BonsaiHgMappingRef;
 use context::CoreContext;
 use derived_data_manager::BonsaiDerivable;
 use derived_data_manager::DerivationStagePayload;
@@ -25,6 +26,7 @@ use derived_data_manager::PipelineDerivable;
 use derived_data_manager::StageId;
 use derived_data_manager::StageInputs;
 use fbinit::FacebookInit;
+use futures::TryStreamExt;
 use justknobs::test_helpers::JustKnobsInMemory;
 use justknobs::test_helpers::KnobVal;
 use justknobs::test_helpers::override_just_knobs;
@@ -33,6 +35,10 @@ use mercurial_derivation::DeriveHgChangeset;
 use mercurial_derivation::MappedHgChangesetId;
 use mercurial_derivation::RootHgAugmentedManifestId;
 use mercurial_derivation::access_labels;
+use mercurial_derivation::rebuild_hg_manifests::HgTreeRebuilder;
+use mercurial_derivation::rebuild_hg_manifests::RebuildAction;
+use mercurial_derivation::rebuild_hg_manifests::TreeScope;
+use mercurial_derivation::rebuild_hg_manifests::commit_hg_roots;
 use mononoke_macros::mononoke;
 use mononoke_types::BlobstoreBytes;
 use mononoke_types::BonsaiChangeset;
@@ -40,6 +46,7 @@ use mononoke_types::ChangesetId;
 use mononoke_types::MPath;
 use repo_blobstore::RepoBlobstoreRef;
 use repo_derived_data::RepoDerivedDataRef;
+use restricted_paths::RestrictedPathsRef;
 use samplingblob::SamplingBlobstore;
 use samplingblob::SamplingHandler;
 use test_repo_factory::TestRepoFactory;
@@ -444,5 +451,35 @@ async fn test_hg_pipeline_terminal_fetch_does_not_read_manifests(fb: FacebookIni
 
     assert!(outputs.contains_key(&root));
     assert!(labels.take().is_empty());
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_hg_manifest_rebuild_reads_are_labelled(fb: FacebookInit) -> Result<()> {
+    // Given: a commit with an Hg changeset and an augmented manifest.
+    set_read_from_augmented();
+    let ctx = CoreContext::test_mock(fb);
+    let (repo, labels) = repo_recording_labels(fb).await?;
+    let (root, _) = root_and_child(&ctx, &repo).await?;
+    repo.derive_hg_changeset(&ctx, root).await?;
+    repo.repo_derived_data()
+        .manager()
+        .derive_heads::<RootHgAugmentedManifestId>(ctx.clone(), vec![root], None, None)
+        .await?;
+    let roots =
+        commit_hg_roots(&ctx, repo.repo_blobstore(), repo.bonsai_hg_mapping(), root).await?;
+    labels.take();
+
+    // When: comparing its rebuilt Hg trees with the stored ones.
+    HgTreeRebuilder::new(
+        repo.repo_blobstore().clone(),
+        repo.restricted_paths().config_based().clone(),
+    )
+    .rebuild(&ctx, roots, TreeScope::Whole, RebuildAction::Compare)
+    .try_collect::<Vec<_>>()
+    .await?;
+
+    // Then: every Hg manifest read is labelled as the rebuild.
+    assert_all_labelled(&labels.take(), access_labels::HG_MANIFEST_REBUILD);
     Ok(())
 }

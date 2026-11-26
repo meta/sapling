@@ -17,6 +17,7 @@ mod exists;
 mod fetch;
 mod find_derivation_gaps;
 mod list_manifest;
+mod rebuild_hg_manifests;
 mod slice;
 mod verify_aug_direct;
 mod verify_manifests;
@@ -74,6 +75,8 @@ use self::find_derivation_gaps::FindDerivationGapsArgs;
 use self::find_derivation_gaps::find_derivation_gaps;
 use self::list_manifest::ListManifestArgs;
 use self::list_manifest::list_manifest;
+use self::rebuild_hg_manifests::RebuildHgManifestsArgs;
+use self::rebuild_hg_manifests::rebuild_hg_manifests;
 use self::slice::SliceArgs;
 use self::slice::slice;
 use self::verify_aug_direct::VerifyAugDirectArgs;
@@ -186,6 +189,9 @@ enum DerivedDataSubcommand {
     FindDerivationGaps(FindDerivationGapsArgs),
     /// List the contents of a manifest at a given path
     ListManifest(ListManifestArgs),
+    /// Rebuild commits' Hg trees from their augmented manifests, compare them
+    /// with the stored ones, and optionally store the missing ones
+    RebuildHgManifests(RebuildHgManifestsArgs),
     /// Slice underived ancestors of given commits
     Slice(SliceArgs),
     /// Validate direct augmented-manifest derivation against stored data
@@ -307,12 +313,18 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
         _ => anyhow::bail!("this subcommand requires exactly one repo"),
     };
 
+    // RebuildHgManifests opens a repo with the restricted paths it records.
+    if let DerivedDataSubcommand::RebuildHgManifests(rebuild_args) = args.subcommand {
+        return rebuild_hg_manifests(&ctx, &app, &repo_args, rebuild_args).await;
+    }
+
     let repo: Repo = match &args.subcommand {
         DerivedDataSubcommand::BackfillAbort(_)
         | DerivedDataSubcommand::BackfillEnqueue(_)
         | DerivedDataSubcommand::BackfillReconcileConfigs(_)
         | DerivedDataSubcommand::BackfillStatus(_)
-        | DerivedDataSubcommand::EnabledTypes(_) => {
+        | DerivedDataSubcommand::EnabledTypes(_)
+        | DerivedDataSubcommand::RebuildHgManifests(_) => {
             unreachable!("handled above")
         }
         DerivedDataSubcommand::Exists(_)
@@ -365,7 +377,8 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
         | DerivedDataSubcommand::BackfillEnqueue(_)
         | DerivedDataSubcommand::BackfillReconcileConfigs(_)
         | DerivedDataSubcommand::BackfillStatus(_)
-        | DerivedDataSubcommand::EnabledTypes(_) => {
+        | DerivedDataSubcommand::EnabledTypes(_)
+        | DerivedDataSubcommand::RebuildHgManifests(_) => {
             unreachable!("handled above")
         }
         DerivedDataSubcommand::Exists(args) => exists(&ctx, &repo, &manager, args).await?,

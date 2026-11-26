@@ -28,7 +28,6 @@ use edenapi_types::commit::BonsaiParents;
 use edenapi_types::commit::GitExtraHeader;
 use edenapi_types::commit::HgInfo;
 use edenapi_types::commit::SubtreeChange as EdenapiSubtreeChange;
-use futures::TryStreamExt;
 use mercurial_types::HgAugmentedManifestId;
 use mercurial_types::HgFileNodeId;
 use mercurial_types::HgManifestId;
@@ -36,7 +35,6 @@ use mercurial_types::HgNodeHash;
 use mercurial_types::blobs::HgBlobChangeset;
 use mercurial_types::blobs::hg_manifests_read_from_augmented;
 use mercurial_types::fetch_manifest_envelope;
-use mercurial_types::preloaded_augmented_manifest::serialize_manifest;
 use mononoke_types::BonsaiChangeset;
 use mononoke_types::BonsaiChangesetMut;
 use mononoke_types::ChangesetId;
@@ -54,44 +52,22 @@ pub async fn from_tree_to_entry(
     repo_blobstore: &RepoBlobstore,
     repo_name: &str,
 ) -> Result<UploadTreeEntry> {
-    if hg_manifests_read_from_augmented(repo_name) {
-        return from_augmented_tree_to_entry(id, ctx, repo_blobstore).await;
-    }
-    let envelope = fetch_manifest_envelope(ctx, repo_blobstore, id).await?;
+    let envelope = if hg_manifests_read_from_augmented(repo_name) {
+        HgAugmentedManifestId::from(id)
+            .load(ctx, repo_blobstore)
+            .await?
+            .augmented_manifest
+            .into_hg_manifest_envelope(ctx, repo_blobstore)
+            .await?
+    } else {
+        fetch_manifest_envelope(ctx, repo_blobstore, id).await?
+    };
     let (p1, p2) = envelope.parents();
     Ok(UploadTreeEntry {
         node_id: envelope.node_id().into(),
         data: envelope.contents().to_vec(),
         parents: to_parents(p1, p2),
         computed_node_id: Some(envelope.computed_node_id().into()),
-    })
-}
-
-/// The upload entry of the Hg tree `id`, rebuilt from the augmented manifest
-/// stored under the same id.
-async fn from_augmented_tree_to_entry(
-    id: HgManifestId,
-    ctx: &CoreContext,
-    repo_blobstore: &RepoBlobstore,
-) -> Result<UploadTreeEntry> {
-    let manifest = HgAugmentedManifestId::from(id)
-        .load(ctx, repo_blobstore)
-        .await?
-        .augmented_manifest;
-    let (node_id, parents, computed_node_id) = (
-        manifest.hg_node_id,
-        to_parents(manifest.p1, manifest.p2),
-        manifest.computed_node_id,
-    );
-    let entries = manifest
-        .into_subentries(ctx, repo_blobstore)
-        .try_collect::<Vec<_>>()
-        .await?;
-    Ok(UploadTreeEntry {
-        node_id: node_id.into(),
-        data: serialize_manifest(&entries)?.to_vec(),
-        parents,
-        computed_node_id: Some(computed_node_id.into()),
     })
 }
 

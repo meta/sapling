@@ -17,6 +17,7 @@ pub mod derive_hg_manifest;
 mod indexed_augmented_manifest;
 mod mapping;
 pub mod pipeline;
+pub mod rebuild_hg_manifests;
 pub mod upload_augmented_manifest;
 
 /// Access labels for the components allowed to read Hg manifests in a repo
@@ -31,6 +32,9 @@ pub mod access_labels {
     /// Augmented manifest derivation of a commit with a mapped Hg changeset,
     /// which builds the augmented manifest from the commit's Hg manifest.
     pub const AUGMENTED_DERIVATION_FROM_HG: &str = "augmented_derivation_from_hg";
+    /// The comparison of stored Hg trees with ones rebuilt from augmented
+    /// manifests.
+    pub const HG_MANIFEST_REBUILD: &str = "hg_manifest_rebuild";
 }
 
 pub use derive_hg_changeset::DeriveHgChangeset;
