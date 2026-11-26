@@ -55,12 +55,14 @@ import sys
 from collections import Counter
 from typing import Any, List, Optional, Pattern, Set, Sized
 
+import bindings
 from bindings import agentdetect
 from sapling import (
     autopull,
     cmdutil,
     commands,
     error,
+    exchange,
     extensions,
     git,
     json,
@@ -574,9 +576,50 @@ def makegraftmessage(orig, repo, ctx, opts, from_paths, to_paths, from_repo):
     return new_message, is_from_user
 
 
+def annotate_push(orig, repo, remote, *args, **kwargs):
+    """Record on the command's tracing span which diffs a push sent.
+
+    Server-side land logging is written where a land is confirmed, which is a
+    different moment, in a different process, from the push that reaches trunk.
+    """
+    pushop = orig(repo, remote, *args, **kwargs)
+    try:
+        _annotate_pushed_diffs(repo, pushop)
+    except Exception as ex:
+        repo.ui.debug("could not annotate the push on the trace: %s\n" % ex)
+    return pushop
+
+
+def _annotate_pushed_diffs(repo, pushop) -> None:
+    annotate = bindings.clientinfo.annotate_trace
+    annotate("sl.push.bookmark", getattr(pushop, "to", None) or "")
+    annotate("sl.push.remote", util.hidepassword(pushop.remote.url()))
+
+    outgoing = getattr(pushop, "outgoing", None)
+    # discovery has not run when a push aborts early, so there is nothing to
+    # attribute; the span still carries the destination it was aiming at.
+    if outgoing is None:
+        return
+
+    # Bottom of stack first, matching the order these commits reach trunk.
+    nodes = list(outgoing.missing)
+    annotate("sl.push.commit_count", str(len(nodes)))
+    if nodes:
+        annotate("sl.push.commit_id", hex(nodes[-1]))
+    diffids = [
+        revision
+        for revision in (
+            diffprops.parserevfromcommitmsg(repo[n].description()) for n in nodes
+        )
+        if revision
+    ]
+    annotate("sl.push.phabricator_diff_numbers", ",".join(diffids))
+
+
 def extsetup(ui) -> None:
     extensions.wrapfunction(commands, "_makebackoutmessage", makebackoutmessage)
     extensions.wrapfunction(commands, "_makegraftmessage", makegraftmessage)
+    extensions.wrapfunction(exchange, "push", annotate_push)
     extensions.wrapfunction(rewriteutil, "commitcheck", validate_commit)
     extensions.wrapfunction(rewriteutil, "precheckmessage", precheckmessage)
     extensions.wrapfunction(rewriteutil, "copycommitmessage", copycommitmessage)
