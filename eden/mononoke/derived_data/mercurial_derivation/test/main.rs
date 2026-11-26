@@ -12,6 +12,7 @@ mod commit_upload_augmented_tests;
 mod file_history_test;
 mod hg_manifest_read_check_test;
 mod slacl_files_test;
+mod stored_root_tests;
 mod tracing_blobstore;
 mod utils;
 

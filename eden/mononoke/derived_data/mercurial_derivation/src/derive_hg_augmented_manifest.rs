@@ -1934,6 +1934,20 @@ pub(crate) async fn track_all_restricted_paths(
     root_hg_aug_mfid: HgAugmentedManifestId,
     blobstore: Arc<dyn KeyedBlobstore>,
 ) -> Result<()> {
+    let entries =
+        find_restricted_path_entries(ctx, &restricted_paths, root_hg_aug_mfid, blobstore).await?;
+    store_restricted_path_entries(ctx, &restricted_paths, hg_cs_id, &entries).await
+}
+
+/// The first step of `track_all_restricted_paths`: walks to every
+/// non-read-only restricted root under `root_hg_aug_mfid`. Returns nothing
+/// when recording is off.
+pub(crate) async fn find_restricted_path_entries(
+    ctx: &CoreContext,
+    restricted_paths: &ArcRestrictedPathsConfigBased,
+    root_hg_aug_mfid: HgAugmentedManifestId,
+    blobstore: Arc<dyn KeyedBlobstore>,
+) -> Result<Vec<RestrictedPathManifestIdEntry>> {
     // Check if restricted paths tracking is enabled via justknobs
     let restricted_paths_enabled = justknobs::eval(
         "scm/mononoke:enabled_restricted_paths_access_logging",
@@ -1943,7 +1957,7 @@ pub(crate) async fn track_all_restricted_paths(
     );
 
     if !restricted_paths_enabled {
-        return Ok(());
+        return Ok(vec![]);
     }
 
     // Get the configured restricted paths. Skip read-only roots: derivation must
@@ -1957,12 +1971,12 @@ pub(crate) async fn track_all_restricted_paths(
         .collect();
 
     if restricted_dirs.is_empty() {
-        return Ok(());
+        return Ok(vec![]);
     }
 
-    // Find all directory entries for the restricted paths and store their
+    // Find all directory entries for the restricted paths, to store their
     // HgAugmentedManifest IDs in the manifest id store
-    let entries: Vec<RestrictedPathManifestIdEntry> = root_hg_aug_mfid
+    root_hg_aug_mfid
         .find_entries(ctx.clone(), blobstore, restricted_dirs)
         .try_filter_map(|(path, manif_entry)| async move {
             match manif_entry {
@@ -1981,15 +1995,26 @@ pub(crate) async fn track_all_restricted_paths(
         })
         .try_collect::<Vec<RestrictedPathManifestIdEntry>>()
         .await
-        .context("Building restricted path manifest entries")?;
+        .context("Building restricted path manifest entries")
+}
 
+/// The second step of `track_all_restricted_paths`: stores the entries. A
+/// write error is returned only when
+/// `scm/mononoke:fail_derivation_on_restricted_manifest_id_store_error` is on
+/// for this callsite.
+pub(crate) async fn store_restricted_path_entries(
+    ctx: &CoreContext,
+    restricted_paths: &ArcRestrictedPathsConfigBased,
+    hg_cs_id: HgChangesetId,
+    entries: &[RestrictedPathManifestIdEntry],
+) -> Result<()> {
     if entries.is_empty() {
         return Ok(());
     }
 
     if let Err(e) = restricted_paths
         .manifest_id_store()
-        .add_entries(ctx, &entries)
+        .add_entries(ctx, entries)
         .await
         .with_context(|| format!("Failed to track restricted paths for changeset {hg_cs_id}"))
     {

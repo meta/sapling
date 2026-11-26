@@ -5,10 +5,12 @@
  * GNU General Public License version 2.
  */
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
 
 use anyhow::Result;
+use anyhow::bail;
 use async_trait::async_trait;
 use blobstore::Blobstore;
 use blobstore::BlobstoreGetData;
@@ -22,6 +24,7 @@ use mononoke_types::BlobstoreBytes;
 pub struct TracingBlobstore<T> {
     inner: T,
     gets: Arc<Mutex<Vec<String>>>,
+    failing: Arc<Mutex<HashSet<String>>>,
 }
 
 impl<T: std::fmt::Display> std::fmt::Display for TracingBlobstore<T> {
@@ -33,7 +36,11 @@ impl<T: std::fmt::Display> std::fmt::Display for TracingBlobstore<T> {
 impl<T> TracingBlobstore<T> {
     pub fn new(inner: T) -> Self {
         let gets = Arc::new(Mutex::new(vec![]));
-        Self { inner, gets }
+        Self {
+            inner,
+            gets,
+            failing: Default::default(),
+        }
     }
 }
 
@@ -41,6 +48,12 @@ impl<T> TracingBlobstore<T> {
     pub fn tracing_gets(&self) -> Vec<String> {
         let mut gets = self.gets.lock().expect("poisoned lock");
         std::mem::take(&mut *gets)
+    }
+
+    /// Makes the next read of a key ending in `key` (the repo blobstore adds
+    /// a prefix) fail with a storage error, not a missing blob.
+    pub fn fail_next_get(&self, key: String) {
+        self.failing.lock().expect("poisoned lock").insert(key);
     }
 }
 
@@ -55,6 +68,17 @@ impl<T: Blobstore> Blobstore for TracingBlobstore<T> {
             .lock()
             .expect("poisoned lock")
             .push(key.to_owned());
+        {
+            let mut failing = self.failing.lock().expect("poisoned lock");
+            if let Some(suffix) = failing
+                .iter()
+                .find(|suffix| key.ends_with(*suffix))
+                .cloned()
+            {
+                failing.remove(&suffix);
+                bail!("reading {suffix} failed");
+            }
+        }
         self.inner.get(ctx, key).await
     }
 
