@@ -5,8 +5,8 @@
  * GNU General Public License version 2.
  */
 
-//! Which access label each read of an Hg manifest carries, as the storage
-//! beneath the repo blobstore sees it.
+//! Which access label each read and write of an Hg manifest carries, as the
+//! storage beneath the repo blobstore sees it.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -18,6 +18,7 @@ use blobstore::BlobstoreGetData;
 use blobstore::BlobstoreIsPresent;
 use blobstore::Loadable;
 use context::CoreContext;
+use derived_data_manager::BonsaiDerivable;
 use derived_data_manager::DerivationStagePayload;
 use derived_data_manager::ManifestStagePayload;
 use derived_data_manager::PipelineDerivable;
@@ -33,6 +34,8 @@ use mercurial_derivation::MappedHgChangesetId;
 use mercurial_derivation::RootHgAugmentedManifestId;
 use mercurial_derivation::access_labels;
 use mononoke_macros::mononoke;
+use mononoke_types::BlobstoreBytes;
+use mononoke_types::BonsaiChangeset;
 use mononoke_types::ChangesetId;
 use mononoke_types::MPath;
 use repo_blobstore::RepoBlobstoreRef;
@@ -44,34 +47,40 @@ use tests_utils::CreateCommitContext;
 
 use crate::Repo;
 
-/// Records the access label of every read of an Hg manifest blob.
+/// Records the access label of every read and every write of an Hg manifest
+/// blob.
 #[derive(Debug, Default)]
-struct HgManifestReadLabels(Mutex<Vec<Option<&'static str>>>);
+struct HgManifestLabels {
+    reads: Mutex<Vec<Option<&'static str>>>,
+    writes: Mutex<Vec<Option<&'static str>>>,
+}
 
-impl HgManifestReadLabels {
+impl HgManifestLabels {
     /// The labels of the Hg manifest reads since the last call.
     fn take(&self) -> Vec<Option<&'static str>> {
-        std::mem::take(&mut *self.0.lock().expect("poisoned lock"))
+        std::mem::take(&mut *self.reads.lock().expect("poisoned lock"))
     }
 
-    fn record(&self, ctx: &CoreContext, key: &str) {
+    /// The labels of the Hg manifest writes since the last call.
+    fn take_writes(&self) -> Vec<Option<&'static str>> {
+        std::mem::take(&mut *self.writes.lock().expect("poisoned lock"))
+    }
+
+    fn record(list: &Mutex<Vec<Option<&'static str>>>, ctx: &CoreContext, key: &str) {
         if key.contains("hgmanifest.sha1.") {
-            self.0
-                .lock()
-                .expect("poisoned lock")
-                .push(ctx.access_label());
+            list.lock().expect("poisoned lock").push(ctx.access_label());
         }
     }
 }
 
-impl SamplingHandler for HgManifestReadLabels {
+impl SamplingHandler for HgManifestLabels {
     fn sample_get(
         &self,
         ctx: &CoreContext,
         key: &str,
         _value: Option<&BlobstoreGetData>,
     ) -> Result<()> {
-        self.record(ctx, key);
+        Self::record(&self.reads, ctx, key);
         Ok(())
     }
 
@@ -81,7 +90,12 @@ impl SamplingHandler for HgManifestReadLabels {
         key: &str,
         _value: &BlobstoreIsPresent,
     ) -> Result<()> {
-        self.record(ctx, key);
+        Self::record(&self.reads, ctx, key);
+        Ok(())
+    }
+
+    fn sample_put(&self, ctx: &CoreContext, key: &str, _value: &BlobstoreBytes) -> Result<()> {
+        Self::record(&self.writes, ctx, key);
         Ok(())
     }
 }
@@ -100,8 +114,8 @@ fn set_read_from_augmented() {
     ])));
 }
 
-async fn repo_recording_labels(fb: FacebookInit) -> Result<(Repo, Arc<HgManifestReadLabels>)> {
-    let labels = Arc::new(HgManifestReadLabels::default());
+async fn repo_recording_labels(fb: FacebookInit) -> Result<(Repo, Arc<HgManifestLabels>)> {
+    let labels = Arc::new(HgManifestLabels::default());
     let repo = TestRepoFactory::new(fb)?
         .with_blobstore(Arc::new(SamplingBlobstore::new(
             Memblob::default(),
@@ -131,16 +145,16 @@ async fn root_and_child(ctx: &CoreContext, repo: &Repo) -> Result<(ChangesetId, 
 fn assert_all_labelled(labels: &[Option<&'static str>], expected: &'static str) {
     assert!(
         !labels.is_empty(),
-        "the operation should read at least one Hg manifest",
+        "the operation should access at least one Hg manifest",
     );
     assert!(
         labels.iter().all(|label| *label == Some(expected)),
-        "every Hg manifest read should carry {expected:?}, got {labels:?}",
+        "every Hg manifest access should carry {expected:?}, got {labels:?}",
     );
 }
 
 #[mononoke::fbinit_test]
-async fn test_hg_derivation_reads_are_labelled(fb: FacebookInit) -> Result<()> {
+async fn test_hg_derivation_reads_and_writes_are_labelled(fb: FacebookInit) -> Result<()> {
     // Given: a repo that reads augmented manifests, with the root's Hg
     // changeset derived.
     set_read_from_augmented();
@@ -149,13 +163,145 @@ async fn test_hg_derivation_reads_are_labelled(fb: FacebookInit) -> Result<()> {
     let (root, child) = root_and_child(&ctx, &repo).await?;
     repo.derive_hg_changeset(&ctx, root).await?;
     labels.take();
+    labels.take_writes();
 
-    // When: deriving the child's Hg changeset from an unlabelled context.
+    // When: deriving the child's Hg changeset through the derived data
+    // manager, which holds writes in memory until it flushes them, from an
+    // unlabelled context.
     repo.derive_hg_changeset(&ctx, child).await?;
 
-    // Then: every Hg manifest read made by the derivation is labelled as Hg
-    // changeset derivation.
+    // Then: every Hg manifest read and write made by the derivation is
+    // labelled as Hg changeset derivation.
     assert_all_labelled(&labels.take(), access_labels::HG_CHANGESET_DERIVATION);
+    assert_all_labelled(
+        &labels.take_writes(),
+        access_labels::HG_CHANGESET_DERIVATION,
+    );
+    Ok(())
+}
+
+/// A root commit and a child, both with Hg changesets stored the way a client
+/// upload stores them and their ACL manifests derived, so that deriving their
+/// augmented manifests builds them from their Hg manifests.
+async fn uploaded_root_and_child(
+    ctx: &CoreContext,
+    repo: &Repo,
+) -> Result<(ChangesetId, ChangesetId)> {
+    let (root, child) = root_and_child(ctx, repo).await?;
+    fixtures::store_hg_changesets_as_uploaded(ctx, repo, vec![root, child]).await?;
+    repo.repo_derived_data()
+        .manager()
+        .derive_exactly_batch::<RootAclManifestId>(ctx, vec![root, child], None)
+        .await?;
+    Ok((root, child))
+}
+
+/// A root commit with its augmented manifest derived, and a child, both with
+/// uploaded Hg changesets. Returns the child and the root's augmented
+/// manifest.
+async fn uploaded_child_of_derived_root(
+    ctx: &CoreContext,
+    repo: &Repo,
+) -> Result<(BonsaiChangeset, RootHgAugmentedManifestId)> {
+    let (root, child) = uploaded_root_and_child(ctx, repo).await?;
+    let manager = repo.repo_derived_data().manager();
+    manager
+        .derive_exactly_batch::<RootHgAugmentedManifestId>(ctx, vec![root], None)
+        .await?;
+    let root_aug = manager
+        .fetch_derived::<RootHgAugmentedManifestId>(ctx, root, None)
+        .await?
+        .expect("the root's augmented manifest was just derived");
+    let bonsai = child.load(ctx, repo.repo_blobstore()).await?;
+    Ok((bonsai, root_aug))
+}
+
+#[mononoke::fbinit_test]
+async fn test_augmented_derivation_from_hg_reads_are_labelled(fb: FacebookInit) -> Result<()> {
+    // Given: a root commit with its augmented manifest derived, and a child,
+    // both with uploaded Hg changesets.
+    set_read_from_augmented();
+    let ctx = CoreContext::test_mock(fb);
+    let (repo, labels) = repo_recording_labels(fb).await?;
+    let (bonsai, root_aug) = uploaded_child_of_derived_root(&ctx, &repo).await?;
+    let manager = repo.repo_derived_data().manager();
+    labels.take();
+
+    // When: deriving the child's augmented manifest from an unlabelled
+    // context.
+    RootHgAugmentedManifestId::derive_single(
+        &ctx,
+        &manager.derivation_context(None),
+        bonsai,
+        vec![root_aug],
+        None,
+    )
+    .await?;
+
+    // Then: every Hg manifest read is labelled as augmented derivation from
+    // Hg manifests.
+    assert_all_labelled(&labels.take(), access_labels::AUGMENTED_DERIVATION_FROM_HG);
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_building_from_hg_outside_derivation_is_unlabelled(fb: FacebookInit) -> Result<()> {
+    // Given: a root commit with its augmented manifest derived, and a child,
+    // both with uploaded Hg changesets.
+    set_read_from_augmented();
+    let ctx = CoreContext::test_mock(fb);
+    let (repo, labels) = repo_recording_labels(fb).await?;
+    let (bonsai, root_aug) = uploaded_child_of_derived_root(&ctx, &repo).await?;
+    let manager = repo.repo_derived_data().manager();
+    labels.take();
+
+    // When: building the child's augmented manifest from its Hg manifest
+    // outside derivation, as `mononoke_admin derived-data verify-aug-direct`
+    // does.
+    RootHgAugmentedManifestId::derive_from_mapped_hg_with_parents(
+        &ctx,
+        &manager.derivation_context(None),
+        &bonsai,
+        vec![root_aug.hg_augmented_manifest_id()],
+    )
+    .await?
+    .expect("the child has an Hg changeset");
+
+    // Then: its Hg manifest reads carry no label, so the read check reports
+    // them.
+    let labels = labels.take();
+    assert!(
+        !labels.is_empty(),
+        "building from Hg should read Hg manifests"
+    );
+    assert!(
+        labels.iter().all(Option::is_none),
+        "no read should be labelled, got {labels:?}",
+    );
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_batch_augmented_derivation_from_hg_reads_are_labelled(
+    fb: FacebookInit,
+) -> Result<()> {
+    // Given: a root commit and a child with uploaded Hg changesets.
+    set_read_from_augmented();
+    let ctx = CoreContext::test_mock(fb);
+    let (repo, labels) = repo_recording_labels(fb).await?;
+    let (root, child) = uploaded_root_and_child(&ctx, &repo).await?;
+    labels.take();
+
+    // When: deriving both augmented manifests in one batch from an
+    // unlabelled context.
+    repo.repo_derived_data()
+        .manager()
+        .derive_exactly_batch::<RootHgAugmentedManifestId>(&ctx, vec![root, child], None)
+        .await?;
+
+    // Then: every Hg manifest read is labelled as augmented derivation from
+    // Hg manifests.
+    assert_all_labelled(&labels.take(), access_labels::AUGMENTED_DERIVATION_FROM_HG);
     Ok(())
 }
 
@@ -184,16 +330,14 @@ async fn test_direct_hg_manifest_load_is_unlabelled(fb: FacebookInit) -> Result<
 #[mononoke::fbinit_test]
 async fn test_augmented_backfill_reads_are_labelled(fb: FacebookInit) -> Result<()> {
     // Given: a commit whose Hg changeset and ACL manifest, the backfill's
-    // predecessors, are derived.
+    // predecessors, are stored, and whose augmented manifest is not. Deriving
+    // the Hg changeset through the manager would derive the augmented
+    // manifest first, so the Hg changeset is stored like an upload.
     set_read_from_augmented();
     let ctx = CoreContext::test_mock(fb);
     let (repo, labels) = repo_recording_labels(fb).await?;
-    let (root, _) = root_and_child(&ctx, &repo).await?;
+    let (root, _) = uploaded_root_and_child(&ctx, &repo).await?;
     let manager = repo.repo_derived_data().manager();
-    fixtures::store_hg_changesets_as_uploaded(&ctx, &repo, vec![root]).await?;
-    manager
-        .derive_exactly_batch::<RootAclManifestId>(&ctx, vec![root], None)
-        .await?;
     labels.take();
 
     // When: backfilling its augmented manifest from its Hg manifest.
@@ -207,7 +351,7 @@ async fn test_augmented_backfill_reads_are_labelled(fb: FacebookInit) -> Result<
 }
 
 #[mononoke::fbinit_test]
-async fn test_hg_pipeline_stage_reads_are_labelled(fb: FacebookInit) -> Result<()> {
+async fn test_hg_pipeline_stage_reads_and_writes_are_labelled(fb: FacebookInit) -> Result<()> {
     // Given: a commit whose Hg changeset is derived, and a new child.
     set_read_from_augmented();
     let ctx = CoreContext::test_mock(fb);
@@ -216,6 +360,7 @@ async fn test_hg_pipeline_stage_reads_are_labelled(fb: FacebookInit) -> Result<(
     repo.derive_hg_changeset(&ctx, root).await?;
     let manager = repo.repo_derived_data().manager();
     labels.take();
+    labels.take_writes();
 
     // When: the pipeline derives the child's root manifest stage, seeding it
     // from the parent's derived changeset, and then its finalize stage.
@@ -227,6 +372,7 @@ async fn test_hg_pipeline_stage_reads_are_labelled(fb: FacebookInit) -> Result<(
         .derive_stage_batch::<MappedHgChangesetId>(&ctx, vec![child], &root_stage)
         .await?;
     let root_stage_labels = labels.take();
+    let root_stage_writes = labels.take_writes();
     let manager = manager.with_stage_inputs(StageInputs::new(
         &root_outputs.outputs.into_iter().collect::<Vec<_>>(),
     )?);
@@ -238,9 +384,10 @@ async fn test_hg_pipeline_stage_reads_are_labelled(fb: FacebookInit) -> Result<(
         )
         .await?;
 
-    // Then: every Hg manifest read of both stages is labelled as the Hg
-    // pipeline.
+    // Then: every Hg manifest read of both stages, and every Hg manifest the
+    // root stage writes, is labelled as the Hg pipeline.
     assert_all_labelled(&root_stage_labels, access_labels::HG_CHANGESET_PIPELINE);
+    assert_all_labelled(&root_stage_writes, access_labels::HG_CHANGESET_PIPELINE);
     assert_all_labelled(&labels.take(), access_labels::HG_CHANGESET_PIPELINE);
     Ok(())
 }

@@ -25,6 +25,7 @@ use mercurial_types::HgManifestId;
 use mononoke_types::BonsaiChangeset;
 use mononoke_types::ChangesetId;
 
+use crate::access_labels;
 use crate::mapping::RootHgAugmentedManifestId;
 
 async fn lookup_mapped_root_hg_manifest_ids(
@@ -77,6 +78,10 @@ pub(crate) async fn lookup_mapped_root_hg_manifest_id(
     )
 }
 
+/// Builds a commit's augmented manifest from its mapped Hg manifest. Derivation
+/// calls this with the `augmented_derivation_from_hg` access label; other
+/// callers, such as `mononoke_admin derived-data verify-aug-direct`, read
+/// without it, so the Hg manifest read check still reports them.
 pub(crate) async fn derive_from_mapped_hg_manifest(
     ctx: &CoreContext,
     derivation_ctx: &DerivationContext,
@@ -150,8 +155,14 @@ pub(crate) async fn derive_single_root(
     let root = if let Some(hg_manifest_id) =
         lookup_mapped_root_hg_manifest_id(ctx, derivation_ctx, csid).await?
     {
-        derive_from_mapped_hg_manifest(ctx, derivation_ctx, &bonsai, hg_manifest_id, aug_parents)
-            .await?
+        derive_from_mapped_hg_manifest(
+            &ctx.with_access_label(access_labels::AUGMENTED_DERIVATION_FROM_HG),
+            derivation_ctx,
+            &bonsai,
+            hg_manifest_id,
+            aug_parents,
+        )
+        .await?
     } else {
         derive_direct(ctx, derivation_ctx, &bonsai, aug_parents).await?
     };
@@ -182,8 +193,14 @@ pub(crate) async fn derive_batch_roots(
             .map(RootHgAugmentedManifestId::hg_augmented_manifest_id)
             .collect();
         let root = if let Some(hg_manifest_id) = mapped_hg_manifest_ids.get(&csid).copied() {
-            derive_from_mapped_hg_manifest(ctx, derivation_ctx, bonsai, hg_manifest_id, aug_parents)
-                .await?
+            derive_from_mapped_hg_manifest(
+                &ctx.with_access_label(access_labels::AUGMENTED_DERIVATION_FROM_HG),
+                derivation_ctx,
+                bonsai,
+                hg_manifest_id,
+                aug_parents,
+            )
+            .await?
         } else {
             derive_direct(ctx, derivation_ctx, bonsai, aug_parents).await?
         };

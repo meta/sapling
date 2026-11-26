@@ -28,6 +28,9 @@ pub mod access_labels {
     pub const HG_CHANGESET_PIPELINE: &str = "hg_changeset_pipeline";
     /// The backfill of augmented manifests from Hg manifests.
     pub const AUGMENTED_BACKFILL_FROM_HG: &str = "augmented_backfill_from_hg";
+    /// Augmented manifest derivation of a commit with a mapped Hg changeset,
+    /// which builds the augmented manifest from the commit's Hg manifest.
+    pub const AUGMENTED_DERIVATION_FROM_HG: &str = "augmented_derivation_from_hg";
 }
 
 pub use derive_hg_changeset::DeriveHgChangeset;

@@ -189,6 +189,9 @@ impl BonsaiDerivable for MappedHgChangesetId {
             bonsais = left_bonsais;
         }
 
+        // Flushed here so that batched writes reach storage under this
+        // derivation's label rather than the manager's context.
+        derivation_ctx.flush(ctx).await?;
         Ok(res)
     }
 

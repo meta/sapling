@@ -261,6 +261,8 @@ impl PipelineDerivable for MappedHgChangesetId {
         stage: &StageId,
         outputs: HashMap<ChangesetId, Self::StageOutput>,
     ) -> Result<Option<StageOutputs>> {
+        // Labelled because this flushes the Hg trees the stage wrote.
+        let ctx = &ctx.with_access_label(access_labels::HG_CHANGESET_PIPELINE);
         if matches!(stage, StageId::Finalize) && derivation.publish_pipeline_outputs() {
             let entries = outputs
                 .into_iter()

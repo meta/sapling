@@ -68,6 +68,7 @@ impl RepoBlobstore {
     /// In a repo whose `scm/mononoke:hgmanifest_read_from_augmented` is on,
     /// count reads of Hg manifests by access label (see
     /// `CoreContext::with_access_label`), and log a sample of unlabelled ones.
+    /// Count every write of an Hg manifest, and log a sample of them.
     /// Copies made by `new_with_wrapped_inner_blobstore`, such as a bubble's
     /// view of the repo, and by `with_log_only_redaction` keep the check.
     pub fn with_hg_manifest_read_check(self, repo_name: &str) -> Self {
@@ -153,6 +154,9 @@ impl KeyedBlobstore for RepoBlobstore {
         key: String,
         value: BlobstoreBytes,
     ) -> Result<()> {
+        if let Some(check) = &self.hg_manifest_read_check {
+            check.check_write(ctx, &key, "put");
+        }
         Blobstore::put(&self.blobstore.0, ctx, key, value).await
     }
     async fn is_present<'a>(
@@ -171,6 +175,9 @@ impl KeyedBlobstore for RepoBlobstore {
         old_key: &'a str,
         new_key: String,
     ) -> Result<()> {
+        if let Some(check) = &self.hg_manifest_read_check {
+            check.check_write(ctx, &new_key, "copy");
+        }
         Blobstore::copy(&self.blobstore.0, ctx, old_key, new_key).await
     }
     async fn unlink<'a>(&'a self, ctx: &'a CoreContext, key: &'a str) -> Result<()> {
