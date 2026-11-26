@@ -11,6 +11,7 @@ use std::cell::RefCell;
 
 use ::clientinfo as client_info;
 use cpython::*;
+use cpython_ext::PyNone;
 use cpython_ext::ResultPyErrExt;
 use cpython_ext::convert::Serde;
 use distributed_tracing::Headers;
@@ -42,7 +43,18 @@ pub fn init_module(py: Python, package: &str) -> PyResult<PyModule> {
         py_fn!(py, outgoing_trace(host: PyBytes)),
     )?;
     m.add(py, "outgoing_trace_env", py_fn!(py, outgoing_trace_env()))?;
+    m.add(
+        py,
+        "annotate_trace",
+        py_fn!(py, annotate_trace(key: &str, value: &str)),
+    )?;
     Ok(m)
+}
+
+/// Attach a key/value attribute to this command's span; ignored unless a trace is active.
+fn annotate_trace(py: Python, key: &str, value: &str) -> PyResult<PyNone> {
+    py.allow_threads(|| distributed_tracing::annotate(key, value));
+    Ok(PyNone)
 }
 
 /// Trace headers for an HTTP request to `host`; empty unless a trace is active.

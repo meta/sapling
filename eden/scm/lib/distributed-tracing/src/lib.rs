@@ -22,6 +22,8 @@ pub trait Provider: Send + Sync {
     fn start(&self);
     /// Record the code the process exits with, before `finish`.
     fn exit_code(&self, code: i32);
+    /// Attach a key/value attribute to the command's span, before `finish`.
+    fn annotate(&self, key: &str, value: &str);
     /// Finish the trace started by `start`.
     fn finish(&self);
     /// Propagation headers for an outgoing HTTP request.
@@ -74,6 +76,17 @@ pub fn exit_code(code: i32) {
     }
 }
 
+/// Attach a key/value attribute to the active command's span. Empty values are
+/// dropped rather than spent against the backend's per-span attribute budget.
+pub fn annotate(key: &str, value: &str) {
+    if value.is_empty() {
+        return;
+    }
+    if let Some(provider) = active() {
+        provider.annotate(key, value);
+    }
+}
+
 /// Propagation headers for an outgoing HTTP request to `url`.
 pub fn outgoing_http(url: &str) -> Headers {
     active().map_or_else(Vec::new, |provider| provider.outgoing_http(url))
@@ -86,6 +99,7 @@ pub fn outgoing_env() -> Headers {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
     use std::sync::atomic::AtomicI32;
     use std::sync::atomic::AtomicUsize;
 
@@ -94,6 +108,14 @@ mod tests {
     static STARTS: AtomicUsize = AtomicUsize::new(0);
     static FINISHES: AtomicUsize = AtomicUsize::new(0);
     static EXIT_CODE: AtomicI32 = AtomicI32::new(0);
+    static ANNOTATIONS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+    fn annotations() -> Headers {
+        ANNOTATIONS
+            .lock()
+            .expect("annotation lock should not be poisoned")
+            .clone()
+    }
 
     struct TestProvider;
 
@@ -104,6 +126,13 @@ mod tests {
 
         fn exit_code(&self, code: i32) {
             EXIT_CODE.store(code, Ordering::Relaxed);
+        }
+
+        fn annotate(&self, key: &str, value: &str) {
+            ANNOTATIONS
+                .lock()
+                .expect("annotation lock should not be poisoned")
+                .push((key.to_owned(), value.to_owned()));
         }
 
         fn finish(&self) {
@@ -126,6 +155,8 @@ mod tests {
         assert_eq!(outgoing_env(), Headers::new());
         exit_code(1);
         assert_eq!(EXIT_CODE.load(Ordering::Relaxed), 0, "no trace, no code");
+        annotate("sl.repo", "untraced");
+        assert_eq!(annotations(), Headers::new(), "no trace, no attributes");
 
         let outer = scope(true).expect("outermost command should trace");
         assert!(
@@ -149,12 +180,22 @@ mod tests {
             .expect("traced request should succeed");
         traced.assert();
 
+        annotate("sl.repo", "fbsource");
+        annotate("sl.command", "");
+        assert_eq!(
+            annotations(),
+            vec![("sl.repo".to_owned(), "fbsource".to_owned())],
+            "a traced command records attributes, but spends no budget on empty values"
+        );
+
         exit_code(3);
         assert_eq!(EXIT_CODE.load(Ordering::Relaxed), 3);
         drop(outer);
         assert_eq!(FINISHES.load(Ordering::Relaxed), 1);
         exit_code(4);
         assert_eq!(EXIT_CODE.load(Ordering::Relaxed), 3, "no code after finish");
+        annotate("sl.repo", "after");
+        assert_eq!(annotations().len(), 1, "no attributes after the scope");
         assert_eq!(outgoing_env(), Headers::new(), "inactive after the scope");
         drop(scope(true).expect("a later command traces again"));
         assert_eq!(STARTS.load(Ordering::Relaxed), 2);
