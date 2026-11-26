@@ -123,7 +123,6 @@ use mononoke_types::Timestamp;
 use mononoke_types::case_conflict_skeleton_manifest::CcsmEntry;
 use mononoke_types::check_case_conflicts;
 use mononoke_types::find_path_conflicts;
-use pushrebase_hook::PreparationRequired;
 use pushrebase_hook::PushrebaseCommitHook;
 use pushrebase_hook::PushrebaseHook;
 use pushrebase_hook::PushrebaseTransactionHook;
@@ -132,7 +131,6 @@ use pushrebase_mutation_mapping::PushrebaseMutationMappingRef;
 use repo_blobstore::RepoBlobstoreArc;
 use repo_bookmark_attrs::RepoBookmarkAttrsRef;
 use repo_cross_repo::RepoCrossRepoRef;
-use repo_derived_data::RepoDerivedDataArc;
 use repo_derived_data::RepoDerivedDataRef;
 use repo_identity::RepoIdentityRef;
 use scuba_ext::MononokeScubaSampleBuilder;
@@ -174,7 +172,6 @@ define_stats! {
     baseline_replay: dynamic_timeseries("{}.baseline_replay.{}.{}", (reponame: String, mode: &'static str, outcome: &'static str); Count),
     baseline_resolution_source: dynamic_timeseries("{}.baseline_resolution_source.{}", (reponame: String, source: &'static str); Count),
     far_root_manifest_check: dynamic_timeseries("{}.far_root_manifest_check.{}", (reponame: String, outcome: &'static str); Count),
-    preparations: dynamic_timeseries("{}.preparations", (reponame: String); Count),
 }
 
 const MAX_REBASE_ATTEMPTS: usize = 100;
@@ -571,7 +568,6 @@ pub trait Repo = BookmarksRef
 
 /// Repository capabilities needed to construct hooks for queued pushrebases.
 pub trait PushrebaseQueueRepo = Repo
-    + RepoDerivedDataArc
     + BonsaiGitMappingArc
     + BonsaiGlobalrevMappingArc
     + PushrebaseMutationMappingRef
@@ -1818,26 +1814,6 @@ async fn do_batched_pushrebase(
     {
         Ok(h) => h,
         Err(e) => {
-            // The bookmark was not moved: prepare outside the critical
-            // section, then requeue the whole batch as after a failed swap.
-            let e = match e.downcast::<PreparationRequired>() {
-                Ok(required) => match prepare_hooks(ctx, reponame, hooks, &required.changesets)
-                    .await
-                {
-                    Ok(()) => {
-                        return pending
-                            .into_iter()
-                            .map(|mut p| {
-                                p.request.retry_num = PushrebaseRetryNum(p.request.retry_num.0 + 1);
-                                p.request.preparation_rounds += 1;
-                                p.request
-                            })
-                            .collect();
-                    }
-                    Err(e) => e,
-                },
-                Err(e) => e,
-            };
             let shared = SharedError::from(PushrebaseError::from(e));
             for p in pending {
                 let _ = p.request.response_tx.send(Err(shared.clone()));
@@ -1888,7 +1864,7 @@ async fn do_batched_pushrebase(
                 if emit_all_bookmarks {
                     bookmarks::saturation::record_pushrebase_retries(
                         repo.repo_identity().name(),
-                        contention_retries(p.request.retry_num.0, p.request.preparation_rounds),
+                        p.request.retry_num.0 as i64,
                     );
                 }
                 let stack_pairs: Vec<PushrebaseChangesetPair> = all_rebased_pairs
@@ -1911,8 +1887,7 @@ async fn do_batched_pushrebase(
                     .add("batch_size", batch_size)
                     .add("batch_total_commits", all_rebased_pairs.len())
                     .add("rebased_changesets", stack_pairs.len())
-                    .add("retry_num", p.request.retry_num.0 as i64)
-                    .add("preparation_rounds", p.request.preparation_rounds as i64);
+                    .add("retry_num", p.request.retry_num.0 as i64);
                 p.merge_summary.clone().add_to_scuba(&mut sample);
                 sample.log_with_msg("batched_pushrebase_request_complete", None);
 
@@ -2760,29 +2735,6 @@ async fn run_batch_hooks(
     .await
 }
 
-/// Run every hook's `prepare` for `changesets`; only outside the critical
-/// section. Each call is one preparation round, counted once per repo for
-/// the direct and the batched path alike.
-async fn prepare_hooks(
-    ctx: &CoreContext,
-    repo_name: &str,
-    hooks: &[Box<dyn PushrebaseHook>],
-    changesets: &[ChangesetId],
-) -> Result<(), Error> {
-    STATS::preparations.add_value(1, (repo_name.to_string(),));
-    try_join_all(hooks.iter().map(|h| h.prepare(ctx, changesets))).await?;
-    Ok(())
-}
-
-/// The retries of a landing that were contention: all its retries but those
-/// spent preparing. This is what the retry stats record.
-pub(crate) fn contention_retries(retries: usize, preparation_rounds: usize) -> i64 {
-    retries
-        .saturating_sub(preparation_rounds)
-        .try_into()
-        .unwrap_or(i64::MAX)
-}
-
 async fn rebase_in_loop(
     ctx: &CoreContext,
     repo: &impl Repo,
@@ -2800,9 +2752,6 @@ async fn rebase_in_loop(
     let mut carried_merge_file_info: Vec<MergedFileInfo> = Vec::new();
     let mut total_pushrebase_distance: usize = 0;
     let mut accumulated_merge_summary = MergeResolutionSummary::NotNeeded;
-    // Attempts that ended for preparation: they count against
-    // `MAX_REBASE_ATTEMPTS`, but not as contention in the retry stats.
-    let mut preparation_rounds: usize = 0;
     for retry_num in 0..MAX_REBASE_ATTEMPTS {
         let retry_num = PushrebaseRetryNum(retry_num);
 
@@ -2890,9 +2839,7 @@ async fn rebase_in_loop(
             return Err(PushrebaseInternalError::MergeResolutionLostOnRetry.into());
         }
 
-        // A hook that needs preparation leaves the bookmark unwritten; the
-        // attempt is retried as after a failed swap, once prepared.
-        let (rebase_outcome, preparation) = match do_rebase(
+        let rebase_outcome = do_rebase(
             ctx,
             repo,
             config,
@@ -2902,14 +2849,7 @@ async fn rebase_in_loop(
             hooks,
             reconciled_overrides.clone(),
         )
-        .await
-        {
-            Err(PushrebaseError::Error(error)) => match error.downcast::<PreparationRequired>() {
-                Ok(required) => (None, Some(required)),
-                Err(error) => return Err(PushrebaseError::Error(error)),
-            },
-            outcome => (outcome?, None),
-        };
+        .await?;
         // CRITICAL SECTION END: Right after writing new value of bookmark
 
         let critical_section_duration_us: i64 = start_critical_section
@@ -2918,19 +2858,19 @@ async fn rebase_in_loop(
             .try_into()
             .unwrap_or(i64::MAX);
         if let Some((head, log_id, rebased_changesets)) = rebase_outcome {
-            let retries = contention_retries(retry_num.0, preparation_rounds);
             if emit_all_bookmarks {
                 bookmarks::saturation::record_pushrebase_success(
                     repo.repo_identity().name(),
                     critical_section_duration_us,
-                    Some(retries),
+                    Some(retry_num.0 as i64),
                     rebased_changesets.len() as i64,
                 );
             }
             if should_log {
                 STATS::critical_section_success_duration_us
                     .add_value(critical_section_duration_us, repo_args.clone());
-                STATS::critical_section_retries_failed.add_value(retries, repo_args.clone());
+                STATS::critical_section_retries_failed
+                    .add_value(retry_num.0 as i64, repo_args.clone());
                 STATS::commits_rebased
                     .add_value(rebased_changesets.len() as i64, repo_args.clone());
             }
@@ -2939,7 +2879,6 @@ async fn rebase_in_loop(
             sample
                 .add("repo_name", repo.repo_identity().name())
                 .add("retry_num", retry_num.0 as i64)
-                .add("preparation_rounds", preparation_rounds as i64)
                 .add("rebased_changesets", rebased_changesets.len() as i64);
             merge_summary_for_scuba.add_to_scuba(&mut sample);
             sample.log_with_msg("pushrebase_complete", None);
@@ -2959,45 +2898,26 @@ async fn rebase_in_loop(
             // CAS failed — carry forward merge info for next attempt
             carried_merge_file_info = reconciled_overrides.unwrap_or_default();
             latest_rebase_attempt = old_bookmark_value.unwrap_or(stack.root);
-            match preparation {
-                // Not contention: prepare outside the critical section and
-                // outside its duration, then retry.
-                Some(required) => {
-                    preparation_rounds += 1;
-                    prepare_hooks(
-                        ctx,
-                        repo.repo_identity().name(),
-                        prepushrebase_hooks,
-                        &required.changesets,
-                    )
-                    .await?;
-                }
-                None => {
-                    if emit_all_bookmarks {
-                        bookmarks::saturation::record_pushrebase_failure(
-                            repo.repo_identity().name(),
-                            critical_section_duration_us,
-                        );
-                    }
-                    if should_log {
-                        STATS::critical_section_failure_duration_us
-                            .add_value(critical_section_duration_us, repo_args.clone());
-                    }
-                }
+            if emit_all_bookmarks {
+                bookmarks::saturation::record_pushrebase_failure(
+                    repo.repo_identity().name(),
+                    critical_section_duration_us,
+                );
+            }
+            if should_log {
+                STATS::critical_section_failure_duration_us
+                    .add_value(critical_section_duration_us, repo_args.clone());
             }
         }
     }
     if emit_all_bookmarks {
         bookmarks::saturation::record_pushrebase_retries(
             repo.repo_identity().name(),
-            contention_retries(MAX_REBASE_ATTEMPTS, preparation_rounds),
+            MAX_REBASE_ATTEMPTS as i64,
         );
     }
     if should_log {
-        STATS::critical_section_retries_failed.add_value(
-            contention_retries(MAX_REBASE_ATTEMPTS, preparation_rounds),
-            repo_args,
-        );
+        STATS::critical_section_retries_failed.add_value(MAX_REBASE_ATTEMPTS as i64, repo_args);
     }
 
     Err(PushrebaseInternalError::TooManyRebaseAttempts.into())
