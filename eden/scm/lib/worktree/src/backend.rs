@@ -155,54 +155,18 @@ impl EdenBackend {
         })
     }
 
-    fn main_for_remove(&self) -> Result<Option<PathBuf>> {
+    fn removal_group(&self, member: &Path) -> Result<Option<(PathBuf, Vec<PathBuf>)>> {
         let registry = load_registry(&self.shared_store_path)?;
         Ok(
-            find_group(&registry, &canonicalize_or_original(&self.repo_path))
-                .map(|group| group.main.clone()),
-        )
-    }
-
-    fn linked_worktrees(&self, main: &Path) -> Result<Vec<PathBuf>> {
-        let registry = load_registry(&self.shared_store_path)?;
-        Ok(find_group(&registry, main)
-            .map(|group| {
-                group
+            find_group(&registry, &canonicalize_or_original(member)).map(|group| {
+                let linked = group
                     .worktrees
                     .keys()
-                    .filter(|path| *path != main)
+                    .filter(|path| **path != group.main)
                     .cloned()
-                    .collect()
-            })
-            .unwrap_or_default())
-    }
-
-    fn validate_removal(&self, main: &Path, target: &Path) -> Result<()> {
-        let registry = load_registry(&self.shared_store_path)?;
-        let members = find_group(&registry, main).map(|group| &group.worktrees);
-        if members.is_some_and(|members| members.contains_key(target)) {
-            if target == main {
-                anyhow::bail!("cannot remove a main worktree with linked worktrees");
-            }
-            return Ok(());
-        }
-        if let Some(parent) = members
-            .into_iter()
-            .flat_map(|members| members.keys())
-            .find(|path| target.starts_with(path))
-        {
-            anyhow::bail!(
-                "{} is not the root of checkout {}, not removing",
-                target.display(),
-                parent.display()
-            );
-        }
-        if !target.exists() {
-            anyhow::bail!("{} does not exist", target.display());
-        }
-        anyhow::bail!(
-            "{} is not in this worktree group, use `eden rm` instead",
-            target.display()
+                    .collect();
+                (group.main.clone(), linked)
+            }),
         )
     }
 
@@ -265,16 +229,6 @@ impl GitBackend {
         Ok((main, linked))
     }
 
-    fn main(&self) -> Result<PathBuf> {
-        let main = self
-            .git
-            .list_worktrees()?
-            .into_iter()
-            .find(|worktree| worktree.is_main)
-            .context("Git did not report a main worktree")?;
-        Ok(canonicalize_or_original(&main.path))
-    }
-
     fn linked_worktrees(&self) -> Result<Vec<PathBuf>> {
         Ok(self
             .git
@@ -300,32 +254,19 @@ impl GitBackend {
             .len())
     }
 
-    fn validate_removal(&self, target: &Path) -> Result<()> {
-        let listed: Vec<_> = self
-            .git
-            .list_worktrees()?
-            .into_iter()
-            .map(|worktree| (canonicalize_or_original(&worktree.path), worktree.is_main))
-            .collect();
-        if let Some((_, is_main)) = listed.iter().find(|(path, _)| path == target) {
-            if *is_main {
-                anyhow::bail!("cannot remove the main worktree");
-            }
-            return Ok(());
-        }
-        // Linked checkouts may be nested inside the main one.
-        if let Some((parent, _)) = listed
+    fn removal_group(&self) -> Result<(PathBuf, Vec<PathBuf>)> {
+        let worktrees = self.git.list_worktrees()?;
+        let main = worktrees
             .iter()
-            .filter(|(path, _)| target.starts_with(path))
-            .max_by_key(|(path, _)| path.components().count())
-        {
-            anyhow::bail!(
-                "{} is not the root of checkout {}, not removing",
-                target.display(),
-                parent.display()
-            );
-        }
-        anyhow::bail!("{} is not in this worktree group", target.display())
+            .find(|worktree| worktree.is_main)
+            .context("Git did not report a main worktree")?;
+        let main = canonicalize_or_original(&main.path);
+        let linked = worktrees
+            .into_iter()
+            .filter(|worktree| !worktree.is_main)
+            .map(|worktree| canonicalize_or_original(&worktree.path))
+            .collect();
+        Ok((main, linked))
     }
 }
 
@@ -436,29 +377,47 @@ impl Worktrees {
         }
     }
 
-    /// Main checkout of the invoking checkout's group, or `None` if it has no
-    /// linked worktrees.
-    pub fn main_for_remove(&self) -> Result<Option<PathBuf>> {
+    /// Read the main and linked checkout paths of `member`'s group.
+    /// Returns `None` if the checkout is not part of a group.
+    pub fn removal_group(&self, member: &Path) -> Result<Option<(PathBuf, Vec<PathBuf>)>> {
         match &self.backend {
-            WorktreeBackend::Eden(backend) => backend.main_for_remove(),
-            WorktreeBackend::Git(backend) => backend.main().map(Some),
+            WorktreeBackend::Eden(backend) => backend.removal_group(member),
+            WorktreeBackend::Git(backend) => backend.removal_group().map(Some),
         }
     }
 
-    /// Linked checkouts in `main`'s group.
-    pub fn linked_worktrees(&self, main: &Path) -> Result<Vec<PathBuf>> {
-        match &self.backend {
-            WorktreeBackend::Eden(backend) => backend.linked_worktrees(main),
-            WorktreeBackend::Git(backend) => backend.linked_worktrees(),
+    /// Check `target` against paths previously read by `removal_group`.
+    pub fn validate_removal(&self, main: &Path, linked: &[PathBuf], target: &Path) -> Result<()> {
+        if target == main {
+            anyhow::bail!("cannot remove the main worktree");
         }
-    }
-
-    /// Check that `target` is the root of a linked checkout in `main`'s group.
-    pub fn validate_removal(&self, main: &Path, target: &Path) -> Result<()> {
-        match &self.backend {
-            WorktreeBackend::Eden(backend) => backend.validate_removal(main, target),
-            WorktreeBackend::Git(backend) => backend.validate_removal(target),
+        if linked.iter().any(|path| path == target) {
+            return Ok(());
         }
+        // Linked checkouts may be nested inside the main one.
+        if let Some(parent) = std::iter::once(main)
+            .chain(linked.iter().map(PathBuf::as_path))
+            .filter(|path| target.starts_with(path))
+            .max_by_key(|path| path.components().count())
+        {
+            anyhow::bail!(
+                "{} is not the root of checkout {}, not removing",
+                target.display(),
+                parent.display()
+            );
+        }
+        if !target.exists() {
+            anyhow::bail!("{} does not exist", target.display());
+        }
+        let outside_hint = match &self.backend {
+            WorktreeBackend::Eden(_) => ", use `eden rm` instead",
+            WorktreeBackend::Git(_) => "",
+        };
+        anyhow::bail!(
+            "{} is not in this worktree group{}",
+            target.display(),
+            outside_hint
+        )
     }
 
     /// Forget `target` after its checkout has been removed. The caller holds its

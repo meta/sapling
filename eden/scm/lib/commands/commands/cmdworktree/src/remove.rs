@@ -27,11 +27,10 @@ pub(crate) fn run(ctx: &ReqCtx<WorktreeOpts>, repo: &Repo, worktrees: &Worktrees
     let logger = ctx.logger();
 
     let (main, mut targets) = if ctx.opts.all {
-        let Some(main) = worktrees.main_for_remove()? else {
+        let Some(group) = worktrees.removal_group(repo.path())? else {
             abort!("this worktree is not part of a group");
         };
-        let targets = worktrees.linked_worktrees(&main)?;
-        (main, targets)
+        group
     } else {
         let path_args = &ctx.opts.args[1..];
         if path_args.is_empty() {
@@ -45,7 +44,7 @@ pub(crate) fn run(ctx: &ReqCtx<WorktreeOpts>, repo: &Repo, worktrees: &Worktrees
                 ))
             })
             .collect::<Result<BTreeSet<_>>>()?;
-        let Some(main) = worktrees.main_for_remove()? else {
+        let Some((main, linked)) = worktrees.removal_group(repo.path())? else {
             let names: Vec<String> = targets.iter().map(|p| p.display().to_string()).collect();
             abort!(
                 "cannot remove {}: {} has no linked worktrees",
@@ -54,7 +53,7 @@ pub(crate) fn run(ctx: &ReqCtx<WorktreeOpts>, repo: &Repo, worktrees: &Worktrees
             );
         };
         for target in &targets {
-            worktrees.validate_removal(&main, target)?;
+            worktrees.validate_removal(&main, &linked, target)?;
         }
         (main, targets.into_iter().collect())
     };
@@ -84,12 +83,17 @@ pub(crate) fn run(ctx: &ReqCtx<WorktreeOpts>, repo: &Repo, worktrees: &Worktrees
         .collect::<Result<HashMap<_, _>>>()?;
 
     // Targets may have been removed while this command waited for their locks.
+    // Look up the group by its main: the invoking checkout may be one of them.
     // `--all` skips them silently; explicit targets fail validation below.
     // A target removed and re-added at the same path in that window is not
     // detected, since the registry tracks worktrees by path.
+    let group = worktrees.removal_group(&main)?;
     if ctx.opts.all {
-        let linked = worktrees.linked_worktrees(&main)?;
-        targets.retain(|target| linked.contains(target));
+        targets.retain(|target| {
+            group
+                .as_ref()
+                .is_some_and(|(_, linked)| linked.contains(target))
+        });
         if targets.is_empty() {
             logger.info("no linked worktrees to remove");
             return Ok(0);
@@ -102,9 +106,11 @@ pub(crate) fn run(ctx: &ReqCtx<WorktreeOpts>, repo: &Repo, worktrees: &Worktrees
     let mut remove_error = None;
     let mut failed = 0;
     for target in &targets {
-        let result = worktrees
-            .validate_removal(&main, target)
-            .and_then(|()| {
+        let result = group
+            .as_ref()
+            .context("this worktree group no longer exists")
+            .and_then(|(main, linked)| {
+                worktrees.validate_removal(main, linked, target)?;
                 if !ctx.opts.force {
                     ensure_clean(ctx, &checkouts, target)?;
                     ensure_no_shelves(repo, &checkouts, target)?;
@@ -116,16 +122,14 @@ pub(crate) fn run(ctx: &ReqCtx<WorktreeOpts>, repo: &Repo, worktrees: &Worktrees
                         "path".to_string(),
                         target.display().to_string(),
                     )])),
-                )
-            })
-            .and_then(|()| {
+                )?;
                 if !checkouts.remove(&logger, target, ctx.opts.force)? {
                     logger.warn(format!(
                         "eden checkout {} not found on disk, continuing to remove from registry",
                         target.display()
                     ));
                 }
-                worktrees.forget_removed(&main, target)
+                worktrees.forget_removed(main, target)
             });
         path_locks.remove(target);
         match result {

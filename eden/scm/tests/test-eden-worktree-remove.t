@@ -23,7 +23,7 @@ test worktree remove - missing PATH argument
 test worktree remove - cannot remove main with linked worktrees
 
   $ sl worktree remove $TESTTMP/myrepo -y
-  abort: cannot remove a main worktree with linked worktrees
+  abort: cannot remove the main worktree
   [255]
 
 test worktree remove - subdirectory path gives clear error
@@ -160,6 +160,57 @@ test worktree remove - the invoking checkout is removed last
   $ test -d $TESTTMP/self_a
   [1]
   $ test -d $TESTTMP/self_b
+  [1]
+
+test worktree remove - another command removes the invoking checkout during confirmation
+
+  $ cat > $TESTTMP/remove-after-confirm.py <<'PY'
+  > import os, pty, subprocess, sys
+  > current = sys.argv[1]
+  > master, slave = pty.openpty()
+  > proc = subprocess.Popen(
+  >     ["sl", "--cwd", current, "worktree", "remove", *sys.argv[2:]],
+  >     stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+  > )
+  > os.close(slave)
+  > try:
+  >     output = b""
+  >     while not output.endswith(b"proceed? [y/N] "):
+  >         byte = proc.stdout.read(1)
+  >         assert byte, output.decode()
+  >         output += byte
+  >     subprocess.check_output(["sl", "worktree", "remove", current, "-y"], stderr=subprocess.STDOUT)
+  >     os.write(master, b"y\n")
+  >     output, _ = proc.communicate(timeout=60)
+  >     print(output.decode(), end="")
+  >     assert proc.returncode == 0, proc.returncode
+  > finally:
+  >     proc.kill()
+  >     proc.wait()
+  >     os.close(master)
+  > PY
+  $ sl worktree add $TESTTMP/race_current
+  created linked worktree at $TESTTMP/race_current
+  $ sl worktree add $TESTTMP/race_other
+  created linked worktree at $TESTTMP/race_other
+  $ python $TESTTMP/remove-after-confirm.py $TESTTMP/race_current --all
+  Unmounting checkout...
+  Deleting EdenFS checkout state...
+  removed $TESTTMP/race_other
+  $ test -d $TESTTMP/race_other
+  [1]
+
+The same race must not prevent removing an explicit target.
+
+  $ sl worktree add $TESTTMP/race_current
+  created linked worktree at $TESTTMP/race_current
+  $ sl worktree add $TESTTMP/race_other
+  created linked worktree at $TESTTMP/race_other
+  $ python $TESTTMP/remove-after-confirm.py $TESTTMP/race_current $TESTTMP/race_other
+  Unmounting checkout...
+  Deleting EdenFS checkout state...
+  removed $TESTTMP/race_other
+  $ test -d $TESTTMP/race_other
   [1]
 
 test worktree remove - direct removal reports skipped backing cleanup
