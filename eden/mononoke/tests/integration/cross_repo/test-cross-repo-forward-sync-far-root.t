@@ -12,11 +12,12 @@
   $ . "${TEST_FIXTURES}/library.sh"
   $ . "${TEST_FIXTURES}/library-push-redirector.sh"
 
-The far-root manifest check is on for both repos.
+The far-root manifest check and its use by forward sync are on for both repos.
   $ merge_just_knobs <<EOF
   > {
   >   "bools": {
-  >     "scm/mononoke:pushrebase_far_root_manifest_conflicts": true
+  >     "scm/mononoke:pushrebase_far_root_manifest_conflicts": true,
+  >     "scm/mononoke:xrepo_forward_sync_far_root_pushrebase": true
   >   }
   > }
   > EOF
@@ -60,6 +61,6 @@ The commit lands on top of the large repo's master.
   │
   o  message: F260
 
-FIXME: pushrebase runs with no recursion limit, so it walks all 260 commits
-between the root and master instead of taking the far-root manifest check.
+The sync takes the far-root manifest check instead of walking the whole range.
   $ jq -r 'select(.normal.log_tag == "pushrebase_far_root_manifest_check") | .normal.far_root_outcome' "$TESTTMP/x_repo_sync_scuba_logs"
+  clean

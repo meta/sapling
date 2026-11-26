@@ -84,6 +84,7 @@
     "scm/mononoke:megarepo_derive_remotely": false,
     "scm/mononoke:megarepo_reject_divergent_config_reinsert": false,
     "scm/mononoke:xrepo_sync_disable_all_syncs": false,
+    "scm/mononoke:xrepo_forward_sync_far_root_pushrebase": false,
     "scm/mononoke:enable_bonsai_tag_mapping_caching": false,
     "scm/mononoke:pushrebase_enable_merge_resolution": false,
     "scm/mononoke:pushrebase_far_root_manifest_conflicts": false,

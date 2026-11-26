@@ -1039,11 +1039,22 @@ async fn unsafe_sync_commit_pushrebase_impl<'a, R: Repo>(
             )
             .await?;
 
+            // Only switch this on for repos with the far-root manifest check on, or
+            // a limit rejects far roots with `RootTooFarBehind` instead of syncing them.
+            let recursion_limit = if justknobs::eval(
+                "scm/mononoke:xrepo_forward_sync_far_root_pushrebase",
+                None,
+                Some(target_repo.repo_identity().name()),
+            ) {
+                target_repo.repo_config().pushrebase.flags.recursion_limit
+            } else {
+                None
+            };
             let pushrebase_flags = PushrebaseFlags {
                 rewritedates: rewritedates == PushrebaseRewriteDates::Yes,
                 forbid_p2_root_rebases: false,
                 casefolding_check: false,
-                recursion_limit: None,
+                recursion_limit,
                 ..Default::default()
             };
             // We need to run all pushrebase hooks because the're not only validating if the
