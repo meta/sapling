@@ -32,7 +32,7 @@ Import test repo.
 Start up SaplingRemoteAPI server.
   $ start_and_wait_for_mononoke_server
 Check response.
-  $ hg debugapi mono:repo -e commitdata -i "['$COMMIT_1','$COMMIT_2']"
+  $ hg debugapi mono:repo -e commitdata -i "['$COMMIT_1','$COMMIT_2']" --sort
   [{"hgid": bin("2c73711572dcc5fba150bc86885bed40a3950176"),
     "revlog_data": b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\03aa4499a34ac1ed79157ffad61e912c79a64989b\nauthor\n0 0\nCOMMIT_1\ntest.txt\n\nadd test.txt"},
    {"hgid": bin("87d56d8162fe716b567ccf245ad56fa9a90b5069"),
