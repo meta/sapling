@@ -916,7 +916,6 @@ mod tests {
     }
 
     #[mononoke::test]
-    #[mononoke::test]
     fn downgrades_count_and_list_entry_paths_separately() -> Result<(), anyhow::Error> {
         let collector = OmissionCollector::default();
         collector.set_path_retention(true);

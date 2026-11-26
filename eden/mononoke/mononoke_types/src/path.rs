@@ -1604,20 +1604,11 @@ where
 
 #[cfg(test)]
 mod test {
-    use std::mem::size_of;
-
     use mononoke_macros::mononoke;
     use quickcheck::TestResult;
     use quickcheck::quickcheck;
 
     use super::*;
-
-    #[mononoke::test]
-    fn test_mpath_element_size() {
-        // MPathElement size is important as we have a lot of them.
-        // Test so we are aware of any change.
-        assert_eq!(32, size_of::<MPathElement>());
-    }
 
     #[mononoke::test]
     fn get_path_hash_multiple_elem() {

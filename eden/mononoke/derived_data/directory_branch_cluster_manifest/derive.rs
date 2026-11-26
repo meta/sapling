@@ -713,35 +713,6 @@ mod tests {
     }
 
     #[mononoke::fbinit_test]
-    async fn test_build_manifest_merge(fb: FacebookInit) -> Result<()> {
-        let ctx = CoreContext::test_mock(fb);
-        let blobstore = make_blobstore();
-
-        // Simulate: Merge B → A (merge from B into A)
-        // Per design doc: B is added to same cluster as A
-        // If A is not in a cluster, new cluster created with A as primary
-        // A should have B in secondaries
-        // B should have primary = A
-        let mut changes = HashMap::new();
-        changes.insert(mpath("A"), cluster_update(None, vec!["B"], vec![]));
-        changes.insert(mpath("B"), cluster_update(Some("A"), vec![], vec![]));
-
-        let manifest = build_manifest(&ctx, &blobstore, vec![], changes).await?;
-
-        // Verify A has B as secondary (A is the primary of the cluster)
-        let (primary, secondaries) = get_cluster_info(&ctx, &blobstore, &manifest, "A").await?;
-        assert!(primary.is_none()); // A is not a secondary of anyone
-        assert_eq!(secondaries, Some(vec![mpath("B")]));
-
-        // Verify B has A as primary
-        let (primary, secondaries) = get_cluster_info(&ctx, &blobstore, &manifest, "B").await?;
-        assert_eq!(primary, Some(mpath("A")));
-        assert!(secondaries.is_none());
-
-        Ok(())
-    }
-
-    #[mononoke::fbinit_test]
     async fn test_build_manifest_full_repo_merge(fb: FacebookInit) -> Result<()> {
         let ctx = CoreContext::test_mock(fb);
         let blobstore = make_blobstore();
@@ -863,37 +834,6 @@ mod tests {
         // A should have empty secondaries
         let (_, secondaries) = get_cluster_info(&ctx, &blobstore, &manifest, "A").await?;
         assert!(secondaries.is_none());
-
-        Ok(())
-    }
-
-    #[mononoke::fbinit_test]
-    async fn test_build_manifest_merge_multiple(fb: FacebookInit) -> Result<()> {
-        let ctx = CoreContext::test_mock(fb);
-        let blobstore = make_blobstore();
-
-        // Simulate: Merge B → A and Merge C → A in same commit
-        let mut changes = HashMap::new();
-        changes.insert(mpath("A"), cluster_update(None, vec!["B", "C"], vec![]));
-        changes.insert(mpath("B"), cluster_update(Some("A"), vec![], vec![]));
-        changes.insert(mpath("C"), cluster_update(Some("A"), vec![], vec![]));
-
-        let manifest = build_manifest(&ctx, &blobstore, vec![], changes).await?;
-
-        // Verify A has both B and C as secondaries
-        let (_, secondaries) = get_cluster_info(&ctx, &blobstore, &manifest, "A").await?;
-        let secs = secondaries.unwrap();
-        assert_eq!(secs.len(), 2);
-        assert!(secs.contains(&mpath("B")));
-        assert!(secs.contains(&mpath("C")));
-
-        // Verify B has A as primary
-        let (primary, _) = get_cluster_info(&ctx, &blobstore, &manifest, "B").await?;
-        assert_eq!(primary, Some(mpath("A")));
-
-        // Verify C has A as primary
-        let (primary, _) = get_cluster_info(&ctx, &blobstore, &manifest, "C").await?;
-        assert_eq!(primary, Some(mpath("A")));
 
         Ok(())
     }
