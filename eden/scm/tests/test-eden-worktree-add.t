@@ -448,6 +448,22 @@ test worktree add - pre-worktree-add hook failure aborts command
   $ test -d $TESTTMP/pre_hook_blocked
   [1]
 
+test worktree add and remove - python hooks receive these kwargs
+
+  $ cat > $TESTTMP/pyhook.py << 'EOF'
+  > def show(**kwargs):
+  >     print(sorted(kwargs), flush=True)
+  > EOF
+  $ setconfig hooks.pre-worktree-add= hooks.post-worktree-add=python:$TESTTMP/pyhook.py:show hooks.pre-worktree-remove=python:$TESTTMP/pyhook.py:show
+  $ sl worktree add $TESTTMP/pyhook_linked
+  created linked worktree at $TESTTMP/pyhook_linked
+  ['io', 'path', 'repo', 'source']
+  $ sl worktree remove $TESTTMP/pyhook_linked -y
+  ['io', 'path', 'repo']
+  Unmounting checkout...
+  Deleting EdenFS checkout state...
+  removed $TESTTMP/pyhook_linked
+
 test worktree add - path-generator produces path when PATH omitted
 
   $ cd $TESTTMP
