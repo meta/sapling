@@ -32,6 +32,7 @@ use crate::ChangesetId;
 use crate::DerivableType;
 
 mod load;
+mod unode;
 
 /// The commit being audited.
 pub struct CommitInfo {

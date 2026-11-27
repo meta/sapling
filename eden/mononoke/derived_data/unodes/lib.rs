@@ -26,6 +26,7 @@ use mononoke_types::NonRootMPath;
 use mononoke_types::subtree_change::SubtreeChange;
 use thiserror::Error;
 
+mod audit;
 mod derive;
 pub mod mapping;
 mod pipeline;

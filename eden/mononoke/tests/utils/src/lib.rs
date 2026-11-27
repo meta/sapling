@@ -56,6 +56,7 @@ use repo_derived_data::RepoDerivedDataRef;
 use repo_identity::RepoIdentity;
 use repo_identity::RepoIdentityRef;
 
+pub mod audit;
 pub mod drawdag;
 pub mod hg_manifest_reads;
 pub mod random;

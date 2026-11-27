@@ -50,6 +50,7 @@ pub use crate::trie_map_ops::TrieMapOps;
 pub use crate::types::Entry;
 pub use crate::types::Manifest;
 pub use crate::types::OrderedManifest;
+pub use crate::walk_added::walk_added;
 
 mod bonsai;
 mod combined;
@@ -66,6 +67,7 @@ mod select;
 mod traced;
 mod trie_map_ops;
 mod types;
+mod walk_added;
 
 #[cfg(test)]
 mod tests;
