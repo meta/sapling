@@ -54,6 +54,7 @@ fixtures = { version = "0.1.0", path = "../../tests/fixtures" }
 memblob = { version = "0.1.0", path = "../../blobstore/memblob" }
 pretty_assertions = { version = "1.4.1", features = ["alloc"], default-features = false }
 repo_identity = { version = "0.1.0", path = "../../repo_attributes/repo_identity" }
+samplingblob = { version = "0.1.0", path = "../../blobstore/samplingblob" }
 test_repo_factory = { version = "0.1.0", path = "../../repo_factory/test_repo_factory" }
 tests_utils = { version = "0.1.0", path = "../../tests/utils" }
 
