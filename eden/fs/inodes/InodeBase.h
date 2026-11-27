@@ -171,6 +171,14 @@ class InodeBase {
   }
 
   /**
+   * Whether the fs refcount counts references rather than being a 0/1 flag:
+   * on Linux, and on an FSKit mount on macOS.
+   */
+  static bool countsFsReferences(const EdenMount& mount) {
+    return folly::kIsLinux || (folly::kIsApple && isOnFSKitMount(mount));
+  }
+
+  /**
    * Get an InodePtr to ourself.
    *
    * This uses InodePtr::newPtrFromExisting() internally.
@@ -804,16 +812,12 @@ class InodeBase {
     lastGcRefTime_.store(EdenTimestamp{timespec{}}, std::memory_order_relaxed);
   }
 
-  /**
-   * Whether the fs refcount counts references rather than being a 0/1 flag:
-   * on Linux, and on an FSKit mount on macOS.
-   */
   bool countsFsReferences() const {
-    return folly::kIsLinux || (folly::kIsApple && isOnFSKitMount());
+    return countsFsReferences(*mount_);
   }
 
   /** Out of line because this header only declares EdenMount. */
-  bool isOnFSKitMount() const;
+  static bool isOnFSKitMount(const EdenMount& mount);
 
   /**
    * The last time this inode was referenced, as far as inode garbage

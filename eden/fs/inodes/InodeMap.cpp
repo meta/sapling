@@ -856,9 +856,7 @@ InodePtr InodeMap::decFsRefcountHelper(
   // forgetStaleInodes(). An inode may be remembered without a reference, for
   // example while a load is pending, so clear rather than subtract.
   auto& unloadedEntry = unloadedIter->second;
-  const bool countsFsReferences = folly::kIsLinux ||
-      (folly::kIsApple && mount_->shouldBeOrIsFSKitChannel());
-  if (clearRefCount || !countsFsReferences) {
+  if (clearRefCount || !InodeBase::countsFsReferences(*mount_)) {
     unloadedEntry.numFsReferences = 0;
   } else if (folly::kIsLinux) {
     XCHECK_GE(unloadedEntry.numFsReferences, count);

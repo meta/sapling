@@ -139,8 +139,8 @@ InodeBase::~InodeBase() {
   }
 }
 
-bool InodeBase::isOnFSKitMount() const {
-  return mount_->shouldBeOrIsFSKitChannel();
+bool InodeBase::isOnFSKitMount(const EdenMount& mount) {
+  return mount.shouldBeOrIsFSKitChannel();
 }
 
 #ifndef _WIN32
