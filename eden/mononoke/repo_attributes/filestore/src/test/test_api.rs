@@ -927,6 +927,47 @@ async fn filestore_rebuild_metadata(fb: FacebookInit) -> Result<()> {
 }
 
 #[mononoke::fbinit_test]
+async fn filestore_compute_metadata_stores_nothing(fb: FacebookInit) -> Result<()> {
+    let req = request(HELLO_WORLD);
+    let content_id = canonical(HELLO_WORLD);
+    let metadata: ContentMetadataV2Id = content_id.clone().into();
+    let alias = Alias::Sha256(*HELLO_WORLD_SHA256);
+
+    let blob = KeyedMemblob::default();
+    let ctx = CoreContext::test_mock(fb);
+    borrowed!(ctx, blob, req);
+
+    filestore::store(
+        blob,
+        DEFAULT_CONFIG,
+        ctx,
+        req,
+        stream::once(future::ready(Ok(Bytes::from(HELLO_WORLD)))),
+    )
+    .await?;
+    let expected =
+        filestore::get_metadata_readonly(blob, ctx, &FetchKey::Canonical(content_id)).await?;
+    assert!(expected.is_some());
+
+    // Remove the metadata and one alias
+    assert!(blob.unlink(ctx, &metadata.blobstore_key()).await.is_ok());
+    assert!(blob.unlink(ctx, &alias.blobstore_key()).await.is_ok());
+
+    // Computing the metadata gives what was stored, but stores neither it nor the alias
+    let res = filestore::compute_metadata(blob, ctx, content_id).await?;
+    assert_eq!(res, expected.flatten());
+    assert_eq!(blob.get(ctx, &metadata.blobstore_key()).await?, None);
+    assert_eq!(blob.get(ctx, &alias.blobstore_key()).await?, None);
+
+    // Without the content, there is nothing to compute
+    assert!(blob.unlink(ctx, &content_id.blobstore_key()).await.is_ok());
+    let res = filestore::compute_metadata(blob, ctx, content_id).await?;
+    assert_eq!(res, None);
+
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
 async fn filestore_test_missing_metadata(fb: FacebookInit) -> Result<()> {
     let content_id = canonical(HELLO_WORLD);
 

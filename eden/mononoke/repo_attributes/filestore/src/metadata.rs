@@ -113,10 +113,51 @@ pub async fn get_metadata_readonly<B: KeyedBlobstore>(
 
 /// If the metadata is missing, we can rebuild it on the fly, since all that's needed to do so
 /// is the file contents. This can happen if we successfully stored a file, but failed to store
-/// its metadata. To rebuild the metadata, we peek at the content in the blobstore to get
-/// its size, then produce a stream of its contents and compute aliases over it. Finally, store
-/// the metadata, and return it.
+/// its metadata. To rebuild the metadata, we compute it from the contents, then store its
+/// aliases and the metadata, and return it.
 async fn rebuild_metadata<B: KeyedBlobstore>(
+    blobstore: &B,
+    ctx: &CoreContext,
+    content_id: ContentId,
+) -> Result<ContentMetadataV2, RebuildBackmappingError> {
+    use RebuildBackmappingError::*;
+
+    let metadata = compute_metadata(blobstore, ctx, content_id).await?;
+    // To maintain consistency, rebuild the aliases to the content along with rebuilding
+    // content metadata.
+    let alias = ContentAlias::from_content_id(content_id);
+    // Ensure that all aliases are covered, and missing out an alias gives a compile time error.
+    future::try_join_all(
+        Alias::iter()
+            .map(|alias_type| match alias_type {
+                Alias::Sha1(_) => AliasBlob(Alias::Sha1(metadata.sha1), alias.clone()),
+                Alias::GitSha1(_) => {
+                    AliasBlob(Alias::GitSha1(metadata.git_sha1.sha1()), alias.clone())
+                }
+
+                Alias::Sha256(_) => AliasBlob(Alias::Sha256(metadata.sha256), alias.clone()),
+                Alias::SeededBlake3(_) => {
+                    AliasBlob(Alias::SeededBlake3(metadata.seeded_blake3), alias.clone())
+                }
+            })
+            .map(|alias_blob| alias_blob.store(ctx, blobstore)),
+    )
+    .await
+    .map_err(|e| InternalError(content_id, e))?;
+
+    let blob = metadata.clone().into_blob();
+
+    blob.store(ctx, blobstore)
+        .await
+        .map_err(|e| InternalError(content_id, e))?;
+
+    Ok(metadata)
+}
+
+/// Computes the metadata of a content from its bytes, storing nothing: we peek at the content
+/// in the blobstore to get its size, then produce a stream of its contents and compute aliases
+/// and the rest of the metadata over it.
+pub(crate) async fn compute_metadata<B: KeyedBlobstore>(
     blobstore: &B,
     ctx: &CoreContext,
     content_id: ContentId,
@@ -153,29 +194,7 @@ async fn rebuild_metadata<B: KeyedBlobstore>(
             let (sha1, sha256, git_sha1, seeded_blake3) = redeemable
                 .redeem(total_size)
                 .map_err(|e| InternalError(content_id, e))?;
-            // To maintain consistency, rebuild the aliases to the content along with rebuilding
-            // content metadata.
-            let alias = ContentAlias::from_content_id(content_id);
-            // Ensure that all aliases are covered, and missing out an alias gives a compile time error.
-            future::try_join_all(
-                Alias::iter()
-                    .map(|alias_type| match alias_type {
-                        Alias::Sha1(_) => AliasBlob(Alias::Sha1(sha1), alias.clone()),
-                        Alias::GitSha1(_) => {
-                            AliasBlob(Alias::GitSha1(git_sha1.sha1()), alias.clone())
-                        }
-
-                        Alias::Sha256(_) => AliasBlob(Alias::Sha256(sha256), alias.clone()),
-                        Alias::SeededBlake3(_) => {
-                            AliasBlob(Alias::SeededBlake3(seeded_blake3), alias.clone())
-                        }
-                    })
-                    .map(|alias_blob| alias_blob.store(ctx, blobstore)),
-            )
-            .await
-            .map_err(|e| InternalError(content_id, e))?;
-
-            let metadata = ContentMetadataV2 {
+            Ok(ContentMetadataV2 {
                 total_size,
                 content_id,
                 sha1,
@@ -190,15 +209,7 @@ async fn rebuild_metadata<B: KeyedBlobstore>(
                 first_line: metadata.first_line,
                 is_generated: metadata.is_generated,
                 is_partially_generated: metadata.is_partially_generated,
-            };
-
-            let blob = metadata.clone().into_blob();
-
-            blob.store(ctx, blobstore)
-                .await
-                .map_err(|e| InternalError(content_id, e))?;
-
-            Ok(metadata)
+            })
         }
         // If the Multiplexer hit an error, then it's worth handling the Cancelled case
         // separately: Cancelled means our Multiplexer noted that one of its readers

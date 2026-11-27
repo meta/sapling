@@ -7,7 +7,7 @@ rust_binary(
     srcs = glob(["src/**/*.rs"]),
     autocargo = {"cargo_toml_dir": "."},
     test_deps = [
-        "fbsource//third-party/rust:async-trait",
+        "fbsource//third-party/rust:bytes",
         "//common/rust/shed/fbinit:fbinit-tokio",
         "//common/rust/shed/sql:sql",
         "//eden/mononoke/blobstore:memblob",
@@ -19,9 +19,11 @@ rust_binary(
         "//eden/mononoke/repo_attributes/repo_derivation_queues/if:derivation_queue_thrift-rust",
         "//eden/mononoke/repo_factory:test_repo_factory",
         "//eden/mononoke/tests/utils:tests_utils",
+        "//thrift/lib/rust:fbthrift",
     ],
     deps = [
         "fbsource//third-party/rust:anyhow",
+        "fbsource//third-party/rust:async-trait",
         "fbsource//third-party/rust:clap",
         "fbsource//third-party/rust:futures",
         "fbsource//third-party/rust:thiserror",
@@ -52,6 +54,7 @@ rust_binary(
         "//eden/mononoke/repo_attributes/bookmarks:bookmarks",
         "//eden/mononoke/repo_attributes/commit_graph/commit_graph:commit_graph",
         "//eden/mononoke/repo_attributes/commit_graph/sql_commit_graph_storage:sql_commit_graph_storage",
+        "//eden/mononoke/repo_attributes/filestore:filestore",
         "//eden/mononoke/repo_attributes/repo_blobstore:repo_blobstore",
         "//eden/mononoke/repo_attributes/repo_derived_data:repo_derived_data",
         "//eden/mononoke/repo_attributes/repo_identity:repo_identity",

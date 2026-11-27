@@ -10,5 +10,6 @@
 //! depends on `mononoke_types`.
 
 mod changeset;
+mod content;
 mod file_content;
 mod test_utils;

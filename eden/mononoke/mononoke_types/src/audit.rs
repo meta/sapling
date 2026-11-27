@@ -30,6 +30,8 @@ pub use self::load::LoadTags;
 pub use self::load::TaggedContext;
 pub use self::load::TaggedRead;
 use crate::ChangesetId;
+use crate::ContentId;
+use crate::ContentMetadataV2;
 use crate::DerivableType;
 
 mod changeset;
@@ -94,6 +96,47 @@ impl From<LoadableError> for LoadError {
             LoadableError::Error(error) => Self::Unreadable(error),
         }
     }
+}
+
+/// Something a family tolerated in stored data: not a failure, but counted and
+/// logged, so how often it occurs stays visible. Like validated objects, it is
+/// counted each time its object is emitted, not once per stored object.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum Notice {
+    /// Content metadata stored before the fields added in spring 2023, which
+    /// `core` recomputed from the content, as production readers do.
+    OldFormatContentMetadata,
+    /// Absent content metadata, which `core` recomputed from the content, as
+    /// production readers do.
+    AbsentContentMetadata,
+}
+
+impl Notice {
+    pub const ALL: [Notice; 2] = [
+        Notice::OldFormatContentMetadata,
+        Notice::AbsentContentMetadata,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OldFormatContentMetadata => "old_format_content_metadata",
+            Self::AbsentContentMetadata => "absent_content_metadata",
+        }
+    }
+}
+
+/// Recomputes a content's metadata from its bytes without storing anything,
+/// for `core` to check metadata stored in an old format. Mononoke's types
+/// cannot compute metadata themselves: the filestore, above them, does.
+#[async_trait]
+pub trait RecomputeContentMetadata {
+    /// Reads the content through `ctx`. An absent content is
+    /// [`LoadError::Missing`].
+    async fn recompute_content_metadata(
+        &self,
+        ctx: &TaggedContext,
+        content: ContentId,
+    ) -> Result<ContentMetadataV2, LoadError>;
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -190,29 +233,63 @@ pub trait Walkable<R> {
 /// One enumerated object: its identity plus the behaviour to load and check it.
 pub struct StoredObject<R> {
     id: ObjectId,
+    notice: Option<Notice>,
     validatable: Box<dyn ErasedValidatable<R>>,
 }
 
 impl<R: Send + Sync + 'static> StoredObject<R> {
     pub fn new<T: Validatable<R>>(key: T) -> Self {
-        Self::build(key, None)
+        Self::build(key, None, None)
     }
 
     /// Wraps a key whose value was already loaded while enumerating it, so
     /// validation does not read it again.
     pub fn preloaded<T: Validatable<R>>(key: T, loaded: T::Loaded) -> Self {
-        Self::build(key, Some(loaded))
+        Self::build(key, Some(loaded), None)
     }
 
-    fn build<T: Validatable<R>>(key: T, loaded: Option<T::Loaded>) -> Self {
+    /// Wraps a key whose loaded value must be `expected`, such as a mapping
+    /// that must point back to the object that named it. Any other value is
+    /// unreadable.
+    pub fn expecting<T>(key: T, expected: T::Loaded) -> Self
+    where
+        T: Validatable<R>,
+        T::Loaded: PartialEq + fmt::Display,
+    {
+        let expected: Expectation<T::Loaded> = Box::new(move |loaded| {
+            (*loaded != expected).then(|| format!("holds {loaded}, not {expected}"))
+        });
+        Self::build(key, None, Some(expected))
+    }
+
+    fn build<T: Validatable<R>>(
+        key: T,
+        loaded: Option<T::Loaded>,
+        expected: Option<Expectation<T::Loaded>>,
+    ) -> Self {
         Self {
             id: ObjectId::of::<R, T>(&key),
-            validatable: Box::new(Typed { key, loaded }),
+            notice: None,
+            validatable: Box::new(Typed {
+                key,
+                loaded,
+                expected,
+            }),
         }
+    }
+
+    /// Records what the family tolerated while enumerating the object, if
+    /// anything.
+    pub fn with_notice(self, notice: Option<Notice>) -> Self {
+        Self { notice, ..self }
     }
 
     pub fn id(&self) -> &ObjectId {
         &self.id
+    }
+
+    pub fn notice(&self) -> Option<Notice> {
+        self.notice
     }
 
     /// Loads the object unless it was preloaded, then runs its checks if
@@ -251,9 +328,13 @@ trait ErasedValidatable<R>: Send {
     ) -> Result<Vec<ValidationOutcome>, LoadError>;
 }
 
+/// Describes how a loaded value differs from the one expected, if it does.
+type Expectation<Loaded> = Box<dyn FnOnce(&Loaded) -> Option<String> + Send>;
+
 struct Typed<T, Loaded> {
     key: T,
     loaded: Option<Loaded>,
+    expected: Option<Expectation<Loaded>>,
 }
 
 #[async_trait]
@@ -269,11 +350,20 @@ where
         repo: &R,
         run_checks: bool,
     ) -> Result<Vec<ValidationOutcome>, LoadError> {
-        let Typed { key, loaded } = *self;
+        let Typed {
+            key,
+            loaded,
+            expected,
+        } = *self;
         let loaded = match loaded {
             Some(loaded) => loaded,
-            None => key.load(&ctx.tag(id), repo).await?,
+            None => key.load(&ctx.tag(id.clone()), repo).await?,
         };
+        if let Some(difference) = expected.and_then(|expected| expected(&loaded)) {
+            return Err(LoadError::Unreadable(AnyhowError::msg(format!(
+                "{id} {difference}"
+            ))));
+        }
         Ok(if run_checks {
             key.check(&loaded)
         } else {

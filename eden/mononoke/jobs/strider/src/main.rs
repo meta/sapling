@@ -5,6 +5,7 @@
  * GNU General Public License version 2.
  */
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::num::NonZeroU32;
 use std::num::NonZeroU64;
@@ -19,6 +20,7 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
 use anyhow::ensure;
+use async_trait::async_trait;
 use blobstore_factory::BlobstoreArgDefaults;
 use blobstore_factory::ReadOnlyStorage;
 use blobstore_factory::ScrubAction;
@@ -55,7 +57,13 @@ use mononoke_app::MononokeAppBuilder;
 use mononoke_app::args::AsRepoArg;
 use mononoke_app::args::RepoArgs;
 use mononoke_types::ChangesetId;
+use mononoke_types::ContentId;
+use mononoke_types::ContentMetadataV2;
+use mononoke_types::audit::LoadError;
 use mononoke_types::audit::LoadTags;
+use mononoke_types::audit::Notice;
+use mononoke_types::audit::RecomputeContentMetadata;
+use mononoke_types::audit::TaggedContext;
 use reads::ReadSampler;
 use replicas::ReplicaCheckAppExtension;
 use replicas::ReplicaChecker;
@@ -127,6 +135,17 @@ pub(crate) struct Repo {
 
     #[facet]
     repo_identity: RepoIdentity,
+}
+
+#[async_trait]
+impl RecomputeContentMetadata for Repo {
+    async fn recompute_content_metadata(
+        &self,
+        ctx: &TaggedContext,
+        content: ContentId,
+    ) -> Result<ContentMetadataV2, LoadError> {
+        families::recompute_content_metadata(ctx, content).await
+    }
 }
 
 fn family_names() -> PossibleValuesParser {
@@ -450,6 +469,14 @@ async fn run(app: MononokeApp) -> Result<()> {
         }
     }
 
+    for notice in Notice::ALL {
+        info!(
+            repo = repo_name,
+            notice = notice.as_str(),
+            count = summary.notices.get(&notice).copied().unwrap_or(0),
+            "Strider notices"
+        );
+    }
     for (object_type, totals) in sampler.totals() {
         info!(
             repo = repo_name,
@@ -716,6 +743,7 @@ struct RunSummary {
     replica_gaps: u64,
     validated_objects: u64,
     validation: ValidationSummary,
+    notices: BTreeMap<Notice, u64>,
 }
 
 impl RunSummary {
@@ -739,6 +767,9 @@ impl RunSummary {
             self.validation.passed += family.validation.passed;
             self.validation.failed += family.validation.failed;
             self.validation.not_applicable += family.validation.not_applicable;
+            for (notice, count) in &family.notices {
+                *self.notices.entry(*notice).or_default() += count;
+            }
         }
         if incomplete {
             self.incomplete_commits += 1;

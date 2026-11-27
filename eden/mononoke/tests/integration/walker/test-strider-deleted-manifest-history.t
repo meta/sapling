@@ -52,8 +52,9 @@ changesets so that parent and mapping edges are followed.
   DeletedManifestV2Mapping:C
 
 Run Strider over every commit in SQL-ID order with the core and
-deleted-manifest families. File contents have no counterpart in this Walker
-run, so they are left out of the comparison.
+deleted-manifest families. File contents, their metadata and their aliases
+have no counterpart in this Walker run, so they are left out of the
+comparison.
 
   $ strider() {
   >   render_mononoke_config
@@ -89,7 +90,7 @@ mapping, and only the manifest nodes that differ from its parent. C reuses B's
   C core status=validated
   C deleted-manifest status=validated
   $ grep -v status= strider.out | letters | cut -d' ' -f1,2 | LC_ALL=C sort | uniq -c
-        4 A core
+       19 A core
         2 A deleted-manifest
         1 B core
         4 B deleted-manifest
@@ -99,7 +100,9 @@ mapping, and only the manifest nodes that differ from its parent. C reuses B's
 Over full history, the union of each commit's additions is exactly Walker's
 deep walk.
 
-  $ grep -v status= strider.out | letters | cut -d' ' -f3 | grep -v '^FileContent:' | LC_ALL=C sort -u > strider.nodes
+  $ grep -v status= strider.out | letters | cut -d' ' -f3 \
+  >   | grep -Ev '^(FileContent|FileContentMetadataV2|AliasContentMapping):' \
+  >   | LC_ALL=C sort -u > strider.nodes
   $ diff -u walker.nodes strider.nodes
 
 Resume after A. Strider audits only B and C and reports the same additions for

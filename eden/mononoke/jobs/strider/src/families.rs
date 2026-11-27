@@ -14,10 +14,16 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use deleted_manifest::RootDeletedManifestV2Id;
+use mononoke_types::BlobstoreKey;
 use mononoke_types::BonsaiChangeset;
+use mononoke_types::ContentId;
+use mononoke_types::ContentMetadataV2;
 use mononoke_types::DerivableType;
 use mononoke_types::audit::CommitInfo;
 use mononoke_types::audit::LoadContext;
+use mononoke_types::audit::LoadError;
+use mononoke_types::audit::RecomputeContentMetadata;
+use mononoke_types::audit::TaggedContext;
 use mononoke_types::audit::WalkStream;
 use mononoke_types::audit::Walkable;
 use repo_derived_data::RepoDerivedDataRef;
@@ -26,7 +32,7 @@ use unodes::RootUnodeManifestId;
 /// Every family Strider can audit, each registered once.
 pub fn families<R>() -> Vec<Family<R>>
 where
-    R: RepoDerivedDataRef + Send + Sync + 'static,
+    R: RepoDerivedDataRef + RecomputeContentMetadata + Send + Sync + 'static,
 {
     vec![
         Family::of::<BonsaiChangeset>(),
@@ -61,4 +67,16 @@ impl<R> Family<R> {
     ) -> WalkStream<R> {
         (self.walk_new)(ctx, repo, commit, max_loads)
     }
+}
+
+/// How a repo recomputes old-format content metadata for `core`: with the
+/// filestore's computation, which stores nothing, unlike its `get_metadata`.
+pub(crate) async fn recompute_content_metadata(
+    ctx: &TaggedContext,
+    content: ContentId,
+) -> Result<ContentMetadataV2, LoadError> {
+    filestore::compute_metadata(ctx.blobstore(), ctx, content)
+        .await
+        .map_err(LoadError::Unreadable)?
+        .ok_or_else(|| LoadError::Missing(content.blobstore_key()))
 }

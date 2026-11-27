@@ -67,7 +67,7 @@ Walker runs with the scrub-all job's graph and chunking arguments, plus pack
 logging; checkpoint, tailing, replica and QPS arguments are omitted. Only the
 types Strider audits are compared.
 
-  $ audited_types='^(Changeset|FileContent|UnodeMapping|UnodeManifest|UnodeFile|DeletedManifestV2Mapping|DeletedManifestV2) '
+  $ audited_types='^(Changeset|FileContent|FileContentMetadataV2|AliasContentMapping|UnodeMapping|UnodeManifest|UnodeFile|DeletedManifestV2Mapping|DeletedManifestV2) '
   $ mononoke_walker scrub -q \
   >   -I deep -i bonsai -i all -I marker -x Blame \
   >   --chunk-direction OldestFirst --chunk-by-public Changeset --chunk-size 100 \
@@ -112,10 +112,12 @@ Each type's keys match Walker's.
   >     -e 's/^DeletedManifestV2MapNode /DeletedManifestV2 /' \
   >   | LC_ALL=C sort -u > strider.reads
   $ cut -d' ' -f1 walker.reads | uniq -c
+     8440 AliasContentMapping
        10 Changeset
        17 DeletedManifestV2
        10 DeletedManifestV2Mapping
      2110 FileContent
+     2110 FileContentMetadataV2
      2110 UnodeFile
        21 UnodeManifest
        10 UnodeMapping
@@ -124,10 +126,12 @@ Each type's keys match Walker's.
 Strider logs a total for every type it read, sharded-map nodes included.
 
   $ grep 'Strider reads' strider.err | sed -nE 's/.*object_type="?([^" ]*)"?.*/\1/p'
+  AliasContentMapping
   Changeset
   DeletedManifestV2
   DeletedManifestV2MapNode
   FileContent
+  FileContentMetadataV2
   Mapping:deleted_manifest
   Mapping:unodes
   UnodeFile

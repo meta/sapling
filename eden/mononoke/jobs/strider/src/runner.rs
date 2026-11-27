@@ -5,6 +5,7 @@
  * GNU General Public License version 2.
  */
 
+use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::fmt;
 use std::num::NonZeroUsize;
@@ -25,6 +26,7 @@ use mononoke_types::audit::CommitInfo;
 use mononoke_types::audit::LoadContext;
 use mononoke_types::audit::LoadError;
 use mononoke_types::audit::LoadTags;
+use mononoke_types::audit::Notice;
 use mononoke_types::audit::ObjectId;
 use mononoke_types::audit::ValidationOutcome;
 use mononoke_types::audit::WalkError;
@@ -118,6 +120,8 @@ pub struct FamilyReport {
     /// Number of objects that loaded, listed or not.
     pub validated_objects: u64,
     pub validation: ValidationSummary,
+    /// What the family tolerated, counted over the objects that loaded.
+    pub notices: BTreeMap<Notice, u64>,
     pub status: FamilyStatus,
 }
 
@@ -128,6 +132,7 @@ impl FamilyReport {
             validated: Vec::new(),
             validated_objects: 0,
             validation: ValidationSummary::default(),
+            notices: BTreeMap::new(),
             status: FamilyStatus::Validated,
         }
     }
@@ -355,15 +360,15 @@ where
             )
             .map(|object| async move {
                 let object = object?;
-                let id = object.id().clone();
+                let (id, notice) = (object.id().clone(), object.notice());
                 let result = object.validate(ctx, repo, run_checks).await;
-                Ok::<_, WalkError>((id, result))
+                Ok::<_, WalkError>((id, notice, result))
             })
             .buffer_unordered(self.limits.max_loads_per_commit.get());
 
         let mut report = FamilyReport::new(family.name);
         while let Some(result) = results.next().await {
-            let (id, result) = match result {
+            let (id, notice, result) = match result {
                 Ok(loaded) => loaded,
                 Err(error) => {
                     let (stage, object, source) = error.into_parts();
@@ -387,6 +392,16 @@ where
                             );
                         }
                         report.validation.record(&outcome);
+                    }
+                    if let Some(notice) = notice {
+                        tracing::debug!(
+                            changeset_id = %commit.changeset_id,
+                            family = family.name,
+                            object = %id,
+                            notice = notice.as_str(),
+                            "Strider notice"
+                        );
+                        *report.notices.entry(notice).or_default() += 1;
                     }
                     if self.list_validated {
                         report.validated.push(id);
@@ -418,6 +433,7 @@ mod tests {
     use std::sync::atomic::Ordering;
     use std::task::Poll;
 
+    use anyhow::Context;
     use anyhow::Result;
     use async_trait::async_trait;
     use blobstore::Blobstore;
@@ -434,8 +450,10 @@ mod tests {
     use memblob::Memblob;
     use metaconfig_types::BlobstoreId;
     use mononoke_macros::mononoke;
+    use mononoke_types::Alias;
     use mononoke_types::BlobstoreKey;
     use mononoke_types::ChangesetId;
+    use mononoke_types::ContentMetadataV2Id;
     use mononoke_types::DerivableType;
     use mononoke_types::audit::LoadTag;
     use mononoke_types::audit::StoredObject;
@@ -450,7 +468,6 @@ mod tests {
     use samplingblob::SamplingBlobstoreSamplingComponentBlobstore;
     use samplingblob::SamplingHandler;
     use test_repo_factory::TestRepoFactory;
-    use tests_utils::BasicTestRepo;
     use tests_utils::CreateCommitContext;
     use tests_utils::audit::walk;
     use unodes::RootUnodeManifestId;
@@ -459,9 +476,12 @@ mod tests {
     use crate::families::families;
     use crate::reads::ReadSampler;
     use crate::reads::ReadTotals;
+    use crate::test_utils::TestRepo;
+    use crate::test_utils::remove_late_fields;
+    use crate::test_utils::rewrite_metadata;
     use crate::test_utils::test_repo;
 
-    type Repo = BasicTestRepo;
+    type Repo = TestRepo;
 
     /// While `recording` is set, records the tag of each storage read, or the
     /// key of a read whose context carries no live tag.
@@ -679,9 +699,60 @@ mod tests {
                 expected
             );
         }
-        // A commits two files and B none: each changeset plus its contents.
-        assert_eq!(reports[0].families[0].validated.len(), 3);
+        // A commits two files and B none: each changeset plus, for each
+        // content, the content, its metadata and its four aliases.
+        assert_eq!(reports[0].families[0].validated.len(), 13);
         assert_eq!(reports[1].families[0].validated.len(), 1);
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn old_format_and_absent_metadata_are_counted_not_failed(fb: FacebookInit) -> Result<()> {
+        // Given A, whose `live` content's metadata is in the format stored
+        // before spring 2023 and whose `dir/a` content has no metadata at all
+        let ctx = CoreContext::test_mock(fb);
+        let (repo, blobstore) = test_repo(fb).await?;
+        let (a, _b) = two_commits(&ctx, &repo).await?;
+        let changeset = Loadable::load(&a, &ctx, repo.repo_blobstore()).await?;
+        let content = |name: &str| {
+            changeset
+                .simplified_file_changes()
+                .find_map(|(path, change)| {
+                    let content = change?.content_id();
+                    (path.to_string() == name).then_some(content)
+                })
+                .with_context(|| format!("A adds `{name}`"))
+        };
+        rewrite_metadata(
+            &ctx,
+            &repo,
+            &blobstore,
+            content("live")?,
+            remove_late_fields,
+        )
+        .await?;
+        unlink(
+            &repo,
+            &blobstore,
+            ContentMetadataV2Id::from(content("dir/a")?),
+        )
+        .await?;
+
+        // When core audits it
+        let reports = audit(&strider(&ctx, &repo, &["core"]), &[a]).await?;
+
+        // Then the commit validates everything as usual, except the two
+        // recomputed contents' seeded Blake3 aliases, which are not checked,
+        // and each kind of record is counted once, separately
+        assert!(all_validated(&reports[0]), "{reports:?}");
+        assert_eq!(reports[0].families[0].validated.len(), 13 - 2);
+        assert_eq!(
+            reports[0].families[0].notices,
+            BTreeMap::from([
+                (Notice::OldFormatContentMetadata, 1),
+                (Notice::AbsentContentMetadata, 1),
+            ])
+        );
         Ok(())
     }
 
@@ -710,8 +781,9 @@ mod tests {
         let reports = audit(&strider, &[a]).await?;
 
         assert!(all_validated(&reports[0]));
-        // A's changeset and its two file contents.
-        assert_eq!(reports[0].families[0].validated_objects, 3);
+        // A's changeset and, for each of its two file contents, the content,
+        // its metadata and its four aliases.
+        assert_eq!(reports[0].families[0].validated_objects, 13);
         assert!(reports[0].families[0].validated.is_empty());
         Ok(())
     }
@@ -1154,9 +1226,11 @@ mod tests {
                 .map(|tag| tag.object.name())
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from([
+                "AliasContentMapping",
                 "Changeset",
                 "DeletedManifestV2",
                 "FileContent",
+                "FileContentMetadataV2",
                 "Mapping",
                 "UnodeFile",
                 "UnodeManifest",
@@ -1241,9 +1315,11 @@ mod tests {
         assert_eq!(
             with_key,
             BTreeSet::from([
+                "AliasContentMapping".to_string(),
                 "Changeset".to_string(),
                 "DeletedManifestV2".to_string(),
                 "FileContent".to_string(),
+                "FileContentMetadataV2".to_string(),
                 "Mapping:deleted_manifest".to_string(),
                 "Mapping:unodes".to_string(),
                 "UnodeFile".to_string(),
@@ -1504,9 +1580,11 @@ mod tests {
         assert_eq!(
             totals_by_name(&sampler).into_keys().collect::<Vec<_>>(),
             vec![
+                "AliasContentMapping",
                 "Changeset",
                 "DeletedManifestV2",
                 "FileContent",
+                "FileContentMetadataV2",
                 "Mapping:deleted_manifest",
                 "Mapping:unodes",
                 "UnodeFile",
@@ -1544,20 +1622,41 @@ mod tests {
         };
         let changeset_bytes = stored_size(a.blobstore_key()).await?;
         let mut content_bytes = 0;
+        let mut metadata_bytes = 0;
+        let mut alias_bytes = 0;
         for content in &contents {
             content_bytes += stored_size(content.blobstore_key()).await?;
+            let metadata_id = ContentMetadataV2Id::from(*content);
+            metadata_bytes += stored_size(metadata_id.blobstore_key()).await?;
+            let metadata = Loadable::load(&metadata_id, &ctx, repo.repo_blobstore()).await?;
+            for alias in [
+                Alias::Sha1(metadata.sha1),
+                Alias::Sha256(metadata.sha256),
+                Alias::GitSha1(metadata.git_sha1.sha1()),
+                Alias::SeededBlake3(metadata.seeded_blake3),
+            ] {
+                alias_bytes += stored_size(alias.blobstore_key()).await?;
+            }
         }
         let strider = tagging_strider(&ctx, &repo, &["core"], tags);
 
         // When core audits it
         let reports = audit(&strider, &[a]).await?;
 
-        // Then the changeset, read once, and both contents are counted with
-        // their sizes, uncompressed as Memblob stores them
+        // Then the changeset, read once, and both contents, with their
+        // metadata and aliases, are counted with their sizes, uncompressed as
+        // Memblob stores them
         assert!(all_validated(&reports[0]), "{reports:?}");
         assert_eq!(
             totals_by_name(&sampler),
             BTreeMap::from([
+                (
+                    "AliasContentMapping".to_string(),
+                    ReadTotals {
+                        keys: 8,
+                        bytes: alias_bytes,
+                    }
+                ),
                 (
                     "Changeset".to_string(),
                     ReadTotals {
@@ -1570,6 +1669,13 @@ mod tests {
                     ReadTotals {
                         keys: 2,
                         bytes: content_bytes,
+                    }
+                ),
+                (
+                    "FileContentMetadataV2".to_string(),
+                    ReadTotals {
+                        keys: 2,
+                        bytes: metadata_bytes,
                     }
                 ),
             ])

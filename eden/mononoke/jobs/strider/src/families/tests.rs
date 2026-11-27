@@ -15,10 +15,10 @@ use fbinit::FacebookInit;
 use mononoke_macros::mononoke;
 use mononoke_types::audit::StoredObject;
 use repo_derived_data::audit::Mapping;
-use tests_utils::BasicTestRepo;
 use tests_utils::CreateCommitContext;
 use tests_utils::audit::load_ctx;
 
+use crate::test_utils::TestRepo;
 use crate::test_utils::test_repo;
 
 #[mononoke::fbinit_test]
@@ -30,7 +30,7 @@ async fn absent_mapping_fails_validation_as_missing(fb: FacebookInit) -> Result<
         .add_file("a", "a")
         .commit()
         .await?;
-    let mapping = StoredObject::<BasicTestRepo>::new(Mapping::<RootDeletedManifestV2Id>::new(a));
+    let mapping = StoredObject::<TestRepo>::new(Mapping::<RootDeletedManifestV2Id>::new(a));
 
     // When it is loaded like any other enumerated object
     let error = mapping

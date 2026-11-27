@@ -20,11 +20,11 @@ use mononoke_types::audit::LoadError;
 use mononoke_types::audit::ObjectId;
 use repo_blobstore::RepoBlobstoreRef;
 use repo_identity::RepoIdentityRef;
-use tests_utils::BasicTestRepo;
 use tests_utils::CreateCommitContext;
 use tests_utils::audit::load_ctx;
 use tests_utils::audit::walk;
 
+use crate::test_utils::TestRepo;
 use crate::test_utils::test_repo;
 
 #[mononoke::fbinit_test]
@@ -50,17 +50,15 @@ async fn core_emits_changeset_and_new_file_contents(fb: FacebookInit) -> Result<
 
     let objects = walk::<BonsaiChangeset, _>(&ctx, &repo, child, 4).await??;
 
+    // Content metadata and aliases are covered by the `content` tests.
     let ids = objects
         .iter()
         .map(|object| object.id().clone())
+        .filter(|id| matches!(id.name(), "Changeset" | "FileContent"))
         .collect::<Vec<_>>();
-    let expected = [ObjectId::of::<BasicTestRepo, _>(&child)]
+    let expected = [ObjectId::of::<TestRepo, _>(&child)]
         .into_iter()
-        .chain(
-            contents
-                .iter()
-                .map(ObjectId::of::<BasicTestRepo, ContentId>),
-        )
+        .chain(contents.iter().map(ObjectId::of::<TestRepo, ContentId>))
         .collect::<Vec<_>>();
     assert_eq!(
         ids.iter().collect::<HashSet<_>>(),
@@ -99,21 +97,18 @@ async fn core_emits_a_content_added_at_several_paths_once(fb: FacebookInit) -> R
     // When the core family walks it
     let objects = walk::<BonsaiChangeset, _>(&ctx, &repo, commit, 4).await??;
 
-    // Then the content is emitted, and read, once
+    // Then the content, its metadata and each alias are emitted, and read,
+    // once
     let ids = objects
         .iter()
         .map(|object| object.id().clone())
         .collect::<Vec<_>>();
+    let content = ObjectId::of::<TestRepo, ContentId>(contents.iter().next().expect("one content"));
+    assert_eq!(ids.iter().filter(|id| **id == content).count(), 1);
     assert_eq!(
-        ids,
-        [ObjectId::of::<BasicTestRepo, _>(&commit)]
-            .into_iter()
-            .chain(
-                contents
-                    .iter()
-                    .map(ObjectId::of::<BasicTestRepo, ContentId>)
-            )
-            .collect::<Vec<_>>()
+        ids.iter().collect::<HashSet<_>>().len(),
+        ids.len(),
+        "an object was emitted twice: {ids:?}"
     );
     Ok(())
 }
@@ -156,19 +151,21 @@ async fn core_emits_merge_contents_a_parent_holds(fb: FacebookInit) -> Result<()
     let objects = walk::<BonsaiChangeset, _>(&ctx, &repo, merge, 4).await??;
 
     // Then it emits the merge's changeset and both parents' contents again
-    let expected = [ObjectId::of::<BasicTestRepo, _>(&merge)]
+    let expected = [ObjectId::of::<TestRepo, _>(&merge)]
         .into_iter()
         .chain(
             parent_contents
                 .iter()
-                .map(ObjectId::of::<BasicTestRepo, ContentId>),
+                .map(ObjectId::of::<TestRepo, ContentId>),
         )
         .collect::<HashSet<_>>();
     assert_eq!(expected.len(), 3);
+    // Content metadata and aliases are covered by the `content` tests.
     assert_eq!(
         objects
             .iter()
             .map(|object| object.id().clone())
+            .filter(|id| matches!(id.name(), "Changeset" | "FileContent"))
             .collect::<HashSet<_>>(),
         expected
     );
@@ -191,7 +188,7 @@ async fn missing_file_content_fails_validation(fb: FacebookInit) -> Result<()> {
     let content = walk::<BonsaiChangeset, _>(&ctx, &repo, root, 4)
         .await??
         .into_iter()
-        .find(|object| *object.id() == ObjectId::of::<BasicTestRepo, _>(&content_id))
+        .find(|object| *object.id() == ObjectId::of::<TestRepo, _>(&content_id))
         .expect("core family emits the added content");
     let key = format!(
         "{}{}",
@@ -214,11 +211,11 @@ fn object_ids_of_different_types_are_distinct() -> Result<()> {
     let changeset = ChangesetId::from_bytes([7; 32])?;
     let content = ContentId::from_bytes([7; 32])?;
 
-    let changeset_id = ObjectId::of::<BasicTestRepo, _>(&changeset);
-    let content_id = ObjectId::of::<BasicTestRepo, _>(&content);
+    let changeset_id = ObjectId::of::<TestRepo, _>(&changeset);
+    let content_id = ObjectId::of::<TestRepo, _>(&content);
 
     assert_ne!(changeset_id, content_id);
-    assert_eq!(changeset_id, ObjectId::of::<BasicTestRepo, _>(&changeset));
+    assert_eq!(changeset_id, ObjectId::of::<TestRepo, _>(&changeset));
     assert_eq!(
         HashSet::from([changeset_id.clone(), changeset_id, content_id]).len(),
         2

@@ -217,6 +217,21 @@ pub async fn get_metadata_readonly<B: KeyedBlobstore>(
     }
 }
 
+/// Compute the metadata of a content from its bytes, as `get_metadata` does when the stored
+/// metadata is absent or in an older format, but store nothing: neither the metadata nor its
+/// aliases. This will return None if the content does not exist.
+pub async fn compute_metadata<B: KeyedBlobstore>(
+    blobstore: &B,
+    ctx: &CoreContext,
+    content_id: ContentId,
+) -> Result<Option<ContentMetadataV2>, Error> {
+    match metadata::compute_metadata(blobstore, ctx, content_id).await {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(metadata::RebuildBackmappingError::NotFound(_)) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
 /// Return true if the given key exists. A successful return means the key definitely
 /// either exists or doesn't; an error means the existence could not be determined.
 pub async fn exists<B: KeyedBlobstore>(
