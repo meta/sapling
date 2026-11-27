@@ -5,6 +5,8 @@
  * GNU General Public License version 2.
  */
 
+mod stats_handler;
+
 use std::time::Duration;
 
 use anyhow::Result;
@@ -14,6 +16,9 @@ use blobstore_factory::SrubWriteOnly;
 use clap::Args;
 use environment::MononokeEnvironment;
 use mononoke_app::AppExtension;
+pub use stats_handler::ScrubStatsKey;
+pub use stats_handler::StatsScrubHandler;
+pub use stats_handler::zero_scrub_stats;
 
 #[derive(Args, Debug)]
 pub struct ScrubArgs {

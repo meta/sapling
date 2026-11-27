@@ -67,7 +67,6 @@ repo_factory = { version = "0.1.0", path = "../../repo_factory" }
 repo_identity = { version = "0.1.0", path = "../../repo_attributes/repo_identity" }
 samplingblob = { version = "0.1.0", path = "../../blobstore/samplingblob" }
 sapling-clientinfo = { version = "0.1.0", path = "../../../scm/lib/clientinfo" }
-scuba = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 scuba_ext = { version = "0.1.0", path = "../../common/scuba_ext" }
 sharding_ext = { version = "0.1.0", path = "../../cmdlib/sharding_ext" }
 skeleton_manifest = { version = "0.1.0", path = "../../derived_data/skeleton_manifest" }

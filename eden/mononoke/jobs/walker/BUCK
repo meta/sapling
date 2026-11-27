@@ -43,7 +43,6 @@ rust_binary(
         "//common/rust/shed/facet:facet",
         "//common/rust/shed/fbinit:fbinit",
         "//common/rust/shed/hash_memo:hash_memo",
-        "//common/rust/shed/scuba_stub:scuba",
         "//common/rust/shed/stats:stats",
         "//eden/mononoke/blobrepo:blobrepo_hg",
         "//eden/mononoke/blobstore:blobstore",

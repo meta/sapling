@@ -8,8 +8,16 @@ rust_library(
     deps = [
         "fbsource//third-party/rust:anyhow",
         "fbsource//third-party/rust:clap",
+        "//common/rust/shed/scuba_stub:scuba",
+        "//common/rust/shed/stats:stats",
+        "//eden/mononoke/blobstore:blobstore",
         "//eden/mononoke/blobstore:blobstore_factory",
+        "//eden/mononoke/blobstore:multiplexedblob",
         "//eden/mononoke/cmdlib:environment",
         "//eden/mononoke/cmdlib/mononoke_app:mononoke_app",
+        "//eden/mononoke/common/scuba_ext:scuba_ext",
+        "//eden/mononoke/metaconfig:metaconfig_types",
+        "//eden/mononoke/mononoke_types:mononoke_types",
+        "//eden/mononoke/servers/slapi/slapi_server/context:context",
     ],
 )

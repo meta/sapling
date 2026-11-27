@@ -16,6 +16,7 @@ use anyhow::bail;
 use anyhow::format_err;
 use blobstore::Blobstore;
 use blobstore_factory::ScrubHandler;
+use cmdlib_scrubbing::StatsScrubHandler;
 use context::CoreContext;
 use fbinit::FacebookInit;
 use metaconfig_types::CommonConfig;
@@ -46,8 +47,8 @@ use crate::args::WalkerGraphParams;
 use crate::commands::JobParams;
 use crate::commands::JobWalkParams;
 use crate::commands::RepoSubcommandParams;
-use crate::detail::blobstore::StatsScrubHandler;
 use crate::detail::blobstore::replace_blobconfig;
+use crate::detail::blobstore::scrub_stats_key;
 use crate::detail::graph::EdgeType;
 use crate::detail::graph::Node;
 use crate::detail::graph::NodeType;
@@ -341,7 +342,7 @@ fn setup_repo_factory(
     repo_factory.with_scrub_handler(Arc::new(StatsScrubHandler::new(
         false,
         scuba_builder,
-        walk_stats_key,
+        scrub_stats_key(walk_stats_key),
         repo_id_to_name,
     )) as Arc<dyn ScrubHandler>);
 

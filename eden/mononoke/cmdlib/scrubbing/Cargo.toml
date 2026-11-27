@@ -9,10 +9,18 @@ license = "GPLv2+"
 
 [dependencies]
 anyhow = "1.0.104"
+blobstore = { version = "0.1.0", path = "../../blobstore" }
 blobstore_factory = { version = "0.1.0", path = "../../blobstore/factory" }
 clap = { version = "4.6.2", features = ["derive", "env", "string", "unicode", "wrap_help"] }
+context = { version = "0.1.0", path = "../../servers/slapi/slapi_server/context" }
 environment = { version = "0.1.0", path = "../environment" }
+metaconfig_types = { version = "0.1.0", path = "../../metaconfig/types" }
 mononoke_app = { version = "0.1.0", path = "../mononoke_app" }
+mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
+multiplexedblob = { version = "0.1.0", path = "../../blobstore/multiplexedblob" }
+scuba = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
+scuba_ext = { version = "0.1.0", path = "../../common/scuba_ext" }
+stats = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 
 [lints]
 workspace = true
