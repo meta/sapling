@@ -62,3 +62,11 @@ the replica has not received yet.
   [1]
   $ grep -o 'upper bound 100 is past .*' strider.err
   upper bound 100 is past the replica's exclusive upper bound, 3
+
+A single store has no other copy to compare, so replica checks there would
+report no gaps without having checked any.
+
+  $ strider "${CACHE_ARGS[@]}" --chunk-size 2 --check-replicas
+  [1]
+  $ grep -o 'replica checks need a multiplexed blobstore.*' strider.err
+  replica checks need a multiplexed blobstore: repo has one store

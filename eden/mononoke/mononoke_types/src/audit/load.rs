@@ -20,12 +20,15 @@ use blobstore::KeyedBlobstore;
 use context::CoreContext;
 use context::SamplingKey;
 
+use crate::ChangesetId;
 use crate::audit::ObjectId;
 
 /// What one load was for.
 #[derive(Clone, Debug)]
 pub struct LoadTag {
     pub object: ObjectId,
+    /// The commit whose audit made the load, a parent's load included.
+    pub changeset_id: Option<ChangesetId>,
 }
 
 /// One storage read, attributed to the load in progress that made it.
@@ -97,6 +100,7 @@ pub struct LoadContext {
     ctx: CoreContext,
     blobstore: Arc<dyn KeyedBlobstore>,
     tags: Arc<LoadTags>,
+    changeset_id: Option<ChangesetId>,
 }
 
 impl LoadContext {
@@ -105,6 +109,15 @@ impl LoadContext {
             ctx,
             blobstore,
             tags,
+            changeset_id: None,
+        }
+    }
+
+    /// The same context, whose tags name the commit being audited.
+    pub fn with_changeset_id(self, changeset_id: ChangesetId) -> Self {
+        Self {
+            changeset_id: Some(changeset_id),
+            ..self
         }
     }
 
@@ -118,7 +131,10 @@ impl LoadContext {
         let key = insert_with_free_key(
             &mut self.tags.lock(),
             LiveTag {
-                tag: LoadTag { object },
+                tag: LoadTag {
+                    object,
+                    changeset_id: self.changeset_id,
+                },
                 found_keys: HashSet::new(),
             },
             SamplingKey::new,

@@ -15,6 +15,7 @@ use anyhow::bail;
 use anyhow::ensure;
 use blobstore_factory::BlobstoreArgDefaults;
 use blobstore_factory::ReadOnlyStorage;
+use blobstore_factory::ScrubAction;
 use bookmarks::BookmarkKey;
 use bookmarks::Bookmarks;
 use bookmarks::BookmarksRef;
@@ -24,6 +25,7 @@ use clap::Parser;
 use clap::builder::PossibleValuesParser;
 use cmdlib_caching::CacheMode;
 use cmdlib_caching::CachelibSettings;
+use cmdlib_scrubbing::zero_scrub_stats;
 use commit_graph::CommitGraph;
 use context::CoreContext;
 use environment::Caching;
@@ -32,14 +34,19 @@ use futures::TryStreamExt;
 use futures::stream;
 use futures::stream::BoxStream;
 use futures::stream::StreamExt;
+use metaconfig_types::BlobConfig;
 use metaconfig_types::RepoConfig;
 use metaconfig_types::RepoConfigRef;
 use mononoke_app::MononokeApp;
 use mononoke_app::MononokeAppBuilder;
+use mononoke_app::args::AsRepoArg;
 use mononoke_app::args::RepoArgs;
 use mononoke_types::ChangesetId;
 use mononoke_types::audit::LoadTags;
 use reads::ReadSampler;
+use replicas::ReplicaCheckAppExtension;
+use replicas::ReplicaChecker;
+use replicas::SCRUB_STATS_KEY;
 use repo_blobstore::RepoBlobstore;
 use repo_derived_data::RepoDerivedData;
 use repo_identity::RepoIdentity;
@@ -57,6 +64,7 @@ use validation::ValidationSummary;
 
 mod families;
 pub mod reads;
+pub mod replicas;
 pub mod runner;
 #[cfg(test)]
 mod test_utils;
@@ -175,6 +183,7 @@ fn main(fb: FacebookInit) -> Result<()> {
     };
     let app = MononokeAppBuilder::new(fb)
         .with_cachelib_settings(cachelib_settings)
+        .with_app_extension(ReplicaCheckAppExtension)
         .with_arg_defaults(CacheMode::LocalOnly)
         .with_arg_defaults(ReadOnlyStorage(true))
         .with_arg_defaults(BlobstoreArgDefaults {
@@ -194,11 +203,16 @@ async fn run(app: MononokeApp) -> Result<()> {
     }
     let tags = Arc::new(LoadTags::default());
     let sampler = Arc::new(ReadSampler::new(tags.clone(), args.print_reads));
+    let replicas = replica_checker(&app, &args.repo, &tags)?;
     // As in Walker: redacted content is still stored, so it is read and
     // checked like any other.
     let repo: Repo = app
         .open_repo_unredacted_with_factory_customization(&args.repo, |repo_factory| {
-            repo_factory.with_blobstore_component_sampler(sampler.clone())
+            repo_factory.with_blobstore_component_sampler(sampler.clone());
+            if let Some(replicas) = &replicas {
+                repo_factory.with_scrub_handler(replicas.clone());
+            }
+            repo_factory
         })
         .await
         .context("failed to open repository")?;
@@ -283,6 +297,12 @@ async fn run(app: MononokeApp) -> Result<()> {
         validation_passed = summary.validation.passed,
         validation_failed = summary.validation.failed,
         validation_not_applicable = summary.validation.not_applicable,
+        replica_gaps = replicas
+            .as_ref()
+            .map_or(0, |replicas| replicas.attributed()),
+        replica_gaps_unattributed = replicas
+            .as_ref()
+            .map_or(0, |replicas| replicas.unattributed()),
         untagged_reads = sampler.untagged_reads(),
         reads_outside_audit = sampler.reads_outside_audit(),
         "Strider completed"
@@ -295,6 +315,37 @@ async fn run(app: MononokeApp) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// The handler for missing copies when `--check-replicas` turned on scrub
+/// reads, with the repo's counters set to zero for each store.
+fn replica_checker(
+    app: &MononokeApp,
+    repo_args: &RepoArgs,
+    tags: &Arc<LoadTags>,
+) -> Result<Option<Arc<ReplicaChecker>>> {
+    let Some(scrub_options) = &app.blobstore_options().scrub_options else {
+        return Ok(None);
+    };
+    if scrub_options.scrub_action != ScrubAction::ReportOnly {
+        bail!("Strider only reports missing copies, it never repairs them");
+    }
+    let (repo_name, repo_config) = app.repo_config(repo_args.as_repo_arg())?;
+    let BlobConfig::MultiplexedWal { blobstores, .. } = &repo_config.storage_config.blobstore
+    else {
+        bail!("replica checks need a multiplexed blobstore: {repo_name} has one store");
+    };
+    zero_scrub_stats(
+        SCRUB_STATS_KEY,
+        &repo_name,
+        blobstores.iter().map(|(id, _store_type, _config)| *id),
+    );
+    Ok(Some(Arc::new(ReplicaChecker::new(
+        tags.clone(),
+        app.environment().scuba_sample_builder.clone(),
+        repo_config.repoid,
+        repo_name,
+    ))))
 }
 
 /// The commits selected by the command line, in SQL-ID order for a range.

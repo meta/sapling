@@ -293,7 +293,7 @@ where
                     changeset_id,
                     parents: parents.into_vec(),
                 });
-                let ctx = self.load_ctx.clone();
+                let ctx = self.load_ctx.clone().with_changeset_id(changeset_id);
                 let mut reports = Vec::with_capacity(self.families.len());
                 for family in &self.families {
                     reports.push(self.audit_family(&ctx, family, &commit).await);
@@ -1196,6 +1196,35 @@ mod tests {
             "{reports:?}"
         );
         assert!(is_validated(&reports[0].families[0]), "{reports:?}");
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn every_read_names_the_audited_commit(fb: FacebookInit) -> Result<()> {
+        // Given a derived merge, in a repository whose store records each
+        // read's tag
+        let ctx = CoreContext::test_mock(fb);
+        let (repo, _blobstore, tags, recorder) = tag_recording_repo(fb).await?;
+        let merge = derived_merge(&ctx, &repo).await?;
+        let strider = tagging_strider(&ctx, &repo, &["core", "unode"], tags);
+
+        // When the merge is audited
+        recorder.recording.store(true, Ordering::SeqCst);
+        let reports = audit(&strider, &[merge]).await?;
+        recorder.recording.store(false, Ordering::SeqCst);
+
+        // Then every read, the parents' included, names the merge
+        assert!(all_validated(&reports[0]), "{reports:?}");
+        assert_eq!(
+            recorder
+                .tagged
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|tag| tag.changeset_id)
+                .collect::<HashSet<_>>(),
+            HashSet::from([Some(merge)]),
+        );
         Ok(())
     }
 

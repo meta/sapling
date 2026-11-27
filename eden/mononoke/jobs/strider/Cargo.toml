@@ -14,6 +14,7 @@ blobstore_factory = { version = "0.1.0", path = "../../blobstore/factory" }
 bookmarks = { version = "0.1.0", path = "../../repo_attributes/bookmarks" }
 clap = { version = "4.6.2", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 cmdlib_caching = { version = "0.1.0", path = "../../cmdlib/caching" }
+cmdlib_scrubbing = { version = "0.1.0", path = "../../cmdlib/scrubbing" }
 commit_graph = { version = "0.1.0", path = "../../repo_attributes/commit_graph/commit_graph" }
 context = { version = "0.1.0", path = "../../servers/slapi/slapi_server/context" }
 deleted_manifest = { version = "0.1.0", path = "../../derived_data/deleted_manifest" }
@@ -29,6 +30,7 @@ repo_blobstore = { version = "0.1.0", path = "../../repo_attributes/repo_blobsto
 repo_derived_data = { version = "0.1.0", path = "../../repo_attributes/repo_derived_data" }
 repo_identity = { version = "0.1.0", path = "../../repo_attributes/repo_identity" }
 samplingblob = { version = "0.1.0", path = "../../blobstore/samplingblob" }
+scuba_ext = { version = "0.1.0", path = "../../common/scuba_ext" }
 sql_commit_graph_storage = { version = "0.1.0", path = "../../repo_attributes/commit_graph/sql_commit_graph_storage" }
 tokio-util = { version = "0.7.20", features = ["full"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
