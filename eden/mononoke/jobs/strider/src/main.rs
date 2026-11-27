@@ -5,7 +5,6 @@
  * GNU General Public License version 2.
  */
 
-use std::collections::HashSet;
 use std::num::NonZeroU32;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -122,6 +121,11 @@ struct StriderArgs {
     #[clap(long, requires = "chunk_size")]
     repo_upper_bound: Option<u64>,
 
+    /// Skip this changeset: every family reports its commit excluded and reads
+    /// nothing for it. Repeat to exclude several.
+    #[clap(long)]
+    exclude_changeset: Vec<ChangesetId>,
+
     /// Family to audit. Repeat to select several.
     #[clap(long, required = true, value_parser = family_names())]
     family: Vec<String>,
@@ -194,7 +198,7 @@ async fn run(app: MononokeApp) -> Result<()> {
         ctx,
         repo,
         families,
-        HashSet::new(),
+        args.exclude_changeset.iter().copied().collect(),
         operation,
         StriderLimits {
             max_concurrency: args.max_concurrency,
