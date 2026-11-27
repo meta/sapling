@@ -28,6 +28,7 @@ pub use self::load::LoadContext;
 pub use self::load::LoadTag;
 pub use self::load::LoadTags;
 pub use self::load::TaggedContext;
+pub use self::load::TaggedRead;
 use crate::ChangesetId;
 use crate::DerivableType;
 
@@ -119,6 +120,11 @@ pub trait Validatable<R>:
 {
     /// Storage type name used in diagnostics.
     const NAME: &'static str;
+
+    /// Splits `NAME` further where one Rust type stores several kinds of
+    /// object, such as mappings by derived data type, so their reads are
+    /// counted separately.
+    const SUBTYPE: Option<&'static str> = None;
 
     type Loaded: Send + 'static;
 
@@ -275,20 +281,45 @@ where
 /// different types are never equal even when their hashes share bytes.
 #[derive(Clone)]
 pub struct ObjectId {
-    name: &'static str,
+    object_type: ObjectType,
     key: Arc<dyn ErasedKey>,
 }
 
 impl ObjectId {
     pub fn of<R, T: Validatable<R>>(object: &T) -> Self {
         Self {
-            name: T::NAME,
+            object_type: ObjectType {
+                name: T::NAME,
+                subtype: T::SUBTYPE,
+            },
             key: Arc::new(object.clone()),
         }
     }
 
     pub fn name(&self) -> &'static str {
-        self.name
+        self.object_type.name
+    }
+
+    pub fn object_type(&self) -> ObjectType {
+        self.object_type
+    }
+}
+
+/// The kind of a stored object: its [`Validatable::NAME`] and, when one Rust
+/// type stores several kinds, its [`Validatable::SUBTYPE`].
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ObjectType {
+    pub name: &'static str,
+    pub subtype: Option<&'static str>,
+}
+
+impl fmt::Display for ObjectType {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.name)?;
+        if let Some(subtype) = self.subtype {
+            write!(formatter, ":{subtype}")?;
+        }
+        Ok(())
     }
 }
 
@@ -309,7 +340,7 @@ impl Hash for ObjectId {
 
 impl fmt::Display for ObjectId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}:{}", self.name, self.key)
+        write!(formatter, "{}:{}", self.object_type.name, self.key)
     }
 }
 

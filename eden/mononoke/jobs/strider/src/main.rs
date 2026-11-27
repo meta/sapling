@@ -39,6 +39,7 @@ use mononoke_app::MononokeAppBuilder;
 use mononoke_app::args::RepoArgs;
 use mononoke_types::ChangesetId;
 use mononoke_types::audit::LoadTags;
+use reads::ReadSampler;
 use repo_blobstore::RepoBlobstore;
 use repo_derived_data::RepoDerivedData;
 use repo_identity::RepoIdentity;
@@ -55,6 +56,7 @@ use tracing::info;
 use validation::ValidationSummary;
 
 mod families;
+pub mod reads;
 pub mod runner;
 #[cfg(test)]
 mod test_utils;
@@ -154,6 +156,12 @@ struct StriderArgs {
     /// each commit's objects until it finishes, so memory grows with commit size.
     #[clap(long)]
     print_visited_nodes: bool,
+
+    /// Print each read that reaches a store: the store, the object type it is
+    /// counted under (or `untagged`, or `outside` for reads such as opening the
+    /// repository), the key, and its size (or `absent`).
+    #[clap(long)]
+    print_reads: bool,
 }
 
 #[fbinit::main]
@@ -184,10 +192,14 @@ async fn run(app: MononokeApp) -> Result<()> {
             "a shared cache could answer for blobs that storage has lost: use --cache-mode local-only or disabled"
         );
     }
+    let tags = Arc::new(LoadTags::default());
+    let sampler = Arc::new(ReadSampler::new(tags.clone(), args.print_reads));
     // As in Walker: redacted content is still stored, so it is read and
     // checked like any other.
     let repo: Repo = app
-        .open_repo_unredacted(&args.repo)
+        .open_repo_unredacted_with_factory_customization(&args.repo, |repo_factory| {
+            repo_factory.with_blobstore_component_sampler(sampler.clone())
+        })
         .await
         .context("failed to open repository")?;
     let repo_name = repo.repo_identity().name().to_string();
@@ -222,7 +234,7 @@ async fn run(app: MononokeApp) -> Result<()> {
             max_loads_per_commit: args.max_loads_per_commit,
         },
         args.print_visited_nodes,
-        Arc::new(LoadTags::default()),
+        tags,
     ));
 
     let mut summary = RunSummary::default();
@@ -246,6 +258,15 @@ async fn run(app: MononokeApp) -> Result<()> {
         }
     }
 
+    for (object_type, totals) in sampler.totals() {
+        info!(
+            repo = repo_name,
+            object_type = %object_type,
+            keys = totals.keys,
+            bytes = totals.bytes,
+            "Strider reads"
+        );
+    }
     let status = if summary.incomplete_commits == 0 {
         "complete"
     } else {
@@ -262,6 +283,8 @@ async fn run(app: MononokeApp) -> Result<()> {
         validation_passed = summary.validation.passed,
         validation_failed = summary.validation.failed,
         validation_not_applicable = summary.validation.not_applicable,
+        untagged_reads = sampler.untagged_reads(),
+        reads_outside_audit = sampler.reads_outside_audit(),
         "Strider completed"
     );
     if summary.incomplete_commits > 0 {

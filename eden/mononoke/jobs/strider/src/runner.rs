@@ -14,6 +14,7 @@ use anyhow::Result;
 use clap::ValueEnum;
 use commit_graph::CommitGraphRef;
 use context::CoreContext;
+use context::SamplingKey;
 use futures::stream;
 use futures::stream::Stream;
 use futures::stream::StreamExt;
@@ -206,6 +207,10 @@ where
         list_validated: bool,
         tags: Arc<LoadTags>,
     ) -> Self {
+        // Every audit context carries a sampling key, so a read that misses
+        // its load's tag is told apart from reads outside the audit, which
+        // carry none.
+        let ctx = ctx.clone_and_sample(SamplingKey::new());
         let load_ctx = LoadContext::new(ctx.clone(), Arc::new(repo.repo_blobstore().clone()), tags);
         Self {
             ctx,
@@ -394,6 +399,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::collections::BTreeSet;
     use std::collections::HashSet;
     use std::fmt;
@@ -406,7 +412,9 @@ mod tests {
 
     use anyhow::Result;
     use async_trait::async_trait;
+    use blobstore::Blobstore;
     use blobstore::BlobstoreGetData;
+    use blobstore::Loadable;
     use context::CoreContext;
     use deleted_manifest::RootDeletedManifestIdCommon;
     use deleted_manifest::RootDeletedManifestV2Id;
@@ -416,6 +424,7 @@ mod tests {
     use futures::future;
     use futures::stream;
     use memblob::Memblob;
+    use metaconfig_types::BlobstoreId;
     use mononoke_macros::mononoke;
     use mononoke_types::BlobstoreKey;
     use mononoke_types::ChangesetId;
@@ -430,6 +439,7 @@ mod tests {
     use repo_derived_data::audit::Mapping;
     use repo_identity::RepoIdentityRef;
     use samplingblob::SamplingBlobstore;
+    use samplingblob::SamplingBlobstoreSamplingComponentBlobstore;
     use samplingblob::SamplingHandler;
     use test_repo_factory::TestRepoFactory;
     use tests_utils::BasicTestRepo;
@@ -439,6 +449,8 @@ mod tests {
 
     use super::*;
     use crate::families::families;
+    use crate::reads::ReadSampler;
+    use crate::reads::ReadTotals;
     use crate::test_utils::test_repo;
 
     type Repo = BasicTestRepo;
@@ -491,6 +503,34 @@ mod tests {
             .build()
             .await?;
         Ok((Arc::new(repo), blobstore, tags, recorder))
+    }
+
+    /// A repository whose store's reads go to a `ReadSampler`, as Strider's
+    /// do, with the registry the sampler reads the tags from.
+    async fn read_sampling_repo(
+        fb: FacebookInit,
+    ) -> Result<(Arc<Repo>, Memblob, Arc<LoadTags>, Arc<ReadSampler>)> {
+        let blobstore = Memblob::default();
+        let tags = Arc::new(LoadTags::default());
+        let sampler = Arc::new(ReadSampler::new(tags.clone(), false));
+        let repo: Repo = TestRepoFactory::new(fb)?
+            .with_blobstore(Arc::new(SamplingBlobstoreSamplingComponentBlobstore::new(
+                blobstore.clone(),
+                Some(BlobstoreId::new(1)),
+                sampler.clone(),
+            )))
+            .build()
+            .await?;
+        Ok((Arc::new(repo), blobstore, tags, sampler))
+    }
+
+    /// The sampler's totals, by type name.
+    fn totals_by_name(sampler: &ReadSampler) -> BTreeMap<String, ReadTotals> {
+        sampler
+            .totals()
+            .into_iter()
+            .map(|(object_type, totals)| (object_type.to_string(), totals))
+            .collect()
     }
 
     fn is_validated(family: &FamilyReport) -> bool {
@@ -1254,6 +1294,107 @@ mod tests {
                 .any(|tag| tag.object.name() == "DeletedManifestV2MapNode")
         );
         assert!(tags.is_empty());
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn no_family_reads_storage_untagged(fb: FacebookInit) -> Result<()> {
+        // Given a derived merge, in a repository whose store's reads go to
+        // the sampler Strider installs
+        let ctx = CoreContext::test_mock(fb);
+        let (repo, _blobstore, tags, sampler) = read_sampling_repo(fb).await?;
+        let merge = derived_merge(&ctx, &repo).await?;
+        let strider = tagging_strider(
+            &ctx,
+            &repo,
+            &["core", "deleted-manifest", "unode"],
+            tags.clone(),
+        );
+
+        // Creating and deriving the commits read outside the audit.
+        let outside_before = sampler.reads_outside_audit();
+
+        // When every family audits the merge
+        let reports = audit(&strider, &[merge]).await?;
+
+        // Then every read the audit made was tagged, and each family's types
+        // were counted
+        assert!(all_validated(&reports[0]), "{reports:?}");
+        assert_eq!(sampler.untagged_reads(), 0);
+        assert_eq!(sampler.reads_outside_audit(), outside_before);
+        assert_eq!(
+            totals_by_name(&sampler).into_keys().collect::<Vec<_>>(),
+            vec![
+                "Changeset",
+                "DeletedManifestV2",
+                "FileContent",
+                "Mapping:deleted_manifest",
+                "Mapping:unodes",
+                "UnodeFile",
+                "UnodeManifest",
+            ]
+        );
+        assert!(tags.is_empty());
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn read_totals_count_each_types_keys_and_bytes(fb: FacebookInit) -> Result<()> {
+        // Given a root commit adding two files, in a repository whose store's
+        // reads go to the sampler
+        let ctx = CoreContext::test_mock(fb);
+        let (repo, blobstore, tags, sampler) = read_sampling_repo(fb).await?;
+        let a = CreateCommitContext::new_root(&ctx, &*repo)
+            .add_file("one", "first")
+            .add_file("two", "second file")
+            .commit()
+            .await?;
+        let changeset = Loadable::load(&a, &ctx, repo.repo_blobstore()).await?;
+        let contents = changeset
+            .simplified_file_changes()
+            .filter_map(|(_path, change)| Some(change?.content_id()))
+            .collect::<Vec<_>>();
+        let stored_size = |key: String| {
+            let blobstore = blobstore.clone();
+            let ctx = ctx.clone();
+            let key = format!("{}{}", repo.repo_identity().id().prefix(), key);
+            async move {
+                let data = blobstore.get(&ctx, &key).await?;
+                Ok::<_, anyhow::Error>(data.expect("the commit's blobs are stored").len() as u64)
+            }
+        };
+        let changeset_bytes = stored_size(a.blobstore_key()).await?;
+        let mut content_bytes = 0;
+        for content in &contents {
+            content_bytes += stored_size(content.blobstore_key()).await?;
+        }
+        let strider = tagging_strider(&ctx, &repo, &["core"], tags);
+
+        // When core audits it
+        let reports = audit(&strider, &[a]).await?;
+
+        // Then the changeset, read once, and both contents are counted with
+        // their sizes, uncompressed as Memblob stores them
+        assert!(all_validated(&reports[0]), "{reports:?}");
+        assert_eq!(
+            totals_by_name(&sampler),
+            BTreeMap::from([
+                (
+                    "Changeset".to_string(),
+                    ReadTotals {
+                        keys: 1,
+                        bytes: changeset_bytes,
+                    }
+                ),
+                (
+                    "FileContent".to_string(),
+                    ReadTotals {
+                        keys: 2,
+                        bytes: content_bytes,
+                    }
+                ),
+            ])
+        );
         Ok(())
     }
 

@@ -145,6 +145,7 @@ where
     D: BonsaiDerivable,
 {
     const NAME: &'static str = "Mapping";
+    const SUBTYPE: Option<&'static str> = Some(D::NAME);
 
     type Loaded = D;
 

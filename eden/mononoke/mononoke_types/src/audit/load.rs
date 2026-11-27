@@ -8,6 +8,7 @@
 //! Tags that tie each storage read to the object it was for.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::hash_map::Entry;
 use std::hash::Hash;
 use std::ops::Deref;
@@ -27,16 +28,51 @@ pub struct LoadTag {
     pub object: ObjectId,
 }
 
+/// One storage read, attributed to the load in progress that made it.
+#[derive(Clone, Debug)]
+pub struct TaggedRead {
+    pub tag: LoadTag,
+    /// Whether the store returned the key and no earlier read by this load,
+    /// from any store, had. A multiplexed load can read one key from several
+    /// stores.
+    pub first_found: bool,
+}
+
+/// A load in progress: its tag and the blobstore keys it has found so far.
+#[derive(Debug)]
+struct LiveTag {
+    tag: LoadTag,
+    found_keys: HashSet<String>,
+}
+
 /// The tags of the loads in progress, by the sampling key their context carries.
 #[derive(Debug, Default)]
 pub struct LoadTags {
-    tags: Mutex<HashMap<SamplingKey, LoadTag>>,
+    tags: Mutex<HashMap<SamplingKey, LiveTag>>,
 }
 
 impl LoadTags {
     /// The tag of the load whose context carries `key`, while that load runs.
     pub fn get(&self, key: &SamplingKey) -> Option<LoadTag> {
-        self.lock().get(key).cloned()
+        self.lock().get(key).map(|live| live.tag.clone())
+    }
+
+    /// Attributes a read of `blobstore_key` to the load whose context carries
+    /// `key`, while that load runs; `found` says whether the store returned
+    /// the key. The keys a load found are kept until its tag is removed.
+    pub fn record_read(
+        &self,
+        key: &SamplingKey,
+        blobstore_key: &str,
+        found: bool,
+    ) -> Option<TaggedRead> {
+        let mut tags = self.lock();
+        let live = tags.get_mut(key)?;
+        let first_found = found && live.found_keys.insert(blobstore_key.to_owned());
+        Some(TaggedRead {
+            tag: live.tag.clone(),
+            first_found,
+        })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -45,7 +81,7 @@ impl LoadTags {
 
     // Each operation leaves the map consistent, so a panic elsewhere while
     // holding the lock cannot corrupt it.
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<SamplingKey, LoadTag>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<SamplingKey, LiveTag>> {
         self.tags.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
@@ -79,7 +115,14 @@ impl LoadContext {
     /// A context whose reads, including those inside library code, carry a
     /// tag for `object` until it is dropped.
     pub fn tag(&self, object: ObjectId) -> TaggedContext {
-        let key = insert_with_free_key(&mut self.tags.lock(), LoadTag { object }, SamplingKey::new);
+        let key = insert_with_free_key(
+            &mut self.tags.lock(),
+            LiveTag {
+                tag: LoadTag { object },
+                found_keys: HashSet::new(),
+            },
+            SamplingKey::new,
+        );
         TaggedContext {
             ctx: self.ctx.clone_and_sample(key),
             blobstore: self.blobstore.clone(),
