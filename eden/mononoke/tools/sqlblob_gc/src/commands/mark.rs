@@ -5,6 +5,7 @@
  * GNU General Public License version 2.
  */
 
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -45,6 +46,14 @@ pub struct CommandArgs {
     /// Refuse to start, before touching any shard, unless the configured mark generation is this one
     #[clap(long)]
     expected_mark_generation: Option<u64>,
+    /// Time limit, in seconds, for one try at marking one key. A try that takes longer fails and
+    /// is retried like any other failed try. 0 turns the limit off.
+    #[clap(long, default_value_t = 300)]
+    key_timeout_secs: u64,
+}
+
+fn key_timeout(secs: u64) -> Option<Duration> {
+    (secs > 0).then(|| Duration::from_secs(secs))
 }
 
 /// A marker that runs with a stale mark generation stamps live chunks too low, and a later erase
@@ -58,22 +67,31 @@ fn check_mark_generation(configured: u64, expected: Option<u64>) -> Result<()> {
     }
 }
 
-async fn handle_one_key(
-    ctx: CoreContext,
-    key: String,
-    store: Arc<Sqlblob>,
-    inline_small_values: bool,
-    mark_generation: u64,
-) -> Result<()> {
-    retry(
-        |_| store.set_generation(&ctx, &key, inline_small_values, mark_generation),
-        BASE_RETRY_DELAY,
-    )
-    .binary_exponential_backoff()
-    .max_attempts(RETRIES)
-    .inspect_err(|attempt, _err| info!("attempt {attempt} of {RETRIES} failed"))
-    .await
-    .with_context(|| anyhow!("Failed to handle {key} after {RETRIES} attempts"))?;
+/// Without a limit, a request that never returns holds its slot, and so the whole run, until the
+/// MySQL client gives up on it.
+async fn within_time_limit<T>(
+    limit: Option<Duration>,
+    fut: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    let Some(limit) = limit else {
+        return fut.await;
+    };
+    tokio::time::timeout(limit, fut)
+        .await
+        .map_err(|_| anyhow!("timed out after {} seconds", limit.as_secs()))?
+}
+
+async fn mark_key<F, Fut>(key: &str, timeout: Option<Duration>, mut mark: F) -> Result<()>
+where
+    F: FnMut() -> Fut + Send,
+    Fut: Future<Output = Result<()>>,
+{
+    retry(|_| within_time_limit(timeout, mark()), BASE_RETRY_DELAY)
+        .binary_exponential_backoff()
+        .max_attempts(RETRIES)
+        .inspect_err(|attempt, _err| info!("attempt {attempt} of {RETRIES} failed"))
+        .await
+        .with_context(|| anyhow!("Failed to handle {key} after {RETRIES} attempts"))?;
     Ok(())
 }
 
@@ -122,6 +140,7 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
     let sqlblob = Arc::new(sqlblob);
 
     let inline_small_values = !args.skip_inline_small_values;
+    let timeout = key_timeout(args.key_timeout_secs);
 
     // Hold mark generation constant for run
     let mark_generation = sqlblob.get_mark_generation();
@@ -136,17 +155,21 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
         let task = mononoke::spawn_task(async move {
             rx.map(Ok)
                 .try_for_each_concurrent(max_parallelism, {
-                    |key| {
+                    |key: String| {
                         let sqlblob = sqlblob.clone();
                         let new_ctx = new_ctx.clone();
                         async move {
-                            mononoke::spawn_task(handle_one_key(
-                                new_ctx,
-                                key,
-                                sqlblob,
-                                inline_small_values,
-                                mark_generation,
-                            ))
+                            mononoke::spawn_task(async move {
+                                mark_key(&key, timeout, || {
+                                    sqlblob.set_generation(
+                                        &new_ctx,
+                                        &key,
+                                        inline_small_values,
+                                        mark_generation,
+                                    )
+                                })
+                                .await
+                            })
                             .await?
                         }
                     }
@@ -181,7 +204,15 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+
+    use futures::future;
+
     use super::*;
+
+    const FIVE_MINUTES: Duration = Duration::from_secs(300);
+    const ONE_HOUR: Duration = Duration::from_secs(3600);
 
     #[mononoke::test]
     fn marks_without_an_expected_generation() {
@@ -200,6 +231,85 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "Refusing to mark: the configured mark generation is 199, expected 201"
+        );
+    }
+
+    #[mononoke::test]
+    fn key_timeout_defaults_to_five_minutes() {
+        let args =
+            CommandArgs::try_parse_from(["mark"]).expect("mark should parse with no options");
+        assert_eq!(key_timeout(args.key_timeout_secs), Some(FIVE_MINUTES));
+    }
+
+    #[mononoke::test]
+    fn zero_turns_the_key_timeout_off() {
+        let args = CommandArgs::try_parse_from(["mark", "--key-timeout-secs", "0"])
+            .expect("a zero key timeout should parse");
+        assert_eq!(key_timeout(args.key_timeout_secs), None);
+    }
+
+    #[mononoke::test]
+    async fn a_try_that_never_returns_is_retried() {
+        tokio::time::pause();
+        let tries = AtomicUsize::new(0);
+        let marking = mark_key("key", Some(FIVE_MINUTES), || {
+            let this_try = tries.fetch_add(1, Ordering::SeqCst) + 1;
+            async move {
+                if this_try == 1 {
+                    future::pending::<()>().await;
+                }
+                Ok(())
+            }
+        });
+
+        tokio::time::timeout(ONE_HOUR, marking)
+            .await
+            .expect("the hung first try should time out, so marking should end within an hour")
+            .expect("the second try should mark the key");
+        assert_eq!(
+            tries.load(Ordering::SeqCst),
+            2,
+            "one hung try, then one that succeeds"
+        );
+    }
+
+    #[mononoke::test]
+    async fn a_key_whose_every_try_hangs_fails() {
+        tokio::time::pause();
+        let tries = AtomicUsize::new(0);
+        let marking = mark_key("key", Some(FIVE_MINUTES), || {
+            tries.fetch_add(1, Ordering::SeqCst);
+            future::pending::<Result<()>>()
+        });
+
+        let err = tokio::time::timeout(ONE_HOUR, marking)
+            .await
+            .expect("every try should time out, so marking should end within an hour")
+            .expect_err("a key whose every try hangs should fail");
+        assert_eq!(
+            format!("{err:#}"),
+            "Failed to handle key after 3 attempts: timed out after 300 seconds"
+        );
+        assert_eq!(tries.load(Ordering::SeqCst), RETRIES);
+    }
+
+    #[mononoke::test]
+    async fn without_a_limit_a_slow_try_is_waited_for() {
+        tokio::time::pause();
+        let tries = AtomicUsize::new(0);
+        mark_key("key", None, || {
+            tries.fetch_add(1, Ordering::SeqCst);
+            async {
+                tokio::time::sleep(Duration::from_secs(2 * 3600)).await;
+                Ok(())
+            }
+        })
+        .await
+        .expect("with the limit off, a try that takes two hours should succeed");
+        assert_eq!(
+            tries.load(Ordering::SeqCst),
+            1,
+            "the slow try is not cut off"
         );
     }
 }
