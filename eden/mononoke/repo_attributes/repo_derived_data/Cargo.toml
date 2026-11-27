@@ -9,6 +9,8 @@ license = "GPLv2+"
 
 [dependencies]
 anyhow = "1.0.104"
+async-trait = "0.1.92"
+blobstore = { version = "0.1.0", path = "../../blobstore" }
 bonsai_git_mapping = { version = "0.1.0", path = "../bonsai_git_mapping" }
 bonsai_hg_mapping = { version = "0.1.0", path = "../bonsai_hg_mapping" }
 commit_derived_data_mapping = { version = "0.1.0", path = "../commit_derived_data_mapping" }
@@ -26,6 +28,9 @@ mononoke_types = { version = "0.1.0", path = "../../mononoke_types" }
 repo_blobstore = { version = "0.1.0", path = "../repo_blobstore" }
 restricted_paths_common = { version = "0.1.0", path = "../restricted_paths_common" }
 scuba_ext = { version = "0.1.0", path = "../../common/scuba_ext" }
+
+[dev-dependencies]
+mononoke_macros = { version = "0.1.0", path = "../../common/mononoke_macros" }
 
 [lints]
 workspace = true

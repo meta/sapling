@@ -37,6 +37,8 @@ use repo_blobstore::RepoBlobstore;
 use restricted_paths_common::ArcRestrictedPathsConfigBased;
 use scuba_ext::MononokeScubaSampleBuilder;
 
+pub mod audit;
+
 /// Repository derived data management.
 #[facet::facet]
 pub struct RepoDerivedData {

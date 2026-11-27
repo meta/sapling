@@ -5,9 +5,14 @@ oncall("scm_server_infra")
 rust_library(
     name = "repo_derived_data",
     srcs = glob(["src/**/*.rs"]),
+    test_deps = [
+        "//eden/mononoke/common/mononoke_macros:mononoke_macros",
+    ],
     deps = [
         "fbsource//third-party/rust:anyhow",
+        "fbsource//third-party/rust:async-trait",
         "//common/rust/shed/facet:facet",
+        "//eden/mononoke/blobstore:blobstore",
         "//eden/mononoke/blobstore:ephemeral_blobstore",
         "//eden/mononoke/common/scuba_ext:scuba_ext",
         "//eden/mononoke/derived_data:derived_data_manager",
