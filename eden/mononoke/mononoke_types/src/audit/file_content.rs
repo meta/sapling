@@ -12,6 +12,7 @@ use futures::StreamExt;
 use futures::TryStreamExt;
 use futures::stream;
 
+use crate::BlobstoreKey;
 use crate::ContentId;
 use crate::FileContents;
 use crate::audit::LoadError;
@@ -58,6 +59,10 @@ impl<R: Send + Sync + 'static> Validatable<R> for ContentId {
             .buffer_unordered(chunk_loads_at_once(largest))
             .try_fold(0, |size, chunk| async move { Ok(size + chunk) })
             .await
+    }
+
+    fn storage_key(&self, _repo: &R) -> Option<String> {
+        Some(self.blobstore_key())
     }
 }
 

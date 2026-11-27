@@ -132,6 +132,13 @@ pub trait Validatable<R>:
     /// the blobstore alone cannot provide.
     async fn load(&self, ctx: &TaggedContext, repo: &R) -> Result<Self::Loaded, LoadError>;
 
+    /// The key `load` reads the object's blob under in the repository's
+    /// blobstore, without the repository's prefix, or `None` for an object
+    /// stored outside the blobstore, such as an SQL row. For an object stored
+    /// in several blobs, such as chunked file content, the blob that names
+    /// the others.
+    fn storage_key(&self, repo: &R) -> Option<String>;
+
     /// Checks run only when the run validates, after a successful load.
     fn check(&self, _loaded: &Self::Loaded) -> Vec<ValidationOutcome> {
         Vec::new()
@@ -283,17 +290,31 @@ where
 pub struct ObjectId {
     object_type: ObjectType,
     key: Arc<dyn ErasedKey>,
+    /// [`Validatable::storage_key`] for the repository type the object was
+    /// identified with.
+    storage_key: fn(&dyn Any, &dyn Any) -> Option<String>,
 }
 
 impl ObjectId {
-    pub fn of<R, T: Validatable<R>>(object: &T) -> Self {
+    pub fn of<R: 'static, T: Validatable<R>>(object: &T) -> Self {
         Self {
             object_type: ObjectType {
                 name: T::NAME,
                 subtype: T::SUBTYPE,
             },
             key: Arc::new(object.clone()),
+            storage_key: erased_storage_key::<R, T>,
         }
+    }
+
+    /// The object's [`Validatable::storage_key`].
+    ///
+    /// # Panics
+    ///
+    /// If `repo` is not of the type the object was identified with, in
+    /// [`ObjectId::of`].
+    pub fn storage_key<R: 'static>(&self, repo: &R) -> Option<String> {
+        (self.storage_key)(self.key.as_any(), repo)
     }
 
     pub fn name(&self) -> &'static str {
@@ -348,6 +369,19 @@ impl fmt::Debug for ObjectId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, formatter)
     }
+}
+
+fn erased_storage_key<R: 'static, T: Validatable<R>>(
+    key: &dyn Any,
+    repo: &dyn Any,
+) -> Option<String> {
+    let key = key
+        .downcast_ref::<T>()
+        .expect("should be the key `ObjectId::of` stored");
+    let repo = repo
+        .downcast_ref::<R>()
+        .expect("should be the repository type the object was identified with");
+    key.storage_key(repo)
 }
 
 trait ErasedKey: fmt::Display + Send + Sync {
@@ -480,6 +514,23 @@ mod tests {
         async fn load(&self, _ctx: &TaggedContext, _repo: &()) -> Result<(), LoadError> {
             Ok(())
         }
+
+        fn storage_key(&self, _repo: &()) -> Option<String> {
+            Some(format!("blob.{}", self.0))
+        }
+    }
+
+    #[mononoke::test]
+    fn an_object_id_gives_its_objects_storage_key() {
+        let id = ObjectId::of::<(), _>(&Blob("b"));
+
+        assert_eq!(id.storage_key(&()), Some("blob.b".to_string()));
+    }
+
+    #[mononoke::test]
+    #[should_panic(expected = "should be the repository type the object was identified with")]
+    fn an_object_id_refuses_another_repository_type() {
+        ObjectId::of::<(), _>(&Blob("b")).storage_key(&0u8);
     }
 
     #[mononoke::test]

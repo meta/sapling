@@ -10,9 +10,11 @@ use std::sync::Arc;
 
 use async_stream::try_stream;
 use derived_data_manager::BonsaiDerivable;
+use derived_data_manager::DerivationContext;
 use futures::StreamExt;
 use manifest::Entry;
 use manifest::walk_added;
+use mononoke_types::ChangesetId;
 use mononoke_types::DerivableType;
 use mononoke_types::audit::CommitInfo;
 use mononoke_types::audit::LoadContext;
@@ -21,8 +23,19 @@ use mononoke_types::audit::WalkStream;
 use mononoke_types::audit::Walkable;
 use repo_derived_data::RepoDerivedDataRef;
 use repo_derived_data::audit::Mapping;
+use repo_derived_data::audit::MappingKey;
 
 use crate::RootUnodeManifestId;
+use crate::format_key;
+
+impl MappingKey for RootUnodeManifestId {
+    fn mapping_key(
+        derivation_ctx: &DerivationContext,
+        changeset_id: ChangesetId,
+    ) -> Option<String> {
+        Some(format_key(derivation_ctx, changeset_id))
+    }
+}
 
 /// The unode family: the commit's mapping, then every manifest and file unode
 /// that differs from all parents' unodes at the same path. File contents

@@ -8,6 +8,7 @@
 use async_trait::async_trait;
 use blobstore::Loadable;
 
+use crate::BlobstoreKey;
 use crate::FileUnodeId;
 use crate::ManifestUnodeId;
 use crate::audit::LoadError;
@@ -25,6 +26,10 @@ impl<R: Send + Sync + 'static> Validatable<R> for ManifestUnodeId {
     async fn load(&self, ctx: &TaggedContext, _repo: &R) -> Result<ManifestUnode, LoadError> {
         Ok(Loadable::load(self, ctx, ctx.blobstore()).await?)
     }
+
+    fn storage_key(&self, _repo: &R) -> Option<String> {
+        Some(self.blobstore_key())
+    }
 }
 
 #[async_trait]
@@ -35,5 +40,9 @@ impl<R: Send + Sync + 'static> Validatable<R> for FileUnodeId {
 
     async fn load(&self, ctx: &TaggedContext, _repo: &R) -> Result<FileUnode, LoadError> {
         Ok(Loadable::load(self, ctx, ctx.blobstore()).await?)
+    }
+
+    fn storage_key(&self, _repo: &R) -> Option<String> {
+        Some(self.blobstore_key())
     }
 }

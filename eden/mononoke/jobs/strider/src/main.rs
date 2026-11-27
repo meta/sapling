@@ -459,6 +459,7 @@ fn report_commit(
                     .object
                     .as_ref()
                     .map_or_else(|| "none".to_string(), ToString::to_string),
+                storage_key = failure.storage_key.as_deref().unwrap_or("none"),
                 cause = failure.cause,
                 "Strider family incomplete"
             );

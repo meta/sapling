@@ -27,6 +27,7 @@ use mononoke_types::audit::LoadError;
 use mononoke_types::audit::LoadTags;
 use mononoke_types::audit::ObjectId;
 use mononoke_types::audit::ValidationOutcome;
+use mononoke_types::audit::WalkError;
 use mononoke_types::audit::WalkStage;
 use repo_blobstore::RepoBlobstoreRef;
 use tokio_util::task::AbortOnDropHandle;
@@ -66,22 +67,21 @@ pub struct Failure {
     pub object: Option<ObjectId>,
     pub class: &'static str,
     pub cause: String,
+    /// The object's storage key, when it is stored in the blobstore.
+    pub storage_key: Option<String>,
 }
 
 impl Failure {
-    fn new(stage: WalkStage, object: Option<ObjectId>, error: &LoadError) -> Self {
+    fn new<R: 'static>(
+        stage: WalkStage,
+        object: Option<ObjectId>,
+        error: &LoadError,
+        repo: &R,
+    ) -> Self {
         Self {
             stage,
+            storage_key: object.as_ref().and_then(|object| object.storage_key(repo)),
             object,
-            class: error.class(),
-            cause: format!("{error:#}"),
-        }
-    }
-
-    fn load(object: ObjectId, error: &LoadError) -> Self {
-        Self {
-            stage: WalkStage::Load,
-            object: Some(object),
             class: error.class(),
             cause: format!("{error:#}"),
         }
@@ -302,7 +302,12 @@ where
             }
             // Without its parents the commit cannot be diffed, so no family runs.
             Err(error) => {
-                let failure = Failure::new(WalkStage::Enumerate, None, &LoadError::from(error));
+                let failure = Failure::new(
+                    WalkStage::Enumerate,
+                    None,
+                    &LoadError::from(error),
+                    &*self.repo,
+                );
                 self.unaudited(|| FamilyStatus::Incomplete(failure.clone()))
             }
         };
@@ -341,20 +346,11 @@ where
                 commit.clone(),
                 self.limits.max_loads_per_commit,
             )
-            .map(|object| match object {
-                Err(error) => {
-                    let (stage, object, source) = error.into_parts();
-                    Err(FamilyStatus::ended(
-                        Failure::new(stage, object, &source),
-                        &source,
-                    ))
-                }
-                Ok(object) => Ok((object.id().clone(), object)),
-            })
             .map(|object| async move {
-                let (id, object) = object?;
+                let object = object?;
+                let id = object.id().clone();
                 let result = object.validate(ctx, repo, run_checks).await;
-                Ok::<_, FamilyStatus>((id, result))
+                Ok::<_, WalkError>((id, result))
             })
             .buffer_unordered(self.limits.max_loads_per_commit.get());
 
@@ -362,8 +358,10 @@ where
         while let Some(result) = results.next().await {
             let (id, result) = match result {
                 Ok(loaded) => loaded,
-                Err(status) => {
-                    report.status = status;
+                Err(error) => {
+                    let (stage, object, source) = error.into_parts();
+                    let failure = Failure::new(stage, object, &source, repo);
+                    report.status = FamilyStatus::ended(failure, &source);
                     break;
                 }
             };
@@ -375,6 +373,7 @@ where
                                 changeset_id = %commit.changeset_id,
                                 family = family.name,
                                 object = %id,
+                                storage_key = id.storage_key(repo).as_deref().unwrap_or("none"),
                                 check,
                                 message,
                                 "Strider validation failed"
@@ -388,7 +387,8 @@ where
                     report.validated_objects += 1;
                 }
                 Err(error) => {
-                    report.status = FamilyStatus::ended(Failure::load(id, &error), &error);
+                    let failure = Failure::new(WalkStage::Load, Some(id), &error, repo);
+                    report.status = FamilyStatus::ended(failure, &error);
                     break;
                 }
             }
@@ -401,6 +401,7 @@ where
 mod tests {
     use std::collections::BTreeMap;
     use std::collections::BTreeSet;
+    use std::collections::HashMap;
     use std::collections::HashSet;
     use std::fmt;
     use std::sync::Arc;
@@ -462,6 +463,8 @@ mod tests {
         tags: Arc<LoadTags>,
         recording: AtomicBool,
         tagged: Mutex<Vec<LoadTag>>,
+        /// The key of each tagged read, with the object its tag names.
+        tagged_keys: Mutex<Vec<(ObjectId, String)>>,
         untagged: Mutex<Vec<String>>,
     }
 
@@ -474,7 +477,13 @@ mod tests {
         ) -> Result<()> {
             if self.recording.load(Ordering::SeqCst) {
                 match ctx.sampling_key().and_then(|key| self.tags.get(key)) {
-                    Some(tag) => self.tagged.lock().unwrap().push(tag),
+                    Some(tag) => {
+                        self.tagged_keys
+                            .lock()
+                            .unwrap()
+                            .push((tag.object.clone(), key.to_owned()));
+                        self.tagged.lock().unwrap().push(tag);
+                    }
                     None => self.untagged.lock().unwrap().push(key.to_owned()),
                 }
             }
@@ -493,6 +502,7 @@ mod tests {
             tags: tags.clone(),
             recording: AtomicBool::new(false),
             tagged: Mutex::new(Vec::new()),
+            tagged_keys: Mutex::new(Vec::new()),
             untagged: Mutex::new(Vec::new()),
         });
         let repo: Repo = TestRepoFactory::new(fb)?
@@ -975,6 +985,10 @@ mod tests {
             let _dropped = CountsDrop;
             future::pending().await
         }
+
+        fn storage_key(&self, _repo: &Repo) -> Option<String> {
+            None
+        }
     }
 
     /// A family that adds eight hanging objects to every commit.
@@ -1142,6 +1156,135 @@ mod tests {
             ])
         );
         assert!(tags.is_empty());
+        Ok(())
+    }
+
+    /// Checks that the storage key of every object the audit validated or
+    /// read is a key its own load read, and returns the object types with a
+    /// key and those without.
+    fn storage_keys_read(
+        repo: &Repo,
+        recorder: &TagRecorder,
+        reports: &[CommitReport],
+    ) -> (BTreeSet<String>, BTreeSet<String>) {
+        let prefix = repo.repo_identity().id().prefix();
+        let mut keys_read: HashMap<ObjectId, HashSet<String>> = HashMap::new();
+        for (object, key) in recorder.tagged_keys.lock().unwrap().iter() {
+            keys_read
+                .entry(object.clone())
+                .or_default()
+                .insert(key.clone());
+        }
+        let validated = reports
+            .iter()
+            .flat_map(|report| &report.families)
+            .flat_map(|family| family.validated.iter().cloned());
+        let objects = keys_read
+            .keys()
+            .cloned()
+            .chain(validated)
+            .collect::<HashSet<_>>();
+        let mut with_key = BTreeSet::new();
+        let mut without_key = BTreeSet::new();
+        for object in &objects {
+            match object.storage_key(repo) {
+                Some(key) => {
+                    let read = keys_read.get(object).cloned().unwrap_or_default();
+                    assert!(
+                        read.contains(&format!("{prefix}{key}")),
+                        "{object} has key {key}, but its load read {read:?}"
+                    );
+                    with_key.insert(object.object_type().to_string());
+                }
+                None => {
+                    without_key.insert(object.object_type().to_string());
+                }
+            }
+        }
+        (with_key, without_key)
+    }
+
+    #[mononoke::fbinit_test]
+    async fn every_objects_storage_key_is_a_key_its_load_read(fb: FacebookInit) -> Result<()> {
+        // Given a derived merge, in a repository whose store records the key
+        // of each read with its tag
+        let ctx = CoreContext::test_mock(fb);
+        let (repo, _blobstore, tags, recorder) = tag_recording_repo(fb).await?;
+        let merge = derived_merge(&ctx, &repo).await?;
+        let strider = tagging_strider(
+            &ctx,
+            &repo,
+            &families::<Repo>()
+                .iter()
+                .map(|family| family.name)
+                .collect::<Vec<_>>(),
+            tags,
+        );
+
+        // When every family audits the merge
+        recorder.recording.store(true, Ordering::SeqCst);
+        let reports = audit(&strider, &[merge]).await?;
+        recorder.recording.store(false, Ordering::SeqCst);
+
+        // Then the storage key of every object that was validated or read,
+        // the parents' included, is a key its own load read from the store,
+        // and the objects without one are the rows the SQL databases hold
+        assert!(all_validated(&reports[0]), "{reports:?}");
+        let (with_key, without_key) = storage_keys_read(&repo, &recorder, &reports);
+        assert_eq!(
+            with_key,
+            BTreeSet::from([
+                "Changeset".to_string(),
+                "DeletedManifestV2".to_string(),
+                "FileContent".to_string(),
+                "Mapping:deleted_manifest".to_string(),
+                "Mapping:unodes".to_string(),
+                "UnodeFile".to_string(),
+                "UnodeManifest".to_string(),
+            ])
+        );
+        assert_eq!(without_key, BTreeSet::<String>::new());
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn sharded_nodes_have_the_keys_their_loads_read(fb: FacebookInit) -> Result<()> {
+        // Given a root adding a directory large enough to store sharded-map
+        // nodes, and a child deleting it
+        let ctx = CoreContext::test_mock(fb);
+        let (repo, _blobstore, tags, recorder) = tag_recording_repo(fb).await?;
+        let names = (0..2100)
+            .map(|index| format!("many/f{index:04}"))
+            .collect::<Vec<_>>();
+        let root = CreateCommitContext::new_root(&ctx, &*repo)
+            .add_files(names.iter().map(|name| (name.as_str(), name.clone())))
+            .commit()
+            .await?;
+        let deleted = names
+            .iter()
+            .fold(
+                CreateCommitContext::new(&ctx, &*repo, vec![root]),
+                |commit, name| commit.delete_file(name.as_str()),
+            )
+            .commit()
+            .await?;
+        let line = vec![root, deleted];
+        derive(&ctx, &repo, deleted).await?;
+        let strider = tagging_strider(&ctx, &repo, &["deleted-manifest"], tags);
+
+        // When the deleted manifest of every commit is audited
+        recorder.recording.store(true, Ordering::SeqCst);
+        let reports = audit(&strider, &line).await?;
+        recorder.recording.store(false, Ordering::SeqCst);
+
+        // Then each object's storage key is a key its own load read, the
+        // sharded-map nodes' among them
+        assert!(reports.iter().all(all_validated), "{reports:?}");
+        let (with_key, _without_key) = storage_keys_read(&repo, &recorder, &reports);
+        assert!(
+            with_key.contains("DeletedManifestV2MapNode"),
+            "{with_key:?}"
+        );
         Ok(())
     }
 
@@ -1462,6 +1605,10 @@ mod tests {
             .await;
             PROBES_LOADING.fetch_sub(1, Ordering::SeqCst);
             Ok(())
+        }
+
+        fn storage_key(&self, _repo: &Repo) -> Option<String> {
+            None
         }
     }
 

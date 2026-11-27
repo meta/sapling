@@ -84,12 +84,12 @@ arguments.
   > }
   $ failures() {
   >   grep 'Strider family incomplete' strider.err | sed -nE \
-  >     's/.*changeset_id="?([0-9a-f]+)"? family="?([a-z-]+)"? failure_stage="?([a-z]+)"? failure_class="?([a-z_]+)"? object="?([^" ]+)"?.*/\1 \2 \3 \4 \5/p' \
+  >     's/.*changeset_id="?([0-9a-f]+)"? family="?([a-z-]+)"? failure_stage="?([a-z]+)"? failure_class="?([a-z_]+)"? object="?([^" ]+)"? storage_key="?([^" ]+)"?.*/\1 \2 \3 \4 \5 \6/p' \
   >   | names | LC_ALL=C sort
   > }
 
 The number of commit and family results, those not validated, and each
-failure as commit, family, stage, class and object.
+failure as commit, family, stage, class, object and storage key.
 
   $ outcomes() {
   >   grep -c ' status=' strider.out
@@ -132,7 +132,7 @@ derived from B's mapping, so C reports it missing.
   8
   B deleted-manifest status=not_derived
   C deleted-manifest status=incomplete
-  C deleted-manifest enumerate missing Mapping:deleted_manifest:B
+  C deleted-manifest enumerate missing Mapping:deleted_manifest:B derived_root_deleted_manifest2.B
   $ mv "$TESTTMP/mapping-B" "$BLOBS/blob-repo0000.derived_root_deleted_manifest2.$B"
 
 A missing shared deleted-manifest node is fatal. Strider reports it against B,
@@ -145,10 +145,10 @@ which added it.
   missing_target DeletedManifestV2:SHARED
   $ strider
   [1]
-  $ outcomes | sed "s/$SHARED/SHARED/"
+  $ outcomes | sed "s/$SHARED/SHARED/g"
   8
   B deleted-manifest status=incomplete
-  B deleted-manifest load missing DeletedManifestV2:SHARED
+  B deleted-manifest load missing DeletedManifestV2:SHARED deletedmanifest2.blake2.SHARED
 
 The same node present but undecodable is an unreadable target.
 
@@ -159,10 +159,10 @@ The same node present but undecodable is an unreadable target.
   unreadable_target DeletedManifestV2:SHARED
   $ strider
   [1]
-  $ outcomes | sed "s/$SHARED/SHARED/"
+  $ outcomes | sed "s/$SHARED/SHARED/g"
   8
   B deleted-manifest status=incomplete
-  B deleted-manifest load unreadable DeletedManifestV2:SHARED
+  B deleted-manifest load unreadable DeletedManifestV2:SHARED deletedmanifest2.blake2.SHARED
   $ mv "$TESTTMP/shared-dm" "$BLOBS/blob-repo0000.deletedmanifest2.blake2.$SHARED"
 
 A missing changeset, reached as a root and through B's parent edge, is fatal.
@@ -179,5 +179,5 @@ parents from the commit graph, so A's deleted manifest is still validated.
   $ outcomes
   8
   A core status=incomplete
-  A core load missing Changeset:A
+  A core load missing Changeset:A changeset.blake2.A
   $ mv "$TESTTMP/changeset-A" "$BLOBS/blob-repo0000.changeset.blake2.$A"

@@ -76,7 +76,7 @@ test-strider-unode-history.t.
   $ unode_rename() {
   >   awk -v f="$TESTTMP/unode.names" '
   >     BEGIN { while ((getline line < f) > 0) { split(line, a, " "); name[a[1]] = a[2] } }
-  >     { i = index($0, ":"); id = substr($0, i + 1); if (i && id in name) $0 = substr($0, 1, i) name[id]; print }'
+  >     { for (id in name) gsub(id, name[id]); print }'
   > }
   $ identities() {
   >   sed -nE \
@@ -127,12 +127,12 @@ test-strider-unode-history.t.
   > }
   $ failures() {
   >   grep 'Strider family incomplete' strider.err | sed -nE \
-  >     's/.*changeset_id="?([0-9a-f]+)"? family="?([a-z-]+)"? failure_stage="?([a-z]+)"? failure_class="?([a-z_]+)"? object="?([^" ]+)"?.*/\1 \2 \3 \4 \5/p' \
+  >     's/.*changeset_id="?([0-9a-f]+)"? family="?([a-z-]+)"? failure_stage="?([a-z]+)"? failure_class="?([a-z_]+)"? object="?([^" ]+)"? storage_key="?([^" ]+)"?.*/\1 \2 \3 \4 \5 \6/p' \
   >   | names | unode_rename | LC_ALL=C sort
   > }
 
 The number of commit and family results, those not validated, and each
-failure as commit, family, stage, class and object.
+failure as commit, family, stage, class, object and storage key.
 
   $ outcomes() {
   >   grep -c ' status=' strider.out
@@ -198,7 +198,7 @@ B's mapping, so C reports it missing.
   4
   B unode status=not_derived
   C unode status=incomplete
-  C unode enumerate missing Mapping:unodes:B
+  C unode enumerate missing Mapping:unodes:B derived_root_unode_v2.B
   $ mv "$TESTTMP/mapping-B" "$BLOBS/blob-repo0000.derived_root_unode_v2.$B"
 
 A missing shared manifest unode is fatal. Only A, which added it, reads it:
@@ -215,7 +215,7 @@ later commits compare dir1 by id. Strider reports it by key as `missing` at
   $ outcomes
   4
   A unode status=incomplete
-  A unode load missing UnodeManifest:dir1/sub@A
+  A unode load missing UnodeManifest:dir1/sub@A manifestunode.blake2.dir1/sub@A
   $ mv "$TESTTMP/shared-manifest" "$BLOBS/blob-repo0000.manifestunode.blake2.$SHARED"
 
 A shared file unode that is present but undecodable is an unreadable target.
@@ -232,7 +232,7 @@ Strider reports it by key against A, which added it.
   $ outcomes
   4
   A unode status=incomplete
-  A unode load unreadable UnodeFile:dir1/sub/file3@A
+  A unode load unreadable UnodeFile:dir1/sub/file3@A fileunode.blake2.dir1/sub/file3@A
   $ mv "$TESTTMP/file3" "$BLOBS/blob-repo0000.fileunode.blake2.$FILE3"
 
 Resuming after A, Walker reaches A's dir2/file2 unode only through the parent

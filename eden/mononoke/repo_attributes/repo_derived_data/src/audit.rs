@@ -14,6 +14,7 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use blobstore::LoadableError;
 use derived_data_manager::BonsaiDerivable;
+use derived_data_manager::DerivationContext;
 use derived_data_manager::DerivationError;
 use mononoke_types::ChangesetId;
 use mononoke_types::audit::CommitInfo;
@@ -26,6 +27,17 @@ use mononoke_types::audit::Validatable;
 use mononoke_types::audit::WalkError;
 
 use crate::RepoDerivedDataRef;
+
+/// Where a derived data type keeps its mapping records, so that a mapping can
+/// name the key it is stored under. Each type implements it with its own key
+/// format.
+pub trait MappingKey: BonsaiDerivable {
+    /// The key the mapping for `changeset_id` is stored under in the
+    /// blobstore, without the repository's prefix, or `None` for a type whose
+    /// mapping is an SQL row.
+    fn mapping_key(derivation_ctx: &DerivationContext, changeset_id: ChangesetId)
+    -> Option<String>;
+}
 
 /// The derived-data mapping record for `D` at one changeset.
 pub struct Mapping<D> {
@@ -42,7 +54,7 @@ impl<D> Mapping<D> {
     }
 }
 
-impl<D: BonsaiDerivable> Mapping<D> {
+impl<D: MappingKey> Mapping<D> {
     /// Loads a family's own mapping for the audited commit, as
     /// [`Validatable::load`] does, except that an absent mapping is not
     /// derived rather than missing. Only this reports an absent mapping as not
@@ -142,7 +154,7 @@ impl<D: BonsaiDerivable> fmt::Debug for Mapping<D> {
 impl<R, D> Validatable<R> for Mapping<D>
 where
     R: RepoDerivedDataRef + Send + Sync + 'static,
-    D: BonsaiDerivable,
+    D: MappingKey,
 {
     const NAME: &'static str = "Mapping";
     const SUBTYPE: Option<&'static str> = Some(D::NAME);
@@ -155,6 +167,13 @@ where
         self.fetch(ctx, repo)
             .await?
             .ok_or_else(|| LoadError::Missing(self.to_string()))
+    }
+
+    // The key `fetch_derived` reads, from the configuration of the
+    // repository's derived data manager.
+    fn storage_key(&self, repo: &R) -> Option<String> {
+        let derivation_ctx = repo.repo_derived_data().manager().derivation_context(None);
+        D::mapping_key(&derivation_ctx, self.changeset_id)
     }
 }
 

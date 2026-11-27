@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use blobstore::Loadable;
 use futures::stream::StreamExt;
 
+use crate::BlobstoreKey;
 use crate::BonsaiChangeset;
 use crate::ChangesetId;
 use crate::DerivableType;
@@ -36,6 +37,10 @@ impl<R: Send + Sync + 'static> Validatable<R> for ChangesetId {
 
     async fn load(&self, ctx: &TaggedContext, _repo: &R) -> Result<BonsaiChangeset, LoadError> {
         Ok(Loadable::load(self, ctx, ctx.blobstore()).await?)
+    }
+
+    fn storage_key(&self, _repo: &R) -> Option<String> {
+        Some(self.blobstore_key())
     }
 }
 

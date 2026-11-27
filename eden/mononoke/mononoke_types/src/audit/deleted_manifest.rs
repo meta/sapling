@@ -8,6 +8,7 @@
 use async_trait::async_trait;
 use blobstore::Loadable;
 
+use crate::BlobstoreKey;
 use crate::DeletedManifestV2Id;
 use crate::audit::LoadError;
 use crate::audit::TaggedContext;
@@ -25,6 +26,10 @@ impl<R: Send + Sync + 'static> Validatable<R> for DeletedManifestV2Id {
     async fn load(&self, ctx: &TaggedContext, _repo: &R) -> Result<DeletedManifestV2, LoadError> {
         Ok(Loadable::load(self, ctx, ctx.blobstore()).await?)
     }
+
+    fn storage_key(&self, _repo: &R) -> Option<String> {
+        Some(self.blobstore_key())
+    }
 }
 
 #[async_trait]
@@ -39,5 +44,9 @@ impl<R: Send + Sync + 'static> Validatable<R> for ShardedMapNodeDMv2Id {
         _repo: &R,
     ) -> Result<ShardedMapNode<DeletedManifestV2Id>, LoadError> {
         Ok(Loadable::load(self, ctx, ctx.blobstore()).await?)
+    }
+
+    fn storage_key(&self, _repo: &R) -> Option<String> {
+        Some(self.blobstore_key())
     }
 }

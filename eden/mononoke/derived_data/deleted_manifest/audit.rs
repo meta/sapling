@@ -15,9 +15,11 @@ use blobstore::KeyedBlobstore;
 use blobstore::Loadable;
 use context::CoreContext;
 use derived_data_manager::BonsaiDerivable;
+use derived_data_manager::DerivationContext;
 use futures::StreamExt;
 use futures::TryStreamExt;
 use futures::stream::FuturesOrdered;
+use mononoke_types::ChangesetId;
 use mononoke_types::DeletedManifestV2Id;
 use mononoke_types::DerivableType;
 use mononoke_types::MPathElement;
@@ -36,9 +38,20 @@ use mononoke_types::sharded_map::ShardedMapNode;
 use mononoke_types::sharded_map::ShardedTraversalOutput;
 use repo_derived_data::RepoDerivedDataRef;
 use repo_derived_data::audit::Mapping;
+use repo_derived_data::audit::MappingKey;
 
 use crate::RootDeletedManifestIdCommon;
 use crate::RootDeletedManifestV2Id;
+use crate::format_key;
+
+impl MappingKey for RootDeletedManifestV2Id {
+    fn mapping_key(
+        derivation_ctx: &DerivationContext,
+        changeset_id: ChangesetId,
+    ) -> Option<String> {
+        Some(format_key(derivation_ctx, changeset_id))
+    }
+}
 
 /// The deleted-manifest family: the commit's mapping, then every manifest node
 /// that differs from all parents' nodes at the same path, and every separately
