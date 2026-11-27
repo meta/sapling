@@ -9,6 +9,7 @@
 #![feature(debug_closure_helpers)]
 
 pub mod acl_manifest;
+pub mod audit;
 pub mod basename_suffix_skeleton_manifest_v3;
 pub mod blame_v2;
 pub mod blame_v3;
