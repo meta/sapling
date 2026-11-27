@@ -10,6 +10,7 @@ dott_test(
     dott_files = glob(["*.t"]),
     deps = [
         "//eden/mononoke:mononoke",
+        "//eden/mononoke/jobs/strider:strider",
         "//eden/mononoke/jobs/walker:walker",
         "//eden/mononoke/tools/admin:admin",
         "//eden/mononoke/tools/packer:packer",

@@ -5,14 +5,348 @@
  * GNU General Public License version 2.
  */
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the CLI, in the next diff, runs the families")
-)]
+use std::collections::HashSet;
+use std::num::NonZeroU32;
+use std::num::NonZeroUsize;
+use std::sync::Arc;
+
+use anyhow::Context;
+use anyhow::Result;
+use anyhow::bail;
+use anyhow::ensure;
+use blobstore_factory::BlobstoreArgDefaults;
+use blobstore_factory::ReadOnlyStorage;
+use clap::ArgGroup;
+use clap::Parser;
+use clap::builder::PossibleValuesParser;
+use cmdlib_caching::CacheMode;
+use cmdlib_caching::CachelibSettings;
+use commit_graph::CommitGraph;
+use context::CoreContext;
+use environment::Caching;
+use fbinit::FacebookInit;
+use futures::TryStreamExt;
+use futures::stream;
+use futures::stream::BoxStream;
+use futures::stream::StreamExt;
+use mononoke_app::MononokeApp;
+use mononoke_app::MononokeAppBuilder;
+use mononoke_app::args::RepoArgs;
+use mononoke_types::ChangesetId;
+use mononoke_types::audit::LoadTags;
+use repo_blobstore::RepoBlobstore;
+use repo_derived_data::RepoDerivedData;
+use repo_identity::RepoIdentity;
+use repo_identity::RepoIdentityRef;
+use runner::CommitReport;
+use runner::FamilyStatus;
+use runner::Operation;
+use runner::Strider;
+use runner::StriderLimits;
+use sql_commit_graph_storage::CommitGraphBulkFetcher;
+use sql_commit_graph_storage::CommitGraphBulkFetcherRef;
+use tracing::error;
+use tracing::info;
+use validation::ValidationSummary;
+
 mod families;
 pub mod runner;
 #[cfg(test)]
 mod test_utils;
 pub mod validation;
 
-fn main() {}
+#[facet::container]
+pub(crate) struct Repo {
+    #[facet]
+    commit_graph: CommitGraph,
+
+    #[facet]
+    commit_graph_bulk_fetcher: CommitGraphBulkFetcher,
+
+    #[facet]
+    repo_blobstore: RepoBlobstore,
+
+    #[facet]
+    repo_derived_data: RepoDerivedData,
+
+    #[facet]
+    repo_identity: RepoIdentity,
+}
+
+fn family_names() -> PossibleValuesParser {
+    PossibleValuesParser::new(
+        families::families::<Repo>()
+            .into_iter()
+            .map(|family| family.name),
+    )
+}
+
+#[derive(Parser)]
+#[clap(
+    about = "Prototype per-commit audit of reachable storage",
+    group(
+        ArgGroup::new("commits")
+            .required(true)
+            .args(["changeset_id", "chunk_size"])
+    )
+)]
+struct StriderArgs {
+    /// Repository to inspect.
+    #[clap(flatten)]
+    repo: RepoArgs,
+
+    /// Audit what this Bonsai changeset added.
+    #[clap(long)]
+    changeset_id: Option<ChangesetId>,
+
+    /// Audit every changeset in an SQL-ID range, fetching this many IDs per query.
+    #[clap(long)]
+    chunk_size: Option<NonZeroUsize>,
+
+    /// Inclusive lower SQL-ID bound for `--chunk-size`. Defaults to the repository bound.
+    #[clap(long, requires = "chunk_size")]
+    repo_lower_bound: Option<u64>,
+
+    /// Exclusive upper SQL-ID bound for `--chunk-size`. Defaults to the repository bound.
+    #[clap(long, requires = "chunk_size")]
+    repo_upper_bound: Option<u64>,
+
+    /// Family to audit. Repeat to select several.
+    #[clap(long, required = true, value_parser = family_names())]
+    family: Vec<String>,
+
+    /// Operation to perform on each added object.
+    #[clap(long, value_enum, default_value = "walk")]
+    operation: Operation,
+
+    /// Maximum number of commits audited concurrently.
+    #[clap(long)]
+    max_concurrency: NonZeroUsize,
+
+    /// Maximum number of objects one commit loads concurrently, counted
+    /// separately while finding what the commit added and while validating it,
+    /// and for each kind of read a family makes while finding: a family that
+    /// loads its own objects for another walk's entries can have twice as many.
+    #[clap(long)]
+    max_loads_per_commit: NonZeroUsize,
+
+    /// Print each validated object and each commit's status per family. Holds
+    /// each commit's objects until it finishes, so memory grows with commit size.
+    #[clap(long)]
+    print_visited_nodes: bool,
+}
+
+#[fbinit::main]
+fn main(fb: FacebookInit) -> Result<()> {
+    // As in Walker: the cache is local to the process and starts empty, so an
+    // object's first read always reaches storage (and, when scrubbing, every
+    // replica). A shared cache such as memcache could answer that read instead.
+    let cachelib_settings = CachelibSettings {
+        cache_size: 2 * 1024 * 1024 * 1024,
+        ..Default::default()
+    };
+    let app = MononokeAppBuilder::new(fb)
+        .with_cachelib_settings(cachelib_settings)
+        .with_arg_defaults(CacheMode::LocalOnly)
+        .with_arg_defaults(ReadOnlyStorage(true))
+        .with_arg_defaults(BlobstoreArgDefaults {
+            read_qps: NonZeroU32::new(20000),
+            ..Default::default()
+        })
+        .build::<StriderArgs>()?;
+    app.run_basic(run)
+}
+
+async fn run(app: MononokeApp) -> Result<()> {
+    let args: StriderArgs = app.args()?;
+    if let Caching::Enabled(_) = app.environment().caching {
+        bail!(
+            "a shared cache could answer for blobs that storage has lost: use --cache-mode local-only or disabled"
+        );
+    }
+    // As in Walker: redacted content is still stored, so it is read and
+    // checked like any other.
+    let repo: Repo = app
+        .open_repo_unredacted(&args.repo)
+        .await
+        .context("failed to open repository")?;
+    let repo_name = repo.repo_identity().name().to_string();
+    let ctx = app.new_basic_context();
+    let operation = args.operation;
+    let families = families::families::<Repo>()
+        .into_iter()
+        .filter(|family| args.family.iter().any(|name| name == family.name))
+        .collect();
+    let repo = Arc::new(repo);
+    let commits = commits(&ctx, &repo, &args).await?;
+    let strider = Arc::new(Strider::new(
+        ctx,
+        repo,
+        families,
+        HashSet::new(),
+        operation,
+        StriderLimits {
+            max_concurrency: args.max_concurrency,
+            max_loads_per_commit: args.max_loads_per_commit,
+        },
+        args.print_visited_nodes,
+        Arc::new(LoadTags::default()),
+    ));
+
+    let mut summary = RunSummary::default();
+    let mut reports = std::pin::pin!(strider.audit(commits));
+    while let Some(report) = reports.try_next().await.transpose() {
+        match report {
+            Ok(report) => {
+                report_commit(&repo_name, operation, &report, args.print_visited_nodes);
+                summary.record(&report);
+            }
+            Err(error) => {
+                error!(
+                    repo = repo_name,
+                    operation = operation.as_str(),
+                    status = "incomplete",
+                    cause = format!("{error:#}"),
+                    "Strider failed to list or audit commits"
+                );
+                return Err(error);
+            }
+        }
+    }
+
+    let status = if summary.incomplete_commits == 0 {
+        "complete"
+    } else {
+        "incomplete"
+    };
+    info!(
+        repo = repo_name,
+        operation = operation.as_str(),
+        status,
+        commits = summary.commits,
+        incomplete_commits = summary.incomplete_commits,
+        not_derived_ignored = summary.not_derived,
+        visited_nodes = summary.validated_objects,
+        validation_passed = summary.validation.passed,
+        validation_failed = summary.validation.failed,
+        validation_not_applicable = summary.validation.not_applicable,
+        "Strider completed"
+    );
+    if summary.incomplete_commits > 0 {
+        bail!(
+            "{} of {} commits are incomplete",
+            summary.incomplete_commits,
+            summary.commits
+        );
+    }
+    Ok(())
+}
+
+/// The commits selected by the command line, in SQL-ID order for a range.
+async fn commits(
+    ctx: &CoreContext,
+    repo: &Arc<Repo>,
+    args: &StriderArgs,
+) -> Result<BoxStream<'static, Result<ChangesetId>>> {
+    if let Some(id) = args.changeset_id {
+        return Ok(stream::once(async move { Ok(id) }).boxed());
+    }
+    // The `commits` group requires exactly one source, so this is `--chunk-size`.
+    let chunk_size = args
+        .chunk_size
+        .context("a commit source is required")?
+        .get();
+    let fetcher = repo.commit_graph_bulk_fetcher();
+    let repo_bounds = fetcher.repo_bounds(ctx, false).await?;
+    let bounds = args.repo_lower_bound.unwrap_or(repo_bounds.start)
+        ..args.repo_upper_bound.unwrap_or(repo_bounds.end);
+    // The range is read from a replica, which may not have the newest commits
+    // yet: a range past what it has would silently skip them.
+    ensure!(
+        bounds.end <= repo_bounds.end,
+        "upper bound {} is past the replica's exclusive upper bound, {}",
+        bounds.end,
+        repo_bounds.end
+    );
+    let explicit = args.repo_lower_bound.is_some() || args.repo_upper_bound.is_some();
+    ensure!(
+        !explicit || bounds.start < bounds.end,
+        "SQL-ID range {bounds:?} is empty"
+    );
+    info!(
+        lower = bounds.start,
+        upper = bounds.end,
+        "Strider SQL-ID range"
+    );
+    Ok(fetcher
+        .oldest_first_stream(ctx, bounds, chunk_size as u64, false)
+        .map_ok(|item| item.cs_id)
+        .boxed())
+}
+
+#[derive(Default)]
+struct RunSummary {
+    commits: u64,
+    incomplete_commits: u64,
+    /// Commit and family pairs whose own mapping is absent.
+    not_derived: u64,
+    validated_objects: u64,
+    validation: ValidationSummary,
+}
+
+impl RunSummary {
+    fn record(&mut self, report: &CommitReport) {
+        self.commits += 1;
+        if report.is_incomplete() {
+            self.incomplete_commits += 1;
+        }
+        for family in &report.families {
+            if matches!(family.status, FamilyStatus::NotDerived) {
+                self.not_derived += 1;
+            }
+            self.validated_objects += family.validated_objects;
+            self.validation.passed += family.validation.passed;
+            self.validation.failed += family.validation.failed;
+            self.validation.not_applicable += family.validation.not_applicable;
+        }
+    }
+}
+
+fn report_commit(
+    repo_name: &str,
+    operation: Operation,
+    report: &CommitReport,
+    print_visited_nodes: bool,
+) {
+    let changeset_id = report.changeset_id;
+    for family in &report.families {
+        if print_visited_nodes {
+            for object in &family.validated {
+                println!("{changeset_id} {} {object}", family.family);
+            }
+            let status = match family.status {
+                FamilyStatus::Validated => "validated",
+                FamilyStatus::NotDerived => "not_derived",
+                FamilyStatus::Excluded => "excluded",
+                FamilyStatus::Incomplete(_) => "incomplete",
+            };
+            println!("{changeset_id} {} status={status}", family.family);
+        }
+        if let Some(failure) = family.failure() {
+            error!(
+                repo = repo_name,
+                operation = operation.as_str(),
+                changeset_id = %changeset_id,
+                family = family.family,
+                failure_stage = failure.stage.as_str(),
+                failure_class = failure.class,
+                object = failure
+                    .object
+                    .as_ref()
+                    .map_or_else(|| "none".to_string(), ToString::to_string),
+                cause = failure.cause,
+                "Strider family incomplete"
+            );
+        }
+    }
+}

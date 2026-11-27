@@ -11,6 +11,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use anyhow::Result;
+use clap::ValueEnum;
 use commit_graph::CommitGraphRef;
 use context::CoreContext;
 use futures::stream;
@@ -32,7 +33,7 @@ use tokio_util::task::AbortOnDropHandle;
 use crate::families::Family;
 use crate::validation::ValidationSummary;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum Operation {
     Walk,
     Validate,

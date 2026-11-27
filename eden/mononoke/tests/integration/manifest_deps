@@ -34,6 +34,7 @@ MONONOKE_BINS = {
     "MONONOKE_BOOKMARK_SERVICE_SERVER": "bookmark_service_server",
     "MONONOKE_BOOKMARK_SERVICE_CLIENT": "bookmark_service_client_cli",
     "MONONOKE_SQLBLOB_GC": "sqlblob_gc",
+    "MONONOKE_STRIDER": "strider",
     "MONONOKE_TESTTOOL": "testtool",
     "MONONOKE_WALKER": "walker",
     "MONONOKE_X_REPO_SYNC": "mononoke_x_repo_sync_job",
