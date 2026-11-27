@@ -32,6 +32,8 @@ use futures::TryStreamExt;
 use futures::stream;
 use futures::stream::BoxStream;
 use futures::stream::StreamExt;
+use metaconfig_types::RepoConfig;
+use metaconfig_types::RepoConfigRef;
 use mononoke_app::MononokeApp;
 use mononoke_app::MononokeAppBuilder;
 use mononoke_app::args::RepoArgs;
@@ -71,6 +73,9 @@ pub(crate) struct Repo {
 
     #[facet]
     repo_blobstore: RepoBlobstore,
+
+    #[facet]
+    repo_config: RepoConfig,
 
     #[facet]
     repo_derived_data: RepoDerivedData,
@@ -188,10 +193,22 @@ async fn run(app: MononokeApp) -> Result<()> {
     let repo_name = repo.repo_identity().name().to_string();
     let ctx = app.new_basic_context();
     let operation = args.operation;
-    let families = families::families::<Repo>()
+    let derived_data_config = &repo.repo_config().derived_data_config;
+    let (families, unavailable): (Vec<_>, Vec<_>) = families::families::<Repo>()
         .into_iter()
         .filter(|family| args.family.iter().any(|name| name == family.name))
-        .collect();
+        .partition(|family| {
+            family
+                .derived_type
+                .is_none_or(|derived_type| derived_data_config.is_enabled(derived_type))
+        });
+    for family in &unavailable {
+        info!(
+            repo = repo_name,
+            family = family.name,
+            "Strider family unavailable: the repository has not enabled its derived data type"
+        );
+    }
     let repo = Arc::new(repo);
     let commits = commits(&ctx, &repo, &args).await?;
     let strider = Arc::new(Strider::new(

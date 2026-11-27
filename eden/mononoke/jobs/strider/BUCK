@@ -31,6 +31,7 @@ rust_binary(
         "//eden/mononoke/common/mononoke_macros:mononoke_macros",
         "//eden/mononoke/derived_data:deleted_manifest",
         "//eden/mononoke/derived_data:unodes",
+        "//eden/mononoke/metaconfig:metaconfig_types",
         "//eden/mononoke/mononoke_types:mononoke_types",
         "//eden/mononoke/repo_attributes/bookmarks:bookmarks",
         "//eden/mononoke/repo_attributes/commit_graph/commit_graph:commit_graph",
