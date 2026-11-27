@@ -10,6 +10,7 @@ license = "GPLv2+"
 [dependencies]
 anyhow = "1.0.104"
 blobstore_factory = { version = "0.1.0", path = "../../blobstore/factory" }
+bookmarks = { version = "0.1.0", path = "../../repo_attributes/bookmarks" }
 clap = { version = "4.6.2", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 cmdlib_caching = { version = "0.1.0", path = "../../cmdlib/caching" }
 commit_graph = { version = "0.1.0", path = "../../repo_attributes/commit_graph/commit_graph" }

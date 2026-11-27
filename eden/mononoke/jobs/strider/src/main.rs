@@ -16,6 +16,10 @@ use anyhow::bail;
 use anyhow::ensure;
 use blobstore_factory::BlobstoreArgDefaults;
 use blobstore_factory::ReadOnlyStorage;
+use bookmarks::BookmarkKey;
+use bookmarks::Bookmarks;
+use bookmarks::BookmarksRef;
+use bookmarks::Freshness;
 use clap::ArgGroup;
 use clap::Parser;
 use clap::builder::PossibleValuesParser;
@@ -58,6 +62,9 @@ pub mod validation;
 #[facet::container]
 pub(crate) struct Repo {
     #[facet]
+    bookmarks: dyn Bookmarks,
+
+    #[facet]
     commit_graph: CommitGraph,
 
     #[facet]
@@ -87,7 +94,7 @@ fn family_names() -> PossibleValuesParser {
     group(
         ArgGroup::new("commits")
             .required(true)
-            .args(["changeset_id", "chunk_size"])
+            .args(["changeset_id", "bookmark", "chunk_size"])
     )
 )]
 struct StriderArgs {
@@ -98,6 +105,10 @@ struct StriderArgs {
     /// Audit what this Bonsai changeset added.
     #[clap(long)]
     changeset_id: Option<ChangesetId>,
+
+    /// Audit what the bookmarked changeset added.
+    #[clap(long)]
+    bookmark: Option<BookmarkKey>,
 
     /// Audit every changeset in an SQL-ID range, fetching this many IDs per query.
     #[clap(long)]
@@ -249,6 +260,15 @@ async fn commits(
     args: &StriderArgs,
 ) -> Result<BoxStream<'static, Result<ChangesetId>>> {
     if let Some(id) = args.changeset_id {
+        return Ok(stream::once(async move { Ok(id) }).boxed());
+    }
+    if let Some(bookmark) = &args.bookmark {
+        let id = repo
+            .bookmarks()
+            .get(ctx.clone(), bookmark, Freshness::MostRecent)
+            .await
+            .with_context(|| format!("failed to resolve bookmark {bookmark}"))?
+            .with_context(|| format!("bookmark {bookmark} does not exist"))?;
         return Ok(stream::once(async move { Ok(id) }).boxed());
     }
     // The `commits` group requires exactly one source, so this is `--chunk-size`.
