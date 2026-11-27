@@ -256,6 +256,11 @@ class InodeMap {
    * However, decrements may happen after we have decided to unload the Inode
    * object.  Therefore decrements are performed on the InodeMap so that we can
    * avoid loading an Inode object just to decrement its reference count.
+   *
+   * On macOS the FSKit extension counts the references it returns, so a
+   * release of more than an inode holds, or of an unknown inode number, is a
+   * bug in the extension. The count stops at zero and the release is counted
+   * in inode_map.fs_refcount_underflow or inode_map.forget_unknown_inode.
    */
   void decFsRefcount(InodeNumber number, uint32_t count = 1);
 

@@ -150,6 +150,65 @@ TEST(InodeMap, unknownInodeNumberIsStaleOnFSKitTakeoverMount) {
           .get(0ms),
       ESTALE);
 }
+
+TEST(InodeMap, fsRefcountTracksLoadedAndUnloadedReferences) {
+  TestMount testMount;
+  testMount.setMountProtocol(MountProtocol::FSKIT);
+  FakeTreeBuilder builder;
+  builder.setFile("file.txt", "contents\n");
+  testMount.initialize(builder);
+
+  auto* inodeMap = testMount.getEdenMount()->getInodeMap();
+  auto file = testMount.getFileInode("file.txt"_relpath);
+  const auto ino = file->getNodeId();
+
+  file->incFsRefcount();
+  file->incFsRefcount();
+  EXPECT_EQ(2u, file->debugGetFsRefcount());
+
+  inodeMap->decFsRefcount(ino, 1);
+  EXPECT_EQ(1u, file->debugGetFsRefcount());
+
+  file->incFsRefcount();
+  EXPECT_EQ(2u, file->debugGetFsRefcount());
+
+  file.reset();
+  testMount.getRootInode()->unloadChildrenNow();
+  ASSERT_TRUE(inodeMap->isInodeRemembered(ino));
+
+  inodeMap->decFsRefcount(ino, 1);
+  EXPECT_TRUE(inodeMap->isInodeRemembered(ino));
+
+  inodeMap->decFsRefcount(ino, 1);
+  EXPECT_FALSE(inodeMap->isInodeLoadedOrRemembered(ino));
+}
+
+TEST(InodeMap, fsRefcountOverReleaseStopsAtZero) {
+  TestMount testMount;
+  testMount.setMountProtocol(MountProtocol::FSKIT);
+  FakeTreeBuilder builder;
+  builder.setFile("file.txt", "contents\n");
+  testMount.initialize(builder);
+
+  auto* inodeMap = testMount.getEdenMount()->getInodeMap();
+  auto file = testMount.getFileInode("file.txt"_relpath);
+  const auto ino = file->getNodeId();
+
+  file->incFsRefcount();
+  inodeMap->decFsRefcount(0x12345678_ino, 1);
+  EXPECT_EQ(1u, file->debugGetFsRefcount());
+
+  inodeMap->decFsRefcount(ino, 5);
+  EXPECT_EQ(0u, file->debugGetFsRefcount());
+
+  file->incFsRefcount();
+  file.reset();
+  testMount.getRootInode()->unloadChildrenNow();
+  ASSERT_TRUE(inodeMap->isInodeRemembered(ino));
+
+  inodeMap->decFsRefcount(ino, 5);
+  EXPECT_FALSE(inodeMap->isInodeLoadedOrRemembered(ino));
+}
 #elif defined(__APPLE__)
 TEST(EdenMount, fskitMountFailsWithEnotsupWithoutFsKitSupport) {
   TestMount testMount;

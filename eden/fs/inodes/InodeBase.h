@@ -102,12 +102,13 @@ class InodeBase {
    * This is generally intended for use by FUSE APIs that return an inode
    * number to the kernel: lookup(), create(), mkdir(), symlink(), link(), or
    * by ProjectedFS APIs that write a placeholder to disk.
-   * On PrjFS and NFS, we treat the fs refcount as a flag to be 0 or 1.
-   * We should revisit this behavior on macOS if we migrate to a FSChannel
-   * implementation that sends us FORGET calls
+   *
+   * FUSE and FSKit return every reference they take, so Linux and FSKit mounts
+   * count them. NFS on macOS and PrjFS return no references, so there the fs
+   * refcount is a 0/1 flag.
    */
   void incFsRefcount(uint32_t count = 1) {
-    if (folly::kIsLinux) {
+    if (countsFsReferences()) {
       numFsReferences_.fetch_add(count, std::memory_order_acq_rel);
     } else {
       XDCHECK_EQ(count, 1u);
@@ -119,13 +120,20 @@ class InodeBase {
    * Decrement the number of outstanding references to this inode's number.
    *
    * This should be used to release inode number references obtained via
-   * incFsRefcount().  The primary use case is for FUSE forget() calls, or
-   * when a ProjectedFS placeholder is manually invalidated.
-   * On PrjFS and NFS, we treat the fs refcount as a flag to be 0 or 1.
-   * We should revisit this behavior on macOS if we migrate to a FSChannel
-   * implementation that sends us FORGET calls
+   * incFsRefcount().  The primary use case is for FUSE forget() and FSKit
+   * reclaim calls, or when a ProjectedFS placeholder is manually invalidated.
+   * Where the fs refcount is a flag, this clears it.
+   *
+   * Returns false when `count` is more than the inode holds. On an FSKit mount
+   * the count then stops at zero: the FSKit extension, not the kernel, counts
+   * the references it returns.
    */
-  void decFsRefcount(uint32_t count = 1) {
+  bool decFsRefcount(uint32_t count = 1) {
+    if (!countsFsReferences()) {
+      XDCHECK_GE(count, 1u);
+      clearFsRefcount();
+      return true;
+    }
     if (folly::kIsLinux) {
       auto prevValue =
           numFsReferences_.fetch_sub(count, std::memory_order_acq_rel);
@@ -133,10 +141,19 @@ class InodeBase {
       if (prevValue == count) {
         fsReleasedLastReference();
       }
-    } else {
-      XDCHECK_GE(count, 1u);
-      clearFsRefcount();
+      return true;
     }
+    auto prevValue = numFsReferences_.load(std::memory_order_acquire);
+    while (!numFsReferences_.compare_exchange_weak(
+        prevValue,
+        prevValue > count ? prevValue - count : 0,
+        std::memory_order_acq_rel,
+        std::memory_order_acquire)) {
+    }
+    if (prevValue != 0 && prevValue <= count) {
+      fsReleasedLastReference();
+    }
+    return prevValue >= count;
   }
 
   /**
@@ -786,6 +803,17 @@ class InodeBase {
   void fsReleasedLastReference() {
     lastGcRefTime_.store(EdenTimestamp{timespec{}}, std::memory_order_relaxed);
   }
+
+  /**
+   * Whether the fs refcount counts references rather than being a 0/1 flag:
+   * on Linux, and on an FSKit mount on macOS.
+   */
+  bool countsFsReferences() const {
+    return folly::kIsLinux || (folly::kIsApple && isOnFSKitMount());
+  }
+
+  /** Out of line because this header only declares EdenMount. */
+  bool isOnFSKitMount() const;
 
   /**
    * The last time this inode was referenced, as far as inode garbage

@@ -775,8 +775,12 @@ void InodeMap::decFsRefcount(InodeNumber number, uint32_t count) {
   }
   // Now release our lock before decrementing the inode's FS reference
   // count and immediately releasing our pointer reference.
-  if (inodePtr) {
-    inodePtr->decFsRefcount(count);
+  if (inodePtr && !inodePtr->decFsRefcount(count)) {
+    stats_->increment(&InodeMapStats::fsRefcountUnderflow);
+    XLOG_EVERY_MS(WARN, 60000) << fmt::format(
+        "FS peer released {} references to loaded inode {}, more than it holds",
+        count,
+        number);
   }
 }
 
@@ -844,18 +848,30 @@ InodePtr InodeMap::decFsRefcountHelper(
                << number;
   }
 
-  // Decrement the reference count in the unloaded entry. Only FUSE counts
-  // references, and InodeBase::incFsRefcount counts them only on Linux, so
-  // the same test applies here. The PrjFS invalidation path arrives with the
-  // 0/1 flag that InodeBase::decFsRefcount keeps for loaded inodes, and NFS
-  // only ever clears through forgetStaleInodes(). An inode may be remembered
-  // without a reference, for example while a load is pending, so clear
-  // rather than subtract.
+  // Decrement the reference count in the unloaded entry. Only FUSE and FSKit
+  // count references, and InodeBase::incFsRefcount counts them only on Linux
+  // and on FSKit mounts, so the same test applies here. The PrjFS
+  // invalidation path arrives with the 0/1 flag that InodeBase::decFsRefcount
+  // keeps for loaded inodes, and NFS only ever clears through
+  // forgetStaleInodes(). An inode may be remembered without a reference, for
+  // example while a load is pending, so clear rather than subtract.
   auto& unloadedEntry = unloadedIter->second;
-  if (clearRefCount || !folly::kIsLinux) {
+  const bool countsFsReferences = folly::kIsLinux ||
+      (folly::kIsApple && mount_->shouldBeOrIsFSKitChannel());
+  if (clearRefCount || !countsFsReferences) {
+    unloadedEntry.numFsReferences = 0;
+  } else if (folly::kIsLinux) {
+    XCHECK_GE(unloadedEntry.numFsReferences, count);
+    unloadedEntry.numFsReferences -= count;
+  } else if (UNLIKELY(count > unloadedEntry.numFsReferences)) {
+    stats_->increment(&InodeMapStats::fsRefcountUnderflow);
+    XLOG_EVERY_MS(WARN, 60000) << fmt::format(
+        "FS peer released {} references to unloaded inode {}, which holds {}",
+        count,
+        number,
+        unloadedEntry.numFsReferences);
     unloadedEntry.numFsReferences = 0;
   } else {
-    XCHECK_GE(unloadedEntry.numFsReferences, count);
     unloadedEntry.numFsReferences -= count;
   }
 

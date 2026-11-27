@@ -139,6 +139,10 @@ InodeBase::~InodeBase() {
   }
 }
 
+bool InodeBase::isOnFSKitMount() const {
+  return mount_->shouldBeOrIsFSKitChannel();
+}
+
 #ifndef _WIN32
 struct stat InodeBase::getStatForCorruptOverlay() const noexcept {
   struct stat st = {};
