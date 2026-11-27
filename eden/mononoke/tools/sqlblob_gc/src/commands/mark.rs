@@ -32,6 +32,11 @@ use crate::utils;
 
 const BASE_RETRY_DELAY: Duration = Duration::from_secs(1);
 const RETRIES: usize = 3;
+/// A wave of primary promotions can fail a key's requests for a minute or more. With waits doubling
+/// from 1 second, a key is tried for about four minutes before it fails, and so restarts its shard.
+const KEY_TRIES: usize = 9;
+/// Spreads out the retries of the keys that failed together on one promotion.
+const KEY_RETRY_JITTER: Duration = Duration::from_secs(1);
 
 /// mark referenced blobs as not safe to delete
 #[derive(Parser)]
@@ -94,15 +99,16 @@ where
 {
     retry(|_| within_time_limit(timeout, mark()), BASE_RETRY_DELAY)
         .binary_exponential_backoff()
-        .max_attempts(RETRIES)
+        .jitter(KEY_RETRY_JITTER)
+        .max_attempts(KEY_TRIES)
         .inspect_err(|attempt, err| {
             warn!(
                 "{}",
-                failed_try_message(&format!("Marking key {key}"), attempt, RETRIES, err)
+                failed_try_message(&format!("Marking key {key}"), attempt, KEY_TRIES, err)
             )
         })
         .await
-        .with_context(|| anyhow!("Failed to handle {key} after {RETRIES} attempts"))?;
+        .with_context(|| anyhow!("Failed to handle {key} after {KEY_TRIES} attempts"))?;
     Ok(())
 }
 
@@ -309,9 +315,9 @@ mod tests {
             .expect_err("a key whose every try hangs should fail");
         assert_eq!(
             format!("{err:#}"),
-            "Failed to handle key after 3 attempts: timed out after 300 seconds"
+            format!("Failed to handle key after {KEY_TRIES} attempts: timed out after 300 seconds")
         );
-        assert_eq!(tries.load(Ordering::SeqCst), RETRIES);
+        assert_eq!(tries.load(Ordering::SeqCst), KEY_TRIES);
     }
 
     #[mononoke::test]
@@ -340,6 +346,42 @@ mod tests {
         assert_eq!(
             failed_try_message("Marking key repo0000.content.blake2.00", 2, 3, &err),
             "Marking key repo0000.content.blake2.00: attempt 2 of 3 failed: Failed to update generation: MySQL server has gone away"
+        );
+    }
+
+    #[mononoke::test]
+    async fn a_key_rides_out_a_three_minute_promotion() {
+        tokio::time::pause();
+        let promotion_ends = tokio::time::Instant::now() + Duration::from_secs(180);
+        mark_key("key", Some(FIVE_MINUTES), || async move {
+            if tokio::time::Instant::now() < promotion_ends {
+                Err(anyhow!("MySQL server has gone away"))
+            } else {
+                Ok(())
+            }
+        })
+        .await
+        .expect("a key should be retried until the promotion ends");
+    }
+
+    #[mononoke::test]
+    async fn a_key_that_keeps_failing_gives_up_after_about_four_minutes() {
+        tokio::time::pause();
+        let start = tokio::time::Instant::now();
+        let tries = AtomicUsize::new(0);
+        mark_key("key", Some(FIVE_MINUTES), || {
+            tries.fetch_add(1, Ordering::SeqCst);
+            future::ready(Err(anyhow!("MySQL server has gone away")))
+        })
+        .await
+        .expect_err("a key that fails every try should fail");
+
+        assert_eq!(tries.load(Ordering::SeqCst), 9);
+        // Eight waits of 1, 2, 4, 8, 16, 32, 64 and 128 seconds, each plus up to 1 second of jitter.
+        let waited = start.elapsed();
+        assert!(
+            waited >= Duration::from_secs(255) && waited <= Duration::from_secs(263),
+            "waited {waited:?}"
         );
     }
 }
