@@ -8,8 +8,8 @@
 
 Absent, missing or unreadable data in history. Walker shows
 where each damaged node belongs. Strider must report the failure against the
-commit that added the node, keep the other commits validated, and exit
-nonzero. See test-strider-chunked-deep-history.t for the Walker and Strider
+commit that added the node, keep the other commits validated, and exit 3,
+because it found problems. See test-strider-chunked-deep-history.t for the Walker and Strider
 arguments.
 
   $ setup_common_config "blob_files"
@@ -127,7 +127,7 @@ derived from B's mapping, so C reports it missing.
   $ grep -c "^DeletedManifestV2:$SHARED$" walker-absent.nodes
   1
   $ strider
-  [1]
+  [3]
   $ outcomes
   8
   B deleted-manifest status=not_derived
@@ -144,7 +144,7 @@ which added it.
   $ walker_failure | sed "s/$SHARED/SHARED/"
   missing_target DeletedManifestV2:SHARED
   $ strider
-  [1]
+  [3]
   $ outcomes | sed "s/$SHARED/SHARED/g"
   8
   B deleted-manifest status=incomplete
@@ -158,11 +158,17 @@ The same node present but undecodable is an unreadable target.
   $ walker_failure | sed "s/$SHARED/SHARED/"
   unreadable_target DeletedManifestV2:SHARED
   $ strider
-  [1]
+  [3]
   $ outcomes | sed "s/$SHARED/SHARED/g"
   8
   B deleted-manifest status=incomplete
   B deleted-manifest load unreadable DeletedManifestV2:SHARED deletedmanifest2.blake2.SHARED
+
+An unreadable object is a problem, but a failed storage read looks the same,
+so the run does not report its status as complete.
+
+  $ grep 'Strider completed' strider.err | grep -oE 'status="?[a-z]+"?' | tr -d '"'
+  status=unreadable
   $ mv "$TESTTMP/shared-dm" "$BLOBS/blob-repo0000.deletedmanifest2.blake2.$SHARED"
 
 A missing changeset, reached as a root and through B's parent edge, is fatal.
@@ -175,7 +181,7 @@ parents from the commit graph, so A's deleted manifest is still validated.
   $ walker_failure
   missing_target Changeset:A
   $ strider
-  [1]
+  [3]
   $ outcomes
   8
   A core status=incomplete

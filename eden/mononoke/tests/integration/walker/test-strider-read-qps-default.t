@@ -6,7 +6,8 @@
 
   $ . "${TEST_FIXTURES}/library.sh"
 
-Without --blobstore-read-qps, Strider limits reads to Walker's default rate.
+Without --blobstore-read-qps, Strider limits reads to 5,000 a second, the rate
+runs against production storage use.
 
   $ "$MONONOKE_STRIDER" --help | awk '/^ *--blobstore-read-qps /{p=1; print; next} /^ *-/{p=0} p' | grep -o '\[default: [^]]*\]'
-  [default: 20000]
+  [default: 5000]

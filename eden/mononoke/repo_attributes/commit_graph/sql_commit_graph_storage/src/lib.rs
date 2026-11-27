@@ -71,6 +71,7 @@ pub use crate::bulkops::ArcCommitGraphBulkFetcher;
 pub use crate::bulkops::CommitGraphBulkFetcher;
 pub use crate::bulkops::CommitGraphBulkFetcherArc;
 pub use crate::bulkops::CommitGraphBulkFetcherRef;
+pub use crate::bulkops::IdsInRange;
 
 mod bulkops;
 #[cfg(test)]
@@ -1136,6 +1137,21 @@ mononoke_queries! {
          WHERE repo_id = {repo_id}"
     }
 
+    read SelectIdsInRange(repo_id: RepositoryId, lower_bound: u64, upper_bound: u64) -> (u64, Option<u64>, Option<u64>) {
+        mysql(
+            "SELECT COUNT(*), MIN(id), MAX(id)
+            FROM commit_graph_edges FORCE INDEX(repo_id_id)
+            WHERE repo_id = {repo_id}
+              AND {lower_bound} <= id AND id < {upper_bound}"
+        )
+        sqlite(
+            "SELECT COUNT(*), MIN(id), MAX(id)
+            FROM commit_graph_edges
+            WHERE repo_id = {repo_id}
+              AND {lower_bound} <= id AND id < {upper_bound}"
+        )
+    }
+
     read SelectOldestChangesetsIdsInRange(repo_id: RepositoryId, lower_bound: u64, upper_bound: u64, limit: u64) -> (ChangesetId, u64) {
         mysql(
             "SELECT cs_id, id
@@ -1837,6 +1853,32 @@ impl SqlCommitGraphStorage {
             (Some(lo), Some(hi)) => Some(*lo..*hi + 1),
             _ => None,
         }))
+    }
+
+    /// How many changesets have auto-increment ids in the range
+    /// [range.start, range.end), and the lowest and highest of those ids.
+    pub(crate) async fn ids_in_range(
+        &self,
+        ctx: &CoreContext,
+        range: Range<u64>,
+        read_from_master: bool,
+    ) -> Result<IdsInRange> {
+        let conn = self.read_conn(read_from_master);
+        let rows = SelectIdsInRange::query(
+            conn,
+            ctx.sql_query_telemetry(),
+            &self.repo_identity.id(),
+            &range.start,
+            &range.end,
+        )
+        .await?;
+        Ok(match rows.first() {
+            Some((count, Some(first), Some(last))) => IdsInRange {
+                count: *count,
+                ids: Some(*first..=*last),
+            },
+            _ => IdsInRange::default(),
+        })
     }
 
     /// Fetch the oldest `limit` changesets from all changesets that have auto-increment ids

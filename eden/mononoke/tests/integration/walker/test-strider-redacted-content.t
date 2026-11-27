@@ -56,7 +56,7 @@ With that content's blob removed, B's core reports it missing.
   $ SECRET=$(grep "^$B core FileContent:" strider.out | cut -d: -f2)
   $ rm "$TESTTMP/blobstore/blobs/blob-repo0000.content.blake2.$SECRET"
   $ strider
-  [1]
+  [3]
   $ grep 'Strider family incomplete' strider.err | sed -nE \
   >   's/.*changeset_id="?([0-9a-f]+)"? family="?([a-z-]+)"? failure_stage="?([a-z]+)"? failure_class="?([a-z_]+)"?.*/\1 \2 \3 \4/p' |
   >   sed -e "s/$B/B/"

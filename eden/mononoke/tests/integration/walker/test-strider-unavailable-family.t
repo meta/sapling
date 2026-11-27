@@ -35,13 +35,15 @@ unodes.
   >   --print-visited-nodes \
   >   --family core --family unode \
   >   --chunk-size 2 > strider.out 2> strider.err
+  [1]
 
-Only core runs, on both commits, and the run completes.
+Only core runs, on both commits. The unode family was asked for but could not
+be checked, so the run is incomplete and exits 1.
 
   $ grep ' status=' strider.out | sed -e "s/$A/A/" -e "s/$B/B/" | LC_ALL=C sort
   A core status=validated
   B core status=validated
   $ grep 'Strider family unavailable' strider.err | sed -nE 's/.* family="?([a-z-]+)"?.*/\1/p'
   unode
-  $ grep 'Strider completed' strider.err | grep -cE 'status="?complete"?'
+  $ grep 'Strider completed' strider.err | grep -E 'status="?incomplete"?' | grep -cE ' unavailable_families=1 '
   1

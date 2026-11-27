@@ -72,6 +72,13 @@ pub struct Failure {
 }
 
 impl Failure {
+    /// Whether the failure is a problem found in storage: an object it names
+    /// is missing or unreadable. Otherwise the family could not be checked,
+    /// such as when a commit's parents could not be listed.
+    pub fn found_problem(&self) -> bool {
+        self.object.is_some() && matches!(self.class, "missing" | "unreadable")
+    }
+
     fn new<R: 'static>(
         stage: WalkStage,
         object: Option<ObjectId>,
@@ -115,7 +122,7 @@ pub struct FamilyReport {
 }
 
 impl FamilyReport {
-    fn new(family: &'static str) -> Self {
+    pub(crate) fn new(family: &'static str) -> Self {
         Self {
             family,
             validated: Vec::new(),

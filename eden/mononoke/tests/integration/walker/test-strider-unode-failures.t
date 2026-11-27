@@ -9,7 +9,7 @@
 Absent, missing or unreadable unode data. Walker shows where
 each damaged node belongs. Strider audits the unode family alone and must
 report the failure against the commit that added the node, keep the other
-commits validated, and exit nonzero. See test-strider-unode-history.t for the
+commits validated, and exit 3. See test-strider-unode-history.t for the
 Walker arguments. Unodes are named `path@linknode`, as in
 test-strider-unode-history.t.
 
@@ -193,7 +193,7 @@ B's mapping, so C reports it missing.
   $ identities < walker.out | LC_ALL=C comm -23 reference-absent.nodes -
   UnodeFile:dir2/file2@B
   $ strider
-  [1]
+  [3]
   $ outcomes
   4
   B unode status=not_derived
@@ -211,7 +211,7 @@ later commits compare dir1 by id. Strider reports it by key as `missing` at
   $ walker_failure
   missing_target UnodeManifest:dir1/sub@A
   $ strider
-  [1]
+  [3]
   $ outcomes
   4
   A unode status=incomplete
@@ -228,7 +228,7 @@ Strider reports it by key against A, which added it.
   $ walker_failure
   unreadable_target UnodeFile:dir1/sub/file3@A
   $ strider
-  [1]
+  [3]
   $ outcomes
   4
   A unode status=incomplete

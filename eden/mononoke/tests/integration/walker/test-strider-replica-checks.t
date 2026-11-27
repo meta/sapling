@@ -84,7 +84,7 @@ Both stores and the write-ahead log are recorded before and after the run.
   $ snapshot > before
 
   $ strider --check-replicas --scuba-log-file scuba.json
-  [1]
+  [3]
 
 The differing values fail C's core family as unreadable.
 
@@ -102,7 +102,7 @@ object that read it, and logged to Scuba with its store.
   >   's/.*changeset_id="?([0-9a-f]+)"? object="?([^" ]+)"? store="?([0-9]+)"? key="?([^" ]+)"?.*/\1 \2 \3 \4/p' \
   >   | names
   A FileContent:OLD 0 repo0000.content.blake2.OLD
-  $ grep 'Strider completed' strider.err | grep -E 'status="?incomplete"?' | grep -cE 'replica_gaps=1 replica_gaps_unattributed=0'
+  $ grep 'Strider completed' strider.err | grep -E 'status="?unreadable"?' | grep -E ' problems=2 ' | grep -cE 'replica_gaps=1 replica_gaps_unattributed=0'
   1
   $ jq -r '.int * .normal | [ .check_fail, .check_type, .node_key, .repo, .blobstore_id ] | @csv' < scuba.json | names
   1,"scrub_repair","repo0000.content.blake2.OLD","repo",0

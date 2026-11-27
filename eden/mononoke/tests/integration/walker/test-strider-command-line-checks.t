@@ -55,13 +55,13 @@ An empty range checks nothing.
   $ grep -o 'SQL-ID range .* is empty' strider.err
   SQL-ID range 2..1 is empty
 
-An upper bound past the replica's newest SQL ID would silently skip the commits
-the replica has not received yet.
+An upper bound past the repository's newest SQL ID is refused: it names
+commits that do not exist yet.
 
   $ strider "${CACHE_ARGS[@]}" --chunk-size 2 --repo-upper-bound 100
   [1]
   $ grep -o 'upper bound 100 is past .*' strider.err
-  upper bound 100 is past the replica's exclusive upper bound, 3
+  upper bound 100 is past the repository's exclusive upper bound, 3
 
 A single store has no other copy to compare, so replica checks there would
 report no gaps without having checked any.

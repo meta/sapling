@@ -49,6 +49,14 @@ pub struct BulkFetcherStreamItem {
     pub sql_id: u64,
 }
 
+/// The changesets of a range of auto-increment ids: how many there are, and
+/// the lowest and highest of their ids, or `None` when there are none.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct IdsInRange {
+    pub count: u64,
+    pub ids: Option<RangeInclusive<u64>>,
+}
+
 /// The direction of the bulk fetcher stream.
 #[derive(Clone, Copy)]
 enum Direction {
@@ -74,6 +82,20 @@ impl CommitGraphBulkFetcher {
             .repo_bounds(ctx, read_from_master)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Can't get repo bounds for an empty repo"))
+    }
+
+    /// Returns how many changesets in the repo have auto-increment ids in the
+    /// half open interval [range.start, range.end), and the lowest and highest
+    /// of those ids.
+    pub async fn ids_in_range(
+        &self,
+        ctx: &CoreContext,
+        range: Range<u64>,
+        read_from_master: bool,
+    ) -> Result<IdsInRange> {
+        self.storage
+            .ids_in_range(ctx, range, read_from_master)
+            .await
     }
 
     /// Returns a stream of all changeset ids in the repo that have auto-increment ids

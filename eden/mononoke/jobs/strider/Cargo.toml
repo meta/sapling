@@ -11,11 +11,17 @@ license = "GPLv2+"
 anyhow = "1.0.104"
 blobstore = { version = "0.1.0", path = "../../blobstore" }
 blobstore_factory = { version = "0.1.0", path = "../../blobstore/factory" }
+bonsai_git_mapping = { version = "0.1.0", path = "../../repo_attributes/bonsai_git_mapping" }
+bonsai_globalrev_mapping = { version = "0.1.0", path = "../../repo_attributes/bonsai_globalrev_mapping" }
+bonsai_hg_mapping = { version = "0.1.0", path = "../../repo_attributes/bonsai_hg_mapping" }
+bonsai_p4_mapping = { version = "0.1.0", path = "../../repo_attributes/bonsai_p4_mapping" }
+bonsai_svnrev_mapping = { version = "0.1.0", path = "../../repo_attributes/bonsai_svnrev_mapping" }
 bookmarks = { version = "0.1.0", path = "../../repo_attributes/bookmarks" }
 clap = { version = "4.6.2", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 cmdlib_caching = { version = "0.1.0", path = "../../cmdlib/caching" }
 cmdlib_scrubbing = { version = "0.1.0", path = "../../cmdlib/scrubbing" }
 commit_graph = { version = "0.1.0", path = "../../repo_attributes/commit_graph/commit_graph" }
+commit_id = { version = "0.1.0", path = "../../cmdlib/commit_id" }
 context = { version = "0.1.0", path = "../../servers/slapi/slapi_server/context" }
 deleted_manifest = { version = "0.1.0", path = "../../derived_data/deleted_manifest" }
 environment = { version = "0.1.0", path = "../../cmdlib/environment" }
@@ -32,15 +38,23 @@ repo_identity = { version = "0.1.0", path = "../../repo_attributes/repo_identity
 samplingblob = { version = "0.1.0", path = "../../blobstore/samplingblob" }
 scuba_ext = { version = "0.1.0", path = "../../common/scuba_ext" }
 sql_commit_graph_storage = { version = "0.1.0", path = "../../repo_attributes/commit_graph/sql_commit_graph_storage" }
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tokio-util = { version = "0.7.20", features = ["full"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 unodes = { version = "0.1.0", path = "../../derived_data/unodes" }
 
 [dev-dependencies]
 async-trait = "0.1.92"
+commit_graph_testlib = { version = "0.1.0", path = "../../repo_attributes/commit_graph/commit_graph_testlib" }
 derivation_queue_thrift = { version = "0.1.0", path = "../../repo_attributes/repo_derivation_queues/if" }
 fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
+in_memory_commit_graph_storage = { version = "0.1.0", path = "../../repo_attributes/commit_graph/in_memory_commit_graph_storage" }
 memblob = { version = "0.1.0", path = "../../blobstore/memblob" }
+rendezvous = { version = "0.1.0", path = "../../common/rendezvous" }
+sql = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
+sql_construct = { version = "0.1.0", path = "../../common/sql_construct" }
+sql_ext = { version = "0.1.0", path = "../../common/rust/sql_ext" }
 test_repo_factory = { version = "0.1.0", path = "../../repo_factory/test_repo_factory" }
 tests_utils = { version = "0.1.0", path = "../../tests/utils" }
 

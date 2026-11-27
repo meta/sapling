@@ -82,12 +82,12 @@ validates A, and reports the exact node against B at the load stage.
   $ BLOBS="$TESTTMP/blobstore/blobs"
   $ mv "$BLOBS/blob-repo0000.deletedmanifest2.blake2.$NODE" "$TESTTMP/damaged-node"
   $ strider --chunk-size 10 --family deleted-manifest > damaged.out 2> damaged.err
-  [1]
+  [3]
   $ grep status= damaged.out | sed -e "s/$A/A/" -e "s/$B/B/" | LC_ALL=C sort
   A deleted-manifest status=validated
   B deleted-manifest status=incomplete
   $ grep 'Strider family incomplete' damaged.err | grep "changeset_id=.*$B" | grep -E 'failure_stage="?load"?' | grep -E 'failure_class="?missing"?' | grep "object=.*DeletedManifestV2:$NODE" > /dev/null
-  $ grep 'Strider completed' damaged.err | grep -E 'status="?incomplete"?' | grep -E 'incomplete_commits=1 ' > /dev/null
+  $ grep 'Strider completed' damaged.err | grep -E 'status="?complete"?' | grep -E ' problems=1 ' > /dev/null
 
 Restore the node and remove A's mapping instead. A's own absent mapping is
 counted and otherwise ignored, as Walker does. B is derived, so its parent's
@@ -96,11 +96,13 @@ mapping must have existed, and B reports it missing.
   $ mv "$TESTTMP/damaged-node" "$BLOBS/blob-repo0000.deletedmanifest2.blake2.$NODE"
   $ rm "$BLOBS/blob-repo0000.derived_root_deleted_manifest2.$A"
   $ strider --chunk-size 10 --family deleted-manifest > lost.out 2> lost.err
-  [1]
+  [3]
   $ grep status= lost.out | sed -e "s/$A/A/" -e "s/$B/B/" | LC_ALL=C sort
   A deleted-manifest status=not_derived
   B deleted-manifest status=incomplete
   $ grep -c 'Strider family incomplete' lost.err
   1
   $ grep 'Strider family incomplete' lost.err | grep "changeset_id=.*$B" | grep -E 'failure_stage="?enumerate"?' | grep -E 'failure_class="?missing"?' | grep "object=.*Mapping:deleted_manifest:$A" > /dev/null
-  $ grep 'Strider completed' lost.err | grep -E 'incomplete_commits=1 ' | grep -E 'not_derived_ignored=1 ' > /dev/null
+  $ grep 'Strider completed' lost.err | grep -E ' problems=1 ' | grep -E 'not_derived_ignored=1 ' > /dev/null
+  $ grep 'Strider family not derived' lost.err | grep -E 'family="?deleted-manifest"?' | grep -c "changeset_id=.*$A"
+  1

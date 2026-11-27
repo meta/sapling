@@ -34,7 +34,7 @@ and reads nothing for it, and the run completes.
   >     --tracing-test-format \
   >     --max-concurrency 4 \
   >     --max-loads-per-commit 4 \
-  >     --print-visited-nodes \
+  >     ${PRINT_VISITED-"--print-visited-nodes"} \
   >     --family core --family deleted-manifest \
   >     --chunk-size 2 \
   >     "$@" > strider.out 2> strider.err
@@ -49,7 +49,7 @@ and reads nothing for it, and the run completes.
 Without the exclusion, B's core fails and the run is incomplete.
 
   $ strider
-  [1]
+  [3]
   $ outcomes
   A core status=validated
   A deleted-manifest status=validated
@@ -66,4 +66,17 @@ With B excluded, every family reports B excluded, and the run completes.
   B core status=excluded
   B deleted-manifest status=excluded
   $ grep 'Strider completed' strider.err | grep -cE 'status="?complete"?'
+  1
+
+Without `--print-visited-nodes`, the log still names each excluded commit and
+family, and the run's summary counts them.
+
+  $ PRINT_VISITED= strider --exclude-changeset "$B"
+  $ grep -c ' status=' strider.out
+  0
+  [1]
+  $ grep 'Strider family excluded' strider.err | sed -nE 's/.*changeset_id="?([0-9a-f]+)"? family="?([a-z-]+)"?.*/\1 \2/p' | sed -e "s/$B/B/g" | LC_ALL=C sort
+  B core
+  B deleted-manifest
+  $ grep 'Strider completed' strider.err | grep -cE ' excluded=2 '
   1
