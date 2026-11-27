@@ -1940,8 +1940,9 @@ pub(crate) async fn track_all_restricted_paths(
 }
 
 /// The first step of `track_all_restricted_paths`: walks to every
-/// non-read-only restricted root under `root_hg_aug_mfid`. Returns nothing
-/// when recording is off.
+/// non-read-only restricted root under `root_hg_aug_mfid` that is a directory,
+/// as incremental derivation records only directories. Returns nothing when
+/// recording is off.
 pub(crate) async fn find_restricted_path_entries(
     ctx: &CoreContext,
     restricted_paths: &ArcRestrictedPathsConfigBased,
@@ -1990,7 +1991,7 @@ pub(crate) async fn find_restricted_path_entries(
                     )?;
                     Ok(Some(entry))
                 }
-                Entry::Leaf(_) => bail!("Path {path} is not a directory"),
+                Entry::Leaf(_) => Ok(None),
             }
         })
         .try_collect::<Vec<RestrictedPathManifestIdEntry>>()

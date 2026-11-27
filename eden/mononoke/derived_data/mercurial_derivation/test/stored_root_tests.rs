@@ -148,6 +148,17 @@ impl MappedCommit {
         parent_files: &[(&str, &str)],
         child_files: &[(&str, &str)],
     ) -> Result<Self> {
+        Self::with_changes(ctx, repo, parent_files, &[], child_files).await
+    }
+
+    /// Like `with_files`, and the child also deletes `child_deletions`.
+    async fn with_changes(
+        ctx: &CoreContext,
+        repo: &Repo,
+        parent_files: &[(&str, &str)],
+        child_deletions: &[&str],
+        child_files: &[(&str, &str)],
+    ) -> Result<Self> {
         let parent = parent_files
             .iter()
             .fold(
@@ -156,12 +167,13 @@ impl MappedCommit {
             )
             .commit()
             .await?;
-        let child = child_files
+        let child = child_deletions
             .iter()
             .fold(
                 CreateCommitContext::new(ctx, repo, vec![parent]),
-                |commit, (path, content)| commit.add_file(*path, *content),
+                |commit, path| commit.delete_file(*path),
             )
+            .add_files(child_files.iter().copied())
             .commit()
             .await?;
         fixtures::store_hg_changesets_as_uploaded(ctx, repo, vec![parent, child]).await?;
@@ -829,6 +841,10 @@ fn set_restricted_paths_knobs(logging: bool, fail_derivation: bool) {
 }
 
 fn restricted_paths_config(path: &str) -> Result<RestrictedPathsConfig> {
+    restricted_paths_config_for(&[path])
+}
+
+fn restricted_paths_config_for(paths: &[&str]) -> Result<RestrictedPathsConfig> {
     let metadata = PathRestrictionMetadata {
         repo_region_acl: MononokeIdentity::from_legacy_type_data("REPO_REGION", "test_acl"),
         permission_request_group: None,
@@ -836,7 +852,10 @@ fn restricted_paths_config(path: &str) -> Result<RestrictedPathsConfig> {
         read_only: false,
     };
     Ok(RestrictedPathsConfig {
-        path_restriction_metadata: [(NonRootMPath::new(path)?, metadata)].into_iter().collect(),
+        path_restriction_metadata: paths
+            .iter()
+            .map(|path| Ok((NonRootMPath::new(path)?, metadata.clone())))
+            .collect::<Result<_>>()?,
         ..Default::default()
     })
 }
@@ -847,7 +866,14 @@ async fn repo_restricting(
     fb: FacebookInit,
     path: &str,
 ) -> Result<(Repo, Arc<TracingBlobstore<Memblob>>)> {
-    let config = restricted_paths_config(path)?;
+    repo_restricting_paths(fb, &[path]).await
+}
+
+async fn repo_restricting_paths(
+    fb: FacebookInit,
+    paths: &[&str],
+) -> Result<(Repo, Arc<TracingBlobstore<Memblob>>)> {
+    let config = restricted_paths_config_for(paths)?;
     let tracing = Arc::new(TracingBlobstore::new(Memblob::default()));
     let repo = TestRepoFactory::new(fb)?
         .with_blobstore(tracing.clone())
@@ -1006,6 +1032,206 @@ async fn test_read_error_in_a_restricted_directory(fb: FacebookInit) -> Result<(
                     format!("{err:#}")
                         .contains(&format!("reading {} failed", shared.blobstore_key())),
                     "{case}: got {err:#}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The writers that record every restricted directory of a root built outside
+/// derivation.
+#[derive(Clone, Copy, Debug)]
+enum RestrictedPathsWriter {
+    Derive(Derive),
+    UploadMapping,
+    Backfill,
+}
+
+const RESTRICTED_PATHS_WRITERS: [RestrictedPathsWriter; 4] = [
+    RestrictedPathsWriter::Derive(Derive::Single),
+    RestrictedPathsWriter::Derive(Derive::Batch),
+    RestrictedPathsWriter::UploadMapping,
+    RestrictedPathsWriter::Backfill,
+];
+
+impl RestrictedPathsWriter {
+    async fn write(
+        self,
+        ctx: &CoreContext,
+        repo: &Repo,
+        commit: &MappedCommit,
+    ) -> Result<HgAugmentedManifestId> {
+        let manager = repo.repo_derived_data().manager();
+        match self {
+            Self::Derive(derive) => derive.root(ctx, repo, commit.child).await,
+            Self::UploadMapping => {
+                let hg_cs_id = repo
+                    .bonsai_hg_mapping()
+                    .get_hg_from_bonsai(ctx, commit.child)
+                    .await?
+                    .context("missing child Hg changeset")?;
+                RootHgAugmentedManifestId::new(commit.root_id())
+                    .store_prebuilt_mapping(
+                        ctx,
+                        &manager.derivation_context(None),
+                        hg_cs_id,
+                        commit.child,
+                    )
+                    .await?;
+                Ok(commit.root_id())
+            }
+            Self::Backfill => Ok(manager
+                .unsafe_derive_untopologically::<RootHgAugmentedManifestId>(ctx, commit.child, None)
+                .await?
+                .hg_augmented_manifest_id()),
+        }
+    }
+}
+
+/// What a commit's augmented derivation leaves behind: its root, the record
+/// under it, its ACL manifest and the restricted directories it recorded.
+#[derive(Debug, PartialEq)]
+struct DerivedRestrictedCommit {
+    root: HgAugmentedManifestId,
+    record: ShardedHgAugmentedManifest,
+    acl_root: RootAclManifestId,
+    recorded: Vec<RestrictedPathManifestIdEntry>,
+}
+
+impl DerivedRestrictedCommit {
+    async fn read(
+        ctx: &CoreContext,
+        repo: &Repo,
+        commit: &MappedCommit,
+        root: HgAugmentedManifestId,
+    ) -> Result<Self> {
+        let mut recorded: Vec<_> = repo
+            .restricted_paths()
+            .config_based()
+            .manifest_id_store()
+            .get_all_entries(ctx)
+            .await?
+            .into_iter()
+            .filter(|entry| entry.manifest_type == ManifestType::HgAugmented)
+            .collect();
+        recorded.sort();
+        Ok(Self {
+            root,
+            record: root
+                .load(ctx, repo.repo_blobstore())
+                .await?
+                .augmented_manifest,
+            acl_root: repo
+                .repo_derived_data()
+                .manager()
+                .fetch_derived::<RootAclManifestId>(ctx, commit.child, None)
+                .await?
+                .context("missing child ACL manifest")?,
+            recorded,
+        })
+    }
+}
+
+/// A commit that changes the type of the restricted root `secret`, or deletes
+/// it, and also changes the restricted root `other`. Derivation from Hg records
+/// only the restricted directories a commit changes, so each case changes every
+/// restricted root that is a directory in the child.
+struct PathTypeChange {
+    name: &'static str,
+    parent_files: &'static [(&'static str, &'static str)],
+    child_deletions: &'static [&'static str],
+    child_files: &'static [(&'static str, &'static str)],
+}
+
+const PATH_TYPE_CHANGES: [PathTypeChange; 3] = [
+    PathTypeChange {
+        name: "restricted directory replaced by a file",
+        parent_files: &[("secret/a", "a"), ("other/o", "o")],
+        child_deletions: &[],
+        child_files: &[("secret", "now a file"), ("other/p", "p")],
+    },
+    PathTypeChange {
+        name: "file replaced by a restricted directory",
+        parent_files: &[("secret", "a file"), ("other/o", "o")],
+        child_deletions: &["secret"],
+        child_files: &[("secret/a", "a"), ("other/p", "p")],
+    },
+    PathTypeChange {
+        name: "restricted directory deleted",
+        parent_files: &[("secret/a", "a"), ("other/o", "o")],
+        child_deletions: &["secret/a"],
+        child_files: &[("other/p", "p")],
+    },
+];
+
+impl PathTypeChange {
+    /// Creates the commit in a new repo where `secret` and `other` are
+    /// writable restricted roots, with nothing recorded yet.
+    async fn create(&self, fb: FacebookInit, ctx: &CoreContext) -> Result<(Repo, MappedCommit)> {
+        let (repo, _) = repo_restricting_paths(fb, &["secret", "other"]).await?;
+        set_restricted_paths_logging(false);
+        let commit = MappedCommit::with_changes(
+            ctx,
+            &repo,
+            self.parent_files,
+            self.child_deletions,
+            self.child_files,
+        )
+        .await?;
+        Ok((repo, commit))
+    }
+}
+
+#[mononoke::fbinit_test]
+async fn test_restricted_root_whose_type_changes_is_recorded_as_derivation_records_it(
+    fb: FacebookInit,
+) -> Result<()> {
+    for change in &PATH_TYPE_CHANGES {
+        for writer in RESTRICTED_PATHS_WRITERS {
+            for fail_derivation in [false, true] {
+                let case = format!(
+                    "{}, {writer:?}, fail derivation {fail_derivation}",
+                    change.name
+                );
+                let ctx = CoreContext::test_mock(fb);
+
+                // Given: the commit derived from its Hg manifest, as every
+                // mapped commit was before stored roots were used.
+                let (canonical_repo, canonical_commit) = change.create(fb, &ctx).await?;
+                set_restricted_paths_knobs(true, fail_derivation);
+                let canonical_root = Derive::Single
+                    .root(&ctx, &canonical_repo, canonical_commit.child)
+                    .await?;
+                let expected = DerivedRestrictedCommit::read(
+                    &ctx,
+                    &canonical_repo,
+                    &canonical_commit,
+                    canonical_root,
+                )
+                .await?;
+                assert!(
+                    !expected.recorded.is_empty(),
+                    "{case}: derivation from Hg records the changed other"
+                );
+
+                // When: the same commit, its root stored as tree upload
+                // stores it, goes through a writer that records every
+                // restricted directory of that root.
+                let (repo, commit) = change.create(fb, &ctx).await?;
+                commit.store_root(&ctx, &repo).await?;
+                set_restricted_paths_knobs(true, fail_derivation);
+                let root = writer
+                    .write(&ctx, &repo, &commit)
+                    .await
+                    .with_context(|| format!("{case}: the writer failed"))?;
+
+                // Then: it records what derivation from Hg records, with the
+                // same root, record and ACL manifest.
+                assert_eq!(
+                    DerivedRestrictedCommit::read(&ctx, &repo, &commit, root).await?,
+                    expected,
+                    "{case}"
                 );
             }
         }
