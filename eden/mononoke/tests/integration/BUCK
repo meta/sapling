@@ -31,6 +31,7 @@ buck_filegroup(
         "library-push-redirector.sh",
         "library-snapshot.sh",
         "raw_text.txt",
+        "walker/strider-benchmark-history.sh",
     ],
 )
 
