@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
+use anyhow::Error;
 use anyhow::Result;
 use anyhow::anyhow;
 use clap::Parser;
@@ -24,6 +25,7 @@ use mononoke_app::MononokeApp;
 use mononoke_macros::mononoke;
 use sqlblob::Sqlblob;
 use tracing::info;
+use tracing::warn;
 
 use crate::MononokeSQLBlobGCArgs;
 use crate::utils;
@@ -50,6 +52,10 @@ pub struct CommandArgs {
     /// is retried like any other failed try. 0 turns the limit off.
     #[clap(long, default_value_t = 300)]
     key_timeout_secs: u64,
+}
+
+fn failed_try_message(what: &str, attempt: usize, tries: usize, err: &Error) -> String {
+    format!("{what}: attempt {attempt} of {tries} failed: {err:#}")
 }
 
 fn key_timeout(secs: u64) -> Option<Duration> {
@@ -89,7 +95,12 @@ where
     retry(|_| within_time_limit(timeout, mark()), BASE_RETRY_DELAY)
         .binary_exponential_backoff()
         .max_attempts(RETRIES)
-        .inspect_err(|attempt, _err| info!("attempt {attempt} of {RETRIES} failed"))
+        .inspect_err(|attempt, err| {
+            warn!(
+                "{}",
+                failed_try_message(&format!("Marking key {key}"), attempt, RETRIES, err)
+            )
+        })
         .await
         .with_context(|| anyhow!("Failed to handle {key} after {RETRIES} attempts"))?;
     Ok(())
@@ -102,7 +113,17 @@ async fn handle_initial_generation(ctx: &CoreContext, store: &Sqlblob, shard: us
     )
     .binary_exponential_backoff()
     .max_attempts(RETRIES)
-    .inspect_err(|attempt, _err| info!("attempt {attempt} of {RETRIES} failed"))
+    .inspect_err(|attempt, err| {
+        warn!(
+            "{}",
+            failed_try_message(
+                &format!("Initial generation on shard {shard}"),
+                attempt,
+                RETRIES,
+                err
+            )
+        )
+    })
     .await
     .with_context(|| {
         anyhow!("Failed to handle initial generation on shard {shard} after {RETRIES} retries",)
@@ -310,6 +331,15 @@ mod tests {
             tries.load(Ordering::SeqCst),
             1,
             "the slow try is not cut off"
+        );
+    }
+
+    #[mononoke::test]
+    fn a_failed_try_is_logged_with_its_error() {
+        let err = anyhow!("MySQL server has gone away").context("Failed to update generation");
+        assert_eq!(
+            failed_try_message("Marking key repo0000.content.blake2.00", 2, 3, &err),
+            "Marking key repo0000.content.blake2.00: attempt 2 of 3 failed: Failed to update generation: MySQL server has gone away"
         );
     }
 }
