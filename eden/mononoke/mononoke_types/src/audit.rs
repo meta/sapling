@@ -31,6 +31,7 @@ pub use self::load::TaggedContext;
 use crate::ChangesetId;
 use crate::DerivableType;
 
+mod deleted_manifest;
 mod load;
 mod unode;
 

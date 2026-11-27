@@ -7,6 +7,7 @@
 
 #![feature(trait_alias)]
 
+mod audit;
 mod derive;
 mod derive_batch;
 mod mapping;

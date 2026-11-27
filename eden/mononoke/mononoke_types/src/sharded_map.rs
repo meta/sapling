@@ -348,6 +348,63 @@ impl<Value: MapValue> ShardedMapNode<Value> {
         })
     }
 
+    /// The value of each of `keys`, as [`Self::lookup`] returns it. Adjacent
+    /// keys that take the same edge share one walk down it, so when `keys` are
+    /// sorted each stored node is loaded once, by `load`. Stored nodes are
+    /// loaded one at a time.
+    #[async_recursion]
+    pub async fn lookup_sorted<Load, Loading>(
+        &self,
+        keys: &[&[u8]],
+        load: &Load,
+    ) -> Result<Vec<Option<Value>>>
+    where
+        Load: Fn(Value::Id) -> Loading + Sync,
+        Loading: Future<Output = Result<Self>> + Send,
+    {
+        let (prefix, value, edges) = match self {
+            Self::Terminal { values } => {
+                return Ok(keys.iter().map(|key| values.get(*key).cloned()).collect());
+            }
+            Self::Intermediate {
+                prefix,
+                value,
+                edges,
+                ..
+            } => (prefix, value, edges),
+        };
+        // `None` for a key outside `prefix`, `Some(None)` for `prefix` itself,
+        // else the byte of the edge the key takes.
+        let next = |key: &[u8]| {
+            key.strip_prefix(prefix.as_slice())
+                .map(|rest| rest.first().copied())
+        };
+        let mut found = Vec::with_capacity(keys.len());
+        for run in keys.chunk_by(|a, b| next(a) == next(b)) {
+            let edge = match next(run[0]) {
+                None => None,
+                Some(None) => {
+                    found.extend(run.iter().map(|_| value.clone()));
+                    continue;
+                }
+                Some(Some(byte)) => edges.get(&byte),
+            };
+            let Some(edge) = edge else {
+                found.extend(run.iter().map(|_| None));
+                continue;
+            };
+            let rests = run
+                .iter()
+                .map(|key| &key[prefix.len() + 1..])
+                .collect::<Vec<_>>();
+            found.extend(match &edge.child {
+                ShardedMapChild::Inlined(node) => node.lookup_sorted(&rests, load).await?,
+                ShardedMapChild::Id(id) => load(*id).await?.lookup_sorted(&rests, load).await?,
+            });
+        }
+        Ok(found)
+    }
+
     /// Given a map and replacements, return the map with the replacements.
     fn update_map(
         map: SortedVectorMap<SmallBinary, Value>,
@@ -1126,6 +1183,8 @@ impl<Value: MapValue> BlobstoreValue for ShardedMapNode<Value> {
 
 #[cfg(test)]
 mod test {
+    use std::collections::BTreeSet;
+    use std::collections::HashSet;
     use std::str::FromStr;
 
     use ShardedMapNode::*;
@@ -1535,6 +1594,48 @@ mod test {
         assert_eq!(map.lookup("abacakk").await?, None);
         // Case 4
         assert_eq!(map.lookup("").await?, None);
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn lookup_sorted_matches_lookup_and_loads_each_stored_node_once(
+        fb: FacebookInit,
+    ) -> Result<()> {
+        // Given a map whose entries are spread over stored nodes, and sorted
+        // keys that are present, absent, and prefixes of present keys
+        let ctx = CoreContext::test_mock(fb);
+        let blobstore = KeyedMemblob::default();
+        let mut map = MapHelper(Default::default(), ctx.clone(), blobstore.clone());
+        map.add_remove(EXAMPLE_ENTRIES, &[]).await?;
+        let keys = EXAMPLE_ENTRIES
+            .iter()
+            .map(|(key, _)| *key)
+            .chain(["", "ab", "abac", "abacakk", "abz", "b", "omiux2", "z"])
+            .map(str::as_bytes)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let mut expected = Vec::new();
+        for key in &keys {
+            expected.push(map.0.lookup(&ctx, &blobstore, key).await?);
+        }
+        let loads = std::sync::Mutex::new(Vec::new());
+
+        // When every key is looked up in one sorted pass
+        let found = map
+            .0
+            .lookup_sorted(&keys, &|id: ShardedMapNodeMyId| {
+                loads.lock().unwrap().push(id);
+                let (ctx, blobstore) = (&ctx, &blobstore);
+                async move { id.load(ctx, blobstore).await.map_err(Into::into) }
+            })
+            .await?;
+
+        // Then each result equals `lookup`'s, and no stored node is loaded twice
+        assert_eq!(found, expected);
+        let loads = loads.into_inner().unwrap();
+        assert_eq!(loads.len(), loads.iter().collect::<HashSet<_>>().len());
+        assert!(!loads.is_empty());
         Ok(())
     }
 
