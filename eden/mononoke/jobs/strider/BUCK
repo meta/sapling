@@ -1,0 +1,22 @@
+load("@fbsource//tools/build_defs:rust_binary.bzl", "rust_binary")
+
+oncall("scm_server_infra")
+
+rust_binary(
+    name = "strider",
+    srcs = glob(["src/**/*.rs"]),
+    autocargo = {"cargo_toml_dir": "."},
+    test_deps = [
+        "fbsource//third-party/rust:anyhow",
+        "//common/rust/shed/fbinit:fbinit",
+        "//common/rust/shed/fbinit:fbinit-tokio",
+        "//eden/mononoke/blobstore:memblob",
+        "//eden/mononoke/common/mononoke_macros:mononoke_macros",
+        "//eden/mononoke/derived_data:deleted_manifest",
+        "//eden/mononoke/mononoke_types:mononoke_types",
+        "//eden/mononoke/repo_attributes/repo_derived_data:repo_derived_data",
+        "//eden/mononoke/repo_factory:test_repo_factory",
+        "//eden/mononoke/servers/slapi/slapi_server/context:context",
+        "//eden/mononoke/tests/utils:tests_utils",
+    ],
+)

@@ -1,4 +1,5 @@
 load("@fbsource//tools/build_defs:rust_library.bzl", "rust_library")
+load("@fbsource//tools/build_defs:rust_unittest.bzl", "rust_unittest")
 
 oncall("scm_server_infra")
 
@@ -21,6 +22,7 @@ rust_library(
         "fbsource//third-party/rust:anyhow",
         "fbsource//third-party/rust:ascii",
         "fbsource//third-party/rust:async-recursion",
+        "fbsource//third-party/rust:async-stream",
         "fbsource//third-party/rust:async-trait",
         "fbsource//third-party/rust:bincode",
         "fbsource//third-party/rust:bit-set",
@@ -66,6 +68,30 @@ rust_library(
         "//eden/scm/lib/edenapi/types:edenapi_types",
         "//eden/scm/lib/xdiff:xdiff",
         "//thrift/lib/rust:fbthrift",
+    ],
+)
+
+rust_unittest(
+    name = "mononoke_types-test",
+    srcs = glob(["test/**/*.rs"]),
+    crate = "mononoke_types_test",
+    deps = [
+        "fbsource//third-party/rust:anyhow",
+        "fbsource//third-party/rust:async-trait",
+        "fbsource//third-party/rust:bytes",
+        "fbsource//third-party/rust:futures",
+        ":mononoke_types",
+        "//common/rust/shed/fbinit:fbinit",
+        "//common/rust/shed/fbinit:fbinit-tokio",
+        "//eden/mononoke/blobstore:blobstore",
+        "//eden/mononoke/blobstore:memblob",
+        "//eden/mononoke/common/mononoke_macros:mononoke_macros",
+        "//eden/mononoke/repo_attributes/filestore:filestore",
+        "//eden/mononoke/repo_attributes/repo_blobstore:repo_blobstore",
+        "//eden/mononoke/repo_attributes/repo_identity:repo_identity",
+        "//eden/mononoke/repo_factory:test_repo_factory",
+        "//eden/mononoke/servers/slapi/slapi_server/context:context",
+        "//eden/mononoke/tests/utils:tests_utils",
     ],
 )
 

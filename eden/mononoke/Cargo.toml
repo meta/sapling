@@ -243,6 +243,7 @@ members = [
   "jobs/modern_sync",
   "jobs/repo_state_logger",
   "jobs/statistics_collector",
+  "jobs/strider",
   "jobs/walker",
   "lfs_import_lib",
   "manifest",
