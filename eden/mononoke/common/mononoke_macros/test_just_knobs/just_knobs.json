@@ -64,6 +64,7 @@
     "scm/mononoke:use_maybe_stale_freshness_for_bookmarks": true,
     "scm/mononoke:retry_query_from_replica_with_consistency_check": true,
     "scm/mononoke:enabled_restricted_paths_access_logging": true,
+    "scm/mononoke:fail_derivation_on_restricted_manifest_id_store_error": false,
     "scm/mononoke:rendezvous_bonsai_git_mapping" : true,
     "scm/mononoke:create_changeset_stack_noop_file_changes_check": true,
     "scm/mononoke:create_repos_attach_to_inflight_mutation": false,
