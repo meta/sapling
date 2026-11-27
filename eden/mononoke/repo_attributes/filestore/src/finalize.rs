@@ -10,6 +10,7 @@ use blobstore::KeyedBlobstore;
 use blobstore::Storable;
 use context::CoreContext;
 use futures::future;
+use mononoke_types::Alias;
 use mononoke_types::BlobstoreValue;
 use mononoke_types::ContentAlias;
 use mononoke_types::ContentMetadataV2;
@@ -18,7 +19,6 @@ use strum::IntoEnumIterator;
 use crate::StoreRequest;
 use crate::errors::FilestoreError;
 use crate::errors::InvalidHash;
-use crate::fetch_key::Alias;
 use crate::fetch_key::AliasBlob;
 use crate::prepare::Prepared;
 

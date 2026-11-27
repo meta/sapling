@@ -69,6 +69,7 @@ pub use blobstore::BlobstoreBytes;
 pub use bonsai_changeset::BonsaiChangeset;
 pub use bonsai_changeset::BonsaiChangesetMut;
 pub use content_chunk::ContentChunk;
+pub use content_metadata_v2::Alias;
 pub use content_metadata_v2::ContentAlias;
 pub use content_metadata_v2::ContentMetadataV2;
 pub use content_metadata_v2::ends_in_newline;

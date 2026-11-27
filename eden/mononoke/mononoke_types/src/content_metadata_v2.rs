@@ -5,16 +5,25 @@
  * GNU General Public License version 2.
  */
 
+use std::fmt::Display;
+
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
+use async_trait::async_trait;
 use blobstore::BlobstoreBytes;
+use blobstore::KeyedBlobstore;
+use blobstore::Loadable;
+use blobstore::LoadableError;
 use bytes::Bytes;
+use context::CoreContext;
 use fbthrift::compact_protocol;
 use futures::Stream;
 use futures::StreamExt;
+use futures_watchdog::WatchdogExt;
 use quickcheck::Arbitrary;
 use quickcheck::Gen;
+use strum::EnumIter;
 
 use crate::blob::Blob;
 use crate::blob::BlobstoreValue;
@@ -28,6 +37,72 @@ use crate::typed_hash::ContentMetadataV2Id;
 
 const MAX_BYTES_FOR_FIRST_LINE: usize = 64;
 const UTF8_BYTES_COUNT: usize = 8;
+
+/// A hash other than the canonical `ContentId` that file content can be
+/// looked up by. Its blob maps it to the content's `ContentId`.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, EnumIter)]
+pub enum Alias {
+    Sha1(hash::Sha1),
+    Sha256(hash::Sha256),
+    GitSha1(hash::GitSha1),
+    SeededBlake3(hash::Blake3),
+}
+
+impl Display for Alias {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sha1(sha1) => f.write_fmt(format_args!("{sha1:?}")),
+            Self::Sha256(sha256) => f.write_fmt(format_args!("{sha256:?}")),
+            Self::GitSha1(gitsha1) => f.write_fmt(format_args!("{gitsha1:?}")),
+            Self::SeededBlake3(seeded_blake3) => f.write_fmt(format_args!("{seeded_blake3:?}")),
+        }
+    }
+}
+
+impl Alias {
+    pub fn blobstore_key(&self) -> String {
+        match self {
+            Alias::GitSha1(git_sha1) => format!("alias.gitsha1.{}", git_sha1.to_hex()),
+            Alias::Sha1(sha1) => format!("alias.sha1.{}", sha1.to_hex()),
+            Alias::Sha256(sha256) => format!("alias.sha256.{}", sha256.to_hex()),
+            Alias::SeededBlake3(blake3) => format!("alias.seeded_blake3.{}", blake3.to_hex()),
+        }
+    }
+
+    #[inline]
+    pub fn sampling_fingerprint(&self) -> u64 {
+        match self {
+            Alias::GitSha1(git_sha1) => git_sha1.sampling_fingerprint(),
+            Alias::Sha1(sha1) => sha1.sampling_fingerprint(),
+            Alias::Sha256(sha256) => sha256.sampling_fingerprint(),
+            Alias::SeededBlake3(blake3) => blake3.sampling_fingerprint(),
+        }
+    }
+}
+
+#[async_trait]
+impl Loadable for Alias {
+    type Value = ContentId;
+
+    async fn load<'a, B: KeyedBlobstore>(
+        &'a self,
+        ctx: &'a CoreContext,
+        blobstore: &'a B,
+    ) -> Result<Self::Value, LoadableError> {
+        let key = self.blobstore_key();
+        let get = blobstore.get(ctx, &key);
+        let maybe_alias = get
+            .watched()
+            .with_max_poll(blobstore::BLOBSTORE_MAX_POLL_TIME_MS)
+            .await?;
+        let blob = maybe_alias.ok_or_else(|| LoadableError::Missing(key.clone()))?;
+
+        ContentAlias::from_bytes(blob.into_raw_bytes())
+            .map(|alias| alias.content_id())
+            .with_context(|| MononokeTypeError::BlobKeyError(key.clone()))
+            .map_err(LoadableError::Error)
+    }
+}
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ContentAlias(ContentId);
