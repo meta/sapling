@@ -32,6 +32,7 @@ buck_filegroup(
         "library-snapshot.sh",
         "raw_text.txt",
         "walker/strider-benchmark-history.sh",
+        "walker/strider-parity-benchmark.sh",
     ],
 )
 
