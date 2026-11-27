@@ -18,7 +18,8 @@ cpp_library(
         "//eden/common/utils:path",
         "//eden/common/utils:utils",
         "//eden/fs/model:model",
-        "//eden/fs/service:thrift-streaming-cpp2-types",
+        "//eden/fs/service:thrift-streaming-cpp2-serialization",
+        "//eden/fs/takeover:serialization-cpp2-serialization",
         "//eden/fs/telemetry:stats",
     ],
 )

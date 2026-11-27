@@ -20,6 +20,7 @@ cpp_unittest(
     network_access = network_access_utils.none(),
     supports_static_listing = False,
     deps = [
+        "fbsource//third-party/fmt:fmt",
         "fbsource//third-party/googletest:gmock",
         "fbsource//third-party/googletest:gtest",
         "fbsource//xplat/folly/test:test_utils",

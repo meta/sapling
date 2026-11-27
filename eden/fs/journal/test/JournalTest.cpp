@@ -7,9 +7,13 @@
 
 #include "eden/fs/journal/Journal.h"
 
+#include <fmt/format.h>
+#include <fmt/ranges.h> // NOLINT(facebook-unused-include-check)
 #include <folly/test/TestUtils.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include <algorithm>
+#include <limits>
 
 #include "eden/common/utils/FaultInjector.h"
 #include "eden/fs/model/RootId.h"
@@ -744,6 +748,162 @@ TEST_F(JournalTest, truncation_nonzero) {
           << " total entries with j = " << j;
     }
   } while (rememberedEntries + 5 > totalEntries);
+}
+
+namespace {
+
+/**
+ * Checks that `restored` answers every position from `from` on the way
+ * `original` does.
+ */
+void expectSameRanges(
+    Journal& original,
+    Journal& restored,
+    Journal::SequenceNumber from) {
+  auto next = original.peekLatest()->sequenceID + 1;
+  for (auto position = from; position <= next; ++position) {
+    SCOPED_TRACE(fmt::format("accumulateRange({})", position));
+    auto expected = original.accumulateRange(position);
+    auto actual = restored.accumulateRange(position);
+    ASSERT_EQ(expected == nullptr, actual == nullptr);
+    if (!expected) {
+      continue;
+    }
+    EXPECT_EQ(expected->isTruncated, actual->isTruncated);
+    EXPECT_EQ(expected->fromSequence, actual->fromSequence);
+    EXPECT_EQ(expected->toSequence, actual->toSequence);
+    EXPECT_EQ(expected->fromTime, actual->fromTime);
+    EXPECT_EQ(expected->toTime, actual->toTime);
+    EXPECT_EQ(expected->snapshotTransitions, actual->snapshotTransitions);
+    EXPECT_EQ(expected->changedFilesInOverlay, actual->changedFilesInOverlay);
+    EXPECT_EQ(expected->uncleanPaths, actual->uncleanPaths);
+  }
+}
+
+/**
+ * Describes every field of every delta from `from` on, newest first, so that
+ * tests can compare deltas that accumulateRange() does not fully expose.
+ */
+std::vector<std::string> describeDeltas(
+    Journal& journal,
+    Journal::SequenceNumber from) {
+  std::vector<std::string> result;
+  journal.forEachDelta(
+      from,
+      std::nullopt,
+      [&](const FileChangeJournalDelta& delta) {
+        result.push_back(
+            fmt::format(
+                "file seq={} earliest={} time={} path1={}:{}:{}:{} "
+                "path2={}:{}:{}:{} type={}",
+                delta.sequenceID,
+                delta.earliestSequenceID,
+                delta.time.time_since_epoch().count(),
+                delta.isPath1Valid,
+                delta.path1.asString(),
+                static_cast<bool>(delta.info1.existedBefore),
+                static_cast<bool>(delta.info1.existedAfter),
+                delta.isPath2Valid,
+                delta.path2.asString(),
+                static_cast<bool>(delta.info2.existedBefore),
+                static_cast<bool>(delta.info2.existedAfter),
+                static_cast<int>(delta.type)));
+        return true;
+      },
+      [&](const RootUpdateJournalDelta& delta) {
+        std::vector<std::string> uncleanPaths;
+        uncleanPaths.reserve(delta.uncleanPaths.size());
+        for (const auto& path : delta.uncleanPaths) {
+          uncleanPaths.push_back(path.asString());
+        }
+        std::sort(uncleanPaths.begin(), uncleanPaths.end());
+        result.push_back(
+            fmt::format(
+                "root seq={} earliest={} time={} from={} unclean={}",
+                delta.sequenceID,
+                delta.earliestSequenceID,
+                delta.time.time_since_epoch().count(),
+                delta.fromRoot.value(),
+                fmt::join(uncleanPaths, ",")));
+        return true;
+      });
+  return result;
+}
+
+} // namespace
+
+TEST_F(JournalTest, takeover_round_trip) {
+  auto root1 = RootId{"1111111111111111111111111111111111111111"};
+  auto root2 = RootId{"2222222222222222222222222222222222222222"};
+  journal.recordRootUpdate(root1);
+  journal.recordCreated("created.txt"_relpath, dtype_t::Regular);
+  journal.recordChanged("changed.txt"_relpath, dtype_t::Regular);
+  journal.recordChanged("changed.txt"_relpath, dtype_t::Regular);
+  journal.recordRenamed("old"_relpath, "new"_relpath, dtype_t::Dir);
+  journal.recordReplaced("a"_relpath, "b"_relpath, dtype_t::Symlink);
+  journal.recordUncleanPaths(root1, root2, {RelativePath{"unclean.txt"}});
+  journal.recordRemoved("created.txt"_relpath, dtype_t::Regular);
+
+  auto serialized = journal.serializeForTakeover(
+      /*mountGeneration=*/42, std::numeric_limits<size_t>::max());
+  ASSERT_TRUE(serialized);
+  EXPECT_EQ(42u, *serialized->mountGeneration());
+
+  Journal restored{edenStats.copy()};
+  restored.initializeFromTakeover(std::move(*serialized));
+
+  expectSameRanges(journal, restored, 1);
+  EXPECT_EQ(describeDeltas(journal, 1), describeDeltas(restored, 1));
+  EXPECT_EQ(journal.getStats()->entryCount, restored.getStats()->entryCount);
+
+  auto latest = journal.peekLatest();
+  auto restoredLatest = restored.peekLatest();
+  ASSERT_TRUE(restoredLatest);
+  EXPECT_EQ(latest->sequenceID, restoredLatest->sequenceID);
+  EXPECT_EQ(root2, restoredLatest->toRoot);
+
+  // The restored journal continues the sequence numbers.
+  restored.recordChanged("after.txt"_relpath, dtype_t::Regular);
+  EXPECT_EQ(latest->sequenceID + 1, restored.peekLatest()->sequenceID);
+}
+
+TEST_F(JournalTest, takeover_carries_the_newest_entries_up_to_the_limit) {
+  for (int i = 0; i < 10; ++i) {
+    journal.recordCreated(
+        RelativePath{fmt::format("file{}", i)}, dtype_t::Regular);
+  }
+  auto entryBytes =
+      FileChangeJournalDelta{
+          "file0"_relpath, dtype_t::Regular, FileChangeJournalDelta::CREATED}
+          .estimateMemoryUsage();
+
+  auto serialized = journal.serializeForTakeover(1, 3 * entryBytes);
+  ASSERT_TRUE(serialized);
+  Journal restored{edenStats.copy()};
+  restored.initializeFromTakeover(std::move(*serialized));
+
+  EXPECT_EQ(3u, restored.getStats()->entryCount);
+  EXPECT_TRUE(restored.accumulateRange(7)->isTruncated);
+  expectSameRanges(journal, restored, 8);
+  EXPECT_EQ(describeDeltas(journal, 8), describeDeltas(restored, 8));
+}
+
+TEST_F(JournalTest, takeover_carries_at_least_the_newest_entry) {
+  journal.recordCreated("file1.txt"_relpath, dtype_t::Regular);
+  journal.recordCreated("file2.txt"_relpath, dtype_t::Regular);
+
+  auto serialized = journal.serializeForTakeover(1, 0);
+  ASSERT_TRUE(serialized);
+  Journal restored{edenStats.copy()};
+  restored.initializeFromTakeover(std::move(*serialized));
+
+  EXPECT_TRUE(restored.accumulateRange(1)->isTruncated);
+  expectSameRanges(journal, restored, 2);
+  EXPECT_EQ(describeDeltas(journal, 2), describeDeltas(restored, 2));
+}
+
+TEST_F(JournalTest, takeover_carries_nothing_from_an_empty_journal) {
+  EXPECT_FALSE(journal.serializeForTakeover(1, 1000));
 }
 
 TEST_F(JournalTest, compaction) {

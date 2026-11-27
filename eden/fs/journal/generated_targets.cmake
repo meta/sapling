@@ -17,6 +17,7 @@ eden_add_library(eden_fs_journal
     Folly::folly_synchronized
     eden_fs_model
     eden_fs_telemetry_stats
+    eden_takeover_thrift
     edencommon::edencommon_utils
     sigbus_memops
     streamingeden_thrift_cpp

@@ -19,6 +19,7 @@
 #include "eden/fs/journal/JournalDelta.h"
 #include "eden/fs/model/RootId.h"
 #include "eden/fs/service/gen-cpp2/streamingeden_types.h"
+#include "eden/fs/takeover/gen-cpp2/takeover_types.h"
 #include "eden/fs/telemetry/EdenStats.h"
 
 namespace facebook::eden {
@@ -225,6 +226,26 @@ class Journal {
   size_t getMemoryLimit() const;
 
   size_t estimateMemoryUsage() const;
+
+  // Graceful restart:
+
+  /**
+   * Copies the newest deltas, up to maxBytes of their estimated memory usage,
+   * for the next EdenFS process to restore with initializeFromTakeover(). The
+   * newest delta is always copied: a restored journal with no deltas would
+   * report no changes for every earlier position instead of truncation.
+   * Returns nullopt if the journal is empty.
+   */
+  std::optional<SerializedJournal> serializeForTakeover(
+      uint64_t mountGeneration,
+      size_t maxBytes) const;
+
+  /**
+   * Restores the deltas the previous EdenFS process copied with
+   * serializeForTakeover(). Positions older than the oldest restored delta
+   * read as truncated. Must be called before anything is recorded.
+   */
+  void initializeFromTakeover(SerializedJournal&& journal);
 
  private:
   /** Add a delta to the journal and notify subscribers.

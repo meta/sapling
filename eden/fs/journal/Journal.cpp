@@ -22,6 +22,18 @@ bool isSaplingMetadataPath(const RelativePath& path) {
   return firstComponent == ".sl"_relpath || firstComponent == ".hg"_relpath;
 }
 
+int64_t toNanos(std::chrono::steady_clock::time_point time) {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             time.time_since_epoch())
+      .count();
+}
+
+std::chrono::steady_clock::time_point fromNanos(int64_t nanos) {
+  return std::chrono::steady_clock::time_point{
+      std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+          std::chrono::nanoseconds{nanos})};
+}
+
 } // namespace
 
 JournalDeltaPtr Journal::DeltaState::frontPtr() noexcept {
@@ -413,6 +425,125 @@ void Journal::flush() {
   }
   if (shouldNotify) {
     notifySubscribers();
+  }
+}
+
+std::optional<SerializedJournal> Journal::serializeForTakeover(
+    uint64_t mountGeneration,
+    size_t maxBytes) const {
+  auto deltaState = deltaState_.rlock();
+  if (deltaState->empty()) {
+    return std::nullopt;
+  }
+
+  SerializedJournal result;
+  result.mountGeneration() = mountGeneration;
+  result.nextSequence() = deltaState->nextSequence;
+  result.currentRoot() = deltaState->currentRoot.value();
+  auto& fileChanges = *result.fileChangeDeltas();
+  auto& rootUpdates = *result.rootUpdateDeltas();
+
+  // Walk from the newest delta and stop at the first one over the budget. As
+  // with truncateIfNecessary(), the deltas left behind are the oldest ones, so
+  // the copy answers every position it does not report as truncated.
+  size_t bytes = 0;
+  auto fits = [&](size_t deltaBytes) {
+    bytes += deltaBytes;
+    return bytes <= maxBytes || (fileChanges.empty() && rootUpdates.empty());
+  };
+  forEachDelta(
+      *deltaState,
+      1,
+      std::nullopt,
+      [&](const FileChangeJournalDelta& delta) {
+        if (!fits(delta.estimateMemoryUsage())) {
+          return false;
+        }
+        auto& serialized = fileChanges.emplace_back();
+        serialized.sequenceID() = delta.sequenceID;
+        serialized.earliestSequenceID() = delta.earliestSequenceID;
+        serialized.timeNanos() = toNanos(delta.time);
+        if (delta.isPath1Valid) {
+          serialized.path1() = delta.path1.asString();
+        }
+        serialized.path1ExistedBefore() = delta.info1.existedBefore;
+        serialized.path1ExistedAfter() = delta.info1.existedAfter;
+        if (delta.isPath2Valid) {
+          serialized.path2() = delta.path2.asString();
+        }
+        serialized.path2ExistedBefore() = delta.info2.existedBefore;
+        serialized.path2ExistedAfter() = delta.info2.existedAfter;
+        serialized.dtype() = static_cast<int32_t>(delta.type);
+        return true;
+      },
+      [&](const RootUpdateJournalDelta& delta) {
+        if (!fits(delta.estimateMemoryUsage())) {
+          return false;
+        }
+        auto& serialized = rootUpdates.emplace_back();
+        serialized.sequenceID() = delta.sequenceID;
+        serialized.earliestSequenceID() = delta.earliestSequenceID;
+        serialized.timeNanos() = toNanos(delta.time);
+        serialized.fromRoot() = delta.fromRoot.value();
+        serialized.uncleanPaths()->reserve(delta.uncleanPaths.size());
+        for (const auto& path : delta.uncleanPaths) {
+          serialized.uncleanPaths()->push_back(path.asString());
+        }
+        return true;
+      });
+  std::reverse(fileChanges.begin(), fileChanges.end());
+  std::reverse(rootUpdates.begin(), rootUpdates.end());
+  return result;
+}
+
+void Journal::initializeFromTakeover(SerializedJournal&& journal) {
+  auto deltaState = deltaState_.wlock();
+  XCHECK(deltaState->empty() && deltaState->nextSequence == 1)
+      << "a journal can only be restored before anything is recorded";
+
+  deltaState->nextSequence = *journal.nextSequence();
+  deltaState->currentRoot = RootId{std::move(*journal.currentRoot())};
+
+  for (auto& serialized : *journal.fileChangeDeltas()) {
+    auto& delta = deltaState->fileChangeDeltas.emplace_back();
+    delta.sequenceID = *serialized.sequenceID();
+    delta.earliestSequenceID = *serialized.earliestSequenceID();
+    delta.time = fromNanos(*serialized.timeNanos());
+    if (serialized.path1().has_value()) {
+      delta.path1 = RelativePath{std::move(*serialized.path1())};
+      delta.isPath1Valid = true;
+    }
+    delta.info1 = PathChangeInfo{
+        *serialized.path1ExistedBefore(), *serialized.path1ExistedAfter()};
+    if (serialized.path2().has_value()) {
+      delta.path2 = RelativePath{std::move(*serialized.path2())};
+      delta.isPath2Valid = true;
+    }
+    delta.info2 = PathChangeInfo{
+        *serialized.path2ExistedBefore(), *serialized.path2ExistedAfter()};
+    delta.type = static_cast<dtype_t>(*serialized.dtype());
+    deltaState->deltaMemoryUsage += delta.estimateMemoryUsage();
+  }
+
+  for (auto& serialized : *journal.rootUpdateDeltas()) {
+    auto& delta = deltaState->rootUpdateDeltas.emplace_back();
+    delta.sequenceID = *serialized.sequenceID();
+    delta.earliestSequenceID = *serialized.earliestSequenceID();
+    delta.time = fromNanos(*serialized.timeNanos());
+    delta.fromRoot = RootId{std::move(*serialized.fromRoot())};
+    for (auto& path : *serialized.uncleanPaths()) {
+      delta.uncleanPaths.emplace(std::move(path));
+    }
+    deltaState->deltaMemoryUsage += delta.estimateMemoryUsage();
+  }
+
+  if (!deltaState->empty()) {
+    InternalJournalStats stats;
+    stats.entryCount = deltaState->fileChangeDeltas.size() +
+        deltaState->rootUpdateDeltas.size();
+    stats.earliestTimestamp = deltaState->frontPtr()->time;
+    stats.latestTimestamp = deltaState->backPtr()->time;
+    deltaState->stats = stats;
   }
 }
 

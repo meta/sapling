@@ -14,4 +14,5 @@ eden_add_test(eden_fs_journal_test
     eden_fs_journal
     eden_fs_model
     edencommon::edencommon_utils
+    fmt::fmt
 )
