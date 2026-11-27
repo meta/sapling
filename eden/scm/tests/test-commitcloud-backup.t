@@ -301,7 +301,7 @@ Throw in an empty transaction - this should not trigger a backup.
   $ sl debugshell --command "l = repo.lock(); repo.transaction('backup-test')" --config infinitepushbackup.autobackup=True --config infinitepushbackup.logdir=$TESTTMP/logs
 
 Check the logs, make sure just one process was started
-  $ cat $TESTTMP/logs/test/*
+  $ cat $TESTTMP/logs/test/* | grep -v '^ *INFO clienttelemetry:'
   
   * starting: * cloud upload * (glob)
   commitcloud: head 'ffeec75ec603' hasn't been uploaded yet
