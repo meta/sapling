@@ -6,7 +6,7 @@
  */
 
 import fs from 'node:fs';
-import {sleep} from 'shared/utils';
+import {defer, sleep} from 'shared/utils';
 import {canonicalizePath, serializeAsyncCall} from '../utils';
 
 function flushPromises() {
@@ -36,6 +36,47 @@ describe('canonicalizePath', () => {
 });
 
 describe('serializeAsyncCall', () => {
+  it.each(['resolve', 'reject'] as const)(
+    'keeps calls serialized when the running call settles via %s',
+    async settlement => {
+      const firstResult = defer<number>();
+      const secondResult = defer<number>();
+      const thirdResult = defer<number>();
+      const results = [firstResult, secondResult, thirdResult];
+      let running = 0;
+      let maxRunning = 0;
+      let nextId = 0;
+      const runner = jest.fn(() => {
+        running++;
+        maxRunning = Math.max(maxRunning, running);
+        return results[nextId++].promise.finally(() => running--);
+      });
+      const testFn = serializeAsyncCall(runner);
+      const first = testFn();
+      const queued = testFn();
+      let reentered: Promise<number> | undefined;
+      const callAgain = () => {
+        reentered = testFn();
+      };
+      const reentry = first.then(callAgain, callAgain);
+
+      if (settlement === 'resolve') {
+        firstResult.resolve(1);
+      } else {
+        firstResult.reject(new Error('failed'));
+      }
+      await reentry;
+      secondResult.resolve(2);
+      thirdResult.resolve(3);
+      await Promise.all([queued, reentered]);
+
+      expect(maxRunning).toBe(1);
+      expect(runner).toHaveBeenCalledTimes(2);
+      expect(reentered).toBe(queued);
+      await expect(queued).resolves.toBe(2);
+    },
+  );
+
   it('only runs one at a time', async () => {
     jest.useFakeTimers();
     const runTime = async (t: number) => {
