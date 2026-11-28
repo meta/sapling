@@ -339,4 +339,4 @@ members = [
   "saplingnative/pybindings",
 ]
 exclude = ["lib/dag/fuzz", "lib/indexedlog/fuzz"]
-resolver = "2"
+resolver = "3"

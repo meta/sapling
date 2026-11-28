@@ -9,7 +9,7 @@ members = [
   "thrift/rust/mocks",
   "thrift/rust/services",
 ]
-resolver = "2"
+resolver = "3"
 
 [workspace.package]
 license = "Apache-2.0"

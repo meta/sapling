@@ -181,6 +181,7 @@ members = [
   "service/thrift_streaming/mocks",
   "service/thrift_streaming/services",
 ]
+resolver = "3"
 
 [workspace.package]
 license = "GPLv2+"
